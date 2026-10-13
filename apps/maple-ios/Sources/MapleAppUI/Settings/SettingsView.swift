@@ -95,6 +95,8 @@
                     settingsText("Account management")
                 }
                 Section {
+                    settingsText("A private AI workspace built for secure research and collaboration.")
+                        .font(.subheadline).foregroundStyle(.secondary)
                     LabeledContent {
                         Text(verbatim: version)
                     } label: {
@@ -154,7 +156,16 @@
                 settingsText("Your plan could not be loaded. Try refreshing account status.")
             case let .loaded(status):
                 LabeledContent {
-                    planName(status.plan)
+                    if let name = status.productName {
+                        Text(
+                            String(
+                                localized: "settings.plan-name", defaultValue: "\(name) Plan",
+                                table: "Settings", bundle: .module)
+                        )
+                        .accessibilityIdentifier("settings.plan-name")
+                    } else {
+                        Text(verbatim: "—").foregroundStyle(.secondary)
+                    }
                 } label: {
                     settingsText("Current plan")
                 }
@@ -162,7 +173,9 @@
                     LabeledContent {
                         Text(date, format: .dateTime.year().month().day())
                     } label: {
-                        settingsText("Current period ends")
+                        settingsText(
+                            status.paymentProvider == "subscription_pass" || status.paymentProvider == "zaprite"
+                                ? "Expires on" : "Renews on")
                     }
                 }
                 if status.plan == .unknown {
@@ -213,6 +226,9 @@
                     settingsText("Chat font")
                 }
                 .accessibilityIdentifier("settings.font")
+                settingsText(preferences.value.chatFont.settingsDescription)
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("settings.font-description")
                 NavigationLink {
                     SettingsModelPicker(entitlements: entitlements) { id in preferences.setSelectedModelID(id) }
                 } label: {
@@ -230,16 +246,29 @@
                 .accessibilityIdentifier("settings.web-search")
                 if entitlements.webSearchAccess != .allowed {
                     settingsText(
-                        "Your web search preference is saved. Web search requires an eligible paid plan and a compatible model."
+                        "Your web search preference is saved. Web search requires an eligible paid plan."
                     )
                     .font(.footnote).foregroundStyle(.secondary)
                 }
                 Picker(selection: Binding(get: { preferences.value.voice }, set: { preferences.setVoice($0) })) {
-                    ForEach(MapleVoice.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
+                    ForEach(["Default voices", "Reference accents"], id: \.self) { group in
+                        Section {
+                            ForEach(MapleVoice.allCases.filter { $0.settingsGroup == group }, id: \.self) {
+                                settingsText($0.settingsLabel).tag($0)
+                            }
+                        } header: {
+                            settingsText(group)
+                        }
+                    }
                 } label: {
                     settingsText("Read aloud voice")
                 }
                 .accessibilityIdentifier("settings.voice")
+                settingsText(
+                    "Any voice can read any supported language; your text determines the spoken language. Matching the voice accent to the text generally sounds most natural."
+                )
+                .font(.footnote).foregroundStyle(.secondary)
+                .accessibilityIdentifier("settings.voice-description")
                 Picker(
                     selection: Binding(
                         get: { preferences.value.playbackSpeed }, set: { preferences.setPlaybackSpeed($0) }
@@ -279,15 +308,6 @@
             }
         }
 
-        private func planName(_ plan: BillingPlan) -> Text {
-            switch plan {
-            case .unknown: settingsText("Unknown")
-            case .free: settingsText("Free")
-            case .paid(.pro): settingsText("Pro")
-            case .paid(.max): settingsText("Max")
-            case .paid(.team): settingsText("Team")
-            }
-        }
     }
 
     /// Fixed app-owned keys are maintained in Settings.xcstrings. Constructing
@@ -305,6 +325,12 @@
         private let canInteract: @MainActor () -> Bool
         private let onSelection: (String) -> Void
         @State private var webSearchNoticePresented = false
+        @State private var modelNotice: ModelNotice?
+
+        private struct ModelNotice: Identifiable {
+            let id = UUID()
+            let name: String
+        }
 
         public init(
             entitlements: AccountEntitlements, webSearchPreference: Binding<Bool>? = nil,
@@ -422,6 +448,9 @@
             .sheet(isPresented: $webSearchNoticePresented) {
                 MediaFeatureNotice(feature: .webSearch, account: entitlements)
             }
+            .sheet(item: $modelNotice) { notice in
+                MediaFeatureNotice(feature: .model, account: entitlements, modelName: notice.name)
+            }
         }
 
         private var hasOptionsGroup: Bool { projectRow != nil || webSearchPreference != nil }
@@ -455,13 +484,32 @@
         private func modelRow(_ model: AccountModelChoice) -> some View {
             Button {
                 guard canInteract() else { return }
-                if entitlements.selectModel(model.id) == .allowed { onSelection(model.id) }
+                if entitlements.selectModel(model.id) == .allowed {
+                    onSelection(model.id)
+                } else {
+                    let name = entitlements.advancedModels.first { $0.id == model.targetModel }?.label ?? model.label
+                    modelNotice = ModelNotice(name: name)
+                }
             } label: {
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(verbatim: model.label)
                             .font(model.isAlias ? .title3.weight(.semibold) : MapleTypography.button)
                             .foregroundStyle(.primary)
+                        let badges = model.badges.filter {
+                            $0 != "Pro" && $0.lowercased() != model.accessTier.lowercased()
+                        }
+                        if !badges.isEmpty {
+                            HStack(spacing: 6) {
+                                ForEach(Array(badges.enumerated()), id: \.offset) { _, badge in
+                                    Text(verbatim: badge)
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(MapleSurface.canvas, in: Capsule())
+                                }
+                            }
+                        }
                         if let description = model.description, !description.isEmpty {
                             Text(verbatim: description)
                                 .font(.subheadline)
@@ -485,7 +533,6 @@
             .buttonStyle(.plain)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24))
-            .disabled(entitlements.modelAccess(model) != .allowed)
             .accessibilityAddTraits(entitlements.selectedModelID == model.id ? .isSelected : [])
             .accessibilityValue(
                 entitlements.modelAccess(model) == .allowed

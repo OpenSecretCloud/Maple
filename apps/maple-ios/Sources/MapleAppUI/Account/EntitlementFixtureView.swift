@@ -108,7 +108,7 @@
     }
 
     private enum EntitlementScenario: String, CaseIterable, Identifiable, Sendable {
-        case loading, failed, free, pro, seat, usage, unknownPlan
+        case loading, failed, free, pro, pass, zaprite, seat, usage, unknownPlan
         var id: String { rawValue }
     }
 
@@ -168,11 +168,15 @@
         func subscriptionStatus() async throws -> BillingStatus {
             if scenario == .loading { await withCheckedContinuation { waiters.append($0) } }
             if scenario == .failed { throw AccountServiceError.unavailable }
-            let plan = scenario == .free ? "Free" : scenario == .unknownPlan ? "Unrecognized fixture plan" : "Pro"
+            let plan =
+                scenario == .free ? "Free" : scenario == .unknownPlan ? "Unrecognized fixture plan" : "Pro Annual"
             return try decode([
                 "is_subscribed": scenario != .free, "product_id": "synthetic",
                 "product_name": plan, "subscription_status": "active", "can_chat": scenario != .usage,
                 "chats_remaining": scenario == .usage ? 0 : 50,
+                "current_period_end": 1_900_000_000,
+                "payment_provider": scenario == .pass
+                    ? "subscription_pass" : scenario == .zaprite ? "zaprite" : "stripe",
                 // Acquisition fields are intentionally inert input to the shipping decoder.
                 "ios_iap_enabled": true, "ios_us_external_link_enabled": true,
             ])
@@ -191,6 +195,7 @@
                     id: id, object: "model", created: 0, ownedBy: "synthetic", displayName: label,
                     shortName: label, contextWindow: 32768, maxContextTokens: 32768, access: paid ? "pro" : "free",
                     capabilities: ModelCapabilities(chat: true, vision: media, reasoning: true, toolUse: media),
+                    badges: paid ? ["Pro", "Reasoning", "New"] : ["free"],
                     enabled: enabled, deprecated: false)
             }
             let capabilities = ModelCapabilities(chat: true, vision: false, reasoning: true, toolUse: false)

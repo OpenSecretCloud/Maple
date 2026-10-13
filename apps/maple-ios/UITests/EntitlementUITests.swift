@@ -49,38 +49,74 @@ import XCTest
         tap("media.access.close")
     }
 
-    func testUnknownLoadingFailureRemainBlockedAndPreserveDraft() {
+    private func waitSendEnabled(_ expected: Bool) {
+        let changed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == %@", NSNumber(value: expected)),
+            object: app.buttons["entitlement.send"])
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 10), .completed)
+    }
+
+    private func tapPickerChoice(_ label: String) {
+        let choices = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "label == %@ AND (elementType == %d OR elementType == %d)", label,
+                XCUIElement.ElementType.button.rawValue, XCUIElement.ElementType.menuItem.rawValue))
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                choices.allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }.count == 1
+            }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        let visible = choices.allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }
+        XCTAssertEqual(visible.count, 1)
+        visible.first?.tap()
+    }
+
+    func testBillingLoadingAndFailurePreserveAvailableChatAndDraft() {
         launch()
         XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
         notice("images", containing: "unavailable")
         scenario("loading", billing: "loading")
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        XCTAssertFalse(app.staticTexts["Checking account access…"].exists)
+        waitSendEnabled(true)
         notice("dictation", containing: "still loading")
         scenario("failed", billing: "failed")
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        XCTAssertTrue(app.staticTexts["Account access is unavailable. Your draft is preserved."].exists)
+        waitSendEnabled(true)
+        XCTAssertFalse(app.staticTexts["Account access is unavailable. Your draft is preserved."].exists)
         tap("entitlement.settings")
         XCTAssertTrue(
             app.staticTexts["Your plan could not be loaded. Try refreshing account status."].waitForExistence(
                 timeout: 5))
-        XCTAssertFalse(app.staticTexts["Free"].exists)
-        referenceScreenshot("failed read-only plan")
+        XCTAssertFalse(app.staticTexts["Free Plan"].exists)
+        referenceScreenshot("failed read-only plan with chat still available")
         tap("entitlement.settings.close")
         scenario("pro", billing: "paid")
-        XCTAssertTrue(app.buttons["entitlement.send"].isEnabled)
+        waitSendEnabled(true)
     }
 
-    func testFreeAndPaidModelMediaGatesStayReadOnly() {
+    func testFreeLockedModelsExplainAccessAndPaidMediaIgnoreModelCapabilities() {
         launch(); scenario("free", billing: "Free")
-        XCTAssertTrue(app.buttons["entitlement.send"].isEnabled)
+        waitSendEnabled(true)
         tap("entitlement.models")
-        XCTAssertTrue(app.buttons["settings.model.auto:quick"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["settings.model.auto:quick"].isEnabled)
-        XCTAssertFalse(app.buttons["settings.model.auto:powerful"].isEnabled)
+        let quick = app.buttons["settings.model.auto:quick"]
+        let powerful = app.buttons["settings.model.auto:powerful"]
+        XCTAssertTrue(quick.waitForExistence(timeout: 5))
+        XCTAssertTrue(quick.isEnabled)
+        XCTAssertTrue(powerful.isEnabled)
+        XCTAssertTrue(powerful.label.contains("Reasoning"))
+        XCTAssertTrue(powerful.label.contains("New"))
+        XCTAssertFalse(powerful.label.contains("Pro"))
         XCTAssertFalse(app.buttons["settings.model.synthetic-disabled"].exists)
-        referenceScreenshot("Free model picker")
+        powerful.tap()
+        let message = app.staticTexts["media.access.message"]
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertEqual(message.label, "Get access to our most advanced AI models for superior performance")
+        XCTAssertTrue(app.navigationBars["Access Power target"].exists)
+        XCTAssertTrue(app.staticTexts["All models run in secure, encrypted environments"].exists)
+        XCTAssertFalse(app.buttons["Upgrade"].exists)
+        XCTAssertFalse(app.buttons["Buy"].exists)
+        referenceScreenshot("locked model read-only explanation with badges")
+        tap("media.access.close")
         tap("entitlement.models.close")
+        waitLabel("entitlement.selected-model", "auto:quick")
         notice("images", containing: "paid plan")
         notice("dictation", containing: "paid plan")
         notice("speech", containing: "paid plan")
@@ -94,39 +130,37 @@ import XCTest
         waitLabel("entitlement.web-effective", "Effective web on")
         tap("entitlement.models"); tap("settings.model.synthetic-text")
         waitLabel("entitlement.selected-model", "synthetic-text")
-        XCTAssertTrue(app.buttons["entitlement.send"].isEnabled)
-        notice("images", containing: "supports images")
-        notice("webSearch", containing: "supports web search")
-        XCTAssertEqual(app.buttons["entitlement.media.dictation"].value as? String, "available")
+        waitSendEnabled(true)
+        for feature in ["images", "dictation", "speech", "webSearch"] {
+            XCTAssertEqual(app.buttons["entitlement.media." + feature].value as? String, "available")
+        }
         waitLabel("entitlement.web-preference", "Web preference on")
-        waitLabel("entitlement.web-effective", "Effective web off")
+        waitLabel("entitlement.web-effective", "Effective web on")
         XCTAssertEqual(editor.value as? String, "Keep this unsent draft")
     }
 
-    func testGuestSeatUsageAndUnknownPlanShowDistinctAuthorityReasons() {
+    func testOnlyKnownFreeGuestsAreBlockedAndUnknownPlansKeepPaidFeaturesUnavailable() {
         launch(guest: true); scenario("free", billing: "Free")
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
+        waitSendEnabled(false)
         XCTAssertTrue(
             app.staticTexts["This guest account can’t start a chat. Sign in with an eligible account."].exists)
         referenceScreenshot("existing guest chat restriction")
         scenario("pro", billing: "paid")
-        XCTAssertTrue(app.buttons["entitlement.send"].isEnabled)
+        waitSendEnabled(true)
         scenario("seat", billing: "paid")
-        let seat = app.staticTexts["Your team’s seat allocation needs attention."]
-        XCTAssertTrue(seat.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        notice("images", containing: "seat allocation")
+        waitSendEnabled(true)
+        XCTAssertEqual(app.buttons["entitlement.media.images"].value as? String, "available")
         scenario("usage", billing: "paid")
-        XCTAssertTrue(app.staticTexts["You’ve reached your current chat allowance."].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        notice("dictation", containing: "usage limit")
+        waitSendEnabled(true)
+        XCTAssertEqual(app.buttons["entitlement.media.dictation"].value as? String, "available")
         scenario("unknownPlan", billing: "unknownPlan")
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
+        waitSendEnabled(true)
         notice("webSearch", containing: "plan details are unavailable")
         tap("entitlement.settings")
         XCTAssertTrue(
             app.staticTexts["Plan details are unavailable. Paid features remain unavailable until your plan is known."]
                 .waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["settings.plan-name"].label, "Unrecognized fixture plan Plan")
         for label in ["Upgrade", "Manage subscription", "Restore purchases", "Developer API", "Manage team"] {
             XCTAssertFalse(app.buttons[label].exists)
         }
@@ -134,24 +168,50 @@ import XCTest
         tap("entitlement.settings.close")
         XCTAssertEqual(editor.value as? String, "Keep this unsent draft")
     }
-    func testShippingRetryFetchesRecoveredServiceAndPreservesUnsentDraft() {
+
+    func testSettingsRefreshRecoversBillingWithoutBlockingAvailableChat() {
         launch(); scenario("failed", billing: "failed")
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        XCTAssertTrue(app.buttons["Retry"].exists)
-        referenceScreenshot("account error with shipping Retry control and preserved draft")
+        waitSendEnabled(true)
         tap("entitlement.prepare-retry")
         waitLabel("entitlement.retry-service", "service ready; account unchanged")
         waitLabel("entitlement.billing", "failed")
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        XCTAssertEqual(editor.value as? String, "Keep this unsent draft")
-        tap("Retry")
+        tap("entitlement.settings")
+        tap("Refresh account status")
+        XCTAssertTrue(app.staticTexts["settings.plan-name"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["settings.plan-name"].label, "Pro Annual Plan")
+        tap("entitlement.settings.close")
         waitLabel("entitlement.billing", "paid")
-        let enabled = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "enabled == true"), object: app.buttons["entitlement.send"])
-        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed)
+        waitSendEnabled(true)
         XCTAssertEqual(editor.value as? String, "Keep this unsent draft")
-        XCTAssertFalse(app.buttons["Retry"].exists)
-        XCTAssertFalse(app.buttons["Upgrade"].exists)
     }
 
+    func testPlanDatesAndPreferenceDescriptionsMatchResearch() {
+        launch(); scenario("pro", billing: "paid")
+        tap("entitlement.settings")
+        XCTAssertEqual(app.staticTexts["settings.plan-name"].label, "Pro Annual Plan")
+        XCTAssertTrue(app.staticTexts["Renews on"].exists)
+        let fontDescription = app.staticTexts["settings.font-description"]
+        if !fontDescription.isHittable { app.swipeUp() }
+        XCTAssertEqual(fontDescription.label, "Maple's default, with a compact modern feel.")
+        tap("settings.voice")
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Default voices")).firstMatch
+                .exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Reference accents")).firstMatch
+                .exists)
+        tapPickerChoice("Casual — Female")
+        tap("settings.speed")
+        tapPickerChoice("1.2×")
+        tap("entitlement.settings.close")
+        for id in ["pass", "zaprite"] {
+            scenario(id, billing: "paid")
+            tap("entitlement.settings")
+            XCTAssertEqual(app.staticTexts["settings.plan-name"].label, "Pro Annual Plan")
+            XCTAssertTrue(app.staticTexts["Expires on"].exists)
+            XCTAssertFalse(app.staticTexts["Renews on"].exists)
+            referenceScreenshot(id + " expiry label")
+            tap("entitlement.settings.close")
+        }
+    }
 }
