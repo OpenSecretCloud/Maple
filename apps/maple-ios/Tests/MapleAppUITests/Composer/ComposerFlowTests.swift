@@ -1,4 +1,5 @@
 import Foundation
+import MapleAppCore
 import MapleSDK
 import Testing
 @testable import MapleAppUI
@@ -205,6 +206,66 @@ import Testing
         #expect(ChatTranscriptRow.rows([pageItems[0], responseItems[0], responseItems[1]]).count == 3)
         let orphan = ChatTranscriptRow.rows([responseItems[1]])
         #expect(orphan.count == 1 && orphan[0].item.type == "tool_output" && orphan[0].toolResult == nil)
+    }
+
+    @Test func pendingIndicatorAppearsOnlyBeforeAssistantOutputDuringGeneration() {
+        let user = ConversationItem(id: "user", type: "message", role: "user")
+        let assistant = ConversationItem(id: "assistant", type: "message", status: "in_progress", role: "assistant")
+        let reasoning = ConversationItem(id: "reasoning", type: "reasoning")
+        let tool = ConversationItem(id: "tool", type: "web_search_call", status: "in_progress")
+        #expect(ChatTranscriptPresentation.showsPending(phase: .sending, items: [user]))
+        #expect(ChatTranscriptPresentation.showsPending(phase: .streaming, items: [user]))
+        for phase: ChatRunPhase? in [nil, .preparing, .stopping, .recovering] {
+            #expect(!ChatTranscriptPresentation.showsPending(phase: phase, items: [user]))
+        }
+        for output in [assistant, reasoning, tool] {
+            #expect(!ChatTranscriptPresentation.showsPending(phase: .streaming, items: [user, output]))
+        }
+    }
+
+    @Test func reasoningDurationMatchesResearchRoundingAndWhitespaceRules() {
+        let english = Locale(identifier: "en")
+        #expect(ChatTranscriptPresentation.thoughtDuration("") == 1)
+        #expect(ChatTranscriptPresentation.thoughtDuration(" \n\t one word \n") == 1)
+        #expect(
+            ChatTranscriptPresentation.thoughtDuration(Array(repeating: "word", count: 38).joined(separator: " ")) == 1)
+        #expect(
+            ChatTranscriptPresentation.thoughtDuration(Array(repeating: "word", count: 39).joined(separator: "\t")) == 2
+        )
+        #expect(ChatTranscriptPresentation.thinkingLabel(text: "", streaming: true, locale: english) == "Thinking")
+        #expect(
+            ChatTranscriptPresentation.thinkingLabel(text: "one", streaming: false, locale: english)
+                == "Thought for 1 seconds")
+        #expect(
+            ChatTranscriptPresentation.thinkingLabel(
+                text: Array(repeating: "word", count: 52).joined(separator: " "), streaming: false, locale: english)
+                == "Thought for 2 seconds")
+    }
+
+    @Test func serverLimitFeedbackDistinguishesKnownPlansAndMessageLimit() {
+        #expect(
+            ChatRecoveryPresentation.message(.usageLimit, plan: .free)
+                == "You've reached your daily usage limit. Upgrade to Pro for more chats.")
+        #expect(
+            ChatRecoveryPresentation.message(.usageLimit, plan: .paid(.pro))
+                == "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage.")
+        for plan: BillingPlan in [.unknown, .paid(.max), .paid(.team)] {
+            #expect(
+                ChatRecoveryPresentation.message(.usageLimit, plan: plan)
+                    == "You've reached your monthly usage limit. Please wait for the next billing cycle.")
+        }
+        #expect(
+            ChatRecoveryPresentation.message(.contextLimit) == "Your message exceeds the context limit for this model.")
+        #expect(
+            ChatRecoveryPresentation.message(.freeTierTokenLimit)
+                == "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.")
+        #expect(
+            ChatRecoveryPresentation.message(.modelUnavailable)
+                == "This model or feature is not available on your current plan.")
+        #expect(
+            ChatRecoveryPresentation.contextLimitMessage
+                == "Your message exceeds the context limit for the current model.\n\nHere's what you can try:\nShorten your message - Try reducing the amount of text or content"
+        )
     }
 
 }

@@ -1,4 +1,5 @@
 import Foundation
+import MapleAppCore
 import MapleSDK
 
 struct ChatTranscriptRow: Identifiable {
@@ -48,6 +49,30 @@ struct ChatTranscriptRow: Identifiable {
     }
 }
 
+enum ChatTranscriptPresentation {
+    static func isGenerating(_ phase: ChatRunPhase?) -> Bool { phase == .sending || phase == .streaming }
+
+    static func showsPending(phase: ChatRunPhase?, items: [ConversationItem]) -> Bool {
+        isGenerating(phase)
+            && !items.contains {
+                $0.role == "assistant" || $0.type == "reasoning" || ChatTranscriptRow.isTool($0)
+            }
+    }
+
+    static func thoughtDuration(_ text: String) -> Int {
+        let words = text.split(whereSeparator: { $0.isWhitespace }).count
+        return max(1, Int((Double(words) / 26).rounded()))
+    }
+
+    static func thinkingLabel(text: String, streaming: Bool, locale: Locale = .current) -> String {
+        if streaming { return MapleStrings.text("Thinking", locale: locale) }
+        let seconds = thoughtDuration(text)
+        return String(
+            localized: "chat.thought-duration", defaultValue: "Thought for \(seconds) seconds",
+            table: "Localizable", bundle: .module, locale: locale)
+    }
+}
+
 enum ChatComposerPresentation {
     static func expanded(newConversation: Bool, editingQueue: Bool, focused: Bool, keyboardVisible: Bool?) -> Bool {
         newConversation || editingQueue || (focused && keyboardVisible != false)
@@ -66,7 +91,11 @@ enum ChatComposerPresentation {
         @Environment(\.horizontalSizeClass) private var sizeClass
         @Environment(\.layoutDirection) private var layoutDirection
         @Environment(\.mapleLaunchTransition) private var launchTransition
-        @State private var columns: NavigationSplitViewVisibility = .all
+        private var columns: Binding<NavigationSplitViewVisibility> {
+            Binding(
+                get: { environment.preferences?.value.sidebarIsOpen == false ? .detailOnly : .all },
+                set: { environment.preferences?.setSidebarIsOpen($0 != .detailOnly) })
+        }
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @AccessibilityFocusState private var menuButtonFocused: Bool
         @State private var compactMenuLease = CompactMenuLease()
@@ -74,7 +103,7 @@ enum ChatComposerPresentation {
         var body: some View {
             Group {
                 if sizeClass == .regular {
-                    NavigationSplitView(columnVisibility: $columns) {
+                    NavigationSplitView(columnVisibility: columns) {
                         library(wide: true)
                     } detail: {
                         NavigationStack {
@@ -265,6 +294,7 @@ enum ChatComposerPresentation {
                             await environment.selectNewChat(projectID: projectID)
                         }
                     },
+                    selectedChatID: environment.selectedChat?.conversationID,
                     settings: { AnyView(SettingsScreen(environment: environment, context: context)) },
                     projectExpansion: context.projectExpansion,
                     menu: context.menu,
@@ -326,7 +356,7 @@ enum ChatComposerPresentation {
                 context.scope == environment.session.account?.scope
             else { return }
             if sizeClass == .regular {
-                columns = columns == .all ? .detailOnly : .all
+                columns.wrappedValue = columns.wrappedValue == .all ? .detailOnly : .all
             } else {
                 environment.menuPresented = true
             }
@@ -391,6 +421,8 @@ enum ChatComposerPresentation {
         #endif
         @State private var queuePresented = false
         @State private var modelPresented = false
+        @State private var contextLimitPresented = false
+        @State private var contextLimitPending = false
         @State private var externalLink: URL?
         @State private var browserPresentationID = UUID()
         @State private var mediaNotice: MediaFeature?
@@ -720,6 +752,8 @@ enum ChatComposerPresentation {
                                                 theme: preferences.value.theme.messageRenderTheme,
                                                 font: preferences.value.chatFont.messageRenderFont,
                                                 isReplyReady: item.status == "completed" || !runtime.hasUnresolvedRun,
+                                                isGenerating: turn.id == turns.last?.id
+                                                    && ChatTranscriptPresentation.isGenerating(runtime.phase),
                                                 speechAccess: account.speechAccess,
                                                 onReadAloud: { environment.readAloud(item, runtime: runtime) },
                                                 onSpeechUnavailable: { mediaNotice = .speech }
@@ -744,6 +778,14 @@ enum ChatComposerPresentation {
                                                     callback(item.id, sample)
                                                 }
                                             #endif
+                                        }
+                                        if turn.id == turns.last?.id,
+                                            ChatTranscriptPresentation.showsPending(
+                                                phase: runtime.phase, items: turn.items)
+                                        {
+                                            ProgressView()
+                                                .accessibilityLabel(MapleStrings.text("Maple is responding"))
+                                                .accessibilityIdentifier("chat.pending")
                                         }
                                     }
                                     .frame(
@@ -887,9 +929,19 @@ enum ChatComposerPresentation {
                 if !menuState.occluded { readingAnchor = nil; pendingScrollMessage = nil }
             }
             .environment(\.retainedMessageRendering, retainsMessageRendering)
-            .tracksChatPresentation(queuePresented || modelPresented || mediaNotice != nil)
+            .tracksChatPresentation(queuePresented || modelPresented || mediaNotice != nil || contextLimitPresented)
             .environment(\.chatPresentationChanged) { id, presented in
                 environment.setPresentationBlocked(presented, id: id, scope: runtime.scope)
+            }
+            .onChange(of: runtime.lastIssue, initial: true) { _, issue in
+                // Rejected drafts have already been restored by the runtime.
+                contextLimitPending = issue == .contextLimit
+                presentContextLimitIfNeeded()
+            }
+            .alert(MapleStrings.text("Message Too Large"), isPresented: $contextLimitPresented) {
+                Button(MapleStrings.text("Got it"), role: .cancel) {}
+            } message: {
+                Text(ChatRecoveryPresentation.contextLimitMessage)
             }
             .onChange(of: composerFocused) { _, focused in
                 #if DEBUG
@@ -901,6 +953,8 @@ enum ChatComposerPresentation {
                 if occluded {
                     composerFocused = false; correctionTask?.cancel(); acceptedTurnScrollTask?.cancel()
                     cancelFollowTasks(); userScrollPhase = false
+                } else {
+                    presentContextLimitIfNeeded()
                 }
             }
             .onChange(of: menuState.returnRevision) { _, _ in
@@ -910,6 +964,7 @@ enum ChatComposerPresentation {
             }
             .onAppear {
                 environment.updatePresentationVisibility()
+                presentContextLimitIfNeeded()
                 if !menuState.occluded, runtime.conversationID == nil { composerFocused = true }
             }
             .externalLinks($externalLink) { presented in
@@ -974,6 +1029,11 @@ enum ChatComposerPresentation {
             }
         }
 
+        private func presentContextLimitIfNeeded() {
+            guard contextLimitPending, currentProjection, !menuState.occluded else { return }
+            contextLimitPending = false; contextLimitPresented = true
+        }
+
         private func composer(maximumHeight: CGFloat) -> some View {
             let owner = runtime.snapshot.draft.id
             let projectionOwner = runtime.snapshot.storageOwner, scope = runtime.scope
@@ -1019,7 +1079,7 @@ enum ChatComposerPresentation {
                 if account.chatAccess != .allowed {
                     AccountAccessNotice(account: account)
                 }
-                ChatRecoveryControls(runtime: runtime)
+                ChatRecoveryControls(runtime: runtime, plan: account.plan)
                 if let importer = environment.imageImporters[ObjectIdentifier(runtime)] {
                     DraftImageStrip(importer: importer)
                     if let issue = importer.issue { ImageImportIssueView(issue: issue) }
@@ -1051,6 +1111,20 @@ enum ChatComposerPresentation {
                     .allowsHitTesting(false).accessibilityHidden(true)
                 }
                 .layoutValue(key: ComposerEditorLayoutKey.self, value: true)
+                HStack(spacing: 4) {
+                    MaplePrivacyLock().environment(\.mapleLaunchTransition, nil).accessibilityHidden(true)
+                    Text(MapleStrings.text("Encrypted and private at every step"))
+                }
+                .font(.footnote).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("composer.privacy")
+                if runtime.conversationID != nil {
+                    Text(MapleStrings.text("AI can make mistakes. Check important info."))
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("composer.disclaimer")
+                }
             }
             // Keep the trailing controls clear of the keyboard's prediction strip.
             .padding(padding).padding(.bottom, bottomPadding).frame(maxWidth: 874).frame(maxWidth: .infinity)
@@ -1075,7 +1149,7 @@ enum ChatComposerPresentation {
                     runtime.scope == account.scope && runtime.snapshot.draft.id == owner
                 },
                 isCurrentPresentation: { currentProjection && !menuState.occluded },
-                placeholder: MapleStrings.text("Message Maple"),
+                placeholder: MapleStrings.text("Message Maple..."),
                 isCompact: !composerExpanded,
                 externalSelection: environment.dictation?.editorState(runtime: runtime, draftID: owner),
                 onChange: { state, edits in
@@ -1115,17 +1189,26 @@ enum ChatComposerPresentation {
                     onUnavailable: { mediaNotice = .images })
             }
         }
+        private var modelShortName: String {
+            account.selectedModel.map { $0.shortName.isEmpty ? $0.label : $0.shortName } ?? account.selectedModelID
+        }
+
         private var modelButton: some View {
             Button {
                 environment.dictation?.stopCaptureForNavigation()
                 composerFocused = false
                 modelPresented = true
             } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
+                HStack(spacing: 4) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text(verbatim: modelShortName)
+                        .font(.footnote.weight(.medium))
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .accessibilityLabel(Text("Chat options", tableName: "Settings", bundle: .module))
+            .accessibilityValue(Text(verbatim: modelShortName))
             .accessibilityIdentifier("chat.model")
         }
         @ViewBuilder private var microphoneButton: some View {
@@ -1188,12 +1271,16 @@ enum ChatComposerPresentation {
         let theme: MessageRenderTheme
         let font: MessageRenderFont
         let isReplyReady: Bool
+        let isGenerating: Bool
         let speechAccess: AccountAccess
         let onReadAloud: () -> Void
         let onSpeechUnavailable: () -> Void
         let onOpenLink: (URL) -> Void
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var appeared = false
+        @State private var copied = false
+        @State private var copyRevision = UUID()
+        @State private var thinkingPulse = false
         private var text: String { (item.content ?? []).compactMap(\.text).joined(separator: "\n\n") }
         private var readableContent: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1205,6 +1292,10 @@ enum ChatComposerPresentation {
         }
 
         private var isUserMessage: Bool { item.role == "user" && item.type == "message" }
+        private var isThinking: Bool {
+            item.type == "reasoning" && isGenerating
+                && (["in_progress", "streaming"].contains(item.status ?? "") || item.status == nil)
+        }
 
         var body: some View {
             HStack(alignment: .top, spacing: 0) {
@@ -1224,6 +1315,11 @@ enum ChatComposerPresentation {
                     } else {
                         messageContent
                     }
+                    if item.status == "incomplete" {
+                        Text(MapleStrings.text("Chat Canceled"))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("message.cancelled." + item.id)
+                    }
                     if item.type != "reasoning", !ChatTranscriptRow.isTool(item), !text.isEmpty {
                         messageActions
                     }
@@ -1231,9 +1327,17 @@ enum ChatComposerPresentation {
                 .frame(maxWidth: isUserMessage ? 650 : .infinity, alignment: isUserMessage ? .trailing : .leading)
             }
             .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
-            .opacity(revealsContent && !appeared && !reduceMotion ? 0 : 1)
+            .opacity(readableContent && revealsContent && !appeared && !reduceMotion ? 0 : 1)
             .onAppear { revealContent() }
             .onChange(of: readableContent) { _, _ in revealContent() }
+            .task(id: copyRevision) {
+                guard copied else { return }
+                try? await Task<Never, Never>.sleep(nanoseconds: 2_000_000_000)
+                if !Task.isCancelled { copied = false }
+            }
+            .onChange(of: isThinking, initial: true) { _, thinking in
+                thinkingPulse = thinking
+            }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier((item.role == "assistant" ? "assistant.message." : "message.") + item.id)
         }
@@ -1244,10 +1348,20 @@ enum ChatComposerPresentation {
                     MessageImages(content: item.content ?? [])
                 }
                 if item.type == "reasoning" {
-                    DisclosureGroup(MapleStrings.text("Thinking")) {
+                    DisclosureGroup {
                         MessageView(
                             text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
+                    } label: {
+                        Text(ChatTranscriptPresentation.thinkingLabel(text: text, streaming: isThinking))
+                            .foregroundStyle(.secondary)
+                            .opacity(isThinking && thinkingPulse && !reduceMotion ? 0.5 : 1)
+                            .animation(
+                                isThinking && !reduceMotion
+                                    ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : nil,
+                                value: thinkingPulse)
                     }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("message.thinking." + item.id)
                 } else if ChatTranscriptRow.isTool(item) {
                     ToolActivityView(
                         item: item, result: toolResult, theme: theme, font: font, generation: generation,
@@ -1255,16 +1369,26 @@ enum ChatComposerPresentation {
                 } else if !text.isEmpty {
                     MessageView(
                         text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
+                } else if item.role == "assistant", isGenerating,
+                    !["completed", "incomplete", "failed"].contains(item.status ?? "")
+                {
+                    ProgressView()
+                        .accessibilityLabel(MapleStrings.text("Maple is responding"))
+                        .accessibilityIdentifier("message.pending." + item.id)
                 }
             }
         }
 
         private var messageActions: some View {
             HStack(spacing: 8) {
-                Button(MapleStrings.text("Copy message"), systemImage: "doc.on.doc") {
+                Button(
+                    MapleStrings.text(copied ? "Copied" : "Copy message"),
+                    systemImage: copied ? "checkmark" : "doc.on.doc"
+                ) {
                     UIPasteboard.general.setItems(
                         [[UTType.utf8PlainText.identifier: text]],
                         options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+                    copied = true; copyRevision = UUID()
                 }.labelStyle(.iconOnly).buttonStyle(.borderless).frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("message.copy." + item.id)
                 if item.role == "assistant" {

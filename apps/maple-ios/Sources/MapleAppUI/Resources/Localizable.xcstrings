@@ -482,7 +482,7 @@
       }
     },
     "Encrypted and private at every step": {
-      "comment": "Privacy reassurance in the empty-chat view, matching the Maple Research composer. Describes encrypted communication without promising absolute anonymity.",
+      "comment": "Research composer privacy assurance displayed beside a lock glyph.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -705,18 +705,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Message"
-          }
-        }
-      }
-    },
-    "Message Maple": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Message Maple"
           }
         }
       }
@@ -1476,18 +1464,6 @@
         }
       }
     },
-    "This conversation is too long for the selected model. Start a new chat.": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This conversation is too long for the selected model. Start a new chat."
-          }
-        }
-      }
-    },
     "This device’s date or time appears incorrect. Check Date & Time and the time zone in Settings, then try again.": {
       "comment": "Safe guidance for a typed SDK attestation time failure. Do not imply trust validation can be bypassed. Settings refers to device system Settings.",
       "extractionState": "manual",
@@ -1568,18 +1544,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "This message is too large. Shorten it and try again."
-          }
-        }
-      }
-    },
-    "This model is unavailable. Choose another model.": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This model is unavailable. Choose another model."
           }
         }
       }
@@ -1956,18 +1920,6 @@
         }
       }
     },
-    "You’ve reached your usage limit.": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You’ve reached your usage limit."
-          }
-        }
-      }
-    },
     "Zoom in": {
       "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
       "extractionState": "manual",
@@ -2048,6 +2000,294 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "You've reached your daily usage limit. Upgrade to Pro for more chats.": {
+      "comment": "Research usage-limit feedback for a known Free account; upgrade is explanatory copy only.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You've reached your daily usage limit. Upgrade to Pro for more chats."
+          }
+        }
+      }
+    },
+    "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage.": {
+      "comment": "Research usage-limit feedback for a known Pro account; preserve the plan names and multiplier.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
+          }
+        }
+      }
+    },
+    "You've reached your monthly usage limit. Please wait for the next billing cycle.": {
+      "comment": "Research usage-limit feedback for all other or unknown plans.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You've reached your monthly usage limit. Please wait for the next billing cycle."
+          }
+        }
+      }
+    },
+    "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.": {
+      "comment": "Research free-tier conversation token-limit feedback, distinct from a single-message context limit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This conversation is too long for the free tier. Upgrade to Pro for longer conversations."
+          }
+        }
+      }
+    },
+    "Your message exceeds the context limit for this model.": {
+      "comment": "Research rejected-message context-limit feedback. The message, not the conversation, exceeded the model limit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your message exceeds the context limit for this model."
+          }
+        }
+      }
+    },
+    "This model or feature is not available on your current plan.": {
+      "comment": "Research server plan-access-denial feedback.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model or feature is not available on your current plan."
+          }
+        }
+      }
+    },
+    "Failed to generate response. Please try again.": {
+      "comment": "Research generation-failure feedback; partial reply text stays visible.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed to generate response. Please try again."
+          }
+        }
+      }
+    },
+    "Stopped before sending. Your message was restored.": {
+      "comment": "Research feedback when Stop prevented dispatch and the draft was restored.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped before sending. Your message was restored."
+          }
+        }
+      }
+    },
+    "Stopping as soon as the response is ready…": {
+      "comment": "Research feedback while Stop is waiting for the server response identifier.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopping as soon as the response is ready…"
+          }
+        }
+      }
+    },
+    "The response finished before it could be stopped.": {
+      "comment": "Research feedback when a requested Stop raced a completed response.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The response finished before it could be stopped."
+          }
+        }
+      }
+    },
+    "The response completed after the connection was restored. Queued messages were kept.": {
+      "comment": "Research successful completion after connection recovery; queued work was retained.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The response completed after the connection was restored. Queued messages were kept."
+          }
+        }
+      }
+    },
+    "The interrupted response stopped. Queued messages were kept.": {
+      "comment": "Research stopped response after connection recovery; queued work was retained.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The interrupted response stopped. Queued messages were kept."
+          }
+        }
+      }
+    },
+    "Image description is temporarily unavailable. Your message and images were restored; please try again.": {
+      "comment": "Research image-description capacity feedback after restoring the rejected draft and its images.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image description is temporarily unavailable. Your message and images were restored; please try again."
+          }
+        }
+      }
+    },
+    "Inference capacity is temporarily unavailable. Your message was restored. Please try again shortly.": {
+      "comment": "Research inference-capacity feedback after restoring the rejected draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inference capacity is temporarily unavailable. Your message was restored. Please try again shortly."
+          }
+        }
+      }
+    },
+    "Message Too Large": {
+      "comment": "Title of the Research context-limit alert.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message Too Large"
+          }
+        }
+      }
+    },
+    "Got it": {
+      "comment": "Dismiss button in the Research message-context-limit alert.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Got it"
+          }
+        }
+      }
+    },
+    "Your message exceeds the context limit for the current model.\n\nHere's what you can try:\nShorten your message - Try reducing the amount of text or content": {
+      "comment": "Research context-limit dialog text, without the document suggestion because native document uploads are outside this pass.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your message exceeds the context limit for the current model.\n\nHere's what you can try:\nShorten your message - Try reducing the amount of text or content"
+          }
+        }
+      }
+    },
+    "Chat Canceled": {
+      "comment": "Research status caption on incomplete assistant output after Stop; retain US spelling.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat Canceled"
+          }
+        }
+      }
+    },
+    "Copied": {
+      "comment": "Research two-second confirmation label after copying a whole message or code block.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copied"
+          }
+        }
+      }
+    },
+    "Message Maple...": {
+      "comment": "Research composer placeholder; Maple is the application name and the punctuation is three periods.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message Maple..."
+          }
+        }
+      }
+    },
+    "AI can make mistakes. Check important info.": {
+      "comment": "Research informational footnote shown below the docked composer.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI can make mistakes. Check important info."
+          }
+        }
+      }
+    },
+    "chat.thought-duration": {
+      "comment": "Research completed reasoning label. Duration is estimated from word count; preserve the complete message.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Thought for %lld seconds"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Thought for %lld seconds"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Maple is responding": {
+      "comment": "Research VoiceOver label for the pending response progress indicator before assistant text arrives.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple is responding"
           }
         }
       }

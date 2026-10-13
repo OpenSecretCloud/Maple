@@ -268,18 +268,8 @@
                     HStack {
                         Text(code.block.language).font(MapleTypography.metadata).foregroundStyle(.secondary)
                         Spacer()
-                        Button {
-                            UIPasteboard.general.setItems(
-                                [[UTType.utf8PlainText.identifier: code.block.source]],
-                                options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
-                        } label: {
-                            Image(systemName: "document.on.document")
-                                .frame(minWidth: 44, minHeight: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .textual.textSelectionInteractionExcluded()
-                        .accessibilityLabel(Text("Copy code", bundle: .module))
+                        MessageCodeCopyButton(source: code.block.source)
+                            .textual.textSelectionInteractionExcluded()
                     }
                     Overflow {
                         InlineText(code.block.source, parser: PreparedMarkup(content: highlighted(code.tokens)))
@@ -321,6 +311,32 @@
                     let color = traits.userInterfaceStyle == .dark ? dark : light
                     return UIColor(red: color.0, green: color.1, blue: color.2, alpha: 1)
                 })
+        }
+    }
+
+    private struct MessageCodeCopyButton: View {
+        let source: String
+        @State private var copied = false
+        @State private var copyRevision = UUID()
+
+        var body: some View {
+            Button {
+                UIPasteboard.general.setItems(
+                    [[UTType.utf8PlainText.identifier: source]],
+                    options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+                copied = true; copyRevision = UUID()
+            } label: {
+                Image(systemName: copied ? "checkmark" : "document.on.document")
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(MapleStrings.text(copied ? "Copied" : "Copy code"))
+            .task(id: copyRevision) {
+                guard copied else { return }
+                try? await Task<Never, Never>.sleep(nanoseconds: 2_000_000_000)
+                if !Task.isCancelled { copied = false }
+            }
         }
     }
 
