@@ -1848,18 +1848,6 @@
         }
       }
     },
-    "Your team’s seat allocation needs attention.": {
-      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Your team’s seat allocation needs attention."
-          }
-        }
-      }
-    },
     "Your team’s seat allocation needs attention. Contact your team administrator.": {
       "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
       "extractionState": "manual",
@@ -2612,6 +2600,216 @@
           "stringUnit": {
             "state": "translated",
             "value": "Preview document: %@"
+          }
+        }
+      }
+    },
+    "Team usage paused": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team usage paused"
+          }
+        }
+      }
+    },
+    "Seat count mismatch": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seat count mismatch"
+          }
+        }
+      }
+    },
+    "This team has more members than paid seats. Remove members to match the paid seat count and resume team usage.": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has more members than paid seats. Remove members to match the paid seat count and resume team usage."
+          }
+        }
+      }
+    },
+    "This team has more members than paid seats. Contact your team admin to resolve the seat count.": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has more members than paid seats. Contact your team admin to resolve the seat count."
+          }
+        }
+      }
+    },
+    "team.seat-mismatch-summary": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@members@, %#@seats@"
+          },
+          "substitutions": {
+            "members": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld member"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld members"
+                    }
+                  }
+                }
+              }
+            },
+            "seats": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seat"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seats"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "team.seat-mismatch-admin-message": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has %#@members@ but only %#@seats@. Remove members to match the paid seat count and resume team usage."
+          },
+          "substitutions": {
+            "members": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld member"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld members"
+                    }
+                  }
+                }
+              }
+            },
+            "seats": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seat"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seats"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "team.seat-mismatch-member-message": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has %#@members@ but only %#@seats@. Contact your team admin to resolve the seat count."
+          },
+          "substitutions": {
+            "members": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld member"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld members"
+                    }
+                  }
+                }
+              }
+            },
+            "seats": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seat"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seats"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

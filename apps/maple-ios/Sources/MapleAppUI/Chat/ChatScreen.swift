@@ -209,6 +209,9 @@ enum ChatComposerPresentation {
                     Color.clear.accessibilityHidden(true)
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let account = environment.entitlements { TeamSeatMismatchNotice(account: account) }
+            }
             #if DEBUG
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if environment.configuration.profile == .local,

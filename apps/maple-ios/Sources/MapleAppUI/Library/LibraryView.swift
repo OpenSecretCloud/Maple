@@ -292,7 +292,14 @@
                         },
                         compactRootBar: usesCompactRootBar,
                         nativeRootBarHidden: !navigationAvailable || !drawerPath.isEmpty,
-                        nativeRootBarTrailing: onClose != nil && navigationAvailable ? AnyView(closeControl) : nil))
+                        nativeRootBarTrailing: onClose != nil && navigationAvailable ? AnyView(closeControl) : nil)
+
+                )
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if drawerNavigation, drawerPath.last != .settings, let account {
+                    TeamSeatMismatchNotice(account: account)
+                }
             }
             .onChange(of: drawerPath) { _, path in
                 guard drawerNavigation else { return }
