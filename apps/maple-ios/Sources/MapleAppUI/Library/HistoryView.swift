@@ -169,7 +169,10 @@
                     }
                 }
                 .confirmationDialog(
-                    Text("Delete selected chats?", tableName: "Library", bundle: .module), isPresented: $deleting,
+                    Text(
+                        String(
+                            localized: "Delete %lld chats?", defaultValue: "Delete \(library.selectedIDs.count) chats?",
+                            table: "Library", bundle: .module)), isPresented: $deleting,
                     titleVisibility: .visible
                 ) {
                     Button(role: .destructive) {
@@ -184,7 +187,13 @@
                         libraryText("Delete selected chats")
                     }
                 } message: {
-                    libraryText("Deleted chats cannot be restored.")
+                    Text(
+                        String(
+                            localized:
+                                "This will permanently delete %lld selected chats. This action cannot be undone.",
+                            defaultValue:
+                                "This will permanently delete \(library.selectedIDs.count) selected chats. This action cannot be undone.",
+                            table: "Library", bundle: .module))
                 }
                 .sheet(isPresented: $moving, onDismiss: { Task { await onMutation?() } }) {
                     NavigationStack {
@@ -197,8 +206,9 @@
                     NavigationStack {
                         DeleteLibraryContentView(
                             title: "Delete all chats",
-                            explanation:
+                            explanation: libraryText(
                                 "This deletes every chat in this account, including chats in projects. Projects remain."
+                            )
                         ) {
                             await library.deleteAllConversations()
                             let issue = library.issue
@@ -370,11 +380,79 @@
         }
     }
 
+    /// Like the project name form, rename remains open on validation or
+    /// service failure; a dismissed form cannot apply a later completion.
+    private struct RenameChatForm: View {
+        let conversation: Conversation
+        @Bindable var library: LibraryModel
+        let onMutation: (@MainActor () async -> Void)?
+        @Environment(\.dismiss) private var dismiss
+        @State private var name = ""
+        @State private var validation: String?
+        @State private var submitting = false
+        @State private var visible = false
+        @FocusState private var focused: Bool
+
+        var body: some View {
+            Form {
+                libraryText("Enter a new name for this chat conversation.")
+                TextField(text: $name) { libraryText("Chat Title") }
+                    .focused($focused).submitLabel(.done).onSubmit { submit() }
+                    .accessibilityIdentifier("library.rename-title")
+                if let validation {
+                    libraryText(validation).foregroundStyle(MapleRedText())
+                        .accessibilityIdentifier("library.rename-validation")
+                }
+                if let issue = library.issue { LibraryIssueView(issue: issue) }
+            }
+            .scrollContentBackground(.hidden).background(MapleSurface.canvas)
+            .navigationTitle(libraryText("Rename Chat"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        libraryText("Cancel")
+                    }.disabled(submitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: submit) { libraryText("Rename Chat") }
+                        .disabled(submitting || library.isMutating || !library.isActive)
+                        .accessibilityIdentifier("library.rename-save")
+                }
+            }
+            .interactiveDismissDisabled(submitting)
+            .disabled(submitting || !library.isActive)
+            .onAppear {
+                visible = true; name = LibraryModel.title(conversation); focused = true
+            }
+            .onDisappear { visible = false }
+            .onChange(of: name) { _, _ in validation = nil }
+        }
+
+        private func submit() {
+            guard visible, library.isActive, !submitting, !library.isMutating else { return }
+            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { validation = "Chat title cannot be empty."; return }
+            guard title != LibraryModel.title(conversation).trimmingCharacters(in: .whitespacesAndNewlines) else {
+                validation = "Please enter a different title."; return
+            }
+            validation = nil; submitting = true; focused = false
+            Task { @MainActor in
+                await library.renameConversation(id: conversation.id, title: title)
+                guard visible, library.isActive else { return }
+                submitting = false
+                if library.issue == nil { await onMutation?(); if visible, library.isActive { dismiss() } }
+            }
+        }
+    }
 
     /// A swipe cell can be recycled as its actions close. Keep confirmation on
     /// the list host, and capture the exact account owner before presenting it.
     @MainActor fileprivate struct LibraryChatDeletionRequest {
         let id: String
+        let title: String
         let library: LibraryModel
         let onMutation: (@MainActor () async -> Void)?
     }
@@ -399,7 +477,7 @@
                     pending = request
                 }
                 .alert(
-                    Text("Delete chat?", tableName: "Library", bundle: .module),
+                    Text("Are you sure you want to delete this chat?", tableName: "Library", bundle: .module),
                     isPresented: Binding(
                         get: { pending != nil }, set: { if !$0 { pending = nil } }),
                     presenting: pending
@@ -419,8 +497,13 @@
                     } label: {
                         libraryText("Delete")
                     }
-                } message: { _ in
-                    libraryText("Deleted chats cannot be restored.")
+                } message: { request in
+                    Text(
+                        String(
+                            localized: "This will permanently delete \"%@\". This action cannot be undone.",
+                            defaultValue:
+                                "This will permanently delete \"\(request.title)\". This action cannot be undone.",
+                            table: "Library", bundle: .module))
                 }
                 .onChange(of: pending?.library.isActive) { _, active in
                     if active == false { pending = nil }
@@ -441,7 +524,6 @@
         var activity: ConversationActivity = .idle
         @Environment(\.requestChatDeletion) private var requestChatDeletion
         @State private var renaming = false
-        @State private var name = ""
         @State private var moving = false
         var body: some View {
             HStack(spacing: 0) {
@@ -475,7 +557,7 @@
                 .tint(.red)
                 .accessibilityIdentifier("library.swipe-delete." + conversation.id)
                 Button {
-                    name = LibraryModel.title(conversation); renaming = true
+                    renaming = true
                 } label: {
                     Label {
                         libraryText("Rename")
@@ -485,20 +567,10 @@
                 }
             }
             .disabled(library.isMutating)
-            .alert(Text("Rename chat", tableName: "Library", bundle: .module), isPresented: $renaming) {
-                TextField(text: $name) { libraryText("Chat name") }
-                Button(role: .cancel) {
-                } label: {
-                    libraryText("Cancel")
+            .sheet(isPresented: $renaming) {
+                NavigationStack {
+                    RenameChatForm(conversation: conversation, library: library, onMutation: onMutation)
                 }
-                Button {
-                    Task {
-                        await library.renameConversation(id: conversation.id, title: name); await changed()
-                    }
-                } label: {
-                    libraryText("Save")
-                }
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .sheet(isPresented: $moving, onDismiss: { Task { await changed() } }) {
                 NavigationStack { MoveChatsView(library: library, ids: [conversation.id]) }
@@ -559,7 +631,7 @@
                 }
             }
             Button {
-                name = LibraryModel.title(conversation); renaming = true
+                renaming = true
             } label: {
                 Label {
                     libraryText("Rename")
@@ -579,7 +651,8 @@
         }
         private func requestDeletion() {
             requestChatDeletion(
-                LibraryChatDeletionRequest(id: conversation.id, library: library, onMutation: onMutation))
+                LibraryChatDeletionRequest(
+                    id: conversation.id, title: displayedTitle(conversation), library: library, onMutation: onMutation))
         }
         private func changed() async { if library.issue == nil { await onMutation?() } }
     }
@@ -628,7 +701,7 @@
 
     struct DeleteLibraryContentView: View {
         let title: String
-        let explanation: String
+        let explanation: Text
         let action: @MainActor () async -> LibraryIssue?
         @Environment(\.dismiss) private var dismiss
         @State private var confirmation = ""
@@ -636,7 +709,7 @@
         @State private var issue: LibraryIssue?
         var body: some View {
             List {
-                libraryText(explanation)
+                explanation
                 TextField(
                     text: $confirmation,
                     prompt: libraryText("Type DELETE to confirm").foregroundStyle(MapleFieldPrompt())

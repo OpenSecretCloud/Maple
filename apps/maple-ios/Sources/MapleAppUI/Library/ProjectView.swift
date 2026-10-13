@@ -122,8 +122,14 @@
             .sheet(isPresented: $deleting) {
                 NavigationStack {
                     DeleteLibraryContentView(
-                        title: "Delete project",
-                        explanation: "This permanently deletes the project and every chat in it."
+                        title: "Delete this project?",
+                        explanation: Text(
+                            String(
+                                localized:
+                                    "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.",
+                                defaultValue:
+                                    "This will permanently delete \"\(renamed ?? project.name)\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.",
+                                table: "Library", bundle: .module))
                     ) {
                         await library.deleteProject(id: project.id)
                         if library.issue == nil { dismiss() }

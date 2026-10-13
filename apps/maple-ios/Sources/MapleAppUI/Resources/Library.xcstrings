@@ -602,18 +602,6 @@
         }
       }
     },
-    "Rename chat": {
-      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rename chat"
-          }
-        }
-      }
-    },
     "Rename project": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -998,6 +986,126 @@
         }
       }
     },
+    "Rename Chat": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename Chat"
+          }
+        }
+      }
+    },
+    "Chat Title": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat Title"
+          }
+        }
+      }
+    },
+    "Chat title cannot be empty.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat title cannot be empty."
+          }
+        }
+      }
+    },
+    "Enter a new name for this chat conversation.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a new name for this chat conversation."
+          }
+        }
+      }
+    },
+    "Please enter a different title.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a different title."
+          }
+        }
+      }
+    },
+    "Please enter a different project name.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a different project name."
+          }
+        }
+      }
+    },
+    "e.g. Use concise bullet points. Focus on practical examples.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "e.g. Use concise bullet points. Focus on practical examples."
+          }
+        }
+      }
+    },
+    "Leave this empty to clear the project's custom instructions.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leave this empty to clear the project's custom instructions."
+          }
+        }
+      }
+    },
+    "Are you sure you want to delete this chat?": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Are you sure you want to delete this chat?"
+          }
+        }
+      }
+    },
+    "Delete this project?": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this project?"
+          }
+        }
+      }
+    },
     "%@, running": {
       "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
       "extractionState": "manual",
@@ -1018,6 +1126,78 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@, completed, unread"
+          }
+        }
+      }
+    },
+    "This will permanently delete \"%@\". This action cannot be undone.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will permanently delete \"%@\". This action cannot be undone."
+          }
+        }
+      }
+    },
+    "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone."
+          }
+        }
+      }
+    },
+    "Delete %lld chats?": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Delete %lld chat?"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Delete %lld chats?"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "This will permanently delete %lld selected chats. This action cannot be undone.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This will permanently delete %lld selected chat. This action cannot be undone."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This will permanently delete %lld selected chats. This action cannot be undone."
+                }
+              }
+            }
           }
         }
       }

@@ -177,17 +177,21 @@
         }
     }
 
-    private struct ProjectNameForm: View {
+    struct ProjectNameForm: View {
         @Bindable var library: LibraryModel
         let projectID: String?
         let isCurrent: @MainActor () -> Bool
         let onCreated: (@MainActor (String?) async -> Bool)?
+        var initialName: String? = nil
+        var onRenamed: (@MainActor (String) -> Void)? = nil
         let isRoot: Bool
         @Environment(\.dismiss) private var dismiss
         @State private var name = ""
         @State private var submitting = false
         @State private var loaded = false
         @State private var visible = false
+        @State private var originalName = ""
+        @State private var validation: String?
         @FocusState private var nameFocused: Bool
 
         var body: some View {
@@ -198,6 +202,10 @@
                         .submitLabel(.done)
                         .onSubmit { submit() }
                         .accessibilityIdentifier("project-editor.name")
+                }
+                if let validation {
+                    libraryText(validation).foregroundStyle(MapleRedText())
+                        .accessibilityIdentifier("project-editor.validation")
                 }
                 if let issue = library.issue { LibraryIssueView(issue: issue) }
             }
@@ -232,9 +240,13 @@
             .interactiveDismissDisabled(submitting)
             .onAppear { visible = true }
             .onDisappear { visible = false }
+            .onChange(of: name) { _, _ in validation = nil }
             .task {
                 guard !loaded, isCurrent() else { return }
-                if let projectID { name = library.projects.first(where: { $0.id == projectID })?.name ?? "" }
+                if let projectID {
+                    name = initialName ?? library.projects.first(where: { $0.id == projectID })?.name ?? ""
+                    originalName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
                 loaded = true; nameFocused = true
             }
         }
@@ -244,13 +256,17 @@
         private func submit() {
             guard visible, isCurrent(), !submitting, !library.isMutating, !trimmedName.isEmpty else { return }
             let value = trimmedName
+            if projectID != nil, value == originalName {
+                validation = "Please enter a different project name."; return
+            }
+            validation = nil
             submitting = true; nameFocused = false
             Task { @MainActor in
                 if let projectID {
                     await library.renameProject(id: projectID, name: value)
                     guard visible, isCurrent() else { return }
                     submitting = false
-                    if library.issue == nil { dismiss() }
+                    if library.issue == nil { onRenamed?(value); dismiss() }
                 } else {
                     let project = await library.createProject(name: value)
                     guard visible, isCurrent() else { return }
@@ -322,8 +338,14 @@
             .sheet(isPresented: $deleting) {
                 NavigationStack {
                     DeleteLibraryContentView(
-                        title: "Delete project",
-                        explanation: "This permanently deletes the project and every chat in it."
+                        title: "Delete this project?",
+                        explanation: Text(
+                            String(
+                                localized:
+                                    "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.",
+                                defaultValue:
+                                    "This will permanently delete \"\(library.projects.first(where: { $0.id == projectID })?.name ?? "")\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.",
+                                table: "Library", bundle: .module))
                     ) {
                         guard isCurrent() else { return .retired }
                         await library.deleteProject(id: projectID)
