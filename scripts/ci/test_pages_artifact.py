@@ -110,6 +110,15 @@ class PagesArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["profile"], "release")
         self.assertEqual(manifest["archive_sha256"], self.digest())
 
+    def test_release_web_zip_requires_explicit_release_profile(self) -> None:
+        manifest = artifact.pack_manifest(self.archive, "release", SHA, RUN_ID, ATTEMPT)
+        self.write_zip(manifest=manifest)
+        self.assert_rejected(self.read_zip)
+        actual = artifact.read_preview_zip(self.preview, SHA, RUN_ID, ATTEMPT,
+                                           self.output_archive, expected_profile="release")
+        self.assertEqual(actual, manifest)
+        self.assertEqual(self.output_archive.read_bytes(), self.archive.read_bytes())
+
     def test_manifest_strict_types_and_unknown_fields(self) -> None:
         mutations = [
             ("schema_version", True), ("schema_version", 2),

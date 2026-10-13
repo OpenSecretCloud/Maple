@@ -5,6 +5,17 @@ on:
     workflows: ["Pages preview build", "Release"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Production web build run ID (leave both inputs blank for latest stable release)"
+        type: string
+        required: false
+        default: ""
+      build_run_attempt:
+        description: "Exact production web build attempt (required with build_run_id)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -69,7 +80,7 @@ jobs:
           deploy --state "$RUNNER_TEMP/maple-pages"
 
   production:
-    name: Publish current stable release
+    name: Publish verified production web artifact
     if: >-
       vars.MAPLE_PAGES_PRODUCTION_ENABLED == 'true' &&
       ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
@@ -87,7 +98,7 @@ jobs:
       cancel-in-progress: false
     environment:
       name: pages-production
-      # Keep job completion from superseding the verified release deployment.
+      # Keep job completion from superseding the verified artifact deployment.
       deployment: false
     permissions:
       contents: write
@@ -109,14 +120,14 @@ jobs:
         working-directory: services/updates
         run: nix develop --no-update-lock-file ../..#pages -c bun install --frozen-lockfile --ignore-scripts
 
-      - name: Verify and prepare the stable release artifact
+      - name: Verify and prepare the production artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
           nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_deploy.py
           prepare --target production --state "$RUNNER_TEMP/maple-pages"
 
-      - name: Deploy the verified stable release
+      - name: Deploy the verified production artifact
         env:
           GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

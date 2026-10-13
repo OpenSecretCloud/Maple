@@ -10,9 +10,11 @@ install_frontend_deps
 case "${MAPLE_WEB_ENVIRONMENT:-pr}" in
   pr)
     use_pr_environment
+    export VITE_APP_ORIGIN="https://app-dev.maple.ai"
     ;;
   release)
     use_release_environment
+    export VITE_APP_ORIGIN="https://app.maple.ai"
     ;;
   *)
     echo "Unsupported MAPLE_WEB_ENVIRONMENT=${MAPLE_WEB_ENVIRONMENT}. Expected pr or release." >&2

@@ -45,6 +45,44 @@ class PagesWorkflowTests(unittest.TestCase):
         for text in strings(value):
             self.assertNotRegex(text, r"\bsecrets\b")
 
+    def test_production_web_build_is_manual_master_only_and_unprivileged(self):
+        build = workflow("pages-production-build.yml")
+        self.assertEqual(build["name"], "Pages production build")
+        self.assertEqual(set(build["on"]), {"workflow_dispatch"})
+        self.assertEqual(build["permissions"], {"contents": "read"})
+        self.assert_no_secrets(build)
+        self.assertEqual(set(build["jobs"]), {"build"})
+        job = build["jobs"]["build"]
+        self.assertNotIn("permissions", job)
+        self.assertNotIn("environment", job)
+        self.assertEqual(normalized(job["if"]),
+                         "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'")
+        self.assertEqual(job["steps"][0]["with"],
+                         {"ref": "${{ github.sha }}", "persist-credentials": False})
+        compile_steps = [step for step in job["steps"] if "bash scripts/ci/web.sh" in step.get("run", "")]
+        self.assertEqual(len(compile_steps), 1)
+        self.assertEqual(compile_steps[0]["env"], {"MAPLE_WEB_ENVIRONMENT": "release"})
+        manifest = next(step["run"] for step in job["steps"] if "pages_artifact.py manifest" in step.get("run", ""))
+        for argument in ('--profile release', '--sha "$GITHUB_SHA"', '--run-id "$GITHUB_RUN_ID"',
+                         '--run-attempt "$GITHUB_RUN_ATTEMPT"'):
+            self.assertIn(argument, manifest)
+        self.assertNotIn("${{", manifest)
+        upload = job["steps"][-1]
+        self.assertEqual(upload["with"], {
+            "name": "maple-pages-production-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz\n"
+                    "apps/maple-research/frontend/src-tauri/target/reproducibility/pages-artifact.json\n",
+            "if-no-files-found": "error", "retention-days": 5,
+        })
+
+    def test_manual_publisher_inputs_select_only_exact_build_run_and_attempt(self):
+        inputs = workflow("pages-publish.yml")["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(set(inputs), {"build_run_id", "build_run_attempt"})
+        for field in inputs.values():
+            self.assertEqual(field["type"], "string")
+            self.assertEqual(field["default"], "")
+            self.assertFalse(field["required"])
+
     def test_build_is_unprivileged_and_skips_forks(self):
         build = workflow("pages-preview-build.yml")
         self.assertEqual(build["name"], "Pages preview build")
@@ -308,7 +346,7 @@ class PagesWorkflowTests(unittest.TestCase):
         )
 
     def test_actions_are_immutable_and_nix_gets_no_github_token(self):
-        for name in ("pages-preview-build.yml", "pages-publish.yml", "pages-tests.yml"):
+        for name in ("pages-preview-build.yml", "pages-production-build.yml", "pages-publish.yml", "pages-tests.yml"):
             for job in workflow(name)["jobs"].values():
                 for step in job["steps"]:
                     if "uses" not in step:
