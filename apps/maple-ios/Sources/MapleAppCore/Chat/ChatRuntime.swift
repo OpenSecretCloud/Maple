@@ -9,7 +9,13 @@ public final class ChatRuntime {
     public let scope: AccountScope
     public private(set) var snapshot: ChatSnapshot
     public private(set) var messages: [ConversationItem] = []
-    public private(set) var lastIssue: ChatIssue?
+    public private(set) var lastIssue: ChatIssue? {
+        didSet {
+            lastIssueID = lastIssue == nil ? nil : hooks.uuid()
+            acknowledgedIssueID = nil
+        }
+    }
+    public private(set) var lastIssueID: UUID?
     public private(set) var lastOutcome: ChatOutcome?
     public private(set) var isLoading = false
     public private(set) var isLoadingOlder = false
@@ -57,6 +63,7 @@ public final class ChatRuntime {
     @ObservationIgnored private var deletionRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var deletedStorageKey: String?
     @ObservationIgnored private var pendingAcceptances: [ChatSendAcceptance] = []
+    @ObservationIgnored private var acknowledgedIssueID: UUID?
 
     public init(
         scope: AccountScope, service: any ChatServing, persistence: any ChatPersistence,
@@ -87,6 +94,20 @@ public final class ChatRuntime {
             guard valid, !isLoading else { return }
             snapshot.draft.text = newValue; changed(); scheduleAutosave()
         }
+    }
+
+    /// Presentation acknowledgment belongs to this account-owned runtime, so
+    /// re-mounting its screen cannot present the same issue occurrence again.
+    public func pendingIssuePresentationID(for issue: ChatIssue) -> UUID? {
+        guard valid, lastIssue == issue, let id = lastIssueID, acknowledgedIssueID != id else { return nil }
+        return id
+    }
+
+    @discardableResult
+    public func acknowledgeIssuePresentation(id: UUID) -> Bool {
+        guard valid, lastIssueID == id, lastIssue != nil, acknowledgedIssueID != id else { return false }
+        acknowledgedIssueID = id
+        return true
     }
 
     public func updateDraft(_ draft: ChatDraft) {
@@ -763,15 +784,20 @@ public final class ChatRuntime {
             case let .reasoningTextDelta(value): try Self.text(value, reasoning: true, final: false, into: &next)
             case let .reasoningTextDone(value): try Self.text(value, reasoning: true, final: true, into: &next)
             case let .toolCallCreated(value):
+                let status = next.first { $0.id == value.toolCallId }?.status ?? "in_progress"
                 Self.merge(
                     ConversationItem(
-                        id: value.toolCallId, type: "function_call", callId: value.toolCallId,
+                        id: value.toolCallId, type: "function_call", status: status, callId: value.toolCallId,
                         name: value.name, arguments: value.arguments), into: &next, authoritative: false)
             case let .toolOutputCreated(value):
                 Self.merge(
                     ConversationItem(
-                        id: value.toolOutputId, type: "function_call_output", callId: value.toolCallId,
+                        id: value.toolOutputId, type: "function_call_output", status: "completed",
+                        callId: value.toolCallId,
                         output: .string(value.output)), into: &next, authoritative: false)
+                if let index = next.firstIndex(where: { $0.id == value.toolCallId && $0.type == "function_call" }) {
+                    next[index].status = "completed"
+                }
             case let .webSearchInProgress(value), let .webSearchSearching(value):
                 Self.merge(
                     ConversationItem(id: value.itemId, type: "web_search_call", status: "in_progress"),
@@ -851,15 +877,21 @@ public final class ChatRuntime {
     private func applyRecovery(_ response: ResearchResponse, runID: UUID, operation: UUID, recovered: Bool = true) async
     {
         guard owns(runID, operation), let chatID = conversationID else { return }
-        let outcome = Self.outcome(response.status)
+        let outcome: ChatOutcome? =
+            response.status == .failed && (recovered || snapshot.pendingRun?.stopRequested == true)
+            ? .cancelled : Self.outcome(response.status)
         for item in response.output ?? [] {
             Self.merge(item, into: &messages, authoritative: outcome != nil, responseID: response.id)
         }
+        let priorHistoryIssueID = lastIssue == .historyUnavailable ? lastIssueID : nil
         do {
             let page = try await service.listConversationItems(
                 conversationId: chatID, parameters: ListParameters(limit: 100, order: .desc))
             guard owns(runID, operation) else { return }
             mergeHistory(page.data.reversed(), authoritative: outcome != nil)
+            if let priorHistoryIssueID, lastIssue == .historyUnavailable, lastIssueID == priorHistoryIssueID {
+                lastIssue = nil
+            }
         } catch { if owns(runID, operation) { lastIssue = .historyUnavailable } }
         guard owns(runID, operation) else { return }
         if let outcome {
@@ -883,7 +915,9 @@ public final class ChatRuntime {
             .union(messages.filter { responseID != nil && $0.responseId == responseID && $0.role != "user" }.map(\.id))
         for index in messages.indices where outputIDs.contains(messages[index].id) {
             if messages[index].responseId == nil { messages[index].responseId = responseID }
-            if outcome == .cancelled { messages[index].status = "incomplete" }
+            if outcome == .cancelled, ["in_progress", "streaming", "searching"].contains(messages[index].status ?? "") {
+                messages[index].status = "incomplete"
+            }
         }
         let completion = chatID.map { id in
             ChatCompletion(
@@ -893,16 +927,26 @@ public final class ChatRuntime {
                 recovered: recovered, wasStopped: wasStopped, wasVisible: isVisible, wasForeground: isForeground)
         }
         snapshot.pendingRun = nil; changed(); lastOutcome = outcome
-        if outcome == .failed, !wasStopped {
-            lastIssue = .generationFailed
-        } else if outcome == .completed, wasStopped {
-            lastIssue = .responseFinishedBeforeStop
-        } else if recovered, outcome == .completed {
-            lastIssue = .recoveredCompletion
-        } else if recovered, outcome == .cancelled || outcome == .failed {
-            lastIssue = .recoveredStop
+        let settlementIssue: ChatIssue?
+        if outcome == .completed, wasStopped {
+            settlementIssue = .responseFinishedBeforeStop
+        } else if recovered {
+            settlementIssue = outcome == .completed ? .recoveredCompletion : .recoveredStop
+        } else if outcome == .failed, !wasStopped {
+            settlementIssue = .generationFailed
         } else {
-            lastIssue = nil
+            settlementIssue = nil
+        }
+        // Settlement owns transient run feedback. History, storage and current
+        // composer/queue failures remain visible until their own recovery.
+        if lastIssue == nil
+            || [
+                ChatIssue.uncertainResponse, .cancellationUnavailable, .generationFailed,
+                .stoppedBeforeSending, .stoppingWhenResponseReady, .responseFinishedBeforeStop,
+                .recoveredCompletion, .recoveredStop,
+            ].contains(where: { $0 == lastIssue })
+        {
+            lastIssue = settlementIssue
         }
         runTask?.cancel(); cancelTask?.cancel()
         runTask = nil; cancelTask = nil
@@ -1136,8 +1180,8 @@ public final class ChatRuntime {
     static func outcome(_ status: ResponseStatus) -> ChatOutcome? {
         switch status {
         case .completed: .completed
-        case .cancelled: .cancelled
-        case .failed, .incomplete: .failed
+        case .cancelled, .incomplete: .cancelled
+        case .failed: .failed
         case .queued, .inProgress: nil
         }
     }
@@ -1294,7 +1338,7 @@ public final class ChatRuntime {
             parts[value.contentIndex].text = (parts[value.contentIndex].text ?? "") + (value.delta ?? "")
         }
         items[index].content = parts
-        if reasoning, items[index].status != "incomplete" {
+        if items[index].status != "incomplete" {
             items[index].status = final ? "completed" : "in_progress"
         }
     }

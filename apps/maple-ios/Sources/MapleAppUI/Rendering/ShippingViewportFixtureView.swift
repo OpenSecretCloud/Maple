@@ -54,9 +54,10 @@
                 Group {
                     if let model {
                         Group {
-                            if model.draftLoadProof && !showingChat {
+                            if (model.draftLoadProof || model.contextLimitProof) && !showingChat {
                                 Text("Retained draft remains in its runtime")
-                                    .accessibilityIdentifier("shipping-draft.away")
+                                    .accessibilityIdentifier(
+                                        model.contextLimitProof ? "shipping-context.away" : "shipping-draft.away")
                             } else {
                                 ChatDetail(
                                     environment: model.environment, runtime: model.runtime,
@@ -320,6 +321,19 @@
                         .accessibilityValue(model.renderLifecyclesJSON)
                 }
                 .frame(maxWidth: .infinity).frame(height: 60)
+            } else if model.contextLimitProof {
+                VStack(spacing: 4) {
+                    HStack {
+                        Button("Reject context") { model.rejectContext() }
+                            .accessibilityIdentifier("shipping-context.reject")
+                            .disabled(!model.ready || model.runtime.hasUnresolvedRun)
+                        Button(showingChat ? "Visit another screen" : "Return to chat") { showingChat.toggle() }
+                            .accessibilityIdentifier("shipping-context.navigate")
+                            .disabled(!model.ready)
+                    }.font(.caption)
+                    Text(model.summary).font(.caption2)
+                        .accessibilityIdentifier("shipping-viewport.summary")
+                }.frame(maxWidth: .infinity).frame(height: 60)
             } else if model.draftLoadProof {
                 VStack(spacing: 4) {
                     HStack {
@@ -415,6 +429,7 @@
             nativeNestedScroll: ProcessInfo.processInfo.arguments.contains(
                 "--maple-shipping-native-nested-scroll-proof"))
         private let store: ShippingViewportStore
+        let contextLimitProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-context-limit-proof")
         let draftLoadProof: Bool
         let compactProjectionProof: Bool
         let coldHistoryProof: Bool
@@ -705,6 +720,11 @@
             return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         }
         func releaseOlder() async { await service.releaseOlder() }
+        func rejectContext() {
+            guard contextLimitProof, ready, !retired, !runtime.hasUnresolvedRun else { return }
+            runtime.draftText = "Synthetic rejected context message"
+            failed = !runtime.send()
+        }
         func startRun() {
             guard ready, !started else { return }
             runtime.draftText = "Synthetic live viewport turn"
@@ -979,6 +999,9 @@
         {
             guard !retired, stream == nil, request.conversation == Self.chatID else {
                 throw ChatIssue.uncertainResponse
+            }
+            if ProcessInfo.processInfo.arguments.contains("--maple-shipping-context-limit-proof") {
+                throw ResearchAPIError.http(status: 413, reason: .contextLimit)
             }
             let pair = AsyncThrowingStream<ResponseStreamEvent, Error>.makeStream()
             stream = pair.continuation

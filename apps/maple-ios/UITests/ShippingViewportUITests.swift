@@ -41,6 +41,38 @@ final class ShippingViewportUITests: XCTestCase {
         XCTAssertTrue(app.buttons["message.speak.viewport-assistant-20"].exists)
     }
 
+    func testContextAlertIsAcknowledgedAcrossRemountAndNewRejectionPresentsAgain() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-context-limit-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        XCTAssertTrue(app.staticTexts["composer.disclaimer"].exists)
+        XCTAssertFalse(app.otherElements["composer.privacy"].exists)
+
+        let reject = app.buttons["shipping-context.reject"]
+        XCTAssertTrue(reject.waitForExistence(timeout: 5))
+        reject.tap()
+        let alert = app.alerts["Message Too Large"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 10))
+        alert.buttons["Got it"].tap()
+        XCTAssertTrue(alert.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(app.textViews["chat.composer"].value as? String, "Synthetic rejected context message")
+
+        app.buttons["shipping-context.navigate"].tap()
+        XCTAssertTrue(app.staticTexts["shipping-context.away"].waitForExistence(timeout: 5))
+        app.buttons["shipping-context.navigate"].tap()
+        XCTAssertTrue(app.textViews["chat.composer"].waitForExistence(timeout: 5))
+        XCTAssertFalse(alert.waitForExistence(timeout: 1), "An acknowledged issue occurrence must survive view remount")
+        XCTAssertTrue(app.staticTexts["chat.error"].exists, "Acknowledgment keeps the context-limit footer")
+
+        reject.tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "A newly rejected request owns a new alert occurrence")
+        alert.buttons["Got it"].tap()
+        XCTAssertTrue(alert.waitForNonExistence(timeout: 5))
+    }
+
     func testUserMessagesStayOnRightAndWebToolRowsRemainVisibleWithDetails() throws {
         continueAfterFailure = false
         app = XCUIApplication()
@@ -313,6 +345,59 @@ final class ShippingViewportUITests: XCTestCase {
             draft += suffix
             XCTAssertEqual(composer.value as? String, draft)
             capture("Existing composer and edge navigation recover after picker — attempt \(attempt)")
+        }
+    }
+
+    func testMenuButtonRecoversAfterOptionsScrimAndSwipeDismissal() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--maple-shipping-viewport-fixture", "--maple-shipping-pagination-menu-proof",
+            "--maple-shipping-picker-proof",
+        ]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let menu = app.buttons["Menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        XCTAssertTrue(menu.isEnabled && menu.isHittable)
+        // Calibrate the actual native control before either presentation.
+        menu.tap()
+        let close = app.buttons["shipping-pagination.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10)); close.tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+
+        for swipeDismissal in [false, true] {
+            let model = app.buttons["chat.model"]
+            XCTAssertTrue(model.exists && model.isHittable); model.tap()
+            let picker = app.collectionViews["settings.models"]
+            XCTAssertTrue(picker.waitForExistence(timeout: 10))
+            let window = app.windows.firstMatch.frame
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            if swipeDismissal {
+                let handle = origin.withOffset(
+                    CGVector(dx: window.midX - app.frame.minX, dy: picker.frame.minY + 8 - app.frame.minY))
+                handle.press(
+                    forDuration: 0.1,
+                    thenDragTo: origin.withOffset(
+                        CGVector(dx: window.midX - app.frame.minX, dy: window.maxY - 15 - app.frame.minY)),
+                    withVelocity: .fast, thenHoldForDuration: 0)
+            } else {
+                origin.withOffset(
+                    CGVector(
+                        dx: window.midX - app.frame.minX,
+                        dy: window.minY + (picker.frame.minY - window.minY) / 2 - app.frame.minY)
+                ).tap()
+            }
+            waitForModelPickerDismissal(picker)
+            XCTAssertTrue(menu.waitForExistence(timeout: 10), "Options dismissal restores the native bar")
+            XCTAssertTrue(menu.isEnabled && menu.isHittable)
+            // No edge swipe, draft mutation or remount may repair the bar first.
+            menu.tap()
+            XCTAssertTrue(close.waitForExistence(timeout: 10), "Menu receives a fresh native touch after dismissal")
+            XCTAssertTrue(close.isEnabled && close.isHittable); close.tap()
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            capture("Native Menu remains available after options \(swipeDismissal ? "swipe" : "scrim") dismissal")
         }
     }
 

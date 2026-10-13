@@ -174,7 +174,7 @@ import Testing
         await service.setRetrieved(chatResponse("response", status))
         await runtime.reconcile()
         #expect(runtime.hasUnresolvedRun == (status == .queued || status == .inProgress))
-        #expect(runtime.lastOutcome == ChatRuntime.outcome(status))
+        #expect(runtime.lastOutcome == (status == .failed ? .cancelled : ChatRuntime.outcome(status)))
         #expect(await service.posts.count == 1)
         runtime.invalidate()
     }
@@ -420,13 +420,12 @@ import Testing
         runtime.invalidate()
     }
 
-    @Test(arguments: [ResponseStatus.failed, .incomplete])
-    func failedTerminalShowsFailureAndKeepsPartialText(_ status: ResponseStatus) async throws {
+    @Test func failedTerminalShowsFailureAndKeepsPartialText() async throws {
         let (runtime, service, _) = fixture()
         await service.setScript([
             .created(try chatLifecycle(chatResponse("response", .inProgress))),
             .outputTextDelta(try chatDelta("Partial response")),
-            .failed(try chatLifecycle(chatResponse("response", status))),
+            .failed(try chatLifecycle(chatResponse("response", .failed))),
         ])
         runtime.draftText = "A turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
         #expect(runtime.lastOutcome == .failed && runtime.lastIssue == .generationFailed)
@@ -493,7 +492,127 @@ import Testing
         runtime.invalidate()
     }
 
-    @Test(arguments: [ResponseStatus.completed, .cancelled, .failed])
+    @Test func stopPreservesCompletedReasoningAndToolsWhileMarkingActiveOutputsIncomplete() async throws {
+        let (runtime, service, _) = fixture()
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let done = try decoder.decode(
+            ResponseTextEvent.self,
+            from: Data(#"{"item_id":"reasoning","output_index":0,"content_index":0,"text":"Finished thought"}"#.utf8))
+        let search = try decoder.decode(
+            ResponseWebSearchEvent.self, from: Data(#"{"item_id":"search","output_index":1}"#.utf8))
+        let activeTool = try decoder.decode(
+            ResponseItemEvent.self,
+            from: Data(
+                #"{"output_index":2,"item":{"id":"active-tool","type":"function_call","status":"searching"}}"#.utf8))
+        await service.setScript([
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .reasoningTextDelta(try chatDelta("A thought", item: "reasoning")), .reasoningTextDone(done),
+            .webSearchInProgress(search), .webSearchCompleted(search), .outputItemAdded(activeTool),
+            .outputTextDelta(try chatDelta("Partial answer")),
+        ])
+        runtime.draftText = "Stop this turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        runtime.stop(); await runtime.waitForCurrentWork()
+        #expect(runtime.lastOutcome == .cancelled && !runtime.hasUnresolvedRun)
+        #expect(runtime.messages.first { $0.id == "reasoning" }?.status == "completed")
+        #expect(runtime.messages.first { $0.id == "search" }?.status == "completed")
+        #expect(runtime.messages.first { $0.id == "active-tool" }?.status == "incomplete")
+        #expect(runtime.messages.first { $0.id == "assistant" }?.status == "incomplete")
+        #expect(runtime.messages.first { $0.id == "assistant" }?.content?.first?.text == "Partial answer")
+        runtime.invalidate()
+    }
+
+    @Test func incompleteTerminalKeepsPartialTextAndSettlesAsStopped() async throws {
+        let (runtime, service, _) = fixture()
+        await service.setScript([
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .outputTextDelta(try chatDelta("Partial response")),
+            .failed(try chatLifecycle(chatResponse("response", .incomplete))),
+        ])
+        runtime.draftText = "A turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        #expect(runtime.lastOutcome == .cancelled && runtime.lastIssue == nil && !runtime.hasUnresolvedRun)
+        #expect(runtime.messages.first { $0.id == "assistant" }?.status == "incomplete")
+        #expect(runtime.messages.first { $0.id == "assistant" }?.content?.first?.text == "Partial response")
+        runtime.invalidate()
+    }
+
+    @Test func authoritativeIncompleteAssistantRetainsCancelledChipAfterTextDone() async throws {
+        let (runtime, service, _) = fixture()
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let done = try decoder.decode(
+            ResponseTextEvent.self,
+            from: Data(#"{"item_id":"assistant","output_index":0,"content_index":0,"text":"Partial response"}"#.utf8))
+        let item = ConversationItem(
+            id: "assistant", type: "message", status: "incomplete", role: "assistant",
+            content: [.init(type: "output_text", text: "Partial response")])
+        await service.setScript([
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .outputTextDelta(try chatDelta("Partial response")), .outputTextDone(done),
+            .failed(try chatLifecycle(chatResponse("response", .incomplete, output: [item]))),
+        ])
+        runtime.draftText = "A turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        #expect(runtime.lastOutcome == .cancelled && runtime.lastIssue == nil && !runtime.hasUnresolvedRun)
+        #expect(runtime.messages.first { $0.id == "assistant" }?.status == "incomplete")
+        #expect(runtime.messages.first { $0.id == "assistant" }?.content?.first?.text == "Partial response")
+        runtime.invalidate()
+    }
+
+    @Test(arguments: [false, true])
+    func failedResponseLookupStopsActiveOutputAndPreservesCompletedReasoning(stopRequested: Bool) async throws {
+        let (runtime, service, _) = fixture()
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let done = try decoder.decode(
+            ResponseTextEvent.self,
+            from: Data(#"{"item_id":"reasoning","output_index":0,"content_index":0,"text":"Finished thought"}"#.utf8))
+        await service.setScript([
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .reasoningTextDelta(try chatDelta("A thought", item: "reasoning")), .reasoningTextDone(done),
+            .outputTextDelta(try chatDelta("Partial answer")),
+        ])
+        runtime.draftText = "Interrupted turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        await service.setRetrieved(chatResponse("response", .failed))
+        if stopRequested {
+            await service.setCancelError(ResearchAPIError.http(status: 400, reason: .unspecified))
+            runtime.stop(); await runtime.waitForCurrentWork()
+        } else {
+            await runtime.reconcile()
+        }
+        #expect(runtime.lastOutcome == .cancelled && !runtime.hasUnresolvedRun)
+        #expect(runtime.lastIssue == (stopRequested ? nil : .recoveredStop))
+        #expect(runtime.messages.first { $0.id == "reasoning" }?.status == "completed")
+        #expect(runtime.messages.first { $0.id == "assistant" }?.status == "incomplete")
+        #expect(runtime.messages.first { $0.id == "assistant" }?.content?.first?.text == "Partial answer")
+        runtime.invalidate()
+    }
+
+    @Test(arguments: [false, true])
+    func stopUsesToolFrameStatusAndPreservesFinishedToolOutput(finished: Bool) async throws {
+        let (runtime, service, _) = fixture()
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let added = try decoder.decode(
+            ResponseItemEvent.self,
+            from: Data(#"{"output_index":0,"item":{"id":"tool","type":"function_call","status":"in_progress"}}"#.utf8))
+        let tool = try decoder.decode(
+            ToolCallEvent.self,
+            from: Data(#"{"tool_call_id":"tool","output_index":0,"name":"search","arguments":{}}"#.utf8))
+        let output = try decoder.decode(
+            ToolOutputEvent.self,
+            from: Data(#"{"tool_output_id":"result","tool_call_id":"tool","output_index":1,"output":"Done"}"#.utf8))
+        var events: [ResponseStreamEvent] = [
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .outputItemAdded(added), .toolCallCreated(tool),
+        ]
+        if finished { events.append(.toolOutputCreated(output)) }
+        await service.setScript(events)
+        runtime.draftText = "Stop this turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        #expect(runtime.messages.first { $0.id == "tool" }?.status == (finished ? "completed" : "in_progress"))
+        runtime.stop(); await runtime.waitForCurrentWork()
+        #expect(runtime.lastOutcome == .cancelled && !runtime.hasUnresolvedRun)
+        #expect(runtime.messages.first { $0.id == "tool" }?.status == (finished ? "completed" : "incomplete"))
+        if finished { #expect(runtime.messages.first { $0.id == "result" }?.status == "completed") }
+        runtime.invalidate()
+    }
+
+    @Test(arguments: [ResponseStatus.completed, .cancelled, .failed, .incomplete])
     func recoveredTerminalPublishesItsResolutionAndKeepsQueue(_ status: ResponseStatus) async throws {
         let (runtime, service, _) = fixture()
         await service.setScript([.created(try chatLifecycle(chatResponse("response", .inProgress)))])
@@ -501,13 +620,102 @@ import Testing
         runtime.draftText = "Queued turn"; #expect(runtime.enqueueDraft())
         await service.setRetrieved(chatResponse("response", status))
         await runtime.reconcile()
-        #expect(
-            runtime.lastIssue
-                == (status == .completed
-                    ? .recoveredCompletion : status == .cancelled ? .recoveredStop : .generationFailed))
+        #expect(runtime.lastIssue == (status == .completed ? .recoveredCompletion : .recoveredStop))
+        #expect(runtime.lastOutcome == (status == .completed ? .completed : .cancelled))
         #expect(runtime.queuedTurns.count == 1 && runtime.queuedTurns.first?.draft.text == "Queued turn")
         #expect(runtime.isQueuePaused && !runtime.hasUnresolvedRun)
         #expect(await service.posts.count == 1)
         runtime.invalidate()
+    }
+
+    @Test(arguments: [ResponseStatus.completed, .cancelled, .failed, .incomplete])
+    func recoveredTerminalPreservesHistoryReloadFailure(_ status: ResponseStatus) async throws {
+        let (runtime, service, _) = fixture()
+        await service.setScript([
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .outputTextDelta(try chatDelta("Visible partial response")),
+        ])
+        runtime.draftText = "Interrupted turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        await service.setRetrieved(chatResponse("response", status))
+        await service.setPageError(URLError(.networkConnectionLost))
+        await runtime.reconcile()
+        #expect(runtime.lastIssue == .historyUnavailable && !runtime.hasUnresolvedRun)
+        #expect(runtime.lastOutcome == (status == .completed ? .completed : .cancelled))
+        #expect(runtime.messages.first { $0.id == "assistant" }?.content?.first?.text == "Visible partial response")
+        runtime.invalidate()
+    }
+
+    @Test(arguments: [false, true])
+    func successfulHistoryRecoveryClearsItsOldFailureAndPreservesANewerComposerIssue(newerIssue: Bool) async throws {
+        let (runtime, service, _) = fixture()
+        await service.setScript([.created(try chatLifecycle(chatResponse("response", .inProgress)))])
+        runtime.draftText = "Interrupted turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        await service.setRetrieved(chatResponse("response", .inProgress))
+        await service.setPageError(URLError(.networkConnectionLost)); await runtime.reconcile()
+        let oldIssueID = try #require(runtime.lastIssueID)
+        #expect(runtime.lastIssue == .historyUnavailable && runtime.hasUnresolvedRun)
+        await service.setPageError(nil); await service.setRetrieved(chatResponse("response", .completed))
+        let gate = ChatTestGate(); await service.setPageGate(gate)
+        let recovery = Task { await runtime.reconcile() }
+        await gate.waitForArrival()
+        if newerIssue {
+            runtime.draftText = String(repeating: "x", count: 32 * 1_024 + 1)
+            #expect(!runtime.enqueueDraft())
+            #expect(runtime.lastIssue == .draftTooLarge && runtime.lastIssueID != oldIssueID)
+        }
+        await gate.release(); await recovery.value
+        #expect(runtime.lastOutcome == .completed && !runtime.hasUnresolvedRun)
+        #expect(runtime.lastIssue == (newerIssue ? .draftTooLarge : .recoveredCompletion))
+        runtime.invalidate()
+    }
+
+    enum ComposerIssue: CaseIterable, Sendable { case draftTooLarge, queueLimit }
+
+    @Test(arguments: ComposerIssue.allCases, [ResponseStatus.completed, .failed, .cancelled])
+    func settlementPreservesCurrentComposerAndQueueIssue(_ failure: ComposerIssue, _ status: ResponseStatus)
+        async throws
+    {
+        let (runtime, service, _) = fixture()
+        runtime.draftText = "In-flight turn"; #expect(runtime.send()); await service.waitForPosts()
+        let issue: ChatIssue
+        switch failure {
+        case .draftTooLarge:
+            runtime.draftText = String(repeating: "x", count: 32 * 1_024 + 1)
+            #expect(!runtime.enqueueDraft()); issue = .draftTooLarge
+        case .queueLimit:
+            for index in 0..<16 {
+                runtime.draftText = "Queued \(index)"; #expect(runtime.enqueueDraft())
+            }
+            runtime.draftText = "Retain this unsent turn"; #expect(!runtime.enqueueDraft()); issue = .queueLimit
+            runtime.pauseQueue()
+        }
+        let issueID = runtime.lastIssueID
+        #expect(runtime.lastIssue == issue)
+        await service.emit(.completed(try chatLifecycle(chatResponse("response", status))))
+        await runtime.waitForCurrentWork()
+        #expect(runtime.lastIssue == issue && runtime.lastIssueID == issueID)
+        #expect(runtime.lastOutcome == ChatRuntime.outcome(status) && !runtime.hasUnresolvedRun)
+        runtime.invalidate()
+    }
+
+    @Test func issueAcknowledgmentSurvivesRemountAndStaleAcknowledgmentCannotConsumeNewRejection() async throws {
+        let (runtime, service, _) = fixture()
+        #expect(runtime.lastIssueID == nil && runtime.pendingIssuePresentationID(for: .contextLimit) == nil)
+        await service.setResponseErrors([ResearchAPIError.http(status: 413, reason: .contextLimit)])
+        runtime.draftText = "Rejected turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        let first = try #require(runtime.pendingIssuePresentationID(for: .contextLimit))
+        #expect(runtime.acknowledgeIssuePresentation(id: first))
+        #expect(!runtime.acknowledgeIssuePresentation(id: first))
+        #expect(runtime.pendingIssuePresentationID(for: .contextLimit) == nil)
+        #expect(runtime.lastIssue == .contextLimit && runtime.lastIssueID == first)
+        await service.setResponseErrors([ResearchAPIError.http(status: 413, reason: .contextLimit)])
+        #expect(runtime.send()); await runtime.waitForCurrentWork()
+        let second = try #require(runtime.pendingIssuePresentationID(for: .contextLimit))
+        #expect(second != first && !runtime.acknowledgeIssuePresentation(id: first))
+        #expect(runtime.pendingIssuePresentationID(for: .contextLimit) == second)
+        #expect(runtime.acknowledgeIssuePresentation(id: second))
+        #expect(runtime.pendingIssuePresentationID(for: .contextLimit) == nil)
+        runtime.invalidate()
+        #expect(!runtime.acknowledgeIssuePresentation(id: second))
     }
 }

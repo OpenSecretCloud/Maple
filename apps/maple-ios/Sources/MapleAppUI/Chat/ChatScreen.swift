@@ -74,6 +74,10 @@ enum ChatTranscriptPresentation {
 }
 
 enum ChatComposerPresentation {
+    static func isEmptyState(hasMessages: Bool, conversationID: String?) -> Bool {
+        !hasMessages && conversationID == nil
+    }
+
     static func expanded(newConversation: Bool, editingQueue: Bool, focused: Bool, keyboardVisible: Bool?) -> Bool {
         newConversation || editingQueue || (focused && keyboardVisible != false)
     }
@@ -408,6 +412,7 @@ enum ChatComposerPresentation {
         @Environment(\.layoutDirection) private var layoutDirection
         @Environment(\.horizontalSizeClass) private var sizeClass
         @Environment(\.compactMenuChatState) private var compactMenuState
+        @Environment(\.compactMenuPresentationDismissed) private var compactMenuPresentationDismissed
         @Bindable var runtime: ChatRuntime
         @Bindable var account: AccountEntitlements
         @Bindable var preferences: PreferencesController
@@ -422,7 +427,6 @@ enum ChatComposerPresentation {
         @State private var queuePresented = false
         @State private var modelPresented = false
         @State private var contextLimitPresented = false
-        @State private var contextLimitPending = false
         @State private var externalLink: URL?
         @State private var browserPresentationID = UUID()
         @State private var mediaNotice: MediaFeature?
@@ -933,9 +937,8 @@ enum ChatComposerPresentation {
             .environment(\.chatPresentationChanged) { id, presented in
                 environment.setPresentationBlocked(presented, id: id, scope: runtime.scope)
             }
-            .onChange(of: runtime.lastIssue, initial: true) { _, issue in
+            .onChange(of: runtime.lastIssueID, initial: true) { _, _ in
                 // Rejected drafts have already been restored by the runtime.
-                contextLimitPending = issue == .contextLimit
                 presentContextLimitIfNeeded()
             }
             .alert(MapleStrings.text("Message Too Large"), isPresented: $contextLimitPresented) {
@@ -973,7 +976,7 @@ enum ChatComposerPresentation {
             .sheet(item: $mediaNotice) { feature in
                 MediaFeatureNotice(feature: feature, account: account)
             }
-            .sheet(isPresented: $modelPresented) {
+            .sheet(isPresented: $modelPresented, onDismiss: compactMenuPresentationDismissed) {
                 let scope = runtime.scope, owner = runtime.snapshot.storageOwner
                 if let context = environment.libraryContext, context.scope == scope {
                     ChatOptionsSheet(
@@ -1030,8 +1033,11 @@ enum ChatComposerPresentation {
         }
 
         private func presentContextLimitIfNeeded() {
-            guard contextLimitPending, currentProjection, !menuState.occluded else { return }
-            contextLimitPending = false; contextLimitPresented = true
+            guard currentProjection, !menuState.occluded,
+                let issueID = runtime.pendingIssuePresentationID(for: .contextLimit),
+                runtime.acknowledgeIssuePresentation(id: issueID)
+            else { return }
+            contextLimitPresented = true
         }
 
         private func composer(maximumHeight: CGFloat) -> some View {
@@ -1079,7 +1085,7 @@ enum ChatComposerPresentation {
                 if account.chatAccess != .allowed {
                     AccountAccessNotice(account: account)
                 }
-                ChatRecoveryControls(runtime: runtime, plan: account.plan)
+                ChatRecoveryControls(runtime: runtime, productName: account.billing.value?.productName)
                 if let importer = environment.imageImporters[ObjectIdentifier(runtime)] {
                     DraftImageStrip(importer: importer)
                     if let issue = importer.issue { ImageImportIssueView(issue: issue) }
@@ -1111,15 +1117,18 @@ enum ChatComposerPresentation {
                     .allowsHitTesting(false).accessibilityHidden(true)
                 }
                 .layoutValue(key: ComposerEditorLayoutKey.self, value: true)
-                HStack(spacing: 4) {
-                    MaplePrivacyLock().environment(\.mapleLaunchTransition, nil).accessibilityHidden(true)
-                    Text(MapleStrings.text("Encrypted and private at every step"))
-                }
-                .font(.footnote).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("composer.privacy")
-                if runtime.conversationID != nil {
+                if ChatComposerPresentation.isEmptyState(
+                    hasMessages: !runtime.messages.isEmpty, conversationID: runtime.conversationID)
+                {
+                    HStack(spacing: 4) {
+                        MaplePrivacyLock().environment(\.mapleLaunchTransition, nil).accessibilityHidden(true)
+                        Text(MapleStrings.text("Encrypted and private at every step"))
+                    }
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("composer.privacy")
+                } else {
                     Text(MapleStrings.text("AI can make mistakes. Check important info."))
                         .font(.footnote).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)

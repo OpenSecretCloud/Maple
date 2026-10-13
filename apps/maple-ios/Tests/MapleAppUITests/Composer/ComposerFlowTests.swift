@@ -242,16 +242,20 @@ import Testing
                 == "Thought for 2 seconds")
     }
 
-    @Test func serverLimitFeedbackDistinguishesKnownPlansAndMessageLimit() {
-        #expect(
-            ChatRecoveryPresentation.message(.usageLimit, plan: .free)
-                == "You've reached your daily usage limit. Upgrade to Pro for more chats.")
-        #expect(
-            ChatRecoveryPresentation.message(.usageLimit, plan: .paid(.pro))
-                == "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage.")
-        for plan: BillingPlan in [.unknown, .paid(.max), .paid(.team)] {
+    @Test func usageLimitCopyMatchesMissingAndRawResearchProductNames() {
+        for productName: String? in [nil, "", "Free", "FREE"] {
             #expect(
-                ChatRecoveryPresentation.message(.usageLimit, plan: plan)
+                ChatRecoveryPresentation.message(.usageLimit, productName: productName)
+                    == "You've reached your daily usage limit. Upgrade to Pro for more chats.")
+        }
+        for productName in ["Pro", "Pro Annual", "Team Pro"] {
+            #expect(
+                ChatRecoveryPresentation.message(.usageLimit, productName: productName)
+                    == "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage.")
+        }
+        for productName in ["Unrecognized plan", "Max", "Team", "Max Pro", " Free "] {
+            #expect(
+                ChatRecoveryPresentation.message(.usageLimit, productName: productName)
                     == "You've reached your monthly usage limit. Please wait for the next billing cycle.")
         }
         #expect(
@@ -266,6 +270,13 @@ import Testing
             ChatRecoveryPresentation.contextLimitMessage
                 == "Your message exceeds the context limit for the current model.\n\nHere's what you can try:\nShorten your message - Try reducing the amount of text or content"
         )
+    }
+
+    @Test func composerPrivacyOnlyAppearsForEmptyUnassignedChat() {
+        #expect(ChatComposerPresentation.isEmptyState(hasMessages: false, conversationID: nil))
+        #expect(!ChatComposerPresentation.isEmptyState(hasMessages: true, conversationID: nil))
+        #expect(!ChatComposerPresentation.isEmptyState(hasMessages: false, conversationID: "existing"))
+        #expect(!ChatComposerPresentation.isEmptyState(hasMessages: true, conversationID: "existing"))
     }
 
 }

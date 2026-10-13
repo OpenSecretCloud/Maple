@@ -96,10 +96,19 @@
         }
     }
 
+    private struct CompactMenuPresentationDismissedKey: EnvironmentKey {
+        static let defaultValue: @MainActor @Sendable () -> Void = {}
+    }
+
     extension EnvironmentValues {
         var compactMenuChatState: @MainActor @Sendable (AccountScope, UUID) -> CompactMenuChatState {
             get { self[CompactMenuChatStateKey.self] }
             set { self[CompactMenuChatStateKey.self] = newValue }
+        }
+
+        var compactMenuPresentationDismissed: @MainActor @Sendable () -> Void {
+            get { self[CompactMenuPresentationDismissedKey.self] }
+            set { self[CompactMenuPresentationDismissedKey.self] = newValue }
         }
     }
 
@@ -134,10 +143,12 @@
             withTransaction(context.transaction) {
                 controller.libraryHost.rootView = CompactMenuHostedContent(
                     content: library, environment: context.environment,
-                    publishBar: controller.barPublisher(role: .library, storageOwner: storageOwner))
+                    publishBar: controller.barPublisher(role: .library, storageOwner: storageOwner),
+                    presentationDismissed: controller.presentationDismissalObserver())
                 controller.chatHost.rootView = CompactMenuHostedContent(
                     content: chat, environment: context.environment,
-                    publishBar: controller.barPublisher(role: .chat, storageOwner: storageOwner))
+                    publishBar: controller.barPublisher(role: .chat, storageOwner: storageOwner),
+                    presentationDismissed: controller.presentationDismissalObserver())
             }
             controller.update(requestedMenu: requestedMenu, reduceMotion: reduceMotion)
         }
@@ -151,9 +162,11 @@
         let content: Content
         let environment: EnvironmentValues
         var publishBar: CompactMenuBarPublicationHandler = { _, _, _ in }
+        var presentationDismissed: @MainActor @Sendable () -> Void = {}
         var body: some View {
             var merged = environment
             merged.compactMenuBarPublication = publishBar
+            merged.compactMenuPresentationDismissed = presentationDismissed
             return content.environment(\.self, merged)
         }
     }
@@ -481,6 +494,8 @@
             delegate = self
             libraryHost.rootView.publishBar = barPublisher(role: .library, storageOwner: storageOwner)
             chatHost.rootView.publishBar = barPublisher(role: .chat, storageOwner: storageOwner)
+            libraryHost.rootView.presentationDismissed = presentationDismissalObserver()
+            chatHost.rootView.presentationDismissed = presentationDismissalObserver()
             setViewControllers([libraryRoute, chatRoute], animated: false)
         }
 
@@ -581,6 +596,21 @@
                     role == .library || self.lease.storageOwner == storageOwner
                 else { return }
                 self.publishRootBar(role: role, owner: publisherOwner, publication: publication)
+            }
+        }
+
+        func presentationDismissalObserver() -> @MainActor @Sendable () -> Void {
+            { [weak self] in self?.presentationDismissed() }
+        }
+
+        private func presentationDismissed() {
+            guard !retired, current else { return }
+            // SwiftUI's onDismiss can precede the end of an interactive sheet
+            // transition. UIKit still owns the presented controller until then.
+            if let coordinator = transitionCoordinator {
+                coordinator.animate(alongsideTransition: nil) { [weak self] _ in self?.scheduleReconcile() }
+            } else {
+                scheduleReconcile()
             }
         }
 
