@@ -87,7 +87,7 @@ import XCTest
         XCTAssertFalse(app.buttons["library.selection-done"].exists)
         tap("library.actions"); tap("Select chats")
         selectAlphaAndBeta(); tap("Delete selected chats")
-        XCTAssertTrue(app.staticTexts["Delete selected chats?"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Delete 2 chats?"].waitForExistence(timeout: 10))
         let confirmationReady = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in
                 self.app.buttons.matching(identifier: "Delete selected chats").allElementsBoundByIndex.contains {
@@ -162,11 +162,11 @@ import XCTest
                 thenDragTo: alpha.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)))
         let delete = app.buttons["library.swipe-delete.alpha"]
         XCTAssertTrue(delete.waitForExistence(timeout: 10))
-        XCTAssertFalse(app.alerts["Delete chat?"].exists)
+        XCTAssertFalse(app.alerts["Are you sure you want to delete this chat?"].exists)
         label("library.fixture.remaining", equals: "Remaining alpha,beta,active,outside")
         label("library.fixture.deletion-count", equals: "deletions 0")
         delete.tap()
-        let confirmation = app.alerts["Delete chat?"]
+        let confirmation = app.alerts["Are you sure you want to delete this chat?"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
         XCTAssertTrue(confirmation.buttons["Cancel"].isHittable)
         label("library.fixture.remaining", equals: "Remaining alpha,beta,active,outside")
@@ -192,7 +192,7 @@ import XCTest
 
     func testEllipsisDeleteAlsoRequiresConfirmationAndCancelKeepsTheChat() {
         launch(["--maple-library-menu-proof"]); tap("library.chat-actions.alpha"); tap("Delete")
-        let confirmation = app.alerts["Delete chat?"]
+        let confirmation = app.alerts["Are you sure you want to delete this chat?"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
         label("library.fixture.remaining", equals: "Remaining alpha,beta,active,outside")
         label("library.fixture.deletion-count", equals: "deletions 0")
@@ -225,13 +225,13 @@ import XCTest
         XCTAssertTrue(pinned.waitForExistence(timeout: 10) && pinned.isHittable && alpha.isHittable)
         alpha.press(forDuration: 0.8, thenDragTo: first, withVelocity: .slow, thenHoldForDuration: 0.3)
         dragAcknowledgement("alpha:fixture-project:unpinned")
-        tap("library.project.fixture-project")
+        tap("library.project.expand.fixture-project")
         XCTAssertTrue(alpha.waitForExistence(timeout: 10) && alpha.isHittable)
         XCTAssertGreaterThanOrEqual(alpha.frame.minX, first.frame.minX + 28)
         XCTAssertGreaterThanOrEqual(alpha.frame.height, 50 - 0.01)
         alpha.press(forDuration: 0.8, thenDragTo: second, withVelocity: .slow, thenHoldForDuration: 0.3)
         dragAcknowledgement("alpha:fixture-project-2:unpinned")
-        tap("library.project.fixture-project-2")
+        tap("library.project.expand.fixture-project-2")
         XCTAssertTrue(alpha.waitForExistence(timeout: 10) && alpha.isHittable)
 
         let recent = app.staticTexts["library.drop.recent"]
@@ -290,5 +290,112 @@ import XCTest
         label("library.fixture.events", equals: "post|cancel-request|cancel-confirm|delete-failed|delete-project")
         label("library.fixture.owner", equals: "removed")
         label("library.fixture.remaining", equals: "Remaining alpha,beta,outside")
+    }
+
+    func testRunningUnreadRowsAndCollapsedProjectSummaryClearOnSelection() {
+        launch(["--maple-library-parity-proof"])
+        let alpha = app.buttons["library.chat.alpha"]
+        XCTAssertTrue(alpha.waitForExistence(timeout: 15))
+        XCTAssertEqual(alpha.label, "Alpha chat, running")
+        XCTAssertEqual(app.buttons["library.chat.beta"].label, "Beta chat, completed, unread")
+        let folder = app.buttons["library.project.fixture-project"]
+        XCTAssertEqual(folder.label, "Synthetic project, completed, unread")
+        let disclosure = app.buttons["library.project.expand.fixture-project"]
+        XCTAssertGreaterThanOrEqual(disclosure.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(disclosure.frame.height, 44)
+        tap("library.project.expand.fixture-project")
+        let child = app.buttons["library.chat.active"]
+        XCTAssertTrue(child.waitForExistence(timeout: 15))
+        XCTAssertEqual(child.label, "Active project chat, completed, unread")
+        XCTAssertEqual(folder.label, "Synthetic project")
+        child.tap()
+        XCTAssertEqual(child.label, "Active project chat")
+        tap("library.project.expand.fixture-project")
+        XCTAssertEqual(folder.label, "Synthetic project")
+        tap("library.chat.beta")
+        XCTAssertEqual(app.buttons["library.chat.beta"].label, "Beta chat")
+        XCTAssertEqual(alpha.label, "Alpha chat, running")
+        screenshot("Running and unread rows with collapsed project summary")
+    }
+
+    func testProjectTitleOpensScopedDetailWithInstructionsAndSelection() {
+        launch(["--maple-library-parity-proof"])
+        tap("library.project.fixture-project")
+        let instructions = app.buttons["library.project-detail.instructions"]
+        XCTAssertTrue(instructions.waitForExistence(timeout: 15))
+        let preview = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@", "Set shared custom instructions that apply to chats in this project."),
+            object: instructions)
+        XCTAssertEqual(XCTWaiter.wait(for: [preview], timeout: 15), .completed)
+        XCTAssertTrue(app.buttons["library.chat.active"].exists)
+        XCTAssertFalse(app.buttons["library.chat.alpha"].exists)
+        tap("library.project-detail.actions"); tap("Select chats")
+        tap("library.chat.active")
+        XCTAssertTrue(app.buttons["library.chat.active"].isSelected)
+        XCTAssertTrue(app.buttons["Move selected chats"].isEnabled)
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10)); back.tap()
+        tap("library.project.fixture-project")
+        tap("library.project-detail.actions"); tap("Select chats")
+        XCTAssertFalse(app.buttons["library.chat.active"].isSelected)
+        XCTAssertFalse(app.buttons["Move selected chats"].isEnabled)
+        tap("library.selection-done")
+        tap("library.project-detail.instructions")
+        XCTAssertTrue(app.textViews["library.instructions-text"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Leave this empty to clear the project's custom instructions."].exists)
+        tap("library.instructions-cancel")
+        XCTAssertTrue(app.buttons["library.project-detail.instructions"].waitForExistence(timeout: 10))
+        screenshot("Project detail uses shared instructions and selection controls")
+    }
+
+    func testLibraryProjectCreationOpensDetailAndUnchangedRenamesDoNotMutate() {
+        launch(["--maple-library-parity-proof"])
+        tap("library.chat-actions.alpha"); tap("Rename")
+        XCTAssertTrue(app.textFields["library.rename-title"].waitForExistence(timeout: 10))
+        tap("library.rename-save")
+        label("library.rename-validation", equals: "Please enter a different title.")
+        tap("Cancel")
+        tap("library.new-project")
+        let name = app.textFields["project-editor.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10)); name.tap(); name.typeText("New synthetic project")
+        tap("project-editor.save")
+        XCTAssertTrue(app.buttons["library.project-detail.instructions"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.navigationBars["New synthetic project"].exists)
+        tap("library.project-detail.actions"); tap("Rename project")
+        XCTAssertTrue(app.textFields["project-editor.name"].waitForExistence(timeout: 10))
+        tap("project-editor.save")
+        label("project-editor.validation", equals: "Please enter a different project name.")
+        tap("project-editor.cancel")
+        label("library.fixture.events", equals: "create-project")
+        screenshot("Library creation opens project detail and unchanged names are rejected")
+    }
+
+    func testReadOnlyUsageAndTeamSeatCountsRenderAndSettingsHidesTheBanner() {
+        launch(["--maple-library-account-proof"])
+        let usage = app.descendants(matching: .any).matching(identifier: "library.usage").firstMatch
+        XCTAssertTrue(usage.waitForExistence(timeout: 15))
+        for text in ["Pro Plan", "25% used", "Resets Monthly", "+2.5 credits"] {
+            XCTAssertTrue(usage.label.localizedCaseInsensitiveContains(text), usage.label)
+        }
+        XCTAssertFalse(app.buttons["library.usage"].exists)
+        XCTAssertEqual(usage.buttons.count, 0)
+        let banner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch").firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 15))
+        XCTAssertTrue(banner.label.contains("1 member, 0 paid seats"), banner.label)
+        XCTAssertTrue(banner.label.contains("This team has 1 member but only 0 paid seats."), banner.label)
+        XCTAssertTrue(banner.label.contains("Remove members to match the paid seat count and resume team usage."))
+        XCTAssertFalse(app.buttons["Manage Team"].exists)
+        XCTAssertFalse(app.buttons["Pricing"].exists)
+        screenshot("Read-only usage and singular member seat mismatch card")
+        tap("library.actions")
+        let settings = app.buttons["library.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        XCTAssertEqual(settings.label, "Settings, Team usage paused")
+        screenshot("Native Settings menu retains the colored attention icon and accessible status")
+        settings.tap()
+        XCTAssertTrue(app.staticTexts["library.fixture.settings"].waitForExistence(timeout: 10))
+        XCTAssertTrue(banner.waitForNonExistence(timeout: 10))
+        screenshot("Settings destination excludes the team usage banner")
     }
 }

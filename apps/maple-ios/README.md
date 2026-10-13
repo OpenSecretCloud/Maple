@@ -129,6 +129,18 @@ The main menu remembers explicitly expanded projects in an account-scoped,
 protected local file excluded from backups. These presentation choices survive
 relaunch and sign-out, never sync to the server, and are removed after account
 deletion. Search can reveal project contents without changing the saved choice.
+Project titles open the existing scoped detail view; the separate disclosure
+keeps folder expansion available. Detail shares chat selection and instructions
+editing with the library. Running and completed-unread indicators follow the
+account-owned runtimes, including pending project chat creation; selecting or
+showing a completed chat clears its unread indicator.
+
+The selected, visible foreground conversation polls items at 2, 5, 10, 15,
+20 and 30 seconds, then every 60 seconds, skipping an active response stream.
+The visible foreground menu polls the first recents page every 60 seconds and
+after conversation creation. Reads preserve loaded older pages and account
+ownership; hiding, retirement and deletion fence late results. Polls are
+serialized, so request duration adds to each delay.
 
 On compact layouts, a retained `UINavigationController` owns the full-screen
 Main Menu and Chat routes, their root navigation bar, and the standard
@@ -151,6 +163,11 @@ Disabled, deprecated and non-chat models cannot
 be selected; every non-Free catalog tier requires a paid plan for selection.
 Web search starts enabled and follows its saved preference, and read-aloud
 blocks only a known Free plan; the server authorizes every request.
+The options sheet offers the selected catalog entry's thinking levels. A saved
+choice the model does not support resolves to Default without overwriting the
+preference, and is omitted from the request. Queued turns retain the effort
+captured at submission. The library's usage meter and team seat notices are
+read-only and never open pricing or team management.
 
 Billing uses a captured account SDK API to mint a third-party token for the
 configured billing origin. It caches that token only in memory and remints

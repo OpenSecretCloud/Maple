@@ -6,6 +6,7 @@
 
     private enum LibraryDrawerDestination: Hashable {
         case settings
+        case project(String)
     }
 
     /// Compact navigation uses this full-scene root beneath the retained chat
@@ -16,6 +17,7 @@
         @State private var drag: LibraryChatDragContext
         @State private var search = ""
         @State private var projectDestination: ProjectSheetDestination?
+        @State private var createdProjectID: String?
         @State private var showingSettings = false
         @State private var selecting = false
         @State private var drawerPath: [LibraryDrawerDestination] = []
@@ -133,6 +135,7 @@
                                             selectedChatID: selectedChatID,
                                             conversationActivity: conversationActivity,
                                             projectActivity: projectActivity(project.id),
+                                            onViewProject: viewProject,
                                             onManageProject: manageProject,
                                             onMutation: refresh, selectionLibrary: library, selecting: $selecting,
                                             drag: drag, dragEnabled: navigationAvailable,
@@ -158,11 +161,7 @@
                                     Spacer()
                                     Button {
                                         suspendSearch()
-                                        if let onManageProjects {
-                                            onManageProjects(nil)
-                                        } else {
-                                            projectDestination = .create
-                                        }
+                                        projectDestination = .create
                                     } label: {
                                         Image(systemName: "folder.badge.plus").foregroundStyle(MapleAccent.action)
                                             .frame(minWidth: 44, minHeight: 44)
@@ -209,6 +208,7 @@
                         }
                         if let issue = library.issue { LibraryIssueView(issue: issue) }
                     }
+
                     .accessibilityIdentifier("library.sidebar-list")
                     .refreshable { await refresh() }
                     .allowsHitTesting(navigationAvailable)
@@ -263,6 +263,7 @@
                             suspendSearch(); onClose?()
                         }
                     }
+
                 }
                 .toolbarVisibility(
                     navigationAvailable && (!usesCompactRootBar || !drawerPath.isEmpty) ? .visible : .hidden,
@@ -276,6 +277,18 @@
                         } else {
                             settings()
                         }
+                    case .project(let id):
+                        if let project = library.projects.first(where: { $0.id == id }) {
+                            ProjectView(
+                                project: project, library: models.project(id),
+                                makeInstructionEditor: makeInstructionEditor,
+                                onSelectChat: selectChat, onNewChat: selectNewChat,
+                                selectedChatID: selectedChatID, conversationActivity: conversationActivity,
+                                onMutation: refresh
+                            )
+                            .toolbarVisibility(.visible, for: .navigationBar)
+                        }
+
                     }
                 }
                 .modifier(
@@ -307,16 +320,34 @@
                 if !path.isEmpty { closeFocused = false; suspendSearch() }
                 onDrawerDestinationChanged?(!path.isEmpty)
             }
+            .onChange(of: library.projects.map(\.id)) { _, ids in
+                drawerPath.removeAll { destination in
+                    if case .project(let id) = destination { return !ids.contains(id) }
+                    return false
+                }
+            }
             .onChange(of: focusAvailable) { _, available in
                 closeFocused = drawerNavigation && available && drawerPath.isEmpty
                 if !available { suspendSearch() } else if !search.isEmpty { models.setSearch(search) }
             }
-            .sheet(isPresented: projectSheetBinding, onDismiss: { Task { await refresh() } }) {
-                if let projectDestination {
+            .sheet(
+                isPresented: projectSheetBinding,
+                onDismiss: {
+                    let id = createdProjectID; createdProjectID = nil
+                    Task {
+                        await refresh()
+                        if let id, library.isActive { viewProject(id) }
+                    }
+                }
+            ) {
+                if let destination = projectDestination {
                     ProjectManagementSheet(
-                        library: library, initialDestination: projectDestination,
+                        library: library, initialDestination: destination,
                         makeInstructionEditor: makeInstructionEditor,
-                        isCurrent: { library.isActive && library.scope == models.scope })
+                        isCurrent: { library.isActive && library.scope == models.scope },
+                        onCreatedProject: { id in
+                            createdProjectID = id; projectDestination = nil
+                        })
                 }
             }
             .fullScreenCover(isPresented: settingsBinding, onDismiss: onSettingsDismiss) {
@@ -343,6 +374,7 @@
                 }
             }
         }
+
         private var usesCompactRootBar: Bool { compactRootBar && drawerNavigation }
 
         @ViewBuilder private var closeControl: some View {
@@ -385,6 +417,12 @@
         private func manageProject(_ id: String) {
             suspendSearch()
             if let onManageProjects { onManageProjects(id) } else { projectDestination = .manage(id) }
+        }
+        private func viewProject(_ id: String) {
+            guard library.isActive, library.projects.contains(where: { $0.id == id }) else { return }
+            suspendSearch(); drag.cancel(); selecting = false; library.selectedIDs = []
+            _ = models.project(id)
+            drawerPath.append(.project(id))
         }
         private func dismissSearch() { searchFocused = false }
         private func suspendSearch() { dismissSearch(); models.cancelSearchLoading() }
@@ -505,6 +543,7 @@
         let selectedChatID: String?
         let conversationActivity: @MainActor (String) -> ConversationActivity
         let projectActivity: ConversationActivity
+        let onViewProject: @MainActor (String) -> Void
         let onManageProject: @MainActor (String) -> Void
         let onMutation: @MainActor () async -> Void
         @Bindable var selectionLibrary: LibraryModel
@@ -520,6 +559,17 @@
                 Button {
                     expanded.toggle()
                 } label: {
+                    Image(systemName: showingChildren ? "chevron.down" : "chevron.right")
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(libraryText(showingChildren ? "Collapse project" : "Expand project"))
+                .accessibilityIdentifier("library.project.expand." + project.id)
+                .accessibilityValue(libraryText(showingChildren ? "Expanded" : "Collapsed"))
+                Button {
+                    onViewProject(project.id)
+                } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "folder")
                         Text(project.name).fontWeight(.semibold).lineLimit(1)
@@ -530,9 +580,16 @@
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("library.project." + project.id)
-                .accessibilityValue(libraryText(showingChildren ? "Expanded" : "Collapsed"))
+                .accessibilityLabel(conversationActivityLabel(title: project.name, activity: folderActivity))
+                .accessibilityAction(named: libraryText("View project")) { onViewProject(project.id) }
                 .accessibilityAction(named: libraryText("Manage project")) { onManageProject(project.id) }
                 .contextMenu {
+                    Button {
+                        onViewProject(project.id)
+                    } label: {
+                        libraryText("View project")
+                    }
+                    .accessibilityIdentifier("library.project.view." + project.id)
                     Button {
                         onManageProject(project.id)
                     } label: {
@@ -585,11 +642,12 @@
                     LibrarySelectableConversationRow(
                         conversation: conversation, library: model, selectionLibrary: selectionLibrary,
                         selecting: $selecting, onSelect: onSelectChat, onMutation: onMutation,
-                        leadingInset: 56, dragContext: drag, dragEnabled: dragEnabled,
-                        dropDestination: .project(project.id), selectedChatID: selectedChatID
+                        leadingInset: 100, dragContext: drag, dragEnabled: dragEnabled,
+                        dropDestination: .project(project.id), selectedChatID: selectedChatID,
+                        activity: conversationActivity(conversation.id)
                     )
                     .listRowInsets(.vertical, 0)
-                    .listRowInsets(.leading, 56).listRowInsets(.trailing, 12)
+                    .listRowInsets(.leading, 100).listRowInsets(.trailing, 12)
                 }
                 if model.hasMore {
                     Button {
@@ -600,7 +658,7 @@
                     .disabled(model.isLoading)
                     .accessibilityIdentifier("library.project.load-more." + project.id)
                     .listRowInsets(.vertical, 0)
-                    .listRowInsets(.leading, 56).listRowInsets(.trailing, 12)
+                    .listRowInsets(.leading, 100).listRowInsets(.trailing, 12)
                     .listRowSeparator(.hidden).listRowBackground(Color.clear)
                 }
                 if let issue = model.issue { LibraryIssueView(issue: issue) }

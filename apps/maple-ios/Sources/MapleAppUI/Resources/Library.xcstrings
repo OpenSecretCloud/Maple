@@ -986,6 +986,18 @@
         }
       }
     },
+    "View project": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View project"
+          }
+        }
+      }
+    },
     "Rename Chat": {
       "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
       "extractionState": "manual",
@@ -1058,6 +1070,42 @@
         }
       }
     },
+    "Custom Instructions": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom Instructions"
+          }
+        }
+      }
+    },
+    "Set shared custom instructions that apply to chats in this project.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set shared custom instructions that apply to chats in this project."
+          }
+        }
+      }
+    },
+    "Loading instructions": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading instructions"
+          }
+        }
+      }
+    },
     "e.g. Use concise bullet points. Focus on practical examples.": {
       "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
       "extractionState": "manual",
@@ -1126,6 +1174,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@, completed, unread"
+          }
+        }
+      }
+    },
+    "Shared instructions for chats in %@": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared instructions for chats in %@"
           }
         }
       }

@@ -22,6 +22,7 @@
         let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
         let isCurrent: @MainActor () -> Bool
         var onSelection: (@MainActor (String?) async -> Bool)? = nil
+        var onCreatedProject: (@MainActor (String) -> Void)? = nil
         @Environment(\.dismiss) private var dismiss
         @State private var path: [ProjectSheetDestination] = []
 
@@ -30,13 +31,13 @@
                 ProjectSheetDestinationView(
                     destination: initialDestination, library: library, selectedProjectID: selectedProjectID,
                     makeInstructionEditor: makeInstructionEditor, isCurrent: isCurrent,
-                    onSelection: selection, isRoot: true
+                    onSelection: selection, onCreatedProject: onCreatedProject, isRoot: true
                 )
                 .navigationDestination(for: ProjectSheetDestination.self) { destination in
                     ProjectSheetDestinationView(
                         destination: destination, library: library, selectedProjectID: selectedProjectID,
                         makeInstructionEditor: makeInstructionEditor, isCurrent: isCurrent,
-                        onSelection: selection)
+                        onSelection: selection, onCreatedProject: onCreatedProject)
                 }
             }
             .presentationDetents([.fraction(0.6), .fraction(0.98)])
@@ -65,6 +66,7 @@
         let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
         let isCurrent: @MainActor () -> Bool
         let onSelection: (@MainActor (String?) async -> Bool)?
+        var onCreatedProject: (@MainActor (String) -> Void)? = nil
         var isRoot = false
 
         @ViewBuilder var body: some View {
@@ -75,7 +77,8 @@
                     isCurrent: isCurrent, onSelection: onSelection)
             case .create:
                 ProjectNameForm(
-                    library: library, projectID: nil, isCurrent: isCurrent, onCreated: onSelection, isRoot: isRoot)
+                    library: library, projectID: nil, isCurrent: isCurrent, onCreated: onSelection,
+                    onCreatedProject: onSelection == nil ? onCreatedProject : nil, isRoot: isRoot)
             case .manage(let id):
                 ProjectManagementView(library: library, projectID: id, isCurrent: isCurrent)
             case .rename(let id):
@@ -182,6 +185,7 @@
         let projectID: String?
         let isCurrent: @MainActor () -> Bool
         let onCreated: (@MainActor (String?) async -> Bool)?
+        var onCreatedProject: (@MainActor (String) -> Void)? = nil
         var initialName: String? = nil
         var onRenamed: (@MainActor (String) -> Void)? = nil
         let isRoot: Bool
@@ -276,6 +280,8 @@
                             // A membership failure leaves the newly created
                             // project available to retry from the project list.
                             if !selected, visible, isCurrent() { dismiss() }
+                        } else if let onCreatedProject {
+                            onCreatedProject(project.id); dismiss()
                         } else {
                             dismiss()
                         }

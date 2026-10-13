@@ -114,6 +114,7 @@
         var onMutation: (@MainActor () async -> Void)? = nil
         var account: AccountEntitlements? = nil
         var onSettings: (@MainActor () -> Void)? = nil
+        var showsWordmarkMenu = true
         var compactRootBar = false
         var nativeRootBarHidden = false
         var nativeRootBarTrailing: AnyView? = nil
@@ -127,8 +128,10 @@
                 .modifier(LibraryChatDeletionConfirmation())
                 .toolbar {
                     if !compactRootBar {
-                        ToolbarItem(placement: .principal) { mapleMenu }
-                            .sharedBackgroundVisibility(.hidden)
+                        if showsWordmarkMenu {
+                            ToolbarItem(placement: .principal) { mapleMenu }
+                                .sharedBackgroundVisibility(.hidden)
+                        }
                         if selecting {
                             ToolbarItem(placement: .topBarLeading) { selectionDone }
                         }
