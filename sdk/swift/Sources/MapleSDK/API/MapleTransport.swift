@@ -83,7 +83,7 @@ public enum ResearchAPIError: Error, Sendable, Equatable, LocalizedError {
         case imageDescriptionUnavailable, authenticationRequired, forbidden, notFound
         case invalidLogin, emailAlreadyRegistered, oauthNotLinked, invalidInviteCode
         case userNotFound, oauthEmailUnavailable, alreadyVerified, modelUnavailable
-        case billingCleanupUnavailable, payloadTooLarge, rateLimited
+        case billingCleanupUnavailable, payloadTooLarge, rateLimited, unsupportedValue
     }
 
     public var errorDescription: String? {

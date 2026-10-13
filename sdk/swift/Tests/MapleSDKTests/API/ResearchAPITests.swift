@@ -212,7 +212,11 @@ private func object(_ request: MapleRequest) throws -> [String: JSONValue] {
 }
 
 @Test func errorsAreSanitizedBoundedAndNeverRetried() async throws {
-    let transport = APIRecorder([.init(status: 403, body: #"{"error":"Usage limit reached; private-canary"}"#)])
+    let transport = APIRecorder([
+        .init(
+            status: 403, body: #"{"error":{"code":"usage_limit_reached","message":"private-canary"}}"#,
+            headers: ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"])
+    ])
     let api = ResearchAPI(transport: transport)
     do { _ = try await api.getConversation(id: "c"); Issue.record("Expected error") } catch {
         #expect(error as? ResearchAPIError == .http(status: 403, reason: .usageLimit))
@@ -221,6 +225,143 @@ private func object(_ request: MapleRequest) throws -> [String: JSONValue] {
     #expect(await transport.snapshot().count == 1)
     let oversized = ResearchAPI(transport: APIRecorder([conversation]), maximumResponseBytes: 5)
     await #expect(throws: ResearchAPIError.responseTooLarge) { try await oversized.getConversation(id: "c") }
+}
+
+@Test func chatErrorCodesUseEverySuppliedSourceAndTheHTTPStatus() async throws {
+    let cases: [(Int, String, ResearchAPIError.RejectionReason, ResearchAPIError.RejectionReason)] = [
+        (403, "usage_limit_reached", .usageLimit, .forbidden),
+        (403, "free_tier_token_limit_exceeded", .freeTierTokenLimit, .forbidden),
+        (413, "message_exceeds_context_limit", .contextLimit, .payloadTooLarge),
+        (403, "model_not_available_on_plan", .modelUnavailable, .forbidden),
+        (400, "unsupported_value", .unsupportedValue, .unspecified),
+    ]
+    for (status, code, reason, fallback) in cases {
+        let headers = ["x-opensecret-error-contract": "1", "x-opensecret-error-code": code]
+        let body = String(
+            data: try JSONEncoder().encode([
+                "code": JSONValue.string(code),
+                "error": .object(["code": .string(code), "message": .string("Changed public wording")]),
+            ]), encoding: .utf8)!
+        for reply in [
+            APIRecorder.Reply(status: status, body: body, headers: headers),
+            APIRecorder.Reply(status: status, body: "", headers: headers),
+            APIRecorder.Reply(status: status, body: body),
+        ] {
+            let api = ResearchAPI(transport: APIRecorder([reply]))
+            await #expect(throws: ResearchAPIError.http(status: status, reason: reason)) {
+                try await api.getConversation(id: "c")
+            }
+        }
+        // The same code under a different HTTP status cannot establish the issue.
+        let wrongStatus = status == 403 ? 413 : 403
+        let wrongReason: ResearchAPIError.RejectionReason = wrongStatus == 413 ? .payloadTooLarge : .forbidden
+        let wrongAPI = ResearchAPI(
+            transport: APIRecorder([.init(status: wrongStatus, body: body, headers: headers)]))
+        await #expect(throws: ResearchAPIError.http(status: wrongStatus, reason: wrongReason)) {
+            try await wrongAPI.getConversation(id: "c")
+        }
+        let unversionedAPI = ResearchAPI(
+            transport: APIRecorder([
+                .init(status: status, body: body, headers: ["x-opensecret-error-code": code])
+            ]))
+        await #expect(throws: ResearchAPIError.http(status: status, reason: fallback)) {
+            try await unversionedAPI.getConversation(id: "c")
+        }
+        // A nested body code alone is sufficient, with or without contract 1.
+        let nestedBody = String(
+            data: try JSONEncoder().encode(["error": ["code": code]]), encoding: .utf8)!
+        for nestedHeaders in [[:], ["x-opensecret-error-contract": "1"]] {
+            let nestedAPI = ResearchAPI(
+                transport: APIRecorder([.init(status: status, body: nestedBody, headers: nestedHeaders)]))
+            await #expect(throws: ResearchAPIError.http(status: status, reason: reason)) {
+                try await nestedAPI.getConversation(id: "c")
+            }
+        }
+    }
+}
+
+@Test func conflictingUnknownAndMalformedChatCodesNeverUseLegacyMessages() async throws {
+    let legacy = #"{"status":403,"message":"Usage limit reached"}"#
+    let cases: [APIRecorder.Reply] = [
+        .init(
+            status: 403, body: legacy,
+            headers: ["x-opensecret-error-contract": "2", "x-opensecret-error-code": "usage_limit_reached"]),
+        .init(status: 403, body: legacy, headers: ["x-opensecret-error-contract": "2"]),
+        .init(status: 403, body: legacy, headers: ["x-opensecret-error-code": "usage_limit_reached"]),
+        .init(
+            status: 403, body: legacy,
+            headers: ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "unknown"]),
+        .init(status: 403, body: #"{"status":403,"message":"Usage limit reached","code":"unknown"}"#),
+        .init(status: 403, body: #"{"status":403,"message":"Usage limit reached","code":403}"#),
+        .init(status: 403, body: #"{"status":403,"message":"Usage limit reached","error":{"code":false}}"#),
+        .init(
+            status: 403,
+            body:
+                #"{"status":403,"message":"Usage limit reached","code":"usage_limit_reached","error":{"code":"free_tier_token_limit_exceeded"}}"#
+        ),
+        .init(
+            status: 403,
+            body: #"{"status":403,"message":"Usage limit reached","error":{"code":"model_not_available_on_plan"}}"#,
+            headers: ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"]),
+        .init(
+            status: 403, body: #"{"error":{"code":"model_not_available_on_plan"},"extra":1e400}"#,
+            headers: ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"]),
+        .init(
+            status: 403, body: #"{"error":{"code":1e400}}"#,
+            headers: ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"]),
+    ]
+    for reply in cases {
+        let api = ResearchAPI(transport: APIRecorder([reply]))
+        await #expect(throws: ResearchAPIError.http(status: 403, reason: .forbidden)) {
+            try await api.getConversation(id: "c")
+        }
+    }
+}
+
+@Test func legacyChatLimitsRequireExactBoundedMessagesAndMatchingStatuses() async throws {
+    let cases: [(Int, String, ResearchAPIError.RejectionReason)] = [
+        (403, "Usage limit reached", .usageLimit),
+        (403, "Free tier token limit exceeded", .freeTierTokenLimit),
+        (413, "Message exceeds context limit", .contextLimit),
+    ]
+    for (status, message, reason) in cases {
+        let body = String(
+            data: try JSONEncoder().encode(["status": JSONValue.integer(Int64(status)), "message": .string(message)]),
+            encoding: .utf8)!
+        let api = ResearchAPI(transport: APIRecorder([.init(status: status, body: body)]))
+        await #expect(throws: ResearchAPIError.http(status: status, reason: reason)) {
+            try await api.getConversation(id: "c")
+        }
+    }
+    for body in [
+        "Usage limit reached",
+        #"{"error":"Usage limit reached"}"#,
+        #"{"message":"Usage limit reached"}"#,
+        #"{"status":"403","message":"Usage limit reached"}"#,
+        #"{"status":413,"message":"Usage limit reached"}"#,
+        #"{"status":403,"message":"Usage limit reached soon"}"#,
+        #"{"status":403,"message":"Model not available on current plan"}"#,
+        #"{"status":403,"message":"Usage limit reached""#,
+        #"{"status":403,"message":"Usage limit reached"} trailing"#,
+        #"{"status":403,"message":"Usage limit reached","padding":""# + String(repeating: "x", count: 4_096) + #""}"#,
+    ] {
+        let api = ResearchAPI(transport: APIRecorder([.init(status: 403, body: body)]))
+        await #expect(throws: ResearchAPIError.http(status: 403, reason: .forbidden)) {
+            try await api.getConversation(id: "c")
+        }
+    }
+}
+
+@Test func chatErrorHeadersRemainUntrustedUntilTheBodyFinishes() async throws {
+    let api = ResearchAPI(transport: APIRecorder([String]()))
+    let response = MapleResponse(
+        status: 403,
+        headers: ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"],
+        body: AsyncThrowingStream {
+            $0.yield(Data(#"{"error":{"code":"usage_limit_reached"}}"#.utf8))
+            $0.finish(throwing: ResearchAPIError.invalidStream)
+        })
+    await #expect(throws: ResearchAPIError.invalidStream) { try await api.checked(response) }
 }
 
 @Test(arguments: ["0", "60", "61", "999999999999999999999", "01", "not-a-delay"])
@@ -265,7 +406,7 @@ func capacityContractAndBoundedRetryAfter(_ delay: String) throws {
         (404, "User not found", .userNotFound),
         (400, "No valid email found for the Oauth account", .oauthEmailUnavailable),
         (400, "User is already verified", .alreadyVerified),
-        (403, "Model not available on current plan", .modelUnavailable),
+        (403, "Model not available on current plan", .forbidden),
         (413, "Payload too large", .payloadTooLarge),
         (429, "Too many requests", .rateLimited),
     ]
