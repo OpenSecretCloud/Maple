@@ -149,8 +149,8 @@ messages do not provide purchasing or management actions. Quick/Powerful
 remain server-owned aliases; catalog failures keep the saved model sendable.
 Disabled, deprecated and non-chat models cannot
 be selected; every non-Free catalog tier requires a paid plan for selection.
-Web search follows its saved preference, and read-aloud blocks only a known
-Free plan; the server authorizes every request.
+Web search starts enabled and follows its saved preference, and read-aloud
+blocks only a known Free plan; the server authorizes every request.
 
 Billing uses a captured account SDK API to mint a third-party token for the
 configured billing origin. It caches that token only in memory and remints

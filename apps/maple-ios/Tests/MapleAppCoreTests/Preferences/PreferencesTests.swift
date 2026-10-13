@@ -11,6 +11,7 @@ import Testing
         let value = LocalPreferences()
         #expect(value.theme == .system && value.chatFont == .manrope)
         #expect(value.selectedModelID == "auto:quick" && value.webSearchPreferred)
+        #expect(try JSONDecoder().decode(LocalPreferences.self, from: JSONEncoder().encode(value)).webSearchPreferred)
         #expect(value.voice == .casualFemale && value.playbackSpeed.rawValue == 1.2)
         #expect(value.sidebarIsOpen)
         #expect(MaplePlaybackSpeed.allCases.map(\.rawValue) == [1, 1.2, 1.25, 1.5, 2])
@@ -46,12 +47,38 @@ import Testing
         var migrated = try await store.activate(owner)
         #expect(migrated.sidebarIsOpen && migrated.playbackSpeed.rawValue == rate)
         #expect(migrated.theme == .dark && migrated.voice == .frenchMale)
+        #expect(!migrated.webSearchPreferred)
         #expect(defaults.data(forKey: key) == data)
         migrated.sidebarIsOpen = false
         try await store.save(migrated, scope: owner, revision: 1)
         try await store.retire(owner)
         let restarted = PreferencesStore(suiteName: suite)
         #expect(try await restarted.activate(scope()) == migrated)
+    }
+
+    @Test(arguments: [false, true])
+    func legacyMissingOrNullWebSearchDefaultsOnAndPersistsWithoutChangingOtherPreferences(null: Bool) async throws {
+        let suite = "preferences-tests.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite)), owner = scope()
+        var legacy: [String: Any] = [
+            "theme": "dark", "chatFont": "serif", "selectedModelID": "auto:powerful",
+            "voice": "fr_male", "playbackSpeed": 1.5, "sidebarIsOpen": false,
+        ]
+        if null { legacy["webSearchPreferred"] = NSNull() }
+        let data = try JSONSerialization.data(withJSONObject: ["version": 1, "preferences": legacy])
+        let key = try PreferencesStore.key(owner)
+        defaults.set(data, forKey: key)
+        let store = PreferencesStore(suiteName: suite)
+        let loaded = try await store.activate(owner)
+        #expect(loaded.webSearchPreferred)
+        #expect(loaded.theme == .dark && loaded.chatFont == .serif && loaded.selectedModelID == "auto:powerful")
+        #expect(loaded.voice == .frenchMale && loaded.playbackSpeed == .fast && !loaded.sidebarIsOpen)
+        #expect(defaults.data(forKey: key) == data)
+        try await store.save(loaded, scope: owner, revision: 1)
+        try await store.retire(owner)
+        let restarted = PreferencesStore(suiteName: suite)
+        #expect(try await restarted.activate(scope()) == loaded)
     }
 
     @Test func sidebarChoiceAndNewPlaybackRateRoundTrip() throws {
@@ -149,6 +176,11 @@ import Testing
                 try JSONSerialization.data(withJSONObject: ["version": 1, "preferences": record]), forKey: key)
             await #expect(throws: PreferencesIssue.invalidRecord) { try await store.activate(owner) }
         }
+        record["sidebarIsOpen"] = true; record["webSearchPreferred"] = "false"
+        let invalidWebSearch = try JSONSerialization.data(withJSONObject: ["version": 1, "preferences": record])
+        defaults.set(invalidWebSearch, forKey: key)
+        await #expect(throws: PreferencesIssue.invalidRecord) { try await store.activate(owner) }
+        #expect(defaults.data(forKey: key) == invalidWebSearch)
     }
 
     @Test func confirmedOldAccountDeletionDoesNotDisturbAnotherSignedInAccount() async throws {

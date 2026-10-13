@@ -49,7 +49,7 @@ public struct LocalPreferences: Codable, Equatable, Sendable {
         theme = try record.decode(MapleTheme.self, forKey: .theme)
         chatFont = try record.decode(MapleChatFont.self, forKey: .chatFont)
         selectedModelID = try record.decode(String.self, forKey: .selectedModelID)
-        webSearchPreferred = try record.decode(Bool.self, forKey: .webSearchPreferred)
+        webSearchPreferred = try record.decodeIfPresent(Bool.self, forKey: .webSearchPreferred) ?? true
         voice = try record.decode(MapleVoice.self, forKey: .voice)
         playbackSpeed = try record.decode(MaplePlaybackSpeed.self, forKey: .playbackSpeed)
         // Existing records predate the sidebar choice; their selected speech rate remains authoritative.
