@@ -2304,6 +2304,30 @@
         }
       }
     },
+    "In progress": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In progress"
+          }
+        }
+      }
+    },
+    "Input": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Input"
+          }
+        }
+      }
+    },
     "Low": {
       "comment": "Research thinking-level option shown beside the chat options trigger.",
       "extractionState": "manual",
@@ -2364,6 +2388,150 @@
         }
       }
     },
+    "Open URL": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URL"
+          }
+        }
+      }
+    },
+    "Open URLs": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URLs"
+          }
+        }
+      }
+    },
+    "Output": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output"
+          }
+        }
+      }
+    },
+    "Read image": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read image"
+          }
+        }
+      }
+    },
+    "Show less": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show less"
+          }
+        }
+      }
+    },
+    "Show more": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show more"
+          }
+        }
+      }
+    },
+    "Tool call": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool call"
+          }
+        }
+      }
+    },
+    "chat.tool-image-title": {
+      "comment": "Tool card title. Placeholder is the image number.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read image: Image %@"
+          }
+        }
+      }
+    },
+    "chat.tool-named-query-title": {
+      "comment": "Unknown tool title. First placeholder is the tool name; second is its query.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: \"%2$@\""
+          }
+        }
+      }
+    },
+    "chat.tool-search-title": {
+      "comment": "Tool card title. Placeholder is the search query.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web Search: \"%@\""
+          }
+        }
+      }
+    },
+    "chat.tool-url-title": {
+      "comment": "Tool card title. Placeholder is the URL.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URL: %@"
+          }
+        }
+      }
+    },
+    "chat.tool-urls-title": {
+      "comment": "Tool card title for multiple pages.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URLs: %lld pages"
+          }
+        }
+      }
+    },
     "No content available": {
       "comment": "Empty legacy document history preview.",
       "extractionState": "manual",
@@ -2376,6 +2544,18 @@
         }
       }
     },
+    "Tool result": {
+      "comment": "An orphan tool output card title.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool result"
+          }
+        }
+      }
+    },
     "chat.document-preview": {
       "comment": "History document chip. Placeholder is its original filename.",
       "extractionState": "manual",
@@ -2384,6 +2564,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Preview document: %@"
+          }
+        }
+      }
+    },
+    "chat.tool-search-name": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web Search"
           }
         }
       }

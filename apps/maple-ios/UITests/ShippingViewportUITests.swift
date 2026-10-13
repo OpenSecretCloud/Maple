@@ -103,16 +103,21 @@ final class ShippingViewportUITests: XCTestCase {
             "The user's copy action follows the trailing message bubble")
 
         let search = app.buttons["tool.activity.viewport-search-20"]
-        let nativeSearch = app.buttons["tool.activity.viewport-native-search-20"]
+        let nativeSearch = app.descendants(matching: .any)["tool.activity.viewport-native-search-20"].firstMatch
         let openedPages = app.buttons["tool.activity.viewport-open-20"]
-        for row in [search, nativeSearch, openedPages] {
+        for row in [search, openedPages] {
             XCTAssertTrue(row.exists && row.isHittable, "Tools have visible interactive rows without ordinary text")
             XCTAssertGreaterThanOrEqual(row.frame.height, 44)
-            XCTAssertEqual(row.value as? String, "Collapsed")
+            XCTAssertEqual(row.value as? String, "Collapsed, Completed")
         }
-        XCTAssertTrue(search.label.contains("Search results"))
-        XCTAssertTrue(nativeSearch.label.contains("Search results"))
-        XCTAssertTrue(openedPages.label.contains("Opened pages"))
+        XCTAssertTrue(nativeSearch.exists && nativeSearch.isHittable)
+        XCTAssertEqual(nativeSearch.value as? String, "Completed")
+        XCTAssertFalse(
+            app.buttons["tool.activity.viewport-native-search-20"].exists,
+            "Research web_search_call without details is a status row")
+        XCTAssertTrue(search.label.contains("Web Search: \"synthetic garden\""))
+        XCTAssertTrue(nativeSearch.label.contains("Web Search"))
+        XCTAssertTrue(openedPages.label.contains("Open URL: https://example.com/garden"))
         XCTAssertFalse(app.buttons["tool.activity.viewport-search-result-20"].exists)
         XCTAssertFalse(app.buttons["tool.activity.viewport-open-result-20"].exists)
         capture("Trailing user bubble and all retained web tool rows are visible")
@@ -133,15 +138,12 @@ final class ShippingViewportUITests: XCTestCase {
                 NSPredicate(format: "label CONTAINS %@", "Synthetic opened page contents")
             ).firstMatch.exists,
             "Search details contain only their matching tool result")
-        XCTAssertEqual(search.value as? String, "Expanded")
+        XCTAssertEqual(search.value as? String, "Expanded, Completed")
         capture("Search opens the exact paired result details")
         search.tap()
         XCTAssertFalse(searchDetails.exists)
 
-        nativeSearch.tap()
-        XCTAssertTrue(app.staticTexts["No tool details available."].waitForExistence(timeout: 10))
-        nativeSearch.tap()
-        XCTAssertFalse(app.staticTexts["No tool details available."].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["tool.details.viewport-native-search-20"].firstMatch.exists)
 
         openedPages.tap()
         let pageDetails = app.descendants(matching: .any)["tool.details.viewport-open-20"].firstMatch
@@ -159,7 +161,7 @@ final class ShippingViewportUITests: XCTestCase {
             "Opened pages contain only their matching tool result")
         capture("Opened pages keeps its exact paired result accessible")
         openedPages.tap()
-        XCTAssertEqual(openedPages.value as? String, "Collapsed")
+        XCTAssertEqual(openedPages.value as? String, "Collapsed, Completed")
         XCTAssertFalse(app.activityIndicators.firstMatch.exists)
     }
 

@@ -1595,41 +1595,55 @@ enum ChatComposerPresentation {
         let onOpenLink: (URL) -> Void
         let onPrepared: @MainActor @Sendable () -> Void
         @State private var expanded = false
-        @State private var details = ""
+        @State private var details = ChatToolPresentation.Details(input: "", output: "")
+        @State private var outputExpanded = false
+        @State private var preparedTitle: String?
+        @State private var outputPreview = ""
         @State private var detailsRevision = UUID()
-        private var failed: Bool {
-            [item.status, result?.status].contains(where: { ["failed", "error"].contains($0 ?? "") })
-        }
+        private var status: ChatToolPresentation.Status { ChatToolPresentation.status(item: item, result: result) }
+        private var failed: Bool { status == .failed }
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    expanded.toggle()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(
-                            systemName: failed ? "exclamationmark.circle" : item.name == "open_urls" ? "link" : "globe"
-                        )
-                        .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(MapleAccent.foreground))
-                        Text(title).foregroundStyle(.primary)
-                        Spacer(minLength: 8)
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Group {
+                    if details.hasDetails {
+                        Button {
+                            expanded.toggle()
+                        } label: {
+                            summary
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(
+                            MapleStrings.text(expanded ? "Expanded" : "Collapsed") + ", " + statusLabel)
+                    } else {
+                        summary.accessibilityValue(statusLabel)
                     }
-                    .font(.footnote.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityValue(MapleStrings.text(expanded ? "Expanded" : "Collapsed"))
                 .accessibilityIdentifier("tool.activity." + item.id)
-                if expanded {
-                    Group {
-                        if !details.isEmpty {
+                if expanded, details.hasDetails {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !details.input.isEmpty {
+                            Text(MapleStrings.text("Input")).font(.caption.weight(.medium)).textCase(.uppercase)
+                            ScrollView {
+                                Text(verbatim: details.input).font(.caption.monospaced()).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                            }.frame(maxHeight: 224).background(MapleSurface.card, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        if !details.output.isEmpty {
+                            Text(MapleStrings.text("Output")).font(.caption.weight(.medium)).textCase(.uppercase)
                             MessageView(
-                                text: details, theme: theme, font: font, accountGeneration: generation,
-                                onOpenLink: onOpenLink)
-                        } else {
-                            Text(MapleStrings.text("No tool details available.")).foregroundStyle(.secondary)
+                                text: outputExpanded ? details.output : outputPreview,
+                                theme: theme, font: font, accountGeneration: generation,
+                                onOpenLink: onOpenLink
+                            )
+                            .onPrepared(onPrepared)
+                            if details.output.utf16.count > 150 {
+                                Button(MapleStrings.text(outputExpanded ? "Show less" : "Show more")) {
+                                    outputExpanded.toggle()
+                                }
+                                .font(.caption.weight(.medium)).frame(minHeight: 44)
+                                .accessibilityValue(MapleStrings.text(outputExpanded ? "Expanded" : "Collapsed"))
+                                .accessibilityIdentifier("tool.output.toggle." + item.id)
+                            }
                         }
                     }
                     .accessibilityElement(children: .contain)
@@ -1643,36 +1657,61 @@ enum ChatComposerPresentation {
             .onChange(of: item) { _, _ in detailsRevision = UUID() }
             .onChange(of: result) { _, _ in detailsRevision = UUID() }
             .task(id: detailsRevision) {
-                let arguments = item.arguments, output = item.output, result = result
+                let item = item, result = result, locale = Locale.current
                 let work = Task.detached(priority: .userInitiated) {
-                    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    var details = [arguments, output, result?.arguments, result?.output].compactMap {
-                        value -> String? in
-                        guard let value, let bytes = try? encoder.encode(value), bytes.count <= 1_048_576,
-                            let text = String(data: bytes, encoding: .utf8)
-                        else { return nil }
-                        return text
-                    }
-                    if let content = result?.content, !content.isEmpty,
-                        let bytes = try? encoder.encode(content), bytes.count <= 1_048_576,
-                        let text = String(data: bytes, encoding: .utf8)
-                    {
-                        details.append(text)
-                    }
-                    return details.joined(separator: "\n\n")
+                    let details = ChatToolPresentation.details(item: item, result: result)
+                    let title =
+                        ChatTranscriptRow.isToolOutput(item)
+                        ? MapleStrings.text("Tool result", locale: locale)
+                        : ChatToolPresentation.title(
+                            name: item.name, arguments: item.arguments,
+                            webSearch: item.type == "web_search_call", locale: locale)
+                    return (details, title, ChatToolPresentation.preview(details.output))
                 }
-                let value = await work.value
-                if !Task.isCancelled { details = value }
+                let (value, title, preview) = await work.value
+                if !Task.isCancelled {
+                    details = value; preparedTitle = title; outputPreview = preview
+                    if !expanded || value.output.isEmpty { onPrepared() }
+                }
+            }
+            .onChange(of: expanded) { _, value in if !value { onPrepared() } }
+        }
+        private var statusLabel: String {
+            switch status {
+            case .active: MapleStrings.text("In progress")
+            case .completed: MapleStrings.text("Completed")
+            case .incomplete: MapleStrings.text("Incomplete")
+            case .failed: MapleStrings.text("Failed")
             }
         }
-        private var title: String {
-            let search = item.name == "web_search" || item.type == "web_search_call"
-            if failed { return MapleStrings.text(search ? "Search failed" : "Tool failed") }
-            if item.name == "open_urls" { return MapleStrings.text("Opened pages") }
-            if search {
-                return MapleStrings.text(result != nil || item.status == "completed" ? "Search results" : "Web search")
+        private var summary: some View {
+            HStack(spacing: 8) {
+                Image(systemName: item.name == "read_image" ? "doc.text.magnifyingglass" : "globe")
+                    .foregroundStyle(.secondary)
+                Text(verbatim: title).foregroundStyle(.primary).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(statusLabel).font(.caption).foregroundStyle(
+                    failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(.secondary))
+                if status == .active {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: status == .completed ? "checkmark" : "xmark")
+                        .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(.secondary))
+                }
+                if details.hasDetails {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
             }
-            return MapleStrings.text("Tool results")
+            .font(.footnote.weight(.medium))
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+        }
+        private var title: String {
+            if let preparedTitle { return preparedTitle }
+            if ChatTranscriptRow.isToolOutput(item) { return MapleStrings.text("Tool result") }
+            return ChatToolPresentation.title(
+                name: item.name, arguments: nil, webSearch: item.type == "web_search_call")
         }
     }
 
