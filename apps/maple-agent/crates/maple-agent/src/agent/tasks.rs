@@ -14,7 +14,9 @@ use super::config::{
     account_attachment_store, ensure_session_project_root_is_visible, load_agent_config_inner,
     normalize_project_root, path_string,
 };
-use super::mcp::{normalize_mcp_servers, servers_for_new_task, set_chosen_servers};
+use super::mcp::{
+    normalize_mcp_servers, servers_for_new_task, servers_with_project_defaults, set_chosen_servers,
+};
 use super::runtime::AgentRuntime;
 use super::store::{TaskKind, TaskRow};
 use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into, session_timeline};
@@ -133,18 +135,22 @@ impl AgentRuntimeHandle {
         request: AgentCreateSessionRequest,
         kind: TaskKind,
     ) -> Result<TaskRow, String> {
-        let config = {
-            let _settings = self.lock_settings().await;
-            load_agent_config_inner(self.paths(), &self.user_id)
-                .map_err(|error| error.to_string())?
-        };
-        let mcp_servers = servers_for_new_task(
-            &normalize_mcp_servers(config.mcp_servers.clone())?,
-            request.mcp_server_names.as_deref(),
-        )?;
         let root = match request.project_root.as_deref() {
             Some(path) if !path.trim().is_empty() => normalize_project_root(Path::new(path))?,
             _ => runtime.project_root(),
+        };
+        let (config, mcp_servers) = {
+            let _settings = self.lock_settings().await;
+            self.verify_generation().await?;
+            let config = load_agent_config_inner(self.paths(), &self.user_id)
+                .map_err(|error| error.to_string())?;
+            let mut servers = normalize_mcp_servers(config.mcp_servers.clone())?;
+            if request.mcp_server_names.is_none() {
+                servers =
+                    servers_with_project_defaults(self.paths(), &self.user_id, &root, servers)?;
+            }
+            let chosen = servers_for_new_task(&servers, request.mcp_server_names.as_deref())?;
+            (config, chosen)
         };
         ensure_session_project_root_is_visible(&root, &config.removed_project_roots)?;
         let fallback_title = match kind {

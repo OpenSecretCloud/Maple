@@ -1503,6 +1503,365 @@ fn mcp_rows(rows: &[AgentSessionMcpServer]) -> Vec<(&str, bool, bool)> {
 }
 
 #[tokio::test]
+async fn project_mcp_defaults_inherit_settings_until_explicitly_pinned() {
+    let harness = Harness::new().await;
+    let project = path_string(&normalize_project_root(harness.project.path()).unwrap());
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = path_string(other_project.path());
+    let catalog = vec![
+        http_mcp_server("Files", "https://mcp.example/files", true),
+        http_mcp_server("Docs", "https://mcp.example/docs", false),
+    ];
+    harness
+        .handle
+        .save_mcp_servers(catalog.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .handle
+            .list_project_mcp_servers(project.clone())
+            .await
+            .unwrap(),
+        catalog
+    );
+
+    // Pinning the current value is explicit too: later Settings edits cannot
+    // change it, but untouched servers continue to inherit live defaults.
+    harness
+        .handle
+        .set_project_mcp_server_enabled(project.clone(), " files ".into(), true)
+        .await
+        .unwrap();
+    let mut updated = catalog;
+    updated[0].enabled = false;
+    updated[1].enabled = true;
+    updated.push(http_mcp_server("New", "https://mcp.example/new", true));
+    harness
+        .handle
+        .save_mcp_servers(updated.clone())
+        .await
+        .unwrap();
+    let mut expected = updated.clone();
+    expected[0].enabled = true;
+    assert_eq!(
+        harness
+            .handle
+            .list_project_mcp_servers(project.clone())
+            .await
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        harness
+            .handle
+            .list_project_mcp_servers(other_root)
+            .await
+            .unwrap(),
+        updated
+    );
+    harness
+        .handle
+        .set_project_mcp_server_enabled(project.clone(), "Files".into(), false)
+        .await
+        .unwrap();
+    expected[0].enabled = false;
+    assert_eq!(
+        harness
+            .handle
+            .list_project_mcp_servers(project)
+            .await
+            .unwrap(),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn project_mcp_defaults_snapshot_new_tasks_without_changing_existing_tasks() {
+    let mut harness = Harness::new().await;
+    let root = path_string(harness.project.path());
+    harness
+        .handle
+        .save_mcp_servers(vec![
+            http_mcp_server("Files", "https://mcp.example/files", true),
+            http_mcp_server("Docs", "https://mcp.example/docs", false),
+        ])
+        .await
+        .unwrap();
+    let old = harness.create_task().await;
+    harness
+        .handle
+        .set_project_mcp_server_enabled(root.clone(), "Files".into(), false)
+        .await
+        .unwrap();
+    harness
+        .handle
+        .set_project_mcp_server_enabled(root.clone(), "Docs".into(), true)
+        .await
+        .unwrap();
+    let new = harness.create_task().await;
+    assert_eq!(
+        mcp_rows(
+            &harness
+                .handle
+                .list_session_mcp_servers(old.clone())
+                .await
+                .unwrap()
+        ),
+        [("Files", true, true), ("Docs", false, true)]
+    );
+    assert_eq!(
+        mcp_rows(
+            &harness
+                .handle
+                .list_session_mcp_servers(new.clone())
+                .await
+                .unwrap()
+        ),
+        [("Files", false, true), ("Docs", true, true)]
+    );
+
+    let other_project = tempfile::tempdir().unwrap();
+    let request = |project_root, names| AgentCreateSessionRequest {
+        project_root: Some(project_root),
+        title: None,
+        model: None,
+        context_limit: None,
+        mcp_server_names: names,
+    };
+    let other = harness
+        .handle
+        .create_session(Some(request(path_string(other_project.path()), None)))
+        .await
+        .unwrap()
+        .session
+        .id;
+    assert_eq!(
+        mcp_rows(
+            &harness
+                .handle
+                .list_session_mcp_servers(other)
+                .await
+                .unwrap()
+        ),
+        [("Files", true, true), ("Docs", false, true)]
+    );
+    let explicit = harness
+        .handle
+        .create_session(Some(request(root.clone(), Some(vec!["Files".into()]))))
+        .await
+        .unwrap()
+        .session
+        .id;
+    assert_eq!(
+        mcp_rows(
+            &harness
+                .handle
+                .list_session_mcp_servers(explicit)
+                .await
+                .unwrap()
+        ),
+        [("Files", true, true), ("Docs", false, true)]
+    );
+    let empty = harness
+        .handle
+        .create_session(Some(request(root.clone(), Some(Vec::new()))))
+        .await
+        .unwrap()
+        .session
+        .id;
+    assert_eq!(
+        mcp_rows(
+            &harness
+                .handle
+                .list_session_mcp_servers(empty)
+                .await
+                .unwrap()
+        ),
+        [("Files", false, true), ("Docs", false, true)]
+    );
+
+    harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&new, "Docs", false))
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .handle
+            .list_project_mcp_servers(root.clone())
+            .await
+            .unwrap()[1]
+            .enabled
+    );
+    harness.restart().await;
+    harness.start().await;
+    assert_eq!(
+        mcp_rows(&harness.handle.list_session_mcp_servers(old).await.unwrap()),
+        [("Files", true, true), ("Docs", false, true)]
+    );
+    assert_eq!(
+        mcp_rows(&harness.handle.list_session_mcp_servers(new).await.unwrap()),
+        [("Files", false, true), ("Docs", false, true)]
+    );
+    let restarted = harness.create_task().await;
+    assert_eq!(
+        mcp_rows(
+            &harness
+                .handle
+                .list_session_mcp_servers(restarted)
+                .await
+                .unwrap()
+        ),
+        [("Files", false, true), ("Docs", true, true)]
+    );
+}
+
+#[tokio::test]
+async fn project_mcp_defaults_are_private_account_local_and_reject_invalid_changes() {
+    let harness = Harness::new().await;
+    let root = path_string(&normalize_project_root(harness.project.path()).unwrap());
+    let catalog = vec![http_mcp_server("Files", "https://mcp.example/files", true)];
+    harness
+        .handle
+        .save_mcp_servers(catalog.clone())
+        .await
+        .unwrap();
+    harness
+        .handle
+        .set_project_mcp_server_enabled(root.clone(), "Files".into(), false)
+        .await
+        .unwrap();
+    let other = harness
+        .service
+        .handle_for_user("other@example.com")
+        .await
+        .unwrap();
+    other.save_mcp_servers(catalog.clone()).await.unwrap();
+    assert_eq!(
+        other.list_project_mcp_servers(root.clone()).await.unwrap(),
+        catalog
+    );
+
+    let local = account_local_data_dir_path(harness.handle.paths(), USER)
+        .unwrap()
+        .join("project_mcp_defaults.json");
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap();
+    assert_eq!(saved, json!({root.clone(): {"files": false}}));
+    let config = account_config_dir_path(harness.handle.paths(), USER)
+        .unwrap()
+        .join("config.json");
+    assert!(
+        !std::fs::read_to_string(config)
+            .unwrap()
+            .contains("projectMcp")
+    );
+    harness
+        .handle
+        .save_config(AgentConfig::default())
+        .await
+        .unwrap();
+    assert!(
+        !harness
+            .handle
+            .list_project_mcp_servers(root.clone())
+            .await
+            .unwrap()[0]
+            .enabled
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        assert_eq!(
+            std::fs::metadata(&local).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(local.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let alias = harness.data.path().join("project-alias");
+        symlink(harness.project.path(), &alias).unwrap();
+        assert!(
+            !harness
+                .handle
+                .list_project_mcp_servers(path_string(&alias))
+                .await
+                .unwrap()[0]
+                .enabled
+        );
+    }
+    for name in ["", "Developer", "cua-driver", "Gone"] {
+        assert!(
+            harness
+                .handle
+                .set_project_mcp_server_enabled(root.clone(), name.into(), true)
+                .await
+                .is_err()
+        );
+    }
+    let missing = path_string(&harness.data.path().join("missing"));
+    assert!(
+        harness
+            .handle
+            .list_project_mcp_servers(missing.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        harness
+            .handle
+            .set_project_mcp_server_enabled(missing, "Files".into(), true)
+            .await
+            .is_err()
+    );
+
+    // A broken local file is reported, never interpreted as inherited defaults
+    // or overwritten by an otherwise valid toggle.
+    std::fs::write(&local, "not json").unwrap();
+    assert!(
+        harness
+            .handle
+            .list_project_mcp_servers(root.clone())
+            .await
+            .unwrap_err()
+            .contains("Failed to read project MCP defaults")
+    );
+    assert!(
+        harness
+            .handle
+            .set_project_mcp_server_enabled(root.clone(), "Files".into(), true)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "not json");
+    assert!(harness.handle.create_session(None).await.is_err());
+    harness
+        .service
+        .advance_generation(&account_scope(USER).unwrap());
+    assert!(
+        harness
+            .handle
+            .list_project_mcp_servers(root.clone())
+            .await
+            .unwrap_err()
+            .contains("data changed")
+    );
+    assert!(
+        harness
+            .handle
+            .set_project_mcp_server_enabled(root, "Files".into(), true)
+            .await
+            .unwrap_err()
+            .contains("data changed")
+    );
+}
+
+#[tokio::test]
 async fn a_tasks_mcp_servers_give_the_model_their_tools() {
     let harness = Harness::new().await;
     let fake = mcp::fake_server::FakeServer::start(Some("Echo before you answer.")).await;

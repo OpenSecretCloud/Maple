@@ -1995,6 +1995,32 @@ impl LocalBackend {
             .await
     }
 
+    pub async fn list_project_mcp_servers(
+        &self,
+        user_id: &str,
+        project_root: &str,
+    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_project_mcp_servers(project_root.to_string())
+            .await
+    }
+
+    pub async fn set_project_mcp_server_enabled(
+        &self,
+        user_id: &str,
+        project_root: &str,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_project_mcp_server_enabled(project_root.to_string(), name.to_string(), enabled)
+            .await
+    }
+
     pub async fn list_integrations(&self, user_id: &str) -> Result<Vec<AgentIntegration>, String> {
         self.service
             .handle_for_user(user_id)

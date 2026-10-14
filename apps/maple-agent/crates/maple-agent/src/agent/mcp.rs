@@ -2,11 +2,17 @@
 //! they are saved (names, commands, endpoints, environment variables and
 //! headers), and the servers each task runs, over rmcp, by Pi's conventions.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
-use super::config::{load_agent_config_inner, save_agent_config_inner};
-use super::integrations::validate_new_mcp_integration_collisions;
-use super::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle};
+use super::config::{
+    account_local_data_dir_path, load_agent_config_inner, normalize_project_root, path_string,
+    save_agent_config_inner, write_device_local_json_file,
+};
+use super::integrations::{is_cua_identity, validate_new_mcp_integration_collisions};
+use super::{
+    AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentPathLayout, AgentRuntimeHandle,
+};
 
 mod connection;
 #[cfg(test)]
@@ -20,6 +26,45 @@ pub(super) use task::{
 };
 
 const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
+
+/// Explicit new-task choices, keyed by canonical project root and server key.
+/// Missing choices inherit the catalog's current default.
+type ProjectMcpDefaults = BTreeMap<String, BTreeMap<String, bool>>;
+
+fn project_mcp_defaults_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
+    account_local_data_dir_path(paths, user_id)
+        .map(|directory| directory.join("project_mcp_defaults.json"))
+        .map_err(|error| error.to_string())
+}
+
+fn read_project_mcp_defaults(path: &Path) -> Result<ProjectMcpDefaults, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Failed to read project MCP defaults: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!("Failed to read project MCP defaults: {error}")),
+    }
+}
+
+/// Apply only this project's explicit switches over the live catalog defaults.
+pub(super) fn servers_with_project_defaults(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    project_root: &Path,
+    mut servers: Vec<AgentMcpServer>,
+) -> Result<Vec<AgentMcpServer>, String> {
+    let defaults = read_project_mcp_defaults(&project_mcp_defaults_path(paths, user_id)?)?;
+    if let Some(choices) = defaults.get(&path_string(project_root)) {
+        for server in &mut servers {
+            if !is_cua_identity(&server.name)
+                && let Some(enabled) = choices.get(&name_to_key(&server.name))
+            {
+                server.enabled = *enabled;
+            }
+        }
+    }
+    Ok(servers)
+}
 
 /// Keys of Maple's own tool groups, which a server cannot take.
 const RESERVED_KEYS: [&str; 2] = ["developer", "maple-skills-extension"];
@@ -73,6 +118,14 @@ pub(super) fn name_to_key(name: &str) -> String {
             }
         })
         .collect()
+}
+
+impl AgentMcpServer {
+    /// The stable catalog identity used to match a server's display name with
+    /// saved project and task choices.
+    pub fn key_for_name(name: &str) -> String {
+        name_to_key(name)
+    }
 }
 
 /// A command line's words. Quotes keep spaces in a word; a single quote opens
@@ -237,6 +290,64 @@ pub(super) fn normalize_mcp_servers(
 }
 
 impl AgentRuntimeHandle {
+    /// The account's custom MCP catalog with this project's new-task defaults.
+    /// Servers without an explicit project choice inherit the Settings default.
+    pub async fn list_project_mcp_servers(
+        &self,
+        project_root: String,
+    ) -> Result<Vec<AgentMcpServer>, String> {
+        self.verify_generation().await?;
+        let project_root = normalize_project_root(Path::new(&project_root))?;
+        let _settings = self.lock_settings().await;
+        self.verify_generation().await?;
+        let config = load_agent_config_inner(self.paths(), &self.user_id)
+            .map_err(|error| error.to_string())?;
+        servers_with_project_defaults(
+            self.paths(),
+            &self.user_id,
+            &project_root,
+            normalize_mcp_servers(config.mcp_servers)?,
+        )
+    }
+
+    /// Pin one custom server's new-task default on this device. This does not
+    /// connect the server or alter any existing task's choices.
+    pub async fn set_project_mcp_server_enabled(
+        &self,
+        project_root: String,
+        name: String,
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let project_root = normalize_project_root(Path::new(&project_root))?;
+        let name = name.trim();
+        let key = name_to_key(name);
+        if key.is_empty() || RESERVED_KEYS.contains(&key.as_str()) || is_cua_identity(name) {
+            return Err("That MCP server cannot be changed".to_string());
+        }
+        let _settings = self.lock_settings().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let config = load_agent_config_inner(self.paths(), &self.user_id)
+            .map_err(|error| error.to_string())?;
+        let servers = normalize_mcp_servers(config.mcp_servers)?;
+        if !servers
+            .iter()
+            .any(|server| name_to_key(&server.name) == key)
+        {
+            return Err(format!("MCP server '{name}' is no longer configured"));
+        }
+        let path = project_mcp_defaults_path(self.paths(), &self.user_id)?;
+        let mut defaults = read_project_mcp_defaults(&path)?;
+        defaults
+            .entry(path_string(&project_root))
+            .or_default()
+            .insert(key, enabled);
+        write_device_local_json_file(&path, &defaults)
+            .map_err(|error| format!("Failed to save project MCP defaults: {error}"))
+    }
+
     /// The account's saved MCP servers, checked as a save checks them.
     pub async fn list_mcp_servers(&self) -> Result<Vec<AgentMcpServer>, String> {
         self.verify_generation().await?;

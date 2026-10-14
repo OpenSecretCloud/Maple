@@ -165,14 +165,17 @@ documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 
 Settings > Integrations also keeps custom MCP servers: a command Maple starts
 (stdio) or a Streamable HTTP endpoint, each with environment variables,
-headers, and a per-request timeout. A server switched on in Settings is on for
-new tasks, and the composer's menu switches servers on or off for one task.
+headers, and a per-request timeout. New tasks inherit each server's Settings
+switch unless their project has a saved choice. Switching a custom MCP server
+in a new-task draft saves that project's choice on this machine; switching one
+in an existing task changes only that task. Switching projects on a draft
+reloads the target project's choices. Off servers remain in the menu.
 A task's servers start when it runs; its first prompt waits up to ten seconds
 for them, and a server that connects later joins from the next prompt. Their
 tools reach the model as `mcp__<server>__<tool>`, and their instructions join
 the system prompt. A server that fails to connect is named once in a notice
-and tried again at the task's next run. Changes in Settings apply from a
-task's next run.
+and tried again at the task's next run. Server definition edits in Settings
+apply from a task's next run.
 
 A stdio server runs in the task's folder with the login shell's PATH, in its
 own process group; it is stopped by closing its input, then SIGTERM, then
@@ -513,6 +516,7 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | `<local data>/send-receipts.db` | Private send admission/results for reconnect reconciliation; no prompt contents. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
+| `<local data>/agent/accounts/<scope>/project_mcp_defaults.json` | Per-project custom MCP overrides on this device; servers without an override inherit Settings. |
 | `<local data>/agent/accounts/<scope>/sessions/` | One session file (JSONL) per task, and `tasks.db`, the task index (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
