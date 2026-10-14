@@ -96,9 +96,19 @@
                 makeInstructionEditor: model.makeInstructions,
                 onSelectChat: model.selectChat, onNewChat: { _ in },
                 settings: {
-                    AnyView(
-                        Text("Synthetic settings").accessibilityIdentifier("library.fixture.settings")
-                            .navigationTitle("Settings"))
+                    if model.accountProof {
+                        AnyView(
+                            SettingsView(
+                                preferences: model.preferences, entitlements: model.account,
+                                account: SettingsAccount(
+                                    email: "synthetic-library@example.test", isVerified: true,
+                                    isGuest: false, canChangePassword: false),
+                                version: "Synthetic fixture", onAction: { _ in }))
+                    } else {
+                        AnyView(
+                            Text("Synthetic settings").accessibilityIdentifier("library.fixture.settings")
+                                .navigationTitle("Settings"))
+                    }
                 },
                 account: model.accountProof ? model.account : nil,
                 conversationActivity: { model.parityProof ? model.activities[$0] ?? .idle : .idle },

@@ -52,6 +52,11 @@
                 } header: {
                     settingsText("Plan")
                 }
+                Section {
+                    LibraryUsageTile(account: entitlements)
+                } header: {
+                    settingsText("Usage")
+                }
                 preferencesSection
                 Section {
                     Button {

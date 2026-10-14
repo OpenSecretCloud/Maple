@@ -417,15 +417,11 @@ import XCTest
         screenshot("Library creation opens project detail and unchanged names are rejected")
     }
 
-    func testReadOnlyUsageAndTeamSeatCountsRenderAndSettingsHidesTheBanner() {
+    func testReadOnlyUsageMovesToSettingsAndTeamSeatNoticeStaysInLibrary() {
         launch(["--maple-library-account-proof"])
-        let usage = app.descendants(matching: .any).matching(identifier: "library.usage").firstMatch
-        XCTAssertTrue(usage.waitForExistence(timeout: 15))
-        for text in ["Pro Plan", "25% used", "Resets Monthly", "+2.5 credits"] {
-            XCTAssertTrue(usage.label.localizedCaseInsensitiveContains(text), usage.label)
-        }
-        XCTAssertFalse(app.buttons["library.usage"].exists)
-        XCTAssertEqual(usage.buttons.count, 0)
+        let usage = app.descendants(matching: .any).matching(identifier: "settings.usage").firstMatch
+        XCTAssertFalse(usage.exists)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "library.usage").firstMatch.exists)
         let banner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch").firstMatch
         XCTAssertTrue(banner.waitForExistence(timeout: 15))
         XCTAssertTrue(banner.label.contains("1 member, 0 paid seats"), banner.label)
@@ -442,7 +438,7 @@ import XCTest
         XCTAssertTrue(newChat.isHittable)
         XCTAssertFalse(app.buttons["Manage Team"].exists)
         XCTAssertFalse(app.buttons["Pricing"].exists)
-        screenshot("Read-only usage and singular member seat mismatch card")
+        screenshot("Library keeps its singular seat notice with no usage tile")
 
         openProjectDetail()
         let projectBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch").firstMatch
@@ -498,9 +494,21 @@ import XCTest
         semantics.name = "Native Settings menu accessibility export"; semantics.lifetime = .keepAlways; add(semantics)
         screenshot("Native Settings menu retains the simple title and colored attention icon")
         settings.tap()
-        XCTAssertTrue(app.staticTexts["library.fixture.settings"].waitForExistence(timeout: 10))
+        let form = app.collectionViews["settings.screen"]
+        XCTAssertTrue(form.waitForExistence(timeout: 10))
         let settingsBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch").firstMatch
         XCTAssertTrue(settingsBanner.waitForNonExistence(timeout: 10))
-        screenshot("Settings destination excludes the team usage banner")
+        for _ in 0..<6 where !usage.exists || !usage.isHittable { form.swipeUp() }
+        XCTAssertTrue(usage.waitForExistence(timeout: 10) && usage.isHittable)
+        XCTAssertTrue(app.staticTexts["Usage"].exists)
+        for text in ["Pro Plan", "25% used", "Resets Monthly", "+2.5 credits"] {
+            XCTAssertTrue(usage.label.localizedCaseInsensitiveContains(text), usage.label)
+        }
+        XCTAssertFalse(app.buttons["settings.usage"].exists)
+        XCTAssertEqual(usage.buttons.count, 0)
+        XCTAssertFalse(app.buttons["Manage Team"].exists)
+        XCTAssertFalse(app.buttons["Pricing"].exists)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "library.usage").firstMatch.exists)
+        screenshot("Shipping Settings Usage section has plan, usage, reset and credit balance")
     }
 }

@@ -169,8 +169,9 @@ blocks only a known Free plan; the server authorizes every request.
 The options sheet offers the selected catalog entry's thinking levels. A saved
 choice the model does not support resolves to Default without overwriting the
 preference, and is omitted from the request. Queued turns retain the effort
-captured at submission. The library's usage meter and team seat notices are
-read-only and never open pricing or team management.
+captured at submission. Settings has a read-only Usage section with the plan,
+usage meter, reset and credit balance. Team seat notices stay in the library;
+neither surface opens pricing or team management.
 
 Billing uses a captured account SDK API to mint a third-party token for the
 configured billing origin. It caches that token only in memory and remints

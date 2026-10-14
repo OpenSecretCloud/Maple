@@ -807,7 +807,7 @@
       }
     },
     "Loading...": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -819,7 +819,7 @@
       }
     },
     "Resets Monthly": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -831,7 +831,7 @@
       }
     },
     "Resets in less than 1 hour": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -843,7 +843,7 @@
       }
     },
     "Resets Tomorrow": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -855,7 +855,7 @@
       }
     },
     "Team usage paused": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -867,7 +867,7 @@
       }
     },
     "Team setup required": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -879,7 +879,7 @@
       }
     },
     "library.usage.product-plan": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -891,7 +891,7 @@
       }
     },
     "library.usage.percent-used": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -903,7 +903,7 @@
       }
     },
     "library.usage.credits": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -915,7 +915,7 @@
       }
     },
     "library.usage.reset-date": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -927,7 +927,7 @@
       }
     },
     "library.usage.reset-hours": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -951,7 +951,7 @@
       }
     },
     "library.usage.reset-days": {
-      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
       "extractionState": "manual",
       "localizations": {
         "en": {

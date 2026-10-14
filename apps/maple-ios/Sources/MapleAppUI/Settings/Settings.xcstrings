@@ -1033,6 +1033,18 @@
         }
       }
     },
+    "Usage": {
+      "comment": "Settings section heading for the read-only plan, usage meter, reset and credit balance.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usage"
+          }
+        }
+      }
+    },
     "Verify email": {
       "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
       "extractionState": "manual",

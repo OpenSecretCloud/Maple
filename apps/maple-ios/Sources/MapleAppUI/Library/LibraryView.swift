@@ -214,13 +214,10 @@
                     .allowsHitTesting(navigationAvailable)
                     .accessibilityHidden(!navigationAvailable)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
-                        VStack(spacing: 8) {
-                            if let account { LibraryUsageTile(account: account) }
-                            searchControls
-                        }
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .allowsHitTesting(navigationAvailable)
-                        .accessibilityHidden(!navigationAvailable)
+                        searchControls
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                            .allowsHitTesting(navigationAvailable)
+                            .accessibilityHidden(!navigationAvailable)
                     }
                     .listStyle(.plain)
                     .environment(\.defaultMinListRowHeight, 50)

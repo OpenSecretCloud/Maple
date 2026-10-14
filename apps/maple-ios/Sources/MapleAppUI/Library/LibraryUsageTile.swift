@@ -2,7 +2,7 @@
     import MapleAppCore
     import SwiftUI
 
-    /// Sidebar billing summary. It deliberately has no purchase or pricing action.
+    /// Read-only billing summary shown in Settings. It has no purchase or pricing action.
     public struct LibraryUsageTile: View {
         private let account: AccountEntitlements
         @Environment(\.locale) private var locale
@@ -60,7 +60,7 @@
             .padding(10)
             .background(MapleSurface.card, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("library.usage")
+            .accessibilityIdentifier("settings.usage")
         }
 
         private func plan(_ label: BillingUsageSummary.PlanLabel) -> some View {
