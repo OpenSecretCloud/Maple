@@ -91,10 +91,14 @@ export function AboutSettings({
             </>
           ) : (
             <>
-              <ExternalRow label="Privacy policy" url="https://trymaple.ai/privacy" icon={Shield} />
+              <ExternalRow
+                label="Privacy policy"
+                url="https://app.maple.ai/privacy"
+                icon={Shield}
+              />
               <ExternalRow
                 label="Terms of service"
-                url="https://trymaple.ai/terms"
+                url="https://app.maple.ai/terms"
                 icon={FileText}
               />
             </>

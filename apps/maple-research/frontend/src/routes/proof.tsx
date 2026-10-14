@@ -33,7 +33,7 @@ import {
 
 const LLMS_FULL_URL = marketingUrl("/llms-full.txt");
 const LLMS_FULL_PROMPT =
-  "Read www.trymaple.ai/llms-full.txt and give me a summary of Maple's security architecture. How does their encryption work, what are the trust assumptions, and how does it compare to using ChatGPT or Claude directly?";
+  "Read maple.ai/llms-full.txt and give me a summary of Maple's security architecture. How does their encryption work, what are the trust assumptions, and how does it compare to using ChatGPT or Claude directly?";
 
 function MatchIndicator({ isMatch, text = "It's a match!" }: { isMatch: boolean; text?: string }) {
   return (
@@ -375,9 +375,9 @@ function AgentModal() {
               <div className="flex flex-col gap-2">
                 <div className="px-3 py-2 rounded-md border border-input bg-[hsl(var(--muted))]/50">
                   <p className="text-sm text-foreground/80 italic">
-                    &quot;Read www.trymaple.ai/llms-full.txt and give me a summary of Maple&apos;s
-                    security architecture. How does their encryption work, what are the trust
-                    assumptions, and how does it compare to using ChatGPT or Claude directly?&quot;
+                    &quot;Read maple.ai/llms-full.txt and give me a summary of Maple&apos;s security
+                    architecture. How does their encryption work, what are the trust assumptions,
+                    and how does it compare to using ChatGPT or Claude directly?&quot;
                   </p>
                 </div>
                 <CopyButton text={LLMS_FULL_PROMPT} label="Copy prompt" />
