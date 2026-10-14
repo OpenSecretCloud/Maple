@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
-      # Shared with the legacy promoter so rollout cannot run two production writers.
+      # Serialize manual and release-triggered production publication.
       group: pages-production
       cancel-in-progress: false
     environment:

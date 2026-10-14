@@ -98,7 +98,6 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
             self.assertNotIn("if", job)
         for name, job_name in (
             ("pages-publish.yml", "production"),
-            ("pages-production.yml", "promote"),
             ("updates-publish.yml", "publish"),
             ("proxy-publish.yml", "prepare"),
             ("zapstore-publish.yml", "publish"),
