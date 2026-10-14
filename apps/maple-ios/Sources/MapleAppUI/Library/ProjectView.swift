@@ -12,7 +12,7 @@
         private let selectedChatID: String?
         private let conversationActivity: @MainActor (String) -> ConversationActivity
         private let onMutation: (@MainActor () async -> Void)?
-        private let menuSearch: String
+        private let teamNoticeAccount: AccountEntitlements?
         @Environment(\.dismiss) private var dismiss
         @State private var renamed: String?
         @State private var renaming = false
@@ -28,12 +28,14 @@
             onSelectChat: @escaping @MainActor (String) -> Void, onNewChat: @escaping @MainActor (String?) -> Void,
             selectedChatID: String? = nil,
             conversationActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
-            onMutation: (@MainActor () async -> Void)? = nil
+            onMutation: (@MainActor () async -> Void)? = nil,
+            teamNoticeAccount: AccountEntitlements? = nil
         ) {
             self.project = project; self.library = library; self.makeInstructionEditor = makeInstructionEditor
             self.onSelectChat = onSelectChat; self.onNewChat = onNewChat
             self.selectedChatID = selectedChatID; self.conversationActivity = conversationActivity
-            self.onMutation = onMutation; menuSearch = library.searchText
+            self.onMutation = onMutation
+            self.teamNoticeAccount = teamNoticeAccount?.scope == library.scope ? teamNoticeAccount : nil
         }
         public var body: some View {
             List {
@@ -42,7 +44,10 @@
                         onNewChat(project.id)
                     } label: {
                         Label {
-                            libraryText("New chat in project")
+                            Text(
+                                String(
+                                    localized: "New chat in %@", defaultValue: "New chat in \(renamed ?? project.name)",
+                                    table: "Library", bundle: .module))
                         } icon: {
                             Image(systemName: "square.and.pencil")
                         }
@@ -67,7 +72,7 @@
                         }.disabled(library.isLoading)
                     }
                     if !library.isLoading, library.conversations.isEmpty, library.issue == nil {
-                        libraryText("No chats yet")
+                        libraryText("No chats in this project yet.")
                     }
                     if let issue = library.issue { LibraryIssueView(issue: issue) }
                 } header: {
@@ -78,15 +83,24 @@
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(MapleSurface.sidebar)
+            .accessibilityIdentifier("library.project-detail." + project.id)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let teamNoticeAccount { TeamSeatMismatchNotice(account: teamNoticeAccount) }
+            }
             .modifier(
                 LibraryChatManagement(
-                    library: library, selecting: $selecting, onMutation: changed, showsWordmarkMenu: false)
+                    library: library, selecting: $selecting, onMutation: changed, showsWordmarkMenu: false,
+                    selectionDeleteTitle: "Delete")
             )
             .navigationTitle(renamed ?? project.name)
             .navigationBarTitleDisplayMode(.inline)
-            .accessibilityIdentifier("library.project-detail." + project.id)
             .navigationDestination(isPresented: $editingInstructions) {
-                if let instructionEditor { InstructionEditorView(editor: instructionEditor) }
+                if let instructionEditor {
+                    InstructionEditorView(editor: instructionEditor)
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if let teamNoticeAccount { TeamSeatMismatchNotice(account: teamNoticeAccount) }
+                        }
+                }
             }
             .searchable(text: $search, prompt: libraryText("Search chats"))
             .onChange(of: search) { _, value in library.searchText = value }
@@ -129,7 +143,7 @@
             .sheet(isPresented: $deleting) {
                 NavigationStack {
                     DeleteLibraryContentView(
-                        title: "Delete this project?",
+                        title: "Delete this project?", actionTitle: "Delete project",
                         explanation: Text(
                             String(
                                 localized:
@@ -158,7 +172,6 @@
                 await library.load(.project(project.id))
                 await instructionEditor?.load()
             }
-            .onDisappear { library.searchText = menuSearch }
         }
         private var instructionsCard: some View {
             Button {

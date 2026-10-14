@@ -974,18 +974,6 @@
         }
       }
     },
-    "Response in progress": {
-      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Response in progress"
-          }
-        }
-      }
-    },
     "View project": {
       "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
       "extractionState": "manual",
@@ -1262,8 +1250,32 @@
         }
       }
     },
+    "New chat in %@": {
+      "comment": "Project detail action starting a new chat. The argument is the user-provided project name; preserve it as an interpolation value.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New chat in %@"
+          }
+        }
+      }
+    },
+    "No chats in this project yet.": {
+      "comment": "Research project detail empty state after its first chat page loads successfully.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No chats in this project yet."
+          }
+        }
+      }
+    },
     "Settings, %@": {
-      "comment": "Native Settings menu action title with the read-only team attention status; the argument is localized status text.",
+      "comment": "Accessibility label for Settings with a read-only team attention status. Keep the visible action title as Settings; the argument is localized status text.",
       "extractionState": "manual",
       "localizations": {
         "en": {

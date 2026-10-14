@@ -344,7 +344,7 @@
             .sheet(isPresented: $deleting) {
                 NavigationStack {
                     DeleteLibraryContentView(
-                        title: "Delete this project?",
+                        title: "Delete this project?", actionTitle: "Delete project",
                         explanation: Text(
                             String(
                                 localized:

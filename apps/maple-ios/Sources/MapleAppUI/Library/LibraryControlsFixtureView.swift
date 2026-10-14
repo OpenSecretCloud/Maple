@@ -10,7 +10,9 @@
     /// This fixture constructs no SDK client and can never reach a real account.
     struct LibraryControlsFixtureView: View {
         @State private var model = LibraryControlsFixtureModel()
+        @State private var compactMenuLease = CompactMenuLease()
         @Environment(\.horizontalSizeClass) private var sizeClass
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         var body: some View {
             VStack(spacing: 0) {
                 Group {
@@ -54,21 +56,7 @@
                                 isCurrent: { model.ready && model.showProjects })
                         }
                     } else if model.dragProof || model.menuProof {
-                        LibraryView(
-                            library: model.library, makeLibrary: model.makeLibrary,
-                            makeInstructionEditor: model.makeInstructions,
-                            onSelectChat: model.selectChat, onNewChat: { _ in },
-                            settings: {
-                                AnyView(
-                                    Text("Synthetic settings").accessibilityIdentifier("library.fixture.settings")
-                                        .navigationTitle("Settings"))
-                            },
-                            account: model.accountProof ? model.account : nil,
-                            conversationActivity: { model.parityProof ? model.activities[$0] ?? .idle : .idle },
-                            projectActivity: { id in
-                                model.parityProof && id == "fixture-project"
-                                    ? model.activities["active"] ?? .idle : .idle
-                            }, drawerNavigation: model.accountProof)
+                        if model.accountProof { accountNavigation } else { menuLibrary }
                     } else {
                         NavigationStack {
                             List {
@@ -100,6 +88,45 @@
                 .fixedSize(horizontal: false, vertical: true)
             }
             .task { await model.prepare() }
+        }
+
+        private var menuLibrary: some View {
+            LibraryView(
+                library: model.library, makeLibrary: model.makeLibrary,
+                makeInstructionEditor: model.makeInstructions,
+                onSelectChat: model.selectChat, onNewChat: { _ in },
+                settings: {
+                    AnyView(
+                        Text("Synthetic settings").accessibilityIdentifier("library.fixture.settings")
+                            .navigationTitle("Settings"))
+                },
+                account: model.accountProof ? model.account : nil,
+                conversationActivity: { model.parityProof ? model.activities[$0] ?? .idle : .idle },
+                projectActivity: { id in
+                    model.parityProof && id == "fixture-project" ? model.activities["active"] ?? .idle : .idle
+                }, drawerNavigation: model.accountProof, compactRootBar: model.accountProof,
+                navigationFocusAvailable: model.accountProof ? compactMenuLease.menuVisible : nil)
+        }
+
+        /// The compact root bar publishes to this existing shipping controller.
+        /// A standalone SwiftUI stack has no publisher to host its native menu.
+        private var accountNavigation: some View {
+            let scope = model.scope
+            return CompactMenuNavigation(
+                scope: scope, storageOwner: model.runtime.snapshot.storageOwner,
+                requestedMenu: true, reduceMotion: reduceMotion, lease: compactMenuLease,
+                library: menuLibrary.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(MapleSurface.sidebar)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("library.drawer"),
+                chat: Color.clear.accessibilityHidden(true),
+                isCurrent: { [weak model] in model?.scope == scope && model?.library.isActive == true },
+                presentationBlocked: { false },
+                requestMenu: { _ in }, blockPresentation: { _, _ in }, chatShown: { _ in }
+            )
+            .id(scope)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container)
         }
 
         private var menuDeletionDiagnostics: some View {
@@ -219,7 +246,8 @@
             let service = LibraryControlsFixtureService(
                 failPage: arguments.contains("--maple-library-controls-page-failure"),
                 failDelete: arguments.contains("--maple-library-controls-delete-failure"), dragProof: dragProof,
-                optionsProof: optionsProof || parityProof)
+                optionsProof: optionsProof || parityProof,
+                searchProof: arguments.contains("--maple-library-search-proof"))
             let store = LibraryControlsFixtureStore()
             let runtime = ChatRuntime(scope: scope, service: service, persistence: store, conversationID: "active")
             let deletions = ChatDeletionCoordinator(scope: scope, retained: [], service: service, persistence: store)
@@ -326,9 +354,15 @@
         ]
         private var projectSequence = 0
 
-        init(failPage: Bool, failDelete: Bool, dragProof: Bool, optionsProof: Bool) {
+        init(failPage: Bool, failDelete: Bool, dragProof: Bool, optionsProof: Bool, searchProof: Bool = false) {
             self.failPage = failPage; self.failDelete = failDelete; self.dragProof = dragProof
             self.optionsProof = optionsProof
+            if searchProof {
+                conversations = [
+                    Self.conversation("project-alpha", title: "Alpha project chat", project: "fixture-project"),
+                    Self.conversation("project-beta", title: "Beta project chat", project: "fixture-project"),
+                ]
+            }
         }
         private static func conversation(_ id: String, title: String, project: String? = nil) -> Conversation {
             Conversation(

@@ -72,7 +72,7 @@ import XCTest
         let root = try rootList(in: app)
         try reveal(root.buttons["library.new-chat"], in: app, owner: root, towardTop: true, limit: pageLimit)
         try settle(root)
-        let folder = root.buttons.matching(identifier: "library.project.expand." + projectID).firstMatch
+        let folder = root.buttons.matching(identifier: "library.project." + projectID).firstMatch
         try reveal(folder, in: app, owner: root, towardTop: false, limit: pageLimit)
         guard let state = folder.value as? String, state == "Expanded" || state == "Collapsed" else {
             throw NativeTextEntryIssue.unavailable

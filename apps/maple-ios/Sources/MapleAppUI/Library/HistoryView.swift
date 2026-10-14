@@ -118,6 +118,7 @@
         var compactRootBar = false
         var nativeRootBarHidden = false
         var nativeRootBarTrailing: AnyView? = nil
+        var selectionDeleteTitle = "Delete selected chats"
         @Environment(\.colorScheme) private var colorScheme
         @Environment(\.displayScale) private var displayScale
         @State private var moving = false
@@ -160,7 +161,7 @@
                                 deleting = true
                             } label: {
                                 Label {
-                                    libraryText("Delete selected chats")
+                                    libraryText(selectionDeleteTitle)
                                 } icon: {
                                     Image(systemName: "trash")
                                 }
@@ -228,12 +229,14 @@
                     if let onSettings {
                         Button(action: onSettings) {
                             Label {
-                                settingsTitle
+                                libraryText("Settings")
                             } icon: {
                                 settingsIcon
                             }
                         }
                         .accessibilityIdentifier("library.settings")
+                        .accessibilityLabel(settingsAccessibilityLabel)
+                        .accessibilityHint(settingsAttentionHint)
                     }
                     Button {
                         selecting.toggle(); if !selecting { library.selectedIDs = [] }
@@ -273,7 +276,7 @@
             .disabled(library.isMutating)
         }
 
-        private var settingsTitle: Text {
+        private var settingsAccessibilityLabel: Text {
             guard let attention = account.flatMap({ LibraryAccountAttention(team: $0.team.value) }) else {
                 return libraryText("Settings")
             }
@@ -281,6 +284,13 @@
                 String(
                     localized: "Settings, %@", defaultValue: "Settings, \(attention.accessibilityLabel)",
                     table: "Library", bundle: .module))
+        }
+
+        private var settingsAttentionHint: Text {
+            guard let attention = account.flatMap({ LibraryAccountAttention(team: $0.team.value) }) else {
+                return Text(verbatim: "")
+            }
+            return Text(verbatim: attention.accessibilityLabel)
         }
 
         private var settingsIcon: Image {
@@ -356,9 +366,7 @@
             switch activity {
             case .idle: EmptyView()
             case .running:
-                ProgressView().controlSize(.mini).tint(MapleAccent.action)
-                    .accessibilityLabel(libraryText("Response in progress"))
-                    .accessibilityHidden(true)
+                ProgressView().controlSize(.mini).tint(MapleAccent.action).accessibilityHidden(true)
             case .unread:
                 Circle().fill(.green).frame(width: 8, height: 8).accessibilityHidden(true)
             }
@@ -704,6 +712,7 @@
 
     struct DeleteLibraryContentView: View {
         let title: String
+        var actionTitle: String? = nil
         let explanation: Text
         let action: @MainActor () async -> LibraryIssue?
         @Environment(\.dismiss) private var dismiss
@@ -725,7 +734,7 @@
                         issue = await action(); working = false; if issue == nil { dismiss() }
                     }
                 } label: {
-                    libraryText(title)
+                    libraryText(actionTitle ?? title)
                 }.disabled(confirmation != "DELETE" || working)
                     .accessibilityIdentifier("library.delete-confirm")
                 if let issue { LibraryIssueView(issue: issue) }

@@ -40,6 +40,15 @@ import XCTest
         tap("library.fixture.project")
         XCTAssertTrue(app.buttons["library.chat.active"].waitForExistence(timeout: 15))
         tap("Project actions"); tap("Delete project")
+        XCTAssertTrue(app.navigationBars["Delete this project?"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["library.delete-confirm"].label, "Delete project")
+    }
+    private func openProjectDetail(_ id: String = "fixture-project") {
+        let folder = app.buttons["library.project." + id]
+        XCTAssertTrue(folder.waitForExistence(timeout: 15) && folder.isHittable)
+        folder.press(forDuration: 0.7)
+        tap("library.project.view." + id)
+        XCTAssertTrue(app.buttons["library.project-detail.instructions"].waitForExistence(timeout: 15))
     }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -225,13 +234,13 @@ import XCTest
         XCTAssertTrue(pinned.waitForExistence(timeout: 10) && pinned.isHittable && alpha.isHittable)
         alpha.press(forDuration: 0.8, thenDragTo: first, withVelocity: .slow, thenHoldForDuration: 0.3)
         dragAcknowledgement("alpha:fixture-project:unpinned")
-        tap("library.project.expand.fixture-project")
+        tap("library.project.fixture-project")
         XCTAssertTrue(alpha.waitForExistence(timeout: 10) && alpha.isHittable)
         XCTAssertGreaterThanOrEqual(alpha.frame.minX, first.frame.minX + 28)
         XCTAssertGreaterThanOrEqual(alpha.frame.height, 50 - 0.01)
         alpha.press(forDuration: 0.8, thenDragTo: second, withVelocity: .slow, thenHoldForDuration: 0.3)
         dragAcknowledgement("alpha:fixture-project-2:unpinned")
-        tap("library.project.expand.fixture-project-2")
+        tap("library.project.fixture-project-2")
         XCTAssertTrue(alpha.waitForExistence(timeout: 10) && alpha.isHittable)
 
         let recent = app.staticTexts["library.drop.recent"]
@@ -300,17 +309,19 @@ import XCTest
         XCTAssertEqual(app.buttons["library.chat.beta"].label, "Beta chat, completed, unread")
         let folder = app.buttons["library.project.fixture-project"]
         XCTAssertEqual(folder.label, "Synthetic project, completed, unread")
-        let disclosure = app.buttons["library.project.expand.fixture-project"]
-        XCTAssertGreaterThanOrEqual(disclosure.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(disclosure.frame.height, 44)
-        tap("library.project.expand.fixture-project")
+        XCTAssertGreaterThanOrEqual(folder.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(folder.frame.height, 44)
+        XCTAssertEqual(folder.value as? String, "Collapsed")
+        XCTAssertFalse(app.buttons["library.project.expand.fixture-project"].exists)
+        tap("library.project.fixture-project")
         let child = app.buttons["library.chat.active"]
         XCTAssertTrue(child.waitForExistence(timeout: 15))
         XCTAssertEqual(child.label, "Active project chat, completed, unread")
         XCTAssertEqual(folder.label, "Synthetic project")
+        XCTAssertEqual(folder.value as? String, "Expanded")
         child.tap()
         XCTAssertEqual(child.label, "Active project chat")
-        tap("library.project.expand.fixture-project")
+        tap("library.project.fixture-project")
         XCTAssertEqual(folder.label, "Synthetic project")
         tap("library.chat.beta")
         XCTAssertEqual(app.buttons["library.chat.beta"].label, "Beta chat")
@@ -318,9 +329,9 @@ import XCTest
         screenshot("Running and unread rows with collapsed project summary")
     }
 
-    func testProjectTitleOpensScopedDetailWithInstructionsAndSelection() {
+    func testProjectMenuOpensScopedDetailWithInstructionsAndSelection() {
         launch(["--maple-library-parity-proof"])
-        tap("library.project.fixture-project")
+        openProjectDetail()
         let instructions = app.buttons["library.project-detail.instructions"]
         XCTAssertTrue(instructions.waitForExistence(timeout: 15))
         let preview = XCTNSPredicateExpectation(
@@ -330,13 +341,15 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for: [preview], timeout: 15), .completed)
         XCTAssertTrue(app.buttons["library.chat.active"].exists)
         XCTAssertFalse(app.buttons["library.chat.alpha"].exists)
+        XCTAssertEqual(app.buttons["library.project-detail.new-chat"].label, "New chat in Synthetic project")
         tap("library.project-detail.actions"); tap("Select chats")
         tap("library.chat.active")
         XCTAssertTrue(app.buttons["library.chat.active"].isSelected)
         XCTAssertTrue(app.buttons["Move selected chats"].isEnabled)
+        XCTAssertTrue(app.buttons["Delete"].isEnabled)
         let back = app.navigationBars.buttons.firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 10)); back.tap()
-        tap("library.project.fixture-project")
+        openProjectDetail()
         tap("library.project-detail.actions"); tap("Select chats")
         XCTAssertFalse(app.buttons["library.chat.active"].isSelected)
         XCTAssertFalse(app.buttons["Move selected chats"].isEnabled)
@@ -347,6 +360,37 @@ import XCTest
         tap("library.instructions-cancel")
         XCTAssertTrue(app.buttons["library.project-detail.instructions"].waitForExistence(timeout: 10))
         screenshot("Project detail uses shared instructions and selection controls")
+    }
+
+    func testProjectDetailMutationRestoresTheRetainedSidebarSearchOnBack() {
+        launch(["--maple-library-parity-proof", "--maple-library-search-proof"])
+        let menuSearch = app.textFields["library.search"]
+        XCTAssertTrue(menuSearch.waitForExistence(timeout: 10))
+        menuSearch.tap(); menuSearch.typeText("alpha\n")
+        XCTAssertTrue(app.buttons["library.chat.project-alpha"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["library.chat.project-beta"].exists)
+        XCTAssertEqual(menuSearch.value as? String, "alpha")
+
+        openProjectDetail()
+        let beta = app.buttons["library.chat.project-beta"]
+        XCTAssertTrue(beta.waitForExistence(timeout: 15))
+        tap("library.chat-actions.project-beta"); tap("Rename")
+        let name = app.textFields["library.rename-title"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.typeText(" renamed"); tap("library.rename-save")
+        let renamed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "renamed"), object: beta)
+        XCTAssertEqual(XCTWaiter.wait(for: [renamed], timeout: 15), .completed)
+        let renameDismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: name)
+        XCTAssertEqual(XCTWaiter.wait(for: [renameDismissed], timeout: 10), .completed)
+
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable); back.tap()
+        XCTAssertTrue(app.buttons["library.chat.project-alpha"].waitForExistence(timeout: 15))
+        XCTAssertEqual(menuSearch.value as? String, "alpha")
+        XCTAssertFalse(beta.exists)
+        screenshot("Project mutation preserves the visible sidebar query and filtered children")
     }
 
     func testLibraryProjectCreationOpensDetailAndUnchangedRenamesDoNotMutate() {
@@ -362,6 +406,8 @@ import XCTest
         tap("project-editor.save")
         XCTAssertTrue(app.buttons["library.project-detail.instructions"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.navigationBars["New synthetic project"].exists)
+        XCTAssertTrue(app.staticTexts["No chats in this project yet."].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons["library.project-detail.new-chat"].label, "New chat in New synthetic project")
         tap("library.project-detail.actions"); tap("Rename project")
         XCTAssertTrue(app.textFields["project-editor.name"].waitForExistence(timeout: 10))
         tap("project-editor.save")
@@ -385,17 +431,76 @@ import XCTest
         XCTAssertTrue(banner.label.contains("1 member, 0 paid seats"), banner.label)
         XCTAssertTrue(banner.label.contains("This team has 1 member but only 0 paid seats."), banner.label)
         XCTAssertTrue(banner.label.contains("Remove members to match the paid seat count and resume team usage."))
+        let newChat = app.buttons["library.new-chat"]
+        XCTAssertTrue(newChat.waitForExistence(timeout: 10))
+        let noticeFrame = banner.frame, newChatFrame = newChat.frame
+        XCTAssertGreaterThan(noticeFrame.height, 0)
+        XCTAssertGreaterThanOrEqual(newChatFrame.height, 44)
+        XCTAssertGreaterThanOrEqual(
+            newChatFrame.minY, noticeFrame.maxY - 0.5,
+            "The initial New chat control must stay below the fixed seat notice without scrolling")
+        XCTAssertTrue(newChat.isHittable)
         XCTAssertFalse(app.buttons["Manage Team"].exists)
         XCTAssertFalse(app.buttons["Pricing"].exists)
         screenshot("Read-only usage and singular member seat mismatch card")
+
+        openProjectDetail()
+        let projectBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch").firstMatch
+        XCTAssertTrue(projectBanner.waitForExistence(timeout: 10))
+        XCTAssertTrue(projectBanner.label.contains("1 member, 0 paid seats"), projectBanner.label)
+        let projectNewChat = app.buttons["library.project-detail.new-chat"]
+        XCTAssertTrue(projectNewChat.waitForExistence(timeout: 10))
+        let projectNoticeFrame = projectBanner.frame, projectNewChatFrame = projectNewChat.frame
+        XCTAssertGreaterThan(projectNoticeFrame.height, 0)
+        XCTAssertGreaterThanOrEqual(projectNewChatFrame.height, 44)
+        XCTAssertGreaterThanOrEqual(
+            projectNewChatFrame.minY, projectNoticeFrame.maxY - 0.5,
+            "Project New chat must stay below the fixed seat notice without scrolling")
+        XCTAssertTrue(projectNewChat.isHittable)
+        screenshot("Project detail keeps the seat notice above its New chat control")
+
+        tap("library.project-detail.instructions")
+        let instructions = app.textViews["library.instructions-text"]
+        XCTAssertTrue(instructions.waitForExistence(timeout: 10))
+        let instructionBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch")
+            .firstMatch
+        XCTAssertTrue(instructionBanner.waitForExistence(timeout: 10))
+        XCTAssertTrue(instructionBanner.label.contains("1 member, 0 paid seats"), instructionBanner.label)
+        let instructionNoticeFrame = instructionBanner.frame, instructionsFrame = instructions.frame
+        XCTAssertGreaterThan(instructionNoticeFrame.height, 0)
+        XCTAssertGreaterThanOrEqual(instructionsFrame.height, 44)
+        XCTAssertGreaterThanOrEqual(
+            instructionsFrame.minY, instructionNoticeFrame.maxY - 0.5,
+            "Custom Instructions must stay below the fixed seat notice")
+        XCTAssertTrue(instructions.isHittable)
+        screenshot("Custom Instructions preserves the seat notice above the editor")
+        tap("library.instructions-cancel")
+        XCTAssertTrue(projectNewChat.waitForExistence(timeout: 10) && projectNewChat.isHittable)
+        let returnedProjectBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch")
+            .firstMatch
+        XCTAssertTrue(returnedProjectBanner.waitForExistence(timeout: 10))
+
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable); back.tap()
+        XCTAssertTrue(newChat.waitForExistence(timeout: 10) && newChat.isHittable)
+        let returnedRootBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch")
+            .firstMatch
+        XCTAssertTrue(returnedRootBanner.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(newChat.frame.minY, returnedRootBanner.frame.maxY - 0.5)
+
         tap("library.actions")
         let settings = app.buttons["library.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
-        XCTAssertEqual(settings.label, "Settings, Team usage paused")
-        screenshot("Native Settings menu retains the colored attention icon and accessible status")
+        XCTAssertTrue(["Settings", "Settings, Team usage paused"].contains(settings.label))
+        let semantics = XCTAttachment(
+            string: "Settings label: \(settings.label)\nValue: \(String(describing: settings.value))\n"
+                + settings.debugDescription)
+        semantics.name = "Native Settings menu accessibility export"; semantics.lifetime = .keepAlways; add(semantics)
+        screenshot("Native Settings menu retains the simple title and colored attention icon")
         settings.tap()
         XCTAssertTrue(app.staticTexts["library.fixture.settings"].waitForExistence(timeout: 10))
-        XCTAssertTrue(banner.waitForNonExistence(timeout: 10))
+        let settingsBanner = app.descendants(matching: .any).matching(identifier: "chat.team-seat-mismatch").firstMatch
+        XCTAssertTrue(settingsBanner.waitForNonExistence(timeout: 10))
         screenshot("Settings destination excludes the team usage banner")
     }
 }

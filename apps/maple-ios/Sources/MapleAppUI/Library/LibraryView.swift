@@ -265,6 +265,11 @@
                     }
 
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if drawerNavigation, let account {
+                        TeamSeatMismatchNotice(account: account)
+                    }
+                }
                 .toolbarVisibility(
                     navigationAvailable && (!usesCompactRootBar || !drawerPath.isEmpty) ? .visible : .hidden,
                     for: .navigationBar
@@ -284,7 +289,7 @@
                                 makeInstructionEditor: makeInstructionEditor,
                                 onSelectChat: selectChat, onNewChat: selectNewChat,
                                 selectedChatID: selectedChatID, conversationActivity: conversationActivity,
-                                onMutation: refresh
+                                onMutation: refresh, teamNoticeAccount: drawerNavigation ? account : nil
                             )
                             .toolbarVisibility(.visible, for: .navigationBar)
                         }
@@ -309,12 +314,11 @@
 
                 )
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if drawerNavigation, drawerPath.last != .settings, let account {
-                    TeamSeatMismatchNotice(account: account)
-                }
-            }
             .onChange(of: drawerPath) { _, path in
+                // Detail has its own query over the shared project snapshot.
+                // Restore the menu owner's query after native Back, rather
+                // than capturing a mutable model value in the destination.
+                if path.isEmpty { models.setSearch(search) }
                 guard drawerNavigation else { return }
                 // Pushing clears root focus; native Back restores its own row.
                 if !path.isEmpty { closeFocused = false; suspendSearch() }
@@ -559,17 +563,6 @@
                 Button {
                     expanded.toggle()
                 } label: {
-                    Image(systemName: showingChildren ? "chevron.down" : "chevron.right")
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(libraryText(showingChildren ? "Collapse project" : "Expand project"))
-                .accessibilityIdentifier("library.project.expand." + project.id)
-                .accessibilityValue(libraryText(showingChildren ? "Expanded" : "Collapsed"))
-                Button {
-                    onViewProject(project.id)
-                } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "folder")
                         Text(project.name).fontWeight(.semibold).lineLimit(1)
@@ -581,6 +574,7 @@
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("library.project." + project.id)
                 .accessibilityLabel(conversationActivityLabel(title: project.name, activity: folderActivity))
+                .accessibilityValue(libraryText(showingChildren ? "Expanded" : "Collapsed"))
                 .accessibilityAction(named: libraryText("View project")) { onViewProject(project.id) }
                 .accessibilityAction(named: libraryText("Manage project")) { onManageProject(project.id) }
                 .contextMenu {
@@ -642,12 +636,12 @@
                     LibrarySelectableConversationRow(
                         conversation: conversation, library: model, selectionLibrary: selectionLibrary,
                         selecting: $selecting, onSelect: onSelectChat, onMutation: onMutation,
-                        leadingInset: 100, dragContext: drag, dragEnabled: dragEnabled,
+                        leadingInset: 56, dragContext: drag, dragEnabled: dragEnabled,
                         dropDestination: .project(project.id), selectedChatID: selectedChatID,
                         activity: conversationActivity(conversation.id)
                     )
                     .listRowInsets(.vertical, 0)
-                    .listRowInsets(.leading, 100).listRowInsets(.trailing, 12)
+                    .listRowInsets(.leading, 56).listRowInsets(.trailing, 12)
                 }
                 if model.hasMore {
                     Button {
@@ -658,7 +652,7 @@
                     .disabled(model.isLoading)
                     .accessibilityIdentifier("library.project.load-more." + project.id)
                     .listRowInsets(.vertical, 0)
-                    .listRowInsets(.leading, 100).listRowInsets(.trailing, 12)
+                    .listRowInsets(.leading, 56).listRowInsets(.trailing, 12)
                     .listRowSeparator(.hidden).listRowBackground(Color.clear)
                 }
                 if let issue = model.issue { LibraryIssueView(issue: issue) }
