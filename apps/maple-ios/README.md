@@ -209,6 +209,10 @@ limited to sixteen; recovery never drops accepted work. A queued baseline is lim
 text. Working editor text can exceed that limit while the user revises it; an
 unsuccessful queue Save must preserve that work and the original item.
 
+A fresh direct send starts a new queue session when the prior queue is empty.
+Pauses on queues with pending messages or an unfinished edit still require an
+explicit resume after interruption or restoration.
+
 Files and directories are excluded from backups and use Complete Protection on
 iOS, with restrictive Unix permissions as an additional measure. The runtime
 must report protected-data availability: lock defers writes without deleting

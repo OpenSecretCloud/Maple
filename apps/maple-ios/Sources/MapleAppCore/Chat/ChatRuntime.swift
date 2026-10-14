@@ -550,6 +550,9 @@ public final class ChatRuntime {
             id: hooks.uuid(), messageID: hooks.uuid().uuidString.lowercased(), outgoingDraft: snapshot.draft,
             options: options)
         var proposed = snapshot; proposed.pendingRun = run; proposed.draft = ChatDraft(id: hooks.uuid())
+        // A fresh direct run owns a new queue. An empty retained queue may
+        // still carry the pause from Stop, recovery, reload or going offline.
+        if proposed.queue?.items.isEmpty == true, proposed.queue?.edit == nil { proposed.queue = nil }
         guard admits(proposed) else { lastIssue = .queueLimit; return false }
         onDraftOwnerChanging?(snapshot.draft.id)
         snapshot = proposed; changed()

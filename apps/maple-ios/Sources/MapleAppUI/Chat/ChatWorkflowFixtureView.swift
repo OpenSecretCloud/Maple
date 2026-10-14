@@ -140,6 +140,7 @@
                     .accessibilityIdentifier("chat.fixture.queued-image-ids")
                 Text(runtime.phase?.rawValue ?? "idle").accessibilityIdentifier("chat.fixture.phase")
                 Text(runtime.isQueuePaused ? "paused" : "running").accessibilityIdentifier("chat.fixture.queue-state")
+                Text("Queued turns \(runtime.queuedTurns.count)").accessibilityIdentifier("chat.fixture.queue-count")
                 Text(runtime.snapshot.queue?.edit?.heldDraft.text ?? "no held draft")
                     .accessibilityIdentifier("chat.fixture.held")
                 Text(runtime.queuedTurns.map(\.draft.text).joined(separator: " | "))
