@@ -2,6 +2,7 @@
     import MapleAppCore
     import SwiftUI
     import UIKit
+    import UniformTypeIdentifiers
 
     #if DEBUG
         @MainActor enum ComposerFocusTrace {
@@ -33,6 +34,8 @@
         var onChange: (DictationEditorState, [DictationTextEdit]) -> Void = { _, _ in }
         var onEditingInteraction: () -> Bool = { true }
         var refreshAfterSubmit: (() -> ComposerEditor?)? = nil
+        /// Return false to let UIKit paste the text representation instead.
+        var onPasteImages: (([NSItemProvider]) -> Bool)? = nil
         var onSubmit: () -> Void
 
         func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -51,6 +54,7 @@
             view.returnKeyType = .default
             view.isScrollEnabled = true
             view.delegate = context.coordinator
+            view.pasteDelegate = context.coordinator
             let observer = ComposerStorageObserver { [weak coordinator = context.coordinator] in
                 Task { @MainActor in coordinator?.publish() }
             }
@@ -114,7 +118,7 @@
                 view.inputOrderObserver = nil
             #endif
             view.changed = nil; view.submit = nil; view.willReplace = nil
-            view.delegate = nil; view.textStorage.delegate = nil
+            view.delegate = nil; view.pasteDelegate = nil; view.textStorage.delegate = nil
             _ = view.resignFirstResponder()
             view.setSoftwareKeyboardSuppressed(false)
             view.text = ""
@@ -124,7 +128,7 @@
             coordinator.lastPublished = nil
         }
 
-        @MainActor final class Coordinator: NSObject, UITextViewDelegate {
+        @MainActor final class Coordinator: NSObject, UITextViewDelegate, UITextPasteDelegate {
             struct Owner: Equatable { let draft: UUID; let generation: UUID? }
             var parent: ComposerEditor
             weak var view: ComposerTextView?
@@ -137,6 +141,43 @@
             var installing = false
             var valid = true
             private var installationRevision = UUID()
+            private static let textPasteOwnerKey = NSAttributedString.Key("MapleComposerTextPasteOwner")
+            private var textPasteRevision = UUID()
+            #if DEBUG
+                var pendingTextPasteReads = 0
+            #endif
+
+            private final class TextPasteOwner: NSObject {
+                let value: Owner
+                let revision: UUID
+                init(_ value: Owner, revision: UUID) { self.value = value; self.revision = revision }
+            }
+
+            @MainActor private final class TextPasteRead {
+                let item: any UITextPasteItem
+                let owner: Owner
+                let revision: UUID
+                weak var coordinator: Coordinator?
+                weak var view: ComposerTextView?
+                init(item: any UITextPasteItem, owner: Owner, coordinator: Coordinator, view: ComposerTextView) {
+                    self.item = item; self.owner = owner; self.coordinator = coordinator; self.view = view
+                    revision = coordinator.textPasteRevision
+                }
+                func complete(_ text: String?) {
+                    #if DEBUG
+                        if let coordinator { coordinator.pendingTextPasteReads -= 1 }
+                    #endif
+                    guard let coordinator, let view, coordinator.valid, !coordinator.installing,
+                        coordinator.view === view, coordinator.owner == owner,
+                        coordinator.textPasteRevision == revision,
+                        view.isEditable, view.markedTextRange == nil,
+                        coordinator.parent.isCurrentOwner(), coordinator.parent.isCurrentPresentation(), let text
+                    else { item.setNoResult(); return }
+                    var attributes = item.defaultAttributes
+                    attributes[Coordinator.textPasteOwnerKey] = TextPasteOwner(owner, revision: revision)
+                    item.setResult(attributedString: NSAttributedString(string: text, attributes: attributes))
+                }
+            }
             private struct HardwareResignation {
                 let owner: Owner?
                 let installation: UUID
@@ -344,6 +385,7 @@
                 view.updateKeyboardRestorationGesture()
                 if ownerChanged {
                     view.invalidateReturnCommands()
+                    textPasteRevision = UUID()
                     owner = nextOwner
                     lastPublished = nil
                 } else if contentChanged {
@@ -499,11 +541,63 @@
             func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String)
                 -> Bool
             {
+                if text == "\n", let view = textView as? ComposerTextView, view.continueList(range: range) {
+                    return false
+                }
                 recordReplacement(before: textView.text ?? "", range: range, replacement: text)
                 #if DEBUG
                     observeInputOrder("proposed")
                 #endif
                 return true
+            }
+
+            func textPasteConfigurationSupporting(
+                _ textPasteConfigurationSupporting: any UITextPasteConfigurationSupporting,
+                transform item: any UITextPasteItem
+            ) {
+                guard valid, !installing, let view, view.isEditable, view.markedTextRange == nil, let owner,
+                    textPasteConfigurationSupporting as? ComposerTextView === view,
+                    parent.isCurrentOwner(), parent.isCurrentPresentation(),
+                    item.itemProvider.canLoadObject(ofClass: NSString.self)
+                else { item.setNoResult(); return }
+                let read = TextPasteRead(item: item, owner: owner, coordinator: self, view: view)
+                #if DEBUG
+                    pendingTextPasteReads += 1
+                #endif
+                // This editor accepts native plain strings, like UITextView's
+                // default with allowsEditingTextAttributes disabled. UIKit still
+                // combines the items and resolves the eventual target range.
+                _ = item.itemProvider.loadObject(ofClass: NSString.self) { object, _ in
+                    let text = (object as? NSString).map { $0 as String }
+                    Task { @MainActor in read.complete(text) }
+                }
+            }
+
+            func textPasteConfigurationSupporting(
+                _ textPasteConfigurationSupporting: any UITextPasteConfigurationSupporting,
+                performPasteOf attributedString: NSAttributedString, to textRange: UITextRange
+            ) -> UITextRange {
+                let unchangedSelection =
+                    (textPasteConfigurationSupporting as? UITextView)?.selectedTextRange ?? textRange
+                guard valid, !installing, let view, view.isEditable, view.markedTextRange == nil,
+                    attributedString.length > 0,
+                    textPasteConfigurationSupporting as? ComposerTextView === view,
+                    parent.isCurrentOwner(), parent.isCurrentPresentation()
+                else { return unchangedSelection }
+                var owned = true
+                attributedString.enumerateAttribute(
+                    Self.textPasteOwnerKey, in: NSRange(location: 0, length: attributedString.length)
+                ) { value, _, _ in
+                    guard let marker = value as? TextPasteOwner,
+                        marker.value == owner, marker.revision == textPasteRevision
+                    else { owned = false; return }
+                }
+                guard owned else { return unchangedSelection }
+                // UIKit has already decoded/combined the providers and resolved
+                // the actual insertion range. This plain-text editor preserves
+                // that native range without treating pasted LF as Return.
+                view.performTextPaste(attributedString.string, in: textRange)
+                return view.selectedTextRange ?? unchangedSelection
             }
 
             private func clearRequests() {
@@ -629,6 +723,24 @@
                     self.publicationScheduled = false
                     self.publish()
                 }
+            }
+
+            fileprivate func handlesImagePaste(_ providers: [NSItemProvider], in view: ComposerTextView) -> Bool {
+                let destinationOwner = owner, revision = textPasteRevision, installation = installationRevision
+                let window = view.window
+                guard let action = parent.onPasteImages else { return false }
+                if action(providers) { return true }
+                // A declined route may fall through only in the initiating
+                // editor. A callback can retire or replace it synchronously.
+                func matches() -> Bool {
+                    valid && !installing && self.view === view && view.delegate === self
+                        && owner == destinationOwner && textPasteRevision == revision
+                        && installationRevision == installation && view.window === window
+                        && view.isEditable && view.markedTextRange == nil
+                }
+                guard matches(), parent.isCurrentOwner(), matches(), parent.isCurrentPresentation(), matches()
+                else { return true }
+                return false
             }
 
             func publish(completedInput: Bool = false) {
@@ -947,6 +1059,7 @@
         var submit: (() -> Void)?
         var willReplace: ((String, NSRange, String) -> Void)?
         private var operationDepth = 0
+        private var pastingText = false
         var performingInputOperation: Bool { operationDepth > 0 }
         private var returnCommandIdentity = UUID()
         private(set) var hardwareReturnInProgress = false
@@ -1082,7 +1195,16 @@
                 guard let command = sender as? UIKeyCommand else { return false }
                 return ownsReturnCommand(command)
             }
+            if action == #selector(paste(_:)), admitsImagePaste, UIPasteboard.general.hasImages { return true }
             return super.canPerformAction(action, withSender: sender)
+        }
+
+        private var admitsImagePaste: Bool {
+            guard let coordinator = delegate as? ComposerEditor.Coordinator,
+                coordinator.valid, !coordinator.installing, isEditable, markedTextRange == nil,
+                coordinator.parent.onPasteImages != nil
+            else { return false }
+            return coordinator.parent.isCurrentOwner() && coordinator.parent.isCurrentPresentation()
         }
 
         private func ownsReturnCommand(_ command: UIKeyCommand) -> Bool {
@@ -1127,7 +1249,28 @@
 
         override func paste(_ sender: Any?) {
             cancelHardwareReturn()
+            if admitsImagePaste {
+                // Only the explicit native paste action reads providers. Menu
+                // validation above checks type availability without reading bytes.
+                let images = UIPasteboard.general.itemProviders.filter {
+                    $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+                }
+                if !images.isEmpty, admitsImagePaste,
+                    let coordinator = delegate as? ComposerEditor.Coordinator
+                {
+                    if coordinator.handlesImagePaste(images, in: self) { return }
+                }
+            }
+            pastingText = true
+            defer { pastingText = false }
             super.paste(sender)
+        }
+
+        fileprivate func performTextPaste(_ text: String, in range: UITextRange) {
+            let previous = pastingText
+            pastingText = true
+            defer { pastingText = previous }
+            replace(range, withText: text)
         }
         override func resignFirstResponder() -> Bool {
             #if DEBUG
@@ -1283,6 +1426,7 @@
             #if DEBUG
                 observeInputOperation("insert.begin", inputLength: text.utf16.count)
             #endif
+            if text == "\n", continueList(range: selectedRange) { return }
             captureReplacement(range: markedReplacementRange, text: text)
             operationDepth += 1
             super.insertText(text)
@@ -1291,6 +1435,27 @@
                 observeInputOperation("insert.end", inputLength: text.utf16.count)
             #endif
             if operationDepth == 0 { changed?() }
+        }
+
+        @discardableResult fileprivate func continueList(range: NSRange) -> Bool {
+            guard markedTextRange == nil, !performingInputOperation, !pastingText, isEditable,
+                let coordinator = delegate as? ComposerEditor.Coordinator, coordinator.valid, !coordinator.installing,
+                coordinator.parent.isCurrentOwner(), coordinator.parent.isCurrentPresentation(),
+                let edit = ComposerListContinuation.edit(text: text ?? "", selectionUTF16: range),
+                let start = position(from: beginningOfDocument, offset: edit.rangeUTF16.location),
+                let end = position(from: start, offset: edit.rangeUTF16.length),
+                let nativeRange = textRange(from: start, to: end)
+            else { return false }
+            let scrollToEnd = NSMaxRange(range) == (text ?? "").utf16.count
+            // replace(_:withText:) records the actual transaction through
+            // recordNativeReplacement, retaining UIKit's ordinary undo behavior.
+            operationDepth += 1
+            replace(nativeRange, withText: edit.replacement)
+            selectedRange = edit.selectionUTF16
+            operationDepth -= 1
+            if scrollToEnd { scrollRangeToVisible(edit.selectionUTF16) }
+            changed?()
+            return true
         }
         override func deleteBackward() {
             #if DEBUG

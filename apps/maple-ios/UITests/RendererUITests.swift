@@ -973,6 +973,11 @@ final class OwnedComposerUITests: XCTestCase {
         XCTAssertTrue(check.isHittable)
         check.tap()
         let status = app.staticTexts["composer.order-status"]
+        let complete = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@", "nativeImagePasteRoutesProvidersAndPreservesTextFallback:"),
+            object: status)
+        XCTAssertEqual(XCTWaiter.wait(for: [complete], timeout: 15), .completed)
         let diagnostic = XCTAttachment(string: status.label)
         diagnostic.name = "Controlled production Coordinator callback order"
         diagnostic.lifetime = .keepAlways
@@ -991,6 +996,7 @@ final class OwnedComposerUITests: XCTestCase {
             "resignationOrdersPriorInputBeforeShiftNewline",
             "hardwareReturnAndKeypadCommandsUseSameGuardedPath",
             "ordinaryTextInputPreservesNewlinesWithoutSubmitting",
+            "markdownNewlineRetainsExactDictationAnchorAndComposition",
             "markedInputDoesNotExposeOrExecuteReturnCommands",
             "retiredOwnerCannotExecuteCachedReturnCommand",
             "reentrantHardwareCommandCannotSubmitTwice",
@@ -1031,6 +1037,7 @@ final class OwnedComposerUITests: XCTestCase {
             "lateNativeFocusCallbacksCannotReopenOrDismissEditor",
             "unrequestedNativeFocusCannotReopenDismissedComposer",
             "nativeTextInsetsKeepCaretAndPlaceholderAligned",
+            "nativeImagePasteRoutesProvidersAndPreservesTextFallback",
         ]
         XCTAssertEqual(status.label, expectedCases.map { "\($0): passed" }.joined(separator: "\n"))
     }

@@ -69,9 +69,12 @@
                                         guard
                                             ProcessInfo.processInfo.arguments.contains(
                                                 "--maple-shipping-follow-scroll-proof")
+                                                || ProcessInfo.processInfo.arguments.contains(
+                                                    "--maple-shipping-item-poll-proof")
                                         else { return }
                                         model?.scrollMetrics = metrics
                                     },
+                                    fixtureScrollStateChanged: { [weak model] state in model?.scrollState = state },
                                     fixtureItemHorizontalGeometryChanged: { [weak model] itemID, geometry in
                                         model?.recordWidthToolHorizontalGeometry(itemID: itemID, geometry: geometry)
                                     },
@@ -133,7 +136,8 @@
                     account: model.account, preferences: model.preferences,
                     fixtureProjectionIsCurrent: { [weak model] scope, owner in
                         model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
-                    }, fixtureOptions: model.optionsContext
+                    }, fixtureOptions: model.optionsContext,
+                    fixtureScrollStateChanged: { [weak model] state in model?.scrollState = state }
                 )
                 .id(owner)
                 .background(MapleSurface.canvas)
@@ -162,9 +166,21 @@
                 requestMenu: { [weak model] in model?.projectionMenuPresented = $0 },
                 blockPresentation: { _, _ in },
                 chatShown: { reason in
-                    guard model.projectionIsCurrent(scope: scope, storageOwner: owner),
-                        !model.projectionMenuPresented
+                    model.paginationChatShownCalls += 1
+                    // The controller retains this callback across initial
+                    // loading, which can replace the snapshot's storage owner.
+                    // Read the controller lease's acknowledged owner now.
+                    guard compactLease.scope == scope, let shownOwner = compactLease.storageOwner,
+                        model.projectionIsCurrent(scope: scope, storageOwner: shownOwner),
+                        !model.projectionMenuPresented,
+                        compactLease.state(scope: scope, storageOwner: shownOwner).returnRevision > 0,
+                        !compactLease.state(scope: scope, storageOwner: shownOwner).occluded
                     else { return }
+                    model.paginationChatShownAdmissions += 1
+                    // The isolated environment owns no signed-in chat registry.
+                    // Mirror production's acknowledged visibility publication
+                    // for this exact retained synthetic runtime.
+                    model.runtime.isVisible = true
                     if reason == .navigation { paginationMenuFocused = true }
                 }
             )
@@ -174,8 +190,16 @@
             .onChange(of: model.projectionMenuPresented) { _, presented in
                 if presented { paginationMenuFocused = false }
             }
-            .onChange(of: compactLease.menuVisible) { _, available in
-                paginationCloseFocused = available
+            .onChange(of: compactLease.state(scope: scope, storageOwner: owner), initial: true) { _, state in
+                guard compactLease.scope == scope, compactLease.storageOwner == owner,
+                    model.projectionIsCurrent(scope: scope, storageOwner: owner)
+                else { return }
+                model.paginationLeasePublications += 1
+                model.runtime.isVisible = state.returnRevision > 0 && !state.occluded
+                paginationCloseFocused = compactLease.menuVisible
+            }
+            .onChange(of: model.runtime.isVisible) { _, _ in
+                model.paginationVisibilityChanges += 1
             }
         }
 
@@ -196,14 +220,7 @@
         }
 
         private func paginationNavigationDiagnostics(_ model: ShippingViewportFixtureModel) -> some View {
-            VStack(spacing: 0) {
-                Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
-                    .accessibilityIdentifier("shipping-viewport.summary")
-                Text("Synthetic retained Chat owners").font(.caption2)
-                    .accessibilityIdentifier("shipping-window.ownership")
-                    .accessibilityValue(model.windowOwnership)
-            }
-            .accessibilityElement(children: .contain)
+            ShippingPaginationNavigationDiagnostics(model: model, lease: compactLease)
         }
 
         private func compactViewport(_ model: ShippingViewportFixtureModel) -> some View {
@@ -377,10 +394,18 @@
                             .accessibilityIdentifier("shipping-viewport.append-item")
                             .disabled(model.chunks != 40 || model.emitting || !model.runtime.hasUnresolvedRun)
                     }
+                    if ProcessInfo.processInfo.arguments.contains("--maple-shipping-item-poll-proof") {
+                        Button("Poll new items") { Task { await model.pollItems() } }
+                            .accessibilityIdentifier("shipping-viewport.poll")
+                            .disabled(!model.ready || model.runtime.hasUnresolvedRun)
+                    }
                 }.font(.caption)
                 Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
                     .accessibilityIdentifier("shipping-viewport.summary")
-                if ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof") {
+                    .accessibilityValue(model.scrollState)
+                if ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof")
+                    || ProcessInfo.processInfo.arguments.contains("--maple-shipping-item-poll-proof")
+                {
                     Text("Synthetic native viewport geometry").font(.caption2)
                         .accessibilityIdentifier("shipping-viewport.scroll-metrics")
                         .accessibilityValue(model.scrollMetricsJSON)
@@ -412,6 +437,25 @@
         func updateUIView(_ uiView: UIView, context: Context) {}
     }
 
+    /// The native title slot retains its content. Read observable inputs in the
+    /// hosted body rather than handing it a Text containing an earlier snapshot.
+    private struct ShippingPaginationNavigationDiagnostics: View {
+        @Bindable var model: ShippingViewportFixtureModel
+        @Bindable var lease: CompactMenuLease
+
+        var body: some View {
+            VStack(spacing: 0) {
+                Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
+                    .accessibilityIdentifier("shipping-viewport.summary")
+                    .accessibilityValue(model.paginationVisibilityJSON(lease: lease))
+                Text("Synthetic retained Chat owners").font(.caption2)
+                    .accessibilityIdentifier("shipping-window.ownership")
+                    .accessibilityValue(model.windowOwnership)
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
     @MainActor @Observable private final class ShippingViewportFixtureModel {
         let environment: AppEnvironment
         let runtime: ChatRuntime
@@ -427,7 +471,12 @@
             historyRendering: ProcessInfo.processInfo.arguments.contains("--maple-shipping-history-rendering-proof"),
             streamWidth: ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof"),
             nativeNestedScroll: ProcessInfo.processInfo.arguments.contains(
-                "--maple-shipping-native-nested-scroll-proof"))
+                "--maple-shipping-native-nested-scroll-proof"),
+            paginationBoundary:
+                ProcessInfo.processInfo.arguments.contains("--maple-shipping-mid-turn-pagination-proof")
+                ? .reasoning
+                : ProcessInfo.processInfo.arguments.contains("--maple-shipping-tool-boundary-pagination-proof")
+                    ? .toolResult : nil)
         private let store: ShippingViewportStore
         let contextLimitProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-context-limit-proof")
         let draftLoadProof: Bool
@@ -436,6 +485,9 @@
         let historyRenderingProof = ProcessInfo.processInfo.arguments.contains(
             "--maple-shipping-history-rendering-proof")
         let streamWidthProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof")
+        private let paginationBoundaryProof =
+            ProcessInfo.processInfo.arguments.contains("--maple-shipping-mid-turn-pagination-proof")
+            || ProcessInfo.processInfo.arguments.contains("--maple-shipping-tool-boundary-pagination-proof")
         private let cachedProjection: ChatRuntime?
         private let cachedProjectionInstance = UUID()
         private(set) var projectionIsNewChat = true
@@ -455,6 +507,11 @@
         private var widthToolGeometry: [String: Double] = [:]
         private var horizontalScrollMetrics: [String: Double] = [:]
         var scrollMetrics: TranscriptViewportMetrics?
+        var scrollState = ""
+        var paginationChatShownCalls = 0
+        var paginationChatShownAdmissions = 0
+        var paginationLeasePublications = 0
+        var paginationVisibilityChanges = 0
         private var preparedDisappeared = 0
         private var preparedRetained = 0
         private var preparedCleared = 0
@@ -529,6 +586,25 @@
         }
         var scrollMetricsJSON: String {
             guard let scrollMetrics, let data = try? JSONEncoder().encode(scrollMetrics) else { return "{}" }
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        func paginationVisibilityJSON(lease: CompactMenuLease) -> String {
+            let owner = runtime.snapshot.storageOwner
+            let state = lease.state(scope: runtime.scope, storageOwner: owner)
+            let value: [String: String] = [
+                "visible": String(runtime.isVisible), "foreground": String(runtime.isForeground),
+                "scopeCurrent": String(lease.scope == runtime.scope && account.scope == runtime.scope),
+                "ownerCurrent": String(lease.storageOwner == owner),
+                "runtimeOwner": owner.uuidString, "leaseOwner": lease.storageOwner?.uuidString ?? "nil",
+                "returnRevision": String(state.returnRevision), "occluded": String(state.occluded),
+                "menuVisible": String(lease.menuVisible), "menuRequested": String(projectionMenuPresented),
+                "projectionCurrent": String(projectionIsCurrent(scope: runtime.scope, storageOwner: owner)),
+                "chatShownCalls": String(paginationChatShownCalls),
+                "chatShownAdmissions": String(paginationChatShownAdmissions),
+                "leasePublications": String(paginationLeasePublications),
+                "visibilityChanges": String(paginationVisibilityChanges), "scrollCallback": scrollState,
+            ]
+            guard let data = try? JSONEncoder().encode(value) else { return "{}" }
             return String(data: data, encoding: .utf8) ?? "{}"
         }
         var widthToolGeometryJSON: String {
@@ -619,7 +695,7 @@
             }
             ready =
                 preferences.state == .ready && account.chatAccess == .allowed
-                && runtime.messages.count == (historyRenderingProof ? 12 : 8)
+                && runtime.messages.count == (historyRenderingProof ? 12 : paginationBoundaryProof ? 20 : 8)
             failed = !ready
         }
         var selectedProjection: ChatRuntime {
@@ -720,6 +796,12 @@
             return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         }
         func releaseOlder() async { await service.releaseOlder() }
+        func pollItems() async {
+            guard ready, !retired,
+                projectionIsCurrent(scope: runtime.scope, storageOwner: runtime.snapshot.storageOwner)
+            else { return }
+            await runtime.pollNewItems()
+        }
         func rejectContext() {
             guard contextLimitProof, ready, !retired, !runtime.hasUnresolvedRun else { return }
             runtime.draftText = "Synthetic rejected context message"
@@ -784,25 +866,29 @@
     }
 
     private actor ShippingViewportService: ChatServing {
+        enum PaginationBoundary: Sendable { case reasoning, toolResult }
         static let chatID = "synthetic-viewport-chat"
         private let complexMarkup: Bool
         private let transcriptRows: Bool
         private let historyRendering: Bool
         private let streamWidth: Bool
         private let nativeNestedScroll: Bool
+        private let paginationBoundary: PaginationBoundary?
         private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
         private var retired = false
+        private let pollingProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-item-poll-proof")
 
         init(
             complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false,
-            streamWidth: Bool = false, nativeNestedScroll: Bool = false
+            streamWidth: Bool = false, nativeNestedScroll: Bool = false, paginationBoundary: PaginationBoundary? = nil
         ) {
             self.complexMarkup = complexMarkup; self.transcriptRows = transcriptRows
             self.historyRendering = historyRendering
             self.streamWidth = streamWidth
             self.nativeNestedScroll = nativeNestedScroll
+            self.paginationBoundary = paginationBoundary
         }
 
         func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
@@ -814,22 +900,90 @@
         func listConversationItems(conversationId: String, parameters: ListParameters) async throws -> APIPage<
             ConversationItem
         > {
-            guard !retired, conversationId == Self.chatID, parameters.order == .desc else {
+            guard !retired, conversationId == Self.chatID else {
                 throw ChatIssue.historyUnavailable
             }
+            if pollingProof, parameters.order == .asc, parameters.limit == 20,
+                parameters.after == "viewport-assistant-23"
+            {
+                return APIPage(
+                    data: [
+                        ConversationItem(
+                            id: "viewport-polled-user", type: "message", status: "completed", role: "user",
+                            content: [MessageContent(type: "input_text", text: "Synthetic poll from another device")]),
+                        ConversationItem(
+                            id: "viewport-polled-answer", type: "message", status: "completed", role: "assistant",
+                            content: [
+                                MessageContent(type: "output_text", text: "A newly polled answer reaches the bottom.")
+                            ]),
+                    ], hasMore: false)
+            }
+            if pollingProof, parameters.order == .asc, parameters.after == "viewport-polled-answer" {
+                return APIPage(data: [], hasMore: false)
+            }
+            guard parameters.order == .desc else { throw ChatIssue.historyUnavailable }
             if parameters.after == nil {
                 if historyRendering { return Self.historyPage() }
+                if let paginationBoundary { return Self.boundaryPage(paginationBoundary, older: false) }
                 return transcriptRows
                     ? try Self.transcriptPage()
                     : Self.page(
                         20..<24, hasMore: true, complexMarkup: complexMarkup, nativeNestedScroll: nativeNestedScroll)
             }
-            guard parameters.after == "viewport-user-20", older == nil else { throw ChatIssue.historyUnavailable }
+            let boundaryID: String
+            switch paginationBoundary {
+            case .some(.reasoning): boundaryID = "viewport-reasoning-20"
+            case .some(.toolResult): boundaryID = "viewport-search-result-20"
+            case nil: boundaryID = "viewport-user-20"
+            }
+            guard parameters.after == boundaryID, older == nil else { throw ChatIssue.historyUnavailable }
             return try await withCheckedThrowingContinuation { older = $0 }
         }
         func releaseOlder() {
             let pending = older; older = nil
-            pending?.resume(returning: Self.page(10..<20, hasMore: false, complexMarkup: complexMarkup))
+            let page =
+                if let paginationBoundary { Self.boundaryPage(paginationBoundary, older: true) } else {
+                    Self.page(10..<20, hasMore: false, complexMarkup: complexMarkup)
+                }
+            pending?.resume(returning: page)
+        }
+        /// Twenty-item pages deliberately split a turn rather than aligning on
+        /// its user message. The tool variant also replaces a standalone result
+        /// row when its matching call becomes available in the older page.
+        private static func boundaryPage(_ boundary: PaginationBoundary, older: Bool) -> APIPage<ConversationItem> {
+            let user = ConversationItem(
+                id: "viewport-user-20", type: "message", status: "completed", role: "user",
+                content: [MessageContent(type: "input_text", text: "Viewport reading anchor 20")])
+            let assistant = ConversationItem(
+                id: "viewport-assistant-20", type: "message", status: "completed", role: "assistant",
+                content: [MessageContent(type: "output_text", text: "The same completed reply remains in this turn.")])
+            let ascending: [ConversationItem]
+            switch (boundary, older) {
+            case (.reasoning, false):
+                let reasoning = ConversationItem(
+                    id: "viewport-reasoning-20", type: "reasoning", status: "completed",
+                    content: [MessageContent(type: "reasoning_text", text: "Completed synthetic boundary reasoning.")])
+                ascending =
+                    [reasoning, assistant] + page(21..<30, hasMore: false, complexMarkup: false).data.reversed()
+            case (.reasoning, true):
+                ascending =
+                    Array(page(10..<20, hasMore: false, complexMarkup: false).data.reversed().dropFirst()) + [user]
+            case (.toolResult, false):
+                let output = ConversationItem(
+                    id: "viewport-search-result-20", type: "function_call_output", status: "completed",
+                    callId: "viewport-boundary-search",
+                    output: .string("The same completed search result survives pairing."))
+                ascending = [output, assistant] + page(21..<30, hasMore: false, complexMarkup: false).data.reversed()
+            case (.toolResult, true):
+                let call = ConversationItem(
+                    id: "viewport-search-20", type: "function_call", status: "completed", role: "assistant",
+                    callId: "viewport-boundary-search", name: "web_search",
+                    arguments: .string("{\"query\":\"synthetic boundary\"}"))
+                ascending = Array(page(10..<19, hasMore: false, complexMarkup: false).data.reversed()) + [user, call]
+            }
+            return APIPage(
+                data: Array(ascending.reversed()), firstId: ascending.last?.id,
+                lastId: ascending.first?.id, hasMore: !older)
         }
         /// Decode both API representations through the SDK item model. A
         /// conversation page uses function_call; retrieved Responses output

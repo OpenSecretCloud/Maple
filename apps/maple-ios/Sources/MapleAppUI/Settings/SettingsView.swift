@@ -52,6 +52,11 @@
                 } header: {
                     settingsText("Plan")
                 }
+                Section {
+                    LibraryUsageTile(account: entitlements)
+                } header: {
+                    settingsText("Usage")
+                }
                 preferencesSection
                 Section {
                     Button {
@@ -376,6 +381,9 @@
                                 }
                             }
                         }
+                        if let preferences = webSearchPreferences, !entitlements.resolvedThinkingLevel.options.isEmpty {
+                            thinkingLevelRow(preferences)
+                        }
                     }
                     .listRowSeparator(.hidden)
                     .listSectionSeparator(.hidden)
@@ -429,6 +437,68 @@
         }
 
         private var hasOptionsGroup: Bool { projectRow != nil || webSearchPreference != nil }
+
+        private func thinkingLevelRow(_ preferences: PreferencesController) -> some View {
+            let resolved = entitlements.resolvedThinkingLevel
+            return Menu {
+                ForEach(resolved.options) { option in
+                    Button {
+                        guard canInteract() else { return }
+                        preferences.setThinkingLevel(option.value)
+                    } label: {
+                        // Native menu actions extract the first sibling Text as
+                        // their title and the second as their subtitle.
+                        settingsText(option.label)
+                        if let effort = option.defaultEffort {
+                            let label = thinkingLevelLabel(effort)
+                            Text(
+                                String(
+                                    localized: "Model default (%@)",
+                                    defaultValue: "Model default (\(label.lowercased()))", table: "Settings",
+                                    bundle: .module)
+                            )
+                        }
+                        if option.value == resolved.effective { Image(systemName: "checkmark") }
+                    }
+                    .accessibilityIdentifier("model.thinking-level.\(option.value.rawValue)")
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "brain")
+                        .foregroundStyle(MapleAccent.foreground)
+                        .accessibilityHidden(true)
+                    settingsText("Thinking")
+                    Spacer()
+                    settingsText(resolved.effective.label)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                .font(MapleTypography.button)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .modifier(OptionRowSpacing(pairedWithProject: projectRow != nil))
+            .listRowSeparator(.hidden)
+            .disabled(preferences.state != .ready)
+            .accessibilityIdentifier("model.thinking-level")
+            .accessibilityValue(settingsText(resolved.effective.label))
+        }
+
+        private func thinkingLevelLabel(_ level: MapleThinkingLevel) -> String {
+            switch level {
+            case .default: String(localized: "Default", table: "Settings", bundle: .module)
+            case .none: String(localized: "Off", table: "Settings", bundle: .module)
+            case .minimal: String(localized: "Minimal", table: "Settings", bundle: .module)
+            case .low: String(localized: "Low", table: "Settings", bundle: .module)
+            case .medium: String(localized: "Medium", table: "Settings", bundle: .module)
+            case .high: String(localized: "High", table: "Settings", bundle: .module)
+            case .xhigh: String(localized: "Extra high", table: "Settings", bundle: .module)
+            case .max: String(localized: "Max", table: "Settings", bundle: .module)
+            }
+        }
 
         private struct OptionRowSpacing: ViewModifier {
             let pairedWithProject: Bool

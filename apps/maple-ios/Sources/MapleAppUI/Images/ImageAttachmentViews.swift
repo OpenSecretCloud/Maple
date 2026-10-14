@@ -15,9 +15,19 @@
         }
     }
 
-    @MainActor private final class ClipboardImageSource {
+    @MainActor final class ClipboardImageSource {
         let provider: NSItemProvider
         init(provider: NSItemProvider) { self.provider = provider }
+
+        static func importImages(_ providers: [NSItemProvider], using importer: ImageImportController, draftID: UUID) {
+            guard providers.count <= 10 else { importer.report(.attachmentLimit); return }
+            importer.importImages(
+                providers.map { provider in
+                    let source = ClipboardImageSource(provider: provider)
+                    return SelectedImageSource { try await source.read() }
+                }, draftID: draftID)
+        }
+
         func read() async throws -> Data {
             guard
                 let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true })
@@ -117,14 +127,7 @@
                     VStack(spacing: 16) {
                         Text(MapleStrings.text("Paste an image from the clipboard."))
                         PasteButton(supportedContentTypes: [.image]) { providers in
-                            guard providers.count <= 10 else {
-                                importer.report(.attachmentLimit); pasteOwner = nil; return
-                            }
-                            importer.importImages(
-                                providers.map { provider in
-                                    let source = ClipboardImageSource(provider: provider)
-                                    return SelectedImageSource { try await source.read() }
-                                }, draftID: owner.id)
+                            ClipboardImageSource.importImages(providers, using: importer, draftID: owner.id)
                             pasteOwner = nil
                         }.tint(MapleAccent.nativeFilled).accessibilityIdentifier("images.paste")
                     }.padding()
@@ -244,6 +247,10 @@
             case .attachmentLimit:
                 MapleStrings.text(
                     "This selection exceeds your current attachment limits. Existing images are unchanged.")
+            case .accountImageLimit:
+                MapleStrings.text("Chat drafts and queued messages can retain up to 640 images across your account")
+            case .accountAttachmentLimit:
+                MapleStrings.text("Chat drafts and queued attachments can use up to 256 MiB across your account")
             case .unsupported, .invalidImage:
                 MapleStrings.text("This image could not be read. Choose a PNG, JPEG, WebP, or HEIF image.")
             case .retired: MapleStrings.text("The draft for this image is no longer open.")

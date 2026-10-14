@@ -17,6 +17,7 @@
         let signIn: NativeSignInCoordinator
         let preferenceStore = PreferencesStore()
         private(set) var chats: [String: ChatRuntime] = [:]
+        private(set) var unreadConversationIDs: Set<String> = []
         private(set) var selectedKey = ChatSnapshot.newChatKey {
             didSet {
                 updatePresentationVisibility()
@@ -36,6 +37,11 @@
         @ObservationIgnored private var titlePoll: Task<Void, Never>?
         private var titlePollConversationID: String?
         private var titlePollTicket: UUID?
+        @ObservationIgnored private var itemPoll: Task<Void, Never>?
+        private var itemPollRuntimeID: ObjectIdentifier?
+        private var itemPollConversationID: String?
+        private var itemPollTicket: UUID?
+        var sidebarVisible = false { didSet { updateRecentsPolling() } }
         var accountFlow: AccountFlow? { didSet { updatePresentationVisibility() } }
         var menuPresented = false {
             didSet {
@@ -115,6 +121,7 @@
             session.onRetire = { [weak self] scope in
                 guard let self else { return }
                 self.cancelTitlePolling()
+                self.cancelItemPolling()
                 for ceremony in self.accountCeremonies { ceremony.invalidate() }
                 self.accountCeremonies.removeAll()
                 self.accountFlow?.ceremonies.invalidate(); self.accountFlow = nil
@@ -137,6 +144,7 @@
                 self.imageImporters.removeAll()
                 for runtime in self.chats.values where runtime.scope == scope { runtime.invalidate() }
                 self.chats.removeAll(); self.accountAPI = nil; self.selectedKey = ChatSnapshot.newChatKey
+                self.unreadConversationIDs.removeAll()
                 self.retainedSnapshots = []; self.navigation = UUID()
                 self.activatingScope = nil
                 self.activationFailedScope = nil
@@ -186,6 +194,39 @@
 
         var selectedChat: ChatRuntime? { chats[selectedKey] }
 
+        func activity(for id: String) -> ConversationActivity {
+            guard let scope = session.account?.scope, deletion?.isConversationDeleted(id) != true else {
+                return .idle
+            }
+            if chats.values.contains(where: {
+                $0.scope == scope && !$0.isRetired && $0.conversationID == id && $0.hasUnresolvedRun
+            }) {
+                return .running
+            }
+            return unreadConversationIDs.contains(id) ? .unread : .idle
+        }
+
+        func activity(forProject id: String) -> ConversationActivity {
+            guard let scope = session.account?.scope else { return .idle }
+            let runtimes = chats.values.filter {
+                guard $0.scope == scope, !$0.isRetired else { return false }
+                let project: String?
+                if $0.conversationID == nil, let run = $0.snapshot.pendingRun {
+                    project = run.options.projectID
+                } else {
+                    project = projectID(for: $0)
+                }
+                return project == id
+            }
+            if runtimes.contains(where: {
+                $0.hasUnresolvedRun && ($0.conversationID.map { deletion?.isConversationDeleted($0) != true } ?? true)
+            }) {
+                return .running
+            }
+            return runtimes.contains(where: { $0.conversationID.map { activity(for: $0) == .unread } ?? false })
+                ? .unread : .idle
+        }
+
         func activate(_ account: AccountSession) async {
             guard session.phase == .signedIn, session.account?.scope == account.scope,
                 accountAPI == nil, activatingScope != account.scope
@@ -233,11 +274,13 @@
                         tokenSource: SDKBillingTokenSource(api: api)),
                     catalog: SDKModelCatalogSource(api: api),
                     selectedModelID: preferences.value.selectedModelID,
-                    webSearchPreferred: preferences.value.webSearchPreferred)
+                    webSearchPreferred: preferences.value.webSearchPreferred,
+                    thinkingLevel: preferences.value.thinkingLevel)
                 entitlements = details
                 preferences.onChange = { [weak self, weak details] value in
                     guard self?.session.account?.scope == account.scope else { return }
                     details?.webSearchPreferred = value.webSearchPreferred
+                    details?.thinkingLevel = value.thinkingLevel
                     details?.selectModel(value.selectedModelID)
                     self?.listening?.updatePreferences(voice: value.voice, speed: value.playbackSpeed)
                 }
@@ -299,6 +342,7 @@
                 self.libraryContext = context; self.library = context.root
                 context.onConversationsDeleted = { [weak self] ids, all in
                     guard let self, self.session.account?.scope == account.scope else { return }
+                    if all { self.unreadConversationIDs.removeAll() } else { self.unreadConversationIDs.subtract(ids) }
                     self.retainedSnapshots.removeAll { all || $0.conversationID.map(ids.contains) == true }
                     self.conversationDetails = self.conversationDetails.filter { !all && !ids.contains($0.key) }
                     self.conversationDetailTickets = self.conversationDetailTickets.filter {
@@ -367,6 +411,7 @@
             }
             previous?.isVisible = false
             selectedKey = key
+            if let id { unreadConversationIDs.remove(id) }
             if let existing = chats[key] {
                 existing.isVisible = true
                 updatePresentationVisibility()
@@ -418,6 +463,7 @@
                     }
                 }
             }
+            if let run = runtime.snapshot.pendingRun { return run.options.projectID }
             return projectSelections[runtime.snapshot.storageOwner]
         }
 
@@ -488,6 +534,55 @@
             titlePoll = nil
             titlePollConversationID = nil
             titlePollTicket = nil
+        }
+
+        private func cancelItemPolling() {
+            itemPoll?.cancel()
+            itemPoll = nil
+            itemPollRuntimeID = nil
+            itemPollConversationID = nil
+            itemPollTicket = nil
+        }
+
+        /// The selected projection owns polling, independently of the account-owned run.
+        private func updateItemPolling() {
+            guard foreground, let account = session.account, let runtime = selectedChat,
+                runtime.scope == account.scope, runtime.isVisible, !runtime.isRetired,
+                runtime.deletionFenceIDs.isEmpty, let id = runtime.conversationID,
+                deletion?.isConversationDeleted(id) != true
+            else {
+                cancelItemPolling()
+                return
+            }
+            let owner = ObjectIdentifier(runtime)
+            guard itemPollRuntimeID != owner || itemPollConversationID != id || itemPoll == nil else { return }
+            cancelItemPolling()
+            let ticket = UUID()
+            itemPollRuntimeID = owner
+            itemPollConversationID = id
+            itemPollTicket = ticket
+            itemPoll = Task { [weak self, weak runtime] in
+                defer {
+                    if self?.itemPollTicket == ticket { self?.cancelItemPolling() }
+                }
+                await ConversationItemPolling.run(
+                    shouldContinue: { [weak self, weak runtime] in
+                        guard let self, let runtime else { return false }
+                        return self.itemPollTicket == ticket && self.foreground
+                            && self.session.account?.scope == account.scope
+                            && self.selectedChat === runtime && runtime.conversationID == id
+                            && runtime.isVisible && !runtime.isRetired && runtime.deletionFenceIDs.isEmpty
+                            && self.deletion?.isConversationDeleted(id) != true
+                    },
+                    poll: { [weak runtime] in await runtime?.pollNewItems() })
+            }
+        }
+
+        private func updateRecentsPolling() {
+            libraryContext?.menu.updateRecentsPolling(
+                visible: (menuPresented || sidebarVisible) && !settingsPresented && accountFlow == nil
+                    && presentationBlocks.isEmpty,
+                foreground: foreground)
         }
 
         /// Title generation outlives the response request. Keep checking only
@@ -564,9 +659,27 @@
                 scope: account.scope, service: service, persistence: storage,
                 conversationID: id)
             let runtime = deletion?.register(candidate) ?? candidate
+            runtime.onDeletionFenceChanged = { [weak self, weak runtime] in
+                guard let self, let runtime, self.session.account?.scope == runtime.scope,
+                    self.selectedChat === runtime
+                else { return }
+                self.updateItemPolling()
+            }
             if imageImporters[ObjectIdentifier(runtime)] == nil {
                 imageImporters[ObjectIdentifier(runtime)] = ImageImportController(
                     runtime: runtime, processor: imageProcessor, budget: imageBudget,
+                    capacityIssue: { [weak self, weak runtime] proposed in
+                        guard let self, let runtime, self.session.account?.scope == account.scope else {
+                            return .retired
+                        }
+                        let loadedOwners = Set(self.chats.values.map { $0.snapshot.storageOwner })
+                        let retained = self.retainedSnapshots.filter { !loadedOwners.contains($0.storageOwner) }
+                        let others = self.chats.values.filter { $0 !== runtime }.map(\.snapshot)
+                        let usage = ChatResourceUsage(snapshots: retained + others + [proposed])
+                        if usage.images > 640 { return .accountImageLimit }
+                        if usage.imageBytes > 256 * 1_024 * 1_024 { return .accountAttachmentLimit }
+                        return nil
+                    },
                     admission: { [weak self] in
                         self?.session.account?.scope == account.scope && self?.entitlements?.imageAccess == .allowed
                     })
@@ -574,6 +687,12 @@
             runtime.onDraftOwnerChanging = { [weak self, weak runtime] owner in
                 guard let runtime else { return }
                 self?.dictation?.ownerWillChange(runtime: runtime, draftID: owner)
+            }
+            runtime.onRunStarted = { [weak self, weak runtime] in
+                guard let self, let runtime, self.session.account?.scope == runtime.scope,
+                    !runtime.isRetired, let id = runtime.conversationID
+                else { return }
+                self.unreadConversationIDs.remove(id)
             }
             runtime.onDraftOwnerRetired = { [weak self, weak runtime] owner in
                 guard let runtime else { return }
@@ -585,6 +704,7 @@
             }
             runtime.onQuiesceForDeletion = { [weak self, weak runtime] in
                 guard let runtime else { return }
+                if self?.selectedChat === runtime { self?.cancelItemPolling() }
                 for draft in runtime.snapshot.ownedDrafts {
                     self?.dictation?.ownerRetired(runtime: runtime, draftID: draft.id)
                     self?.dictationSend.retire(
@@ -610,7 +730,12 @@
                     self.lifecycleFixture?.listeningProof?.assigned(
                         scope: runtime.scope, chatID: assignedID, armedMessageID: arm?.messageID)
                 #endif
-                Task { await self.refreshConversationDetails(assignedID, account: account, api: api) }
+                Task {
+                    guard self.session.account?.scope == account.scope else { return }
+                    await self.refreshConversationDetails(assignedID, account: account, api: api)
+                    guard self.session.account?.scope == account.scope else { return }
+                    await self.libraryContext?.menu.refreshRecents()
+                }
             }
             runtime.onTurnAccepted = { [weak self] accepted in
                 guard let self, self.session.account?.scope == accepted.scope else { return }
@@ -632,8 +757,15 @@
                 guard let self, self.session.account?.scope == account.scope else { return }
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
-            runtime.onSuccessfulCompletion = { [weak self] chatID in
-                guard let self, self.session.account?.scope == account.scope else { return }
+            runtime.onSuccessfulCompletion = { [weak self, weak runtime] chatID in
+                guard let self, let runtime, self.session.account?.scope == account.scope, !runtime.isRetired else {
+                    return
+                }
+                if runtime.isVisible && self.foreground {
+                    self.unreadConversationIDs.remove(chatID)
+                } else {
+                    self.unreadConversationIDs.insert(chatID)
+                }
                 let details = self.entitlements
                 Task {
                     guard self.session.account?.scope == account.scope else { return }
@@ -675,6 +807,9 @@
                 if runtime.isVisible != isVisible { runtime.isVisible = isVisible }
             }
             listening?.setVisibility(chatID: visible ? selectedChat?.conversationID : nil, foreground: foreground)
+            if visible, foreground, let id = selected?.conversationID { unreadConversationIDs.remove(id) }
+            updateItemPolling()
+            updateRecentsPolling()
         }
 
         func send(_ runtime: ChatRuntime, options: ChatSendOptions) -> Bool {
@@ -683,6 +818,7 @@
                 scope: runtime.scope, storageOwnerID: runtime.snapshot.storageOwner, draftID: runtime.snapshot.draft.id)
             let ticket = dictationSend.ticket(for: owner, reviewActive: listening?.dictationHold == .review)
             guard runtime.send(options: options) else { return false }
+            if let id = runtime.conversationID { unreadConversationIDs.remove(id) }
             if let ticket { dictationSend.didSubmit(ticket) }
             return true
         }

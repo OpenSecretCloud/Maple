@@ -16,9 +16,20 @@
                     )
                     .font(.callout).foregroundStyle(.secondary)
                     TextEditor(text: $editor.text).disabled(editor.isSaving)
+                        .overlay(alignment: .topLeading) {
+                            if isProject, editor.text.isEmpty {
+                                libraryText("e.g. Use concise bullet points. Focus on practical examples.")
+                                    .foregroundStyle(MapleFieldPrompt()).padding(.top, 8).padding(.leading, 5)
+                                    .allowsHitTesting(false).accessibilityHidden(true)
+                            }
+                        }
                         .accessibilityLabel(Text("Instructions", tableName: "Library", bundle: .module))
                         .accessibilityIdentifier("library.instructions-text")
                         .scrollContentBackground(.hidden)
+                    if isProject {
+                        libraryText("Leave this empty to clear the project's custom instructions.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 } else if !editor.isLoading {
                     Button {
                         Task { await editor.load() }
@@ -64,6 +75,10 @@
                 }
             }
             .task { await editor.load() }
+        }
+        private var isProject: Bool {
+            if case .project = editor.destination { return true }
+            return false
         }
     }
 

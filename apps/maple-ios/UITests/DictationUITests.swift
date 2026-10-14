@@ -47,6 +47,17 @@ import XCTest
         launchFixture(); startAndStop()
         tap("dictation.fixture.fail"); waitForPhase("failed")
         XCTAssertTrue(app.buttons["dictation.retry"].exists)
+        let explanation = app.staticTexts["dictation.failed"]
+        XCTAssertTrue(explanation.exists)
+        let expired = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "none"),
+            object: app.staticTexts["dictation.fixture.feedback"])
+        XCTAssertEqual(XCTWaiter.wait(for: [expired], timeout: 10), .completed)
+        XCTAssertEqual(app.staticTexts["dictation.fixture.phase"].label, "failed")
+        XCTAssertTrue(
+            explanation.exists, "The retained failed clip keeps its explanation after transient feedback expires")
+        XCTAssertEqual(explanation.label, "Failed to transcribe audio. Please try again.")
+        XCTAssertTrue(app.buttons["dictation.retry"].exists)
         XCTAssertEqual(composer.value as? String, "Keep this draft")
         tap("dictation.retry"); waitForPhase("transcribing")
         tap("dictation.discard"); waitForPhase("idle")

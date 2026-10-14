@@ -10,7 +10,9 @@
     /// This fixture constructs no SDK client and can never reach a real account.
     struct LibraryControlsFixtureView: View {
         @State private var model = LibraryControlsFixtureModel()
+        @State private var compactMenuLease = CompactMenuLease()
         @Environment(\.horizontalSizeClass) private var sizeClass
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         var body: some View {
             VStack(spacing: 0) {
                 Group {
@@ -54,11 +56,7 @@
                                 isCurrent: { model.ready && model.showProjects })
                         }
                     } else if model.dragProof || model.menuProof {
-                        LibraryView(
-                            library: model.library, makeLibrary: model.makeLibrary,
-                            makeInstructionEditor: model.makeInstructions,
-                            onSelectChat: { model.selected = $0 }, onNewChat: { _ in },
-                            settings: { AnyView(Text("Synthetic settings")) })
+                        if model.accountProof { accountNavigation } else { menuLibrary }
                     } else {
                         NavigationStack {
                             List {
@@ -90,6 +88,55 @@
                 .fixedSize(horizontal: false, vertical: true)
             }
             .task { await model.prepare() }
+        }
+
+        private var menuLibrary: some View {
+            LibraryView(
+                library: model.library, makeLibrary: model.makeLibrary,
+                makeInstructionEditor: model.makeInstructions,
+                onSelectChat: model.selectChat, onNewChat: { _ in },
+                settings: {
+                    if model.accountProof {
+                        AnyView(
+                            SettingsView(
+                                preferences: model.preferences, entitlements: model.account,
+                                account: SettingsAccount(
+                                    email: "synthetic-library@example.test", isVerified: true,
+                                    isGuest: false, canChangePassword: false),
+                                version: "Synthetic fixture", onAction: { _ in }))
+                    } else {
+                        AnyView(
+                            Text("Synthetic settings").accessibilityIdentifier("library.fixture.settings")
+                                .navigationTitle("Settings"))
+                    }
+                },
+                account: model.accountProof ? model.account : nil,
+                conversationActivity: { model.parityProof ? model.activities[$0] ?? .idle : .idle },
+                projectActivity: { id in
+                    model.parityProof && id == "fixture-project" ? model.activities["active"] ?? .idle : .idle
+                }, drawerNavigation: model.accountProof, compactRootBar: model.accountProof,
+                navigationFocusAvailable: model.accountProof ? compactMenuLease.menuVisible : nil)
+        }
+
+        /// The compact root bar publishes to this existing shipping controller.
+        /// A standalone SwiftUI stack has no publisher to host its native menu.
+        private var accountNavigation: some View {
+            let scope = model.scope
+            return CompactMenuNavigation(
+                scope: scope, storageOwner: model.runtime.snapshot.storageOwner,
+                requestedMenu: true, reduceMotion: reduceMotion, lease: compactMenuLease,
+                library: menuLibrary.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(MapleSurface.sidebar)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("library.drawer"),
+                chat: Color.clear.accessibilityHidden(true),
+                isCurrent: { [weak model] in model?.scope == scope && model?.library.isActive == true },
+                presentationBlocked: { false },
+                requestMenu: { _ in }, blockPresentation: { _, _ in }, chatShown: { _ in }
+            )
+            .id(scope)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container)
         }
 
         private var menuDeletionDiagnostics: some View {
@@ -176,6 +223,8 @@
         let dragProof: Bool
         let menuProof: Bool
         let optionsProof: Bool
+        let parityProof: Bool
+        let accountProof: Bool
         let account: AccountEntitlements
         let preferences: PreferencesController
         var selectedProjectID: String?
@@ -185,6 +234,7 @@
         @ObservationIgnored private var menuLibraries: [LibraryModel] = []
         var selected = ""
         var ready = false
+        var activities: [String: ConversationActivity] = ["alpha": .running, "beta": .unread, "active": .unread]
         var removed = false
         private var preparing = false
         let project = ConversationProjectListItem(
@@ -194,21 +244,26 @@
             let arguments = ProcessInfo.processInfo.arguments
             let dragProof = arguments.contains("--maple-library-drag-proof")
             let optionsProof = arguments.contains("--maple-chat-options-proof")
+            let parityProof = arguments.contains("--maple-library-parity-proof")
+            let accountProof = arguments.contains("--maple-library-account-proof")
             self.dragProof = dragProof
-            menuProof = arguments.contains("--maple-library-menu-proof")
+            menuProof = arguments.contains("--maple-library-menu-proof") || parityProof || accountProof
             self.optionsProof = optionsProof
+            self.parityProof = parityProof
+            self.accountProof = accountProof
             let scope = AccountScope(apiOrigin: "http://127.0.0.1:1", principalID: "synthetic-library-controls")
             self.scope = scope
             let service = LibraryControlsFixtureService(
                 failPage: arguments.contains("--maple-library-controls-page-failure"),
                 failDelete: arguments.contains("--maple-library-controls-delete-failure"), dragProof: dragProof,
-                optionsProof: optionsProof)
+                optionsProof: optionsProof || parityProof,
+                searchProof: arguments.contains("--maple-library-search-proof"))
             let store = LibraryControlsFixtureStore()
             let runtime = ChatRuntime(scope: scope, service: service, persistence: store, conversationID: "active")
             let deletions = ChatDeletionCoordinator(scope: scope, retained: [], service: service, persistence: store)
             self.service = service; self.runtime = runtime; self.deletions = deletions
             library = LibraryModel(scope: scope, service: service, deletions: deletions)
-            let accountService = ChatOptionsFixtureAccountService()
+            let accountService = ChatOptionsFixtureAccountService(accountProof: accountProof)
             account = AccountEntitlements(
                 scope: scope, isGuest: false, billing: accountService, catalog: accountService)
             preferences = PreferencesController(scope: scope, store: ChatOptionsFixturePreferences())
@@ -223,6 +278,8 @@
             defer { preparing = false }
             if optionsProof {
                 await preferences.load(); await account.refresh(); await library.loadProjects()
+            } else if accountProof {
+                await account.refresh()
             }
             if ProcessInfo.processInfo.arguments.contains("--maple-library-controls-active") {
                 runtime.draftText = "Synthetic active request"
@@ -242,6 +299,10 @@
         }
         func makeInstructions(_ destination: InstructionDestination) -> InstructionEditor {
             InstructionEditor(scope: scope, destination: destination, service: service)
+        }
+        func selectChat(_ id: String) {
+            selected = id
+            if activities[id] == .unread { activities[id] = .idle }
         }
         func makeLibrary() -> LibraryModel {
             let value = LibraryModel(scope: scope, service: service, deletions: deletions)
@@ -303,9 +364,15 @@
         ]
         private var projectSequence = 0
 
-        init(failPage: Bool, failDelete: Bool, dragProof: Bool, optionsProof: Bool) {
+        init(failPage: Bool, failDelete: Bool, dragProof: Bool, optionsProof: Bool, searchProof: Bool = false) {
             self.failPage = failPage; self.failDelete = failDelete; self.dragProof = dragProof
             self.optionsProof = optionsProof
+            if searchProof {
+                conversations = [
+                    Self.conversation("project-alpha", title: "Alpha project chat", project: "fixture-project"),
+                    Self.conversation("project-beta", title: "Beta project chat", project: "fixture-project"),
+                ]
+            }
         }
         private static func conversation(_ id: String, title: String, project: String? = nil) -> Conversation {
             Conversation(
@@ -489,14 +556,27 @@
         }
     }
     private actor ChatOptionsFixtureAccountService: BillingServing, ModelCatalogServing {
+        private let accountProof: Bool
+        init(accountProof: Bool = false) { self.accountProof = accountProof }
         func subscriptionStatus() throws -> BillingStatus {
-            try decode([
+            var value: [String: Any] = [
                 "is_subscribed": true, "product_id": "synthetic", "product_name": "Pro",
                 "subscription_status": "active", "can_chat": true, "chats_remaining": 50,
-            ])
+            ]
+            if accountProof {
+                value["total_tokens"] = 100; value["used_tokens"] = 25
+                value["api_credit_balance"] = 2.5; value["usage_reset_date"] = NSNull()
+            }
+            return try decode(value)
         }
         func teamStatus() throws -> TeamStatus {
-            try decode(["has_team_subscription": false, "team_created": false])
+            if accountProof {
+                return try decode([
+                    "has_team_subscription": true, "team_created": true, "role": "admin", "is_team_admin": true,
+                    "team_member_count": 1, "billed_seat_count": 0, "seat_limit_exceeded": true,
+                ])
+            }
+            return try decode(["has_team_subscription": false, "team_created": false])
         }
         func fetchCatalog() -> ModelCatalog {
             let capabilities = ModelCapabilities(chat: true, vision: true, reasoning: true, toolUse: true)

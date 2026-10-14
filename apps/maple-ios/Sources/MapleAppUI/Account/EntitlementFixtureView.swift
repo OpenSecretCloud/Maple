@@ -77,13 +77,21 @@
                 .sheet(item: $media) { MediaFeatureNotice(feature: $0, account: model.account) }
                 .sheet(isPresented: $showModels) {
                     NavigationStack {
-                        SettingsModelPicker(entitlements: model.account) { _ in showModels = false }
-                            .toolbar {
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button("Done") { showModels = false }.accessibilityIdentifier(
-                                        "entitlement.models.close")
-                                }
+                        SettingsModelPicker(
+                            entitlements: model.account,
+                            webSearchPreference: Binding(
+                                get: { model.preferences.value.webSearchPreferred },
+                                set: { model.preferences.setWebSearchPreferred($0) }),
+                            webSearchPreferences: model.preferences
+                        ) { id in
+                            model.preferences.setSelectedModelID(id); showModels = false
+                        }
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showModels = false }.accessibilityIdentifier(
+                                    "entitlement.models.close")
                             }
+                        }
                     }
                 }
                 .sheet(isPresented: $showSettings) {
@@ -104,6 +112,7 @@
                     }
                 }
             }
+            .task { await model.preferences.load() }
         }
     }
 
@@ -128,6 +137,11 @@
                 scope: scope, isGuest: ProcessInfo.processInfo.arguments.contains("--maple-entitlement-guest"),
                 billing: service, catalog: service)
             preferences = PreferencesController(scope: scope, store: EntitlementFixturePreferences())
+            preferences.onChange = { [weak account = self.account] value in
+                account?.webSearchPreferred = value.webSearchPreferred
+                account?.thinkingLevel = value.thinkingLevel
+                account?.selectModel(value.selectedModelID)
+            }
         }
         var billingLabel: String {
             switch account.billing {
@@ -188,34 +202,43 @@
             ])
         }
         func fetchCatalog() -> ModelCatalog {
-            func item(_ id: String, label: String, paid: Bool = false, media: Bool = true, enabled: Bool = true)
+            let quickReasoning = ModelReasoning(
+                mandatory: false, defaultEnabled: true, supportedEfforts: ["high", "low"], defaultEffort: "low")
+            let lowReasoning = ModelReasoning(
+                mandatory: true, defaultEnabled: true, supportedEfforts: ["low"], defaultEffort: "low")
+            func item(
+                _ id: String, label: String, paid: Bool = false, media: Bool = true, enabled: Bool = true,
+                reasoning: ModelReasoning? = nil
+            )
                 -> ModelCatalogItem
             {
                 ModelCatalogItem(
                     id: id, object: "model", created: 0, ownedBy: "synthetic", displayName: label,
                     shortName: label, contextWindow: 32768, maxContextTokens: 32768, access: paid ? "pro" : "free",
-                    capabilities: ModelCapabilities(chat: true, vision: media, reasoning: true, toolUse: media),
+                    capabilities: ModelCapabilities(
+                        chat: true, vision: media, reasoning: reasoning != nil, toolUse: media),
                     badges: paid ? ["Pro", "Reasoning", "New"] : ["free"],
-                    enabled: enabled, deprecated: false)
+                    enabled: enabled, deprecated: false, reasoning: reasoning)
             }
             let capabilities = ModelCapabilities(chat: true, vision: false, reasoning: true, toolUse: false)
             return ModelCatalog(
                 object: "list",
                 data: [
-                    item("synthetic-quick", label: "Quick target"),
-                    item("synthetic-power", label: "Power target", paid: true),
+                    item("synthetic-quick", label: "Quick target", reasoning: quickReasoning),
+                    item("synthetic-power", label: "Power target", paid: true, reasoning: lowReasoning),
                     item("synthetic-text", label: "Text only", media: false),
+                    item("synthetic-low", label: "Low thinking", media: false, reasoning: lowReasoning),
                     item("synthetic-disabled", label: "Disabled model", enabled: false),
                 ],
                 aliases: [
                     ModelAlias(
                         id: .quick, label: "Quick", shortName: "Quick", description: "Synthetic quick model",
                         targetModel: "synthetic-quick", access: "free",
-                        capabilities: capabilities),
+                        capabilities: capabilities, reasoning: quickReasoning),
                     ModelAlias(
                         id: .powerful, label: "Powerful", shortName: "Powerful", description: "Synthetic paid model",
                         targetModel: "synthetic-power",
-                        access: "pro", capabilities: capabilities),
+                        access: "pro", capabilities: capabilities, reasoning: lowReasoning),
                 ], defaults: ModelDefaults(quick: .quick, powerful: .powerful),
                 audio: AudioModelCatalog(
                     transcription: AudioModelAvailability(available: true, model: "synthetic-transcription"),

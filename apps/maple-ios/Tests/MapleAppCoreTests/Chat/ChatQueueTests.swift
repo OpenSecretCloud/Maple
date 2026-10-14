@@ -29,6 +29,152 @@ import Testing
         runtime.invalidate()
     }
 
+    enum EmptyQueuePause: CaseIterable, Sendable { case reload, offline, stop }
+
+    @Test(arguments: EmptyQueuePause.allCases)
+    func freshRunAfterDrainedQueuePromotesNewFollowUp(_ pause: EmptyQueuePause) async throws {
+        let (original, service, store) = fixture()
+        var runtime = original, completions = 0
+        defer { runtime.invalidate() }
+        runtime.onCompletion = { _ in completions += 1 }
+        runtime.draftText = "First run"; #expect(runtime.send()); await service.waitForPosts()
+        runtime.draftText = "First follow-up"; #expect(runtime.send())
+        await service.emit(.completed(try chatLifecycle(chatResponse("first", .completed))))
+        await service.waitForPosts(2)
+        await service.emit(.completed(try chatLifecycle(chatResponse("first-follow-up", .completed))))
+        await waitUntil { completions == 2 }
+        try #require(!runtime.hasUnresolvedRun && runtime.queuedTurns.isEmpty)
+        await runtime.saveDraft()
+
+        var nextPost = 3
+        switch pause {
+        case .reload:
+            let scope = runtime.scope
+            runtime.invalidate()
+            runtime = ChatRuntime(scope: scope, service: service, persistence: store, conversationID: "conversation")
+            await runtime.load(chatID: "conversation")
+            runtime.onCompletion = { _ in completions += 1 }
+            try #require(runtime.isQueuePaused)
+        case .offline:
+            runtime.isOnline = false; runtime.isOnline = true
+            try #require(runtime.isQueuePaused)
+        case .stop:
+            runtime.draftText = "Stopped without a queued follow-up"
+            #expect(runtime.send()); await service.waitForPosts(3)
+            await service.emit(.created(try chatLifecycle(chatResponse("stopped", .inProgress))))
+            await waitUntil { runtime.snapshot.pendingRun?.responseID == "stopped" }
+            runtime.stop(); await service.waitForCancellation(); await runtime.waitForCurrentWork()
+            try #require(runtime.lastOutcome == .cancelled)
+            #expect(await service.cancellations == ["stopped"])
+            nextPost = 4
+        }
+        try #require(runtime.queuedTurns.isEmpty && !runtime.hasUnresolvedRun)
+
+        runtime.draftText = "Second run"; #expect(runtime.send()); await service.waitForPosts(nextPost)
+        #expect(!runtime.isQueuePaused)
+        runtime.draftText = "Second follow-up"; #expect(runtime.send())
+        let followUp = try #require(runtime.queuedTurns.first)
+        runtime.draftText = "Keep this unsubmitted draft"
+        let heldDraft = runtime.snapshot.draft
+        await service.emit(.completed(try chatLifecycle(chatResponse("second", .completed))))
+        await waitUntil { completions == 3 }
+        guard let promoted = runtime.snapshot.pendingRun else {
+            #expect(runtime.queuedTurns.isEmpty)
+            #expect(await service.posts.count == nextPost + 1)
+            return
+        }
+        #expect(promoted.queuedTurn == followUp && promoted.messageID == followUp.messageID)
+        #expect(runtime.snapshot.draft == heldDraft)
+        await service.waitForPosts(nextPost + 1)
+        #expect(await service.posts.last?.metadata?["internal_message_id"] == .string(followUp.messageID))
+        await service.emit(.completed(try chatLifecycle(chatResponse("second-follow-up", .completed))))
+        await waitUntil { completions == 4 }
+        #expect(!runtime.hasUnresolvedRun && runtime.queuedTurns.isEmpty && !runtime.isQueuePaused)
+        #expect(runtime.snapshot.draft == heldDraft)
+        #expect(await service.durableAtDispatch == Array(repeating: true, count: nextPost + 1))
+    }
+
+    @Test func stopPreservesStagedFollowUpUntilExplicitResume() async throws {
+        let (runtime, service, _) = fixture()
+        defer { runtime.invalidate() }
+        runtime.draftText = "Active run"; #expect(runtime.send()); await service.waitForPosts()
+        runtime.draftText = "Keep this staged follow-up"; #expect(runtime.send())
+        let staged = try #require(runtime.queuedTurns.first)
+        runtime.draftText = "Keep this composer draft"
+        let held = runtime.snapshot.draft
+        await service.emit(.created(try chatLifecycle(chatResponse("stopped", .inProgress))))
+        await waitUntil { runtime.snapshot.pendingRun?.responseID == "stopped" }
+        runtime.stop(); await service.waitForCancellation(); await runtime.waitForCurrentWork()
+        #expect(runtime.lastOutcome == .cancelled && !runtime.hasUnresolvedRun)
+        #expect(runtime.isQueuePaused && runtime.queuedTurns == [staged] && runtime.snapshot.draft == held)
+        #expect(await service.posts.count == 1)
+        #expect(await service.cancellations == ["stopped"])
+        #expect(runtime.resumeQueue()); await service.waitForPosts(2)
+        #expect(runtime.snapshot.pendingRun?.queuedTurn == staged && runtime.snapshot.draft == held)
+        #expect(await service.posts.last?.metadata?["internal_message_id"] == .string(staged.messageID))
+    }
+
+    @Test(arguments: [false, true])
+    func sendPreservesNonemptyPausedQueueAndWorkingEdit(_ editing: Bool) async throws {
+        let (runtime, service, _) = fixture()
+        defer { runtime.invalidate() }
+        runtime.isOnline = false
+        runtime.draftText = "Already staged"; #expect(runtime.enqueueDraft())
+        let staged = try #require(runtime.queuedTurns.first)
+        runtime.isOnline = true
+        runtime.draftText = "Held composer"
+        if editing {
+            #expect(runtime.beginQueueEdit(id: staged.id))
+            runtime.draftText = "Uncommitted edit"
+            let prior = runtime.snapshot
+            #expect(!runtime.send() && runtime.lastIssue == .unfinishedQueueEdit)
+            #expect(runtime.snapshot == prior)
+        } else {
+            #expect(runtime.send())
+            #expect(runtime.queuedTurns.count == 2 && runtime.queuedTurns.first == staged)
+            #expect(runtime.queuedTurns.last?.draft.text == "Held composer")
+        }
+        #expect(runtime.isQueuePaused && !runtime.hasUnresolvedRun)
+        #expect(await service.posts.isEmpty)
+    }
+
+    enum FreshRunRejection: CaseIterable, Sendable { case empty, invalidImages, accountCapacity }
+
+    @Test(arguments: FreshRunRejection.allCases)
+    func rejectedFreshRunPreservesDrainedPausedQueue(_ rejection: FreshRunRejection) async throws {
+        let (runtime, service, _) = fixture()
+        defer { runtime.invalidate() }
+        runtime.draftText = "Staged then removed"; #expect(runtime.enqueueDraft())
+        runtime.deleteQueuedTurn(id: try #require(runtime.queuedTurns.first?.id))
+        try #require(runtime.queuedTurns.isEmpty && runtime.isQueuePaused)
+        let expectedIssue: ChatIssue
+        switch rejection {
+        case .empty: expectedIssue = .emptyDraft
+        case .invalidImages:
+            runtime.updateDraft(
+                ChatDraft(
+                    id: runtime.snapshot.draft.id, text: "Preserve this invalid image draft",
+                    images: [ChatImageAttachment(data: Data(), contentType: "image/png")]))
+            expectedIssue = .invalidImages
+        case .accountCapacity:
+            runtime.draftText = "Preserve this rejected draft"
+            runtime.canAdmitSnapshot = { _ in false }
+            expectedIssue = .queueLimit
+        }
+        let prior = runtime.snapshot
+        #expect(!runtime.send() && runtime.lastIssue == expectedIssue)
+        #expect(runtime.snapshot == prior && runtime.isQueuePaused && !runtime.hasUnresolvedRun)
+        #expect(await service.posts.isEmpty)
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async {
+        for _ in 0..<20_000 {
+            if condition() { return }
+            await Task.yield()
+        }
+        #expect(condition())
+    }
+
     @Test func completionDuringEditWaitsThenSaveRestoresHeldDraftAndPromotesEditedTurn() async throws {
         let (runtime, service, _) = fixture()
         runtime.draftText = "Active"; #expect(runtime.send()); await service.waitForPosts()

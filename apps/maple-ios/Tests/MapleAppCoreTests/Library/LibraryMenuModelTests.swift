@@ -121,4 +121,111 @@ import Testing
         #expect(menu.project("first").visibleConversations.map(\.id) == ["one"])
         #expect(menu.project("second").visibleConversations.map(\.id) == ["two"])
     }
+
+    @Test func visibleMenuPollsOnlyRecentsOnceWithoutRecreatingItsOwners() async {
+        let (menu, service) = fixture(), first = ChatTestGate(), next = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")])
+        await menu.prepare { _ in false }
+        let recent = menu.recent, pinned = menu.pinned
+        let clock = LibraryRecentsSleepRecorder(gates: [first, next])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await first.waitForArrival()
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await service.configure(conversations: [libraryConversation("new"), libraryConversation("old")])
+        await first.release(); await next.waitForArrival()
+        #expect(menu.recent === recent && menu.pinned === pinned)
+        #expect(menu.recent.conversations.map(\.id) == ["new", "old"])
+        #expect(await service.conversationListCalls.count == 3)
+        #expect(await service.projectListCalls.count == 1)
+        #expect(await clock.delays == [.seconds(60), .seconds(60)])
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        await next.release()
+    }
+
+    @Test func failedPollingClockCanRestartWithoutHidingTheMenu() async {
+        let (menu, service) = fixture(), sleeping = ChatTestGate()
+        let failedClock = LibraryRecentsSleepRecorder(fails: true)
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await failedClock.sleep($0) })
+        let restartedClock = LibraryRecentsSleepRecorder(gates: [sleeping])
+        // Actor turns make progress without depending on an elapsed wall-clock
+        // delay. A retained completed task would prevent every restart attempt.
+        for _ in 0..<100 {
+            menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await restartedClock.sleep($0) })
+            if !(await restartedClock.delays).isEmpty { break }
+            await Task.yield()
+        }
+        #expect(await failedClock.delays == [.seconds(60)])
+        #expect(await restartedClock.delays == [.seconds(60)])
+        #expect(await service.conversationListCalls.isEmpty)
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        await sleeping.release(); menu.invalidate()
+    }
+
+    @Test func oldPollCompletionCannotClearItsVisibleReplacement() async {
+        let (menu, service) = fixture(), oldSleep = ChatTestGate(), newSleep = ChatTestGate()
+        let oldClock = LibraryRecentsSleepRecorder(gates: [oldSleep])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await oldClock.sleep($0) })
+        await oldSleep.waitForArrival()
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        let newClock = LibraryRecentsSleepRecorder(gates: [newSleep])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await newClock.sleep($0) })
+        await newSleep.waitForArrival(); await oldSleep.release()
+        let unexpectedClock = LibraryRecentsSleepRecorder(fails: true)
+        for _ in 0..<20 {
+            menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await unexpectedClock.sleep($0) })
+            _ = await unexpectedClock.delays
+            await Task.yield()
+        }
+        #expect(await newClock.delays == [.seconds(60)])
+        #expect(await unexpectedClock.delays.isEmpty)
+        #expect(await service.conversationListCalls.isEmpty)
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        await newSleep.release(); menu.invalidate()
+    }
+
+    enum RecentsOwnerChange: CaseIterable, Sendable, Equatable { case hidden, backgrounded, retired }
+
+    @Test(arguments: RecentsOwnerChange.allCases)
+    func recentsOwnershipLossDuringReadCannotPublishLateRows(_ change: RecentsOwnerChange) async {
+        let (menu, service) = fixture(), request = ChatTestGate(), sleeping = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")]); await menu.prepare { _ in false }
+        let clock = LibraryRecentsSleepRecorder(gates: [sleeping])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await sleeping.waitForArrival()
+        await service.configure(conversations: [libraryConversation("late")], listGate: request)
+        let refreshing = Task { await menu.refreshRecents() }
+        await request.waitForArrival()
+        switch change {
+        case .hidden: menu.updateRecentsPolling(visible: false, foreground: true)
+        case .backgrounded: menu.updateRecentsPolling(visible: true, foreground: false)
+        case .retired: menu.invalidate()
+        }
+        await request.release(); await refreshing.value; await sleeping.release()
+        #expect(menu.recent.conversations.map(\.id) == (change == .retired ? [] : ["old"]))
+    }
+
+    @Test func conversationCreatedRefreshesHiddenRecentsButNotBackgroundedOrRetiredMenu() async {
+        let (menu, service) = fixture()
+        await service.configure(conversations: [libraryConversation("old")]); await menu.prepare { _ in false }
+        await service.configure(conversations: [libraryConversation("created"), libraryConversation("old")])
+        await menu.refreshRecents()
+        #expect(menu.recent.conversations.map(\.id) == ["created", "old"])
+        menu.updateRecentsPolling(visible: false, foreground: false)
+        await menu.refreshRecents()
+        menu.invalidate(); await menu.refreshRecents()
+        #expect(await service.conversationListCalls.count == 3)
+    }
+
+    @Test func hidingMenuDoesNotCancelExplicitLoadedWindowRefresh() async {
+        let (menu, service) = fixture(), request = ChatTestGate(), sleeping = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")]); await menu.prepare { _ in false }
+        let clock = LibraryRecentsSleepRecorder(gates: [sleeping])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await sleeping.waitForArrival()
+        await service.configure(conversations: [libraryConversation("fresh")], listGate: request)
+        let refreshing = Task { await menu.refresh { _ in false } }
+        await request.waitForArrival(); menu.updateRecentsPolling(visible: false, foreground: true)
+        await request.release(); await refreshing.value; await sleeping.release()
+        #expect(menu.recent.conversations.map(\.id) == ["fresh"])
+    }
 }

@@ -22,6 +22,7 @@
         let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
         let isCurrent: @MainActor () -> Bool
         var onSelection: (@MainActor (String?) async -> Bool)? = nil
+        var onCreatedProject: (@MainActor (String) -> Void)? = nil
         @Environment(\.dismiss) private var dismiss
         @State private var path: [ProjectSheetDestination] = []
 
@@ -30,13 +31,13 @@
                 ProjectSheetDestinationView(
                     destination: initialDestination, library: library, selectedProjectID: selectedProjectID,
                     makeInstructionEditor: makeInstructionEditor, isCurrent: isCurrent,
-                    onSelection: selection, isRoot: true
+                    onSelection: selection, onCreatedProject: onCreatedProject, isRoot: true
                 )
                 .navigationDestination(for: ProjectSheetDestination.self) { destination in
                     ProjectSheetDestinationView(
                         destination: destination, library: library, selectedProjectID: selectedProjectID,
                         makeInstructionEditor: makeInstructionEditor, isCurrent: isCurrent,
-                        onSelection: selection)
+                        onSelection: selection, onCreatedProject: onCreatedProject)
                 }
             }
             .presentationDetents([.fraction(0.6), .fraction(0.98)])
@@ -65,6 +66,7 @@
         let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
         let isCurrent: @MainActor () -> Bool
         let onSelection: (@MainActor (String?) async -> Bool)?
+        var onCreatedProject: (@MainActor (String) -> Void)? = nil
         var isRoot = false
 
         @ViewBuilder var body: some View {
@@ -75,7 +77,8 @@
                     isCurrent: isCurrent, onSelection: onSelection)
             case .create:
                 ProjectNameForm(
-                    library: library, projectID: nil, isCurrent: isCurrent, onCreated: onSelection, isRoot: isRoot)
+                    library: library, projectID: nil, isCurrent: isCurrent, onCreated: onSelection,
+                    onCreatedProject: onSelection == nil ? onCreatedProject : nil, isRoot: isRoot)
             case .manage(let id):
                 ProjectManagementView(library: library, projectID: id, isCurrent: isCurrent)
             case .rename(let id):
@@ -177,17 +180,22 @@
         }
     }
 
-    private struct ProjectNameForm: View {
+    struct ProjectNameForm: View {
         @Bindable var library: LibraryModel
         let projectID: String?
         let isCurrent: @MainActor () -> Bool
         let onCreated: (@MainActor (String?) async -> Bool)?
+        var onCreatedProject: (@MainActor (String) -> Void)? = nil
+        var initialName: String? = nil
+        var onRenamed: (@MainActor (String) -> Void)? = nil
         let isRoot: Bool
         @Environment(\.dismiss) private var dismiss
         @State private var name = ""
         @State private var submitting = false
         @State private var loaded = false
         @State private var visible = false
+        @State private var originalName = ""
+        @State private var validation: String?
         @FocusState private var nameFocused: Bool
 
         var body: some View {
@@ -198,6 +206,10 @@
                         .submitLabel(.done)
                         .onSubmit { submit() }
                         .accessibilityIdentifier("project-editor.name")
+                }
+                if let validation {
+                    libraryText(validation).foregroundStyle(MapleRedText())
+                        .accessibilityIdentifier("project-editor.validation")
                 }
                 if let issue = library.issue { LibraryIssueView(issue: issue) }
             }
@@ -232,9 +244,13 @@
             .interactiveDismissDisabled(submitting)
             .onAppear { visible = true }
             .onDisappear { visible = false }
+            .onChange(of: name) { _, _ in validation = nil }
             .task {
                 guard !loaded, isCurrent() else { return }
-                if let projectID { name = library.projects.first(where: { $0.id == projectID })?.name ?? "" }
+                if let projectID {
+                    name = initialName ?? library.projects.first(where: { $0.id == projectID })?.name ?? ""
+                    originalName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
                 loaded = true; nameFocused = true
             }
         }
@@ -244,13 +260,17 @@
         private func submit() {
             guard visible, isCurrent(), !submitting, !library.isMutating, !trimmedName.isEmpty else { return }
             let value = trimmedName
+            if projectID != nil, value == originalName {
+                validation = "Please enter a different project name."; return
+            }
+            validation = nil
             submitting = true; nameFocused = false
             Task { @MainActor in
                 if let projectID {
                     await library.renameProject(id: projectID, name: value)
                     guard visible, isCurrent() else { return }
                     submitting = false
-                    if library.issue == nil { dismiss() }
+                    if library.issue == nil { onRenamed?(value); dismiss() }
                 } else {
                     let project = await library.createProject(name: value)
                     guard visible, isCurrent() else { return }
@@ -260,6 +280,8 @@
                             // A membership failure leaves the newly created
                             // project available to retry from the project list.
                             if !selected, visible, isCurrent() { dismiss() }
+                        } else if let onCreatedProject {
+                            onCreatedProject(project.id); dismiss()
                         } else {
                             dismiss()
                         }
@@ -322,8 +344,14 @@
             .sheet(isPresented: $deleting) {
                 NavigationStack {
                     DeleteLibraryContentView(
-                        title: "Delete project",
-                        explanation: "This permanently deletes the project and every chat in it."
+                        title: "Delete this project?", actionTitle: "Delete project",
+                        explanation: Text(
+                            String(
+                                localized:
+                                    "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.",
+                                defaultValue:
+                                    "This will permanently delete \"\(library.projects.first(where: { $0.id == projectID })?.name ?? "")\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.",
+                                table: "Library", bundle: .module))
                     ) {
                         guard isCurrent() else { return .retired }
                         await library.deleteProject(id: projectID)

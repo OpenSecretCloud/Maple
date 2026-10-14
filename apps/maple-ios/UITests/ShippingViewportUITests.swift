@@ -103,16 +103,21 @@ final class ShippingViewportUITests: XCTestCase {
             "The user's copy action follows the trailing message bubble")
 
         let search = app.buttons["tool.activity.viewport-search-20"]
-        let nativeSearch = app.buttons["tool.activity.viewport-native-search-20"]
+        let nativeSearch = app.descendants(matching: .any)["tool.activity.viewport-native-search-20"].firstMatch
         let openedPages = app.buttons["tool.activity.viewport-open-20"]
-        for row in [search, nativeSearch, openedPages] {
+        for row in [search, openedPages] {
             XCTAssertTrue(row.exists && row.isHittable, "Tools have visible interactive rows without ordinary text")
             XCTAssertGreaterThanOrEqual(row.frame.height, 44)
-            XCTAssertEqual(row.value as? String, "Collapsed")
+            XCTAssertEqual(row.value as? String, "Collapsed, Completed")
         }
-        XCTAssertTrue(search.label.contains("Search results"))
-        XCTAssertTrue(nativeSearch.label.contains("Search results"))
-        XCTAssertTrue(openedPages.label.contains("Opened pages"))
+        XCTAssertTrue(nativeSearch.exists && nativeSearch.isHittable)
+        XCTAssertEqual(nativeSearch.value as? String, "Completed")
+        XCTAssertFalse(
+            app.buttons["tool.activity.viewport-native-search-20"].exists,
+            "Research web_search_call without details is a status row")
+        XCTAssertTrue(search.label.contains("Web Search: \"synthetic garden\""))
+        XCTAssertTrue(nativeSearch.label.contains("Web Search"))
+        XCTAssertTrue(openedPages.label.contains("Open URL: https://example.com/garden"))
         XCTAssertFalse(app.buttons["tool.activity.viewport-search-result-20"].exists)
         XCTAssertFalse(app.buttons["tool.activity.viewport-open-result-20"].exists)
         capture("Trailing user bubble and all retained web tool rows are visible")
@@ -133,15 +138,12 @@ final class ShippingViewportUITests: XCTestCase {
                 NSPredicate(format: "label CONTAINS %@", "Synthetic opened page contents")
             ).firstMatch.exists,
             "Search details contain only their matching tool result")
-        XCTAssertEqual(search.value as? String, "Expanded")
+        XCTAssertEqual(search.value as? String, "Expanded, Completed")
         capture("Search opens the exact paired result details")
         search.tap()
         XCTAssertFalse(searchDetails.exists)
 
-        nativeSearch.tap()
-        XCTAssertTrue(app.staticTexts["No tool details available."].waitForExistence(timeout: 10))
-        nativeSearch.tap()
-        XCTAssertFalse(app.staticTexts["No tool details available."].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["tool.details.viewport-native-search-20"].firstMatch.exists)
 
         openedPages.tap()
         let pageDetails = app.descendants(matching: .any)["tool.details.viewport-open-20"].firstMatch
@@ -159,7 +161,7 @@ final class ShippingViewportUITests: XCTestCase {
             "Opened pages contain only their matching tool result")
         capture("Opened pages keeps its exact paired result accessible")
         openedPages.tap()
-        XCTAssertEqual(openedPages.value as? String, "Collapsed")
+        XCTAssertEqual(openedPages.value as? String, "Collapsed, Completed")
         XCTAssertFalse(app.activityIndicators.firstMatch.exists)
     }
 
@@ -678,11 +680,12 @@ final class ShippingViewportUITests: XCTestCase {
         launchFixture()
         let anchor = readingAnchor(20)
         waitForReadingAnchor(anchor, index: 20)
-        // Invoke the real in-transcript pagination action, then hold its service
-        // result while recording the exact visible text position.
-        let load = app.buttons["Load earlier messages"]
-        XCTAssertTrue(load.isHittable)
-        load.tap()
+        XCTAssertFalse(app.buttons["Load earlier messages"].exists)
+        // Initial layout at the history boundary must not load. A real native
+        // backward gesture triggers pagination; hold its synthetic service page
+        // while recording the exact visible reading position.
+        waitSummary("older 0; messages 8")
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
         waitSummary("older 1; messages 8")
         waitForReadingAnchor(anchor, index: 20)
         let before = anchor.frame.midY
@@ -690,9 +693,68 @@ final class ShippingViewportUITests: XCTestCase {
         waitSummary("older 0; messages 28")
         waitForReadingAnchor(anchor, index: 20)
         XCTAssertEqual(anchor.frame.midY, before, accuracy: 3)
-        XCTAssertFalse(load.exists)
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
         XCTAssertTrue(app.textViews["chat.composer"].isHittable)
         capture("Shipping history prepend retains reading anchor and composer inset")
+    }
+
+    func testShippingPaginationPreservesCompletedReasoningAtMidTurnBoundary() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-mid-turn-pagination-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 20")
+        let reasoning = app.descendants(matching: .any)["message.thinking.viewport-reasoning-20"].firstMatch
+        waitForBoundaryAnchor(reasoning)
+        XCTAssertFalse(app.buttons["message.copy.viewport-user-20"].exists)
+        // This descending page starts at completed reasoning, so prepending
+        // its missing user replaces the enclosing turn's original reasoning ID.
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
+        waitSummary("older 1; messages 20")
+        waitForBoundaryAnchor(reasoning)
+        let before = reasoning.frame.midY
+        capture("Completed reasoning at a held twenty-item mid-turn history boundary")
+        app.buttons["shipping-viewport.release-older"].tap()
+        waitSummary("older 0; messages 40")
+        waitForBoundaryAnchor(reasoning)
+        XCTAssertEqual(reasoning.frame.midY, before, accuracy: 3)
+        XCTAssertTrue(app.buttons["message.copy.viewport-user-20"].exists)
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
+        XCTAssertTrue(app.textViews["chat.composer"].isHittable)
+        capture("The same completed reasoning row retains its native reading position after its user arrives")
+    }
+
+    func testShippingPaginationPreservesToolOutputAfterItsEarlierCallArrives() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-tool-boundary-pagination-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 20")
+        let output = app.buttons["tool.activity.viewport-search-result-20"]
+        waitForBoundaryAnchor(output)
+        XCTAssertFalse(app.buttons["tool.activity.viewport-search-20"].exists)
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
+        waitSummary("older 1; messages 20")
+        waitForBoundaryAnchor(output)
+        let before = output.frame.midY
+        capture("Standalone completed tool output at a held twenty-item history boundary")
+        app.buttons["shipping-viewport.release-older"].tap()
+        waitSummary("older 0; messages 40")
+        let paired = app.buttons["tool.activity.viewport-search-20"]
+        waitForBoundaryAnchor(paired)
+        XCTAssertEqual(paired.frame.midY, before, accuracy: 3)
+        XCTAssertFalse(output.exists, "The earlier call absorbs its exact result into one visible row")
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
+        XCTAssertTrue(app.textViews["chat.composer"].isHittable)
+        paired.tap()
+        XCTAssertTrue(app.otherElements["tool.details.viewport-search-20"].waitForExistence(timeout: 10))
+        let resultText = app.textViews.matching(
+            NSPredicate(format: "value == %@", "The same completed search result survives pairing.")
+        ).firstMatch
+        XCTAssertTrue(resultText.waitForExistence(timeout: 10))
+        capture("The same persisted tool output retains its native reading position when its call becomes available")
     }
 
     func testShippingPaginationCompletesBehindRetainedCompactMenu() throws {
@@ -707,12 +769,21 @@ final class ShippingViewportUITests: XCTestCase {
         waitForReadingAnchor(anchor, index: 20)
         XCTAssertTrue(composer.exists && composer.isHittable)
         let owners = try windowOwnership()
+        let visibilityValue = try XCTUnwrap(app.staticTexts["shipping-viewport.summary"].value as? String)
+        let visibilityData = try XCTUnwrap(visibilityValue.data(using: .utf8))
+        let visibility = try JSONDecoder().decode([String: String].self, from: visibilityData)
+        attachScrollState("Retained Chat visibility before input")
+        XCTAssertTrue(
+            visibility["visible"] == "true" && visibility["scopeCurrent"] == "true"
+                && visibility["ownerCurrent"] == "true" && visibility["occluded"] == "false"
+                && (UInt64(visibility["returnRevision"] ?? "") ?? 0) > 0,
+            "The retained fixture must publish the actual acknowledged Chat visibility before input: \(visibilityValue)"
+        )
         for key in ["instance", "storageOwner", "draftOwner"] {
             XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(owners[key])))
         }
-        let load = app.buttons["Load earlier messages"]
-        XCTAssertTrue(load.exists && load.isEnabled && load.isHittable)
-        load.tap()
+        XCTAssertFalse(app.buttons["Load earlier messages"].exists)
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
         waitSummary("older 1; messages 8")
         waitForReadingAnchor(anchor, index: 20)
         let before = anchor.frame.midY
@@ -751,9 +822,47 @@ final class ShippingViewportUITests: XCTestCase {
         waitForReadingAnchor(anchor, index: 20)
         XCTAssertEqual(anchor.frame.midY, before, accuracy: 3)
         XCTAssertEqual(try windowOwnership(), owners)
-        XCTAssertFalse(load.exists)
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
         XCTAssertTrue(composer.isHittable)
         capture("Full-screen Menu returns the same Chat owner and pagination anchor")
+    }
+
+    func testIdlePolledConversationItemsScrollToTheBottom() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-item-poll-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let anchor = readingAnchor(20)
+        waitForReadingAnchor(anchor, index: 20)
+        func distanceFromBottom() -> Double? {
+            let diagnostic = app.staticTexts["shipping-viewport.scroll-metrics"]
+            guard diagnostic.exists, let raw = diagnostic.value as? String,
+                let data = raw.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Double]
+            else { return nil }
+            return object["distanceFromBottom"]
+        }
+        XCTAssertGreaterThan(try XCTUnwrap(distanceFromBottom()), 100)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+        let poll = app.buttons["shipping-viewport.poll"]
+        XCTAssertTrue(poll.exists && poll.isEnabled && poll.isHittable)
+        poll.tap()
+        waitSummary("older 0; messages 10")
+        let tail = app.buttons["message.copy.viewport-polled-answer"]
+        let followed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                tail.exists && tail.isHittable && (distanceFromBottom().map { $0 < 30 } ?? false)
+            }, object: tail)
+        let result = XCTWaiter.wait(for: [followed], timeout: 15)
+        attachScrollState("Polled append scroll state")
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+        poll.tap()
+        waitSummary("older 0; messages 10")
+        XCTAssertLessThan(try XCTUnwrap(distanceFromBottom()), 30)
+        capture("Idle polling appends real runtime items and follows their rendered bottom without starting inference")
     }
 
     func testNativeMenuFlickAndCancelledSlowDragRetainTheChat() throws {
@@ -1527,7 +1636,9 @@ final class ShippingViewportUITests: XCTestCase {
                 appendedTail.exists && appendedTail.isHittable && transcript.frame.contains(appendedTail.frame)
                     && (distanceFromBottom().map { $0 < 30 } ?? false)
             }, object: appendedTail)
-        XCTAssertEqual(XCTWaiter.wait(for: [followed], timeout: 10), .completed)
+        let result = XCTWaiter.wait(for: [followed], timeout: 10)
+        attachScrollState("Streaming append scroll state")
+        XCTAssertEqual(result, .completed)
         capture("New streaming reply item follows the reader at the bottom")
 
         let anchor = readingAnchor(20)
@@ -1702,6 +1813,18 @@ final class ShippingViewportUITests: XCTestCase {
             .textViews.matching(NSPredicate(format: "value == %@", "Viewport reading anchor \(index)")).firstMatch
     }
 
+    private func waitForBoundaryAnchor(_ anchor: XCUIElement) {
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                guard anchor.exists else { return false }
+                let frame = anchor.frame
+                return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
+                    && frame.width > 0 && frame.height > 0 && !frame.intersection(self.app.frame).isEmpty
+                    && anchor.isHittable
+            }, object: anchor)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
+    }
+
     private func waitForReadingAnchor(_ anchor: XCUIElement, index: Int) {
         let expected = "Viewport reading anchor \(index)"
         let owner = app.otherElements["message.viewport-user-\(index)"]
@@ -1727,5 +1850,10 @@ final class ShippingViewportUITests: XCTestCase {
     private func capture(_ name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name; shot.lifetime = .keepAlways; add(shot)
+    }
+    private func attachScrollState(_ name: String) {
+        let attachment = XCTAttachment(
+            string: app.staticTexts["shipping-viewport.summary"].value as? String ?? "missing")
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 }

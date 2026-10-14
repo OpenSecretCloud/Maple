@@ -211,6 +211,49 @@ private func object(_ request: MapleRequest) throws -> [String: JSONValue] {
     #expect(try object(requests[4])["response_format"] == .string("wav"))
 }
 
+@Test(arguments: ["missing", "null", "published", "future"])
+func catalogReasoningAndCompletionBudgetRemainBackwardCompatible(kind: String) async throws {
+    var item: [String: Any] = [
+        "id": "model", "object": "model", "created": 0, "owned_by": "fixture",
+        "display_name": "Model", "short_name": "Model", "context_window": 4096,
+        "max_context_tokens": 4096, "access": "free", "enabled": true, "deprecated": false,
+        "capabilities": ["chat": true, "vision": false, "reasoning": true, "tool_use": true],
+    ]
+    var alias: [String: Any] = [
+        "id": "auto:quick", "label": "Quick", "short_name": "Quick", "description": "Fast",
+        "target_model": "model", "access": "free", "capabilities": item["capabilities"]!,
+    ]
+    if kind == "null" {
+        item["reasoning"] = NSNull(); alias["reasoning"] = NSNull()
+        item["max_completion_tokens"] = NSNull(); alias["max_completion_tokens"] = NSNull()
+    } else if kind != "missing" {
+        let effort = kind == "future" ? "future-effort" : "high"
+        let reasoning: [String: Any] = [
+            "mandatory": true, "default_enabled": true, "supported_efforts": [effort, "low"],
+            "default_effort": effort,
+        ]
+        item["reasoning"] = reasoning; alias["reasoning"] = reasoning
+        item["max_completion_tokens"] = 1024; alias["max_completion_tokens"] = 2048
+    }
+    let data = try JSONSerialization.data(withJSONObject: [
+        "object": "list", "data": [item], "aliases": [alias],
+        "defaults": ["quick": "auto:quick", "powerful": "auto:powerful"],
+    ])
+    let api = ResearchAPI(transport: APIRecorder([String(decoding: data, as: UTF8.self)]))
+    let catalog = try await api.fetchModelCatalog()
+    let decodedItem = try #require(catalog.data.first), decodedAlias = try #require(catalog.aliases.first)
+    if kind == "missing" || kind == "null" {
+        #expect(decodedItem.reasoning == nil && decodedAlias.reasoning == nil)
+        #expect(decodedItem.maxCompletionTokens == nil && decodedAlias.maxCompletionTokens == nil)
+    } else {
+        let effort = kind == "future" ? "future-effort" : "high"
+        #expect(decodedItem.reasoning?.mandatory == true && decodedItem.reasoning?.defaultEnabled == true)
+        #expect(decodedItem.reasoning?.supportedEfforts == [effort, "low"])
+        #expect(decodedItem.reasoning?.defaultEffort == effort && decodedAlias.reasoning == decodedItem.reasoning)
+        #expect(decodedItem.maxCompletionTokens == 1024 && decodedAlias.maxCompletionTokens == 2048)
+    }
+}
+
 @Test func errorsAreSanitizedBoundedAndNeverRetried() async throws {
     let transport = APIRecorder([
         .init(

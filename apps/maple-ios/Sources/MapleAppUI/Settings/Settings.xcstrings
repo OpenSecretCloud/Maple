@@ -1033,6 +1033,18 @@
         }
       }
     },
+    "Usage": {
+      "comment": "Settings section heading for the read-only plan, usage meter, reset and credit balance.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usage"
+          }
+        }
+      }
+    },
     "Verify email": {
       "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
       "extractionState": "manual",
@@ -1125,6 +1137,114 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ Plan"
+          }
+        }
+      }
+    },
+    "Default": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default"
+          }
+        }
+      }
+    },
+    "Extra high": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extra high"
+          }
+        }
+      }
+    },
+    "High": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "High"
+          }
+        }
+      }
+    },
+    "Low": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Low"
+          }
+        }
+      }
+    },
+    "Medium": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Medium"
+          }
+        }
+      }
+    },
+    "Minimal": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimal"
+          }
+        }
+      }
+    },
+    "Model default (%@)": {
+      "comment": "Model default thinking effort; placeholder is the localized lowercase effort label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model default (%@)"
+          }
+        }
+      }
+    },
+    "Off": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off"
+          }
+        }
+      }
+    },
+    "Thinking": {
+      "comment": "Research thinking-level selector label.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking"
           }
         }
       }

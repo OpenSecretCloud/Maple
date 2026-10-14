@@ -59,13 +59,23 @@ import XCTest
         field.tap(); field.typeText(name)
         referenceScreenshot("new-project form")
         tap("project-editor.save")
-        let project = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "library.project.", name)
+        // Library creation now opens the real scoped detail. Journal its exact
+        // returned UUID before navigating back or asserting later controls.
+        let detail = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "library.project-detail.")
+        ).matching(
+            NSPredicate(
+                format: "identifier != %@ AND identifier != %@ AND identifier != %@",
+                "library.project-detail.instructions", "library.project-detail.actions",
+                "library.project-detail.new-chat")
         ).firstMatch
-        XCTAssertTrue(project.waitForExistence(timeout: 20))
-        let id = String(project.identifier.dropFirst("library.project.".count))
+        XCTAssertTrue(detail.waitForExistence(timeout: 20))
+        let id = String(detail.identifier.dropFirst("library.project-detail.".count))
         guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
         try rememberProject(id); currentProjectID = id
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10)); back.tap()
+        XCTAssertTrue(app.buttons["library.project." + id].waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts[name].firstMatch.waitForExistence(timeout: 20))
     }
     private func openProject(_ name: String) {
@@ -303,10 +313,9 @@ import XCTest
         XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 10))
         referenceScreenshot("chat context menu")
         tap("Rename")
-        let rename = app.alerts["Rename chat"]
-        try replace(rename.textFields.firstMatch, with: chatName, presentedAlert: rename)
+        try replace(app.textFields["library.rename-title"], with: chatName)
         referenceScreenshot("rename-chat dialog")
-        rename.buttons["Save"].tap()
+        tap("library.rename-save")
         let chat = row(named: chatName)
         XCTAssertTrue(chat.waitForExistence(timeout: 20)); try openChatActions(chatID); tap("Pin")
         try openChatActions(chatID); XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 15))
@@ -459,7 +468,7 @@ extension LibraryWorkflowUITests {
         XCTAssertEqual(row.identifier, "library.chat." + id)
         guard row.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
         try cleanupTap("library.chat-actions." + id); try cleanupTap("Delete")
-        guard app.staticTexts["Delete chat?"].waitForExistence(timeout: 10) else {
+        guard app.staticTexts["Are you sure you want to delete this chat?"].waitForExistence(timeout: 10) else {
             throw LibraryCleanupIssue.inaccessibleControl
         }
         try cleanupTap("Delete")

@@ -38,6 +38,9 @@ import Observation
     @discardableResult public func setWebSearchPreferred(_ enabled: Bool) -> Bool {
         update { $0.webSearchPreferred = enabled }
     }
+    @discardableResult public func setThinkingLevel(_ level: MapleThinkingLevel) -> Bool {
+        update { $0.thinkingLevel = level }
+    }
     @discardableResult public func setSidebarIsOpen(_ isOpen: Bool) -> Bool {
         update { $0.sidebarIsOpen = isOpen }
     }

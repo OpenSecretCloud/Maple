@@ -6,6 +6,7 @@
 
     private enum LibraryDrawerDestination: Hashable {
         case settings
+        case project(String)
     }
 
     /// Compact navigation uses this full-scene root beneath the retained chat
@@ -16,6 +17,7 @@
         @State private var drag: LibraryChatDragContext
         @State private var search = ""
         @State private var projectDestination: ProjectSheetDestination?
+        @State private var createdProjectID: String?
         @State private var showingSettings = false
         @State private var selecting = false
         @State private var drawerPath: [LibraryDrawerDestination] = []
@@ -39,6 +41,9 @@
         private let onDrawerDestinationChanged: (@MainActor (Bool) -> Void)?
         private let projectExpansion: LibraryProjectExpansionController?
         private let onManageProjects: (@MainActor (String?) -> Void)?
+        private let account: AccountEntitlements?
+        private let conversationActivity: @MainActor (String) -> ConversationActivity
+        private let projectActivity: @MainActor (String) -> ConversationActivity
 
         public init(
             library: LibraryModel, makeLibrary: @escaping @MainActor () -> LibraryModel,
@@ -47,6 +52,9 @@
             onNewChat: @escaping @MainActor (String?) -> Void,
             selectedChatID: String? = nil,
             settings: @escaping @MainActor () -> AnyView,
+            account: AccountEntitlements? = nil,
+            conversationActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
+            projectActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
             projectExpansion: LibraryProjectExpansionController? = nil,
             menu: LibraryMenuModel? = nil,
             onManageProjects: (@MainActor (String?) -> Void)? = nil,
@@ -64,6 +72,8 @@
             self.library = library; self.makeInstructionEditor = makeInstructionEditor
             self.onSelectChat = onSelectChat; self.onNewChat = onNewChat; self.settings = settings;
             self.selectedChatID = selectedChatID
+            self.account = account
+            self.conversationActivity = conversationActivity; self.projectActivity = projectActivity
             self.onClose = onClose; self.settingsFullScreen = settingsFullScreen
             self.settingsPresented = settingsPresented; self.onSettingsDismiss = onSettingsDismiss
             self.supplementary = supplementary
@@ -123,6 +133,9 @@
                                             project: project, model: projectModel, search: search,
                                             onSelectChat: selectChat, onNewChat: selectNewChat,
                                             selectedChatID: selectedChatID,
+                                            conversationActivity: conversationActivity,
+                                            projectActivity: projectActivity(project.id),
+                                            onViewProject: viewProject,
                                             onManageProject: manageProject,
                                             onMutation: refresh, selectionLibrary: library, selecting: $selecting,
                                             drag: drag, dragEnabled: navigationAvailable,
@@ -148,11 +161,7 @@
                                     Spacer()
                                     Button {
                                         suspendSearch()
-                                        if let onManageProjects {
-                                            onManageProjects(nil)
-                                        } else {
-                                            projectDestination = .create
-                                        }
+                                        projectDestination = .create
                                     } label: {
                                         Image(systemName: "folder.badge.plus").foregroundStyle(MapleAccent.action)
                                             .frame(minWidth: 44, minHeight: 44)
@@ -199,6 +208,7 @@
                         }
                         if let issue = library.issue { LibraryIssueView(issue: issue) }
                     }
+
                     .accessibilityIdentifier("library.sidebar-list")
                     .refreshable { await refresh() }
                     .allowsHitTesting(navigationAvailable)
@@ -250,6 +260,12 @@
                             suspendSearch(); onClose?()
                         }
                     }
+
+                }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if drawerNavigation, let account {
+                        TeamSeatMismatchNotice(account: account)
+                    }
                 }
                 .toolbarVisibility(
                     navigationAvailable && (!usesCompactRootBar || !drawerPath.isEmpty) ? .visible : .hidden,
@@ -263,11 +279,24 @@
                         } else {
                             settings()
                         }
+                    case .project(let id):
+                        if let project = library.projects.first(where: { $0.id == id }) {
+                            ProjectView(
+                                project: project, library: models.project(id),
+                                makeInstructionEditor: makeInstructionEditor,
+                                onSelectChat: selectChat, onNewChat: selectNewChat,
+                                selectedChatID: selectedChatID, conversationActivity: conversationActivity,
+                                onMutation: refresh, teamNoticeAccount: drawerNavigation ? account : nil
+                            )
+                            .toolbarVisibility(.visible, for: .navigationBar)
+                        }
+
                     }
                 }
                 .modifier(
                     LibraryChatManagement(
                         library: library, selecting: $selecting, onMutation: refresh,
+                        account: account,
                         onSettings: {
                             suspendSearch()
                             if settingsFullScreen {
@@ -278,24 +307,48 @@
                         },
                         compactRootBar: usesCompactRootBar,
                         nativeRootBarHidden: !navigationAvailable || !drawerPath.isEmpty,
-                        nativeRootBarTrailing: onClose != nil && navigationAvailable ? AnyView(closeControl) : nil))
+                        nativeRootBarTrailing: onClose != nil && navigationAvailable ? AnyView(closeControl) : nil)
+
+                )
             }
             .onChange(of: drawerPath) { _, path in
+                // Detail has its own query over the shared project snapshot.
+                // Restore the menu owner's query after native Back, rather
+                // than capturing a mutable model value in the destination.
+                if path.isEmpty { models.setSearch(search) }
                 guard drawerNavigation else { return }
                 // Pushing clears root focus; native Back restores its own row.
                 if !path.isEmpty { closeFocused = false; suspendSearch() }
                 onDrawerDestinationChanged?(!path.isEmpty)
             }
+            .onChange(of: library.projects.map(\.id)) { _, ids in
+                drawerPath.removeAll { destination in
+                    if case .project(let id) = destination { return !ids.contains(id) }
+                    return false
+                }
+            }
             .onChange(of: focusAvailable) { _, available in
                 closeFocused = drawerNavigation && available && drawerPath.isEmpty
                 if !available { suspendSearch() } else if !search.isEmpty { models.setSearch(search) }
             }
-            .sheet(isPresented: projectSheetBinding, onDismiss: { Task { await refresh() } }) {
-                if let projectDestination {
+            .sheet(
+                isPresented: projectSheetBinding,
+                onDismiss: {
+                    let id = createdProjectID; createdProjectID = nil
+                    Task {
+                        await refresh()
+                        if let id, library.isActive { viewProject(id) }
+                    }
+                }
+            ) {
+                if let destination = projectDestination {
                     ProjectManagementSheet(
-                        library: library, initialDestination: projectDestination,
+                        library: library, initialDestination: destination,
                         makeInstructionEditor: makeInstructionEditor,
-                        isCurrent: { library.isActive && library.scope == models.scope })
+                        isCurrent: { library.isActive && library.scope == models.scope },
+                        onCreatedProject: { id in
+                            createdProjectID = id; projectDestination = nil
+                        })
                 }
             }
             .fullScreenCover(isPresented: settingsBinding, onDismiss: onSettingsDismiss) {
@@ -322,6 +375,7 @@
                 }
             }
         }
+
         private var usesCompactRootBar: Bool { compactRootBar && drawerNavigation }
 
         @ViewBuilder private var closeControl: some View {
@@ -364,6 +418,12 @@
         private func manageProject(_ id: String) {
             suspendSearch()
             if let onManageProjects { onManageProjects(id) } else { projectDestination = .manage(id) }
+        }
+        private func viewProject(_ id: String) {
+            guard library.isActive, library.projects.contains(where: { $0.id == id }) else { return }
+            suspendSearch(); drag.cancel(); selecting = false; library.selectedIDs = []
+            _ = models.project(id)
+            drawerPath.append(.project(id))
         }
         private func dismissSearch() { searchFocused = false }
         private func suspendSearch() { dismissSearch(); models.cancelSearchLoading() }
@@ -440,7 +500,8 @@
                 LibrarySelectableConversationRow(
                     conversation: conversation, library: model, selectionLibrary: library, selecting: $selecting,
                     onSelect: selectChat, onMutation: refresh, dragContext: drag,
-                    dragEnabled: navigationAvailable, dropDestination: destination, selectedChatID: selectedChatID
+                    dragEnabled: navigationAvailable, dropDestination: destination, selectedChatID: selectedChatID,
+                    activity: conversationActivity(conversation.id)
                 )
                 .onScrollVisibilityChange(threshold: 0.1) { visible in
                     guard visible, destination == .recent, navigationAvailable, focusAvailable else { return }
@@ -481,6 +542,9 @@
         let onSelectChat: @MainActor (String) -> Void
         let onNewChat: @MainActor (String?) -> Void
         let selectedChatID: String?
+        let conversationActivity: @MainActor (String) -> ConversationActivity
+        let projectActivity: ConversationActivity
+        let onViewProject: @MainActor (String) -> Void
         let onManageProject: @MainActor (String) -> Void
         let onMutation: @MainActor () async -> Void
         @Bindable var selectionLibrary: LibraryModel
@@ -499,15 +563,24 @@
                     HStack(spacing: 12) {
                         Image(systemName: "folder")
                         Text(project.name).fontWeight(.semibold).lineLimit(1)
+                        ConversationActivityIndicator(activity: folderActivity)
                         Spacer(minLength: 0)
                     }
                     .frame(minHeight: 48).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("library.project." + project.id)
+                .accessibilityLabel(conversationActivityLabel(title: project.name, activity: folderActivity))
                 .accessibilityValue(libraryText(showingChildren ? "Expanded" : "Collapsed"))
+                .accessibilityAction(named: libraryText("View project")) { onViewProject(project.id) }
                 .accessibilityAction(named: libraryText("Manage project")) { onManageProject(project.id) }
                 .contextMenu {
+                    Button {
+                        onViewProject(project.id)
+                    } label: {
+                        libraryText("View project")
+                    }
+                    .accessibilityIdentifier("library.project.view." + project.id)
                     Button {
                         onManageProject(project.id)
                     } label: {
@@ -561,7 +634,8 @@
                         conversation: conversation, library: model, selectionLibrary: selectionLibrary,
                         selecting: $selecting, onSelect: onSelectChat, onMutation: onMutation,
                         leadingInset: 56, dragContext: drag, dragEnabled: dragEnabled,
-                        dropDestination: .project(project.id), selectedChatID: selectedChatID
+                        dropDestination: .project(project.id), selectedChatID: selectedChatID,
+                        activity: conversationActivity(conversation.id)
                     )
                     .listRowInsets(.vertical, 0)
                     .listRowInsets(.leading, 56).listRowInsets(.trailing, 12)
@@ -580,6 +654,13 @@
                 }
                 if let issue = model.issue { LibraryIssueView(issue: issue) }
             }
+        }
+        private var folderActivity: ConversationActivity {
+            guard !showingChildren else { return .idle }
+            let children = model.conversations.map { conversationActivity($0.id) }
+            if projectActivity == .running || children.contains(.running) { return .running }
+            if projectActivity == .unread || children.contains(.unread) { return .unread }
+            return .idle
         }
         #if DEBUG
             private var cleanupState: String {

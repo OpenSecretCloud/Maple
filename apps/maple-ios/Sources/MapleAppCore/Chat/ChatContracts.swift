@@ -51,9 +51,15 @@ public struct ChatSendOptions: Codable, Sendable, Equatable {
     public var model: String
     public var webSearch: Bool
     public var projectID: String?
+    /// Effective catalog-supported choice captured when this turn is submitted.
+    public var reasoningEffort: ReasoningEffort?
 
-    public init(model: String = "auto:quick", webSearch: Bool = false, projectID: String? = nil) {
+    public init(
+        model: String = "auto:quick", webSearch: Bool = false, projectID: String? = nil,
+        reasoningEffort: ReasoningEffort? = nil
+    ) {
         self.model = model; self.webSearch = webSearch; self.projectID = projectID
+        self.reasoningEffort = reasoningEffort
     }
 }
 
@@ -147,7 +153,7 @@ public struct ChatSendAcceptance: Sendable, Equatable {
 /// prompt, token, callback or underlying error description crosses this boundary.
 public enum ChatIssue: String, Error, Sendable {
     case offline, busy, emptyDraft, invalidImages, draftTooLarge, storageUnavailable
-    case conversationUnavailable, uncertainResponse, responseUnavailable, cancellationUnavailable
+    case conversationUnavailable, conversationDeleting, uncertainResponse, responseUnavailable, cancellationUnavailable
     case historyUnavailable, requestRejected, contextLimit, freeTierTokenLimit, usageLimit, modelUnavailable, signedOut
     case unsupportedValue, imageDescriptionUnavailable, inferenceCapacityUnavailable, generationFailed
     case stoppedBeforeSending, stoppingWhenResponseReady, responseFinishedBeforeStop, recoveredCompletion, recoveredStop

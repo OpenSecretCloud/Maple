@@ -14,6 +14,17 @@ private actor ImageFixtureProcessor: ImageProcessing {
 
 @MainActor private final class ImageAdmissionState { var allowed = true }
 
+private actor ImageFeedbackClock {
+    let gates: [ChatTestGate]
+    private(set) var delays: [Duration] = []
+    init(gates: [ChatTestGate]) { self.gates = gates }
+    func sleep(_ duration: Duration) async {
+        let index = delays.count
+        delays.append(duration)
+        if index < gates.count { await gates[index].hold() }
+    }
+}
+
 @MainActor struct ImageImportOwnershipTests {
     private func makeRuntime(snapshot: ChatSnapshot = ChatSnapshot()) async -> ChatRuntime {
         let store = ChatFixtureStore(); await store.seed(snapshot)
@@ -22,6 +33,58 @@ private actor ImageFixtureProcessor: ImageProcessing {
             service: ChatFixtureService(store: store), persistence: store)
         await runtime.load(chatID: nil)
         return runtime
+    }
+
+    @Test func attachmentFeedbackExpiresAfterFiveSecondsWithoutChangingTheDraft() async {
+        let runtime = await makeRuntime(); runtime.draftText = "Keep this draft"
+        let gate = ChatTestGate(), clock = ImageFeedbackClock(gates: [gate])
+        let importer = ImageImportController(
+            runtime: runtime, processor: ImageFixtureProcessor(), sleep: { await clock.sleep($0) })
+        importer.report(.invalidImage)
+        let expiry = importer.issueExpiry
+        await gate.waitForArrival()
+        #expect(importer.issue == .invalidImage)
+        #expect(await clock.delays == [.seconds(5)])
+        await gate.release(); await expiry?.value
+        #expect(importer.issue == nil)
+        #expect(runtime.snapshot.draft.text == "Keep this draft")
+        #expect(runtime.snapshot.draft.images.isEmpty)
+        importer.invalidate(); runtime.invalidate()
+    }
+
+    @Test func anOlderTimeoutCannotClearANewOccurrenceOfTheSameAttachmentError() async {
+        let runtime = await makeRuntime(), first = ChatTestGate(), second = ChatTestGate()
+        let clock = ImageFeedbackClock(gates: [first, second])
+        let importer = ImageImportController(
+            runtime: runtime, processor: ImageFixtureProcessor(), sleep: { await clock.sleep($0) })
+        importer.report(.tooLarge)
+        let oldExpiry = importer.issueExpiry
+        await first.waitForArrival()
+        importer.report(.tooLarge)
+        let newExpiry = importer.issueExpiry
+        await second.waitForArrival()
+        await first.release(); await oldExpiry?.value
+        #expect(importer.issue == .tooLarge)
+        await second.release(); await newExpiry?.value
+        #expect(importer.issue == nil)
+        #expect(await clock.delays == [.seconds(5), .seconds(5)])
+        importer.invalidate(); runtime.invalidate()
+    }
+
+    @Test func retiringAnImporterCancelsItsPendingFeedbackExpiry() async {
+        let runtime = await makeRuntime(), gate = ChatTestGate()
+        let clock = ImageFeedbackClock(gates: [gate])
+        let importer = ImageImportController(
+            runtime: runtime, processor: ImageFixtureProcessor(), sleep: { await clock.sleep($0) })
+        importer.report(.unavailable)
+        let expiry = importer.issueExpiry
+        await gate.waitForArrival()
+        importer.invalidate()
+        #expect(expiry?.isCancelled == true)
+        await gate.release(); await expiry?.value
+        #expect(importer.issue == nil)
+        #expect(importer.issueExpiry == nil)
+        runtime.invalidate()
     }
 
     @Test func unavailableAccessDoesNotReadAProvider() async {
@@ -174,6 +237,21 @@ private actor ImageFixtureProcessor: ImageProcessing {
         #expect(runtime.snapshot.draft.text == "Keep")
         #expect(runtime.snapshot.draft.images.isEmpty)
         runtime.invalidate()
+    }
+
+    @Test(arguments: [ImageImportIssue.accountImageLimit, .accountAttachmentLimit])
+    func accountRetentionRejectionsUseTheirOwnFeedbackAndPreserveTheDraft(_ issue: ImageImportIssue) async {
+        let original = ChatDraft(
+            text: "Keep this text", images: [ChatImageAttachment(data: Data([8]), contentType: "image/png")])
+        let runtime = await makeRuntime(snapshot: ChatSnapshot(draft: original))
+        let importer = ImageImportController(
+            runtime: runtime, processor: ImageFixtureProcessor(), capacityIssue: { _ in issue })
+        importer.importImages([SelectedImageSource { Data([1]) }], draftID: original.id)
+        await importer.waitForImports()
+        #expect(importer.issue == issue)
+        #expect(runtime.snapshot.draft == original)
+        #expect(runtime.busyDraftIDs.isEmpty)
+        importer.invalidate(); runtime.invalidate()
     }
 }
 

@@ -23,6 +23,8 @@
                             ?? model.coordinator.statuses.values.first?.phase.rawValue ?? "idle"
                     )
                     .accessibilityIdentifier("dictation.fixture.phase")
+                    Text(model.coordinator.issue(for: model.runtime) == nil ? "none" : "visible")
+                        .accessibilityIdentifier("dictation.fixture.feedback")
                     Text("Sends \(model.sends)").accessibilityIdentifier("dictation.fixture.sends")
                     Text("Requests \(model.transcriber.requests); returned \(model.transcriber.returned)")
                         .accessibilityIdentifier("dictation.fixture.requests")

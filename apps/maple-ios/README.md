@@ -78,7 +78,9 @@ nix develop --no-update-lock-file .#apple -c env -u LD -u LDPLUSPLUS -u CC -u CX
 This example requires the standard software keyboard to be visible and uses
 synthetic in-memory text; it does not require account credentials or services.
 Rebuild after relevant source changes and record the selected method, artifact,
-simulator and authoritative test result.
+simulator and authoritative test result. Hardware Return sends on iPhone;
+software Return and Shift-Return insert newlines and continue Markdown lists.
+An empty draft does not submit or create a failure notice.
 
 `build.sh test-simulator local` instead builds and runs the **entire** UI target;
 it does not accept a test selector. That target also contains input-delivery
@@ -129,6 +131,19 @@ The main menu remembers explicitly expanded projects in an account-scoped,
 protected local file excluded from backups. These presentation choices survive
 relaunch and sign-out, never sync to the server, and are removed after account
 deletion. Search can reveal project contents without changing the saved choice.
+Project titles expand or collapse their folders; View project in the context
+menu opens the existing scoped detail view. Detail reuses the library’s chat
+selection controls and instructions editor. Its search stays separate from the
+retained sidebar query. Running and completed-unread indicators follow the
+account-owned runtimes, including pending project chat creation; selecting or
+showing a completed chat clears its unread indicator.
+
+The selected, visible foreground conversation polls items at 2, 5, 10, 15,
+20 and 30 seconds, then every 60 seconds, skipping an active response stream.
+The visible foreground menu polls the first recents page every 60 seconds and
+after conversation creation. Reads preserve loaded older pages and account
+ownership; hiding, retirement and deletion fence late results. Polls are
+serialized, so request duration adds to each delay.
 
 On compact layouts, a retained `UINavigationController` owns the full-screen
 Main Menu and Chat routes, their root navigation bar, and the standard
@@ -151,6 +166,12 @@ Disabled, deprecated and non-chat models cannot
 be selected; every non-Free catalog tier requires a paid plan for selection.
 Web search starts enabled and follows its saved preference, and read-aloud
 blocks only a known Free plan; the server authorizes every request.
+The options sheet offers the selected catalog entry's thinking levels. A saved
+choice the model does not support resolves to Default without overwriting the
+preference, and is omitted from the request. Queued turns retain the effort
+captured at submission. Settings has a read-only Usage section with the plan,
+usage meter, reset and credit balance. Team seat notices stay in the library;
+neither surface opens pricing or team management.
 
 Billing uses a captured account SDK API to mint a third-party token for the
 configured billing origin. It caches that token only in memory and remints
@@ -188,6 +209,10 @@ seventeenth head item until explicitly resumed or removed. New admission stays
 limited to sixteen; recovery never drops accepted work. A queued baseline is limited to 32 KiB of UTF-8
 text. Working editor text can exceed that limit while the user revises it; an
 unsuccessful queue Save must preserve that work and the original item.
+
+A fresh direct send starts a new queue session when the prior queue is empty.
+Pauses on queues with pending messages or an unfinished edit still require an
+explicit resume after interruption or restoration.
 
 Files and directories are excluded from backups and use Complete Protection on
 iOS, with restrictive Unix permissions as an additional measure. The runtime

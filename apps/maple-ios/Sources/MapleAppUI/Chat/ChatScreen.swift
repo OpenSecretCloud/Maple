@@ -8,6 +8,13 @@ struct ChatTranscriptRow: Identifiable {
     let order: Int
     var id: String { item.id }
 
+    // A previously standalone output can be absorbed when pagination reveals
+    // its call. Both persisted IDs must keep referring to the rendered row.
+    var historyAnchorIDs: [String] {
+        guard let toolResult, toolResult.id != item.id else { return [item.id] }
+        return [item.id, toolResult.id]
+    }
+
     // Conversation pages use function_call/function_call_output, while a
     // retrieved Responses run uses tool_call/tool_output. Keep presentation
     // admission consistent for both SDK-decoded representations.
@@ -209,6 +216,9 @@ enum ChatComposerPresentation {
                     Color.clear.accessibilityHidden(true)
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let account = environment.entitlements { TeamSeatMismatchNotice(account: account) }
+            }
             #if DEBUG
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if environment.configuration.profile == .local,
@@ -300,6 +310,15 @@ enum ChatComposerPresentation {
                     },
                     selectedChatID: environment.selectedChat?.conversationID,
                     settings: { AnyView(SettingsScreen(environment: environment, context: context)) },
+                    account: environment.entitlements?.scope == context.scope ? environment.entitlements : nil,
+                    conversationActivity: {
+                        guard context.scope == environment.session.account?.scope else { return .idle }
+                        return environment.activity(for: $0)
+                    },
+                    projectActivity: {
+                        guard context.scope == environment.session.account?.scope else { return .idle }
+                        return environment.activity(forProject: $0)
+                    },
                     projectExpansion: context.projectExpansion,
                     menu: context.menu,
                     onClose: wide
@@ -320,6 +339,18 @@ enum ChatComposerPresentation {
                     }
                 )
                 .id(context.scope)
+                .onAppear {
+                    guard wide, context.scope == environment.session.account?.scope else { return }
+                    environment.sidebarVisible = environment.preferences?.value.sidebarIsOpen != false
+                }
+                .onChange(of: environment.preferences?.value.sidebarIsOpen) { _, open in
+                    guard wide, context.scope == environment.session.account?.scope else { return }
+                    environment.sidebarVisible = open != false
+                }
+                .onDisappear {
+                    guard wide, context.scope == environment.session.account?.scope else { return }
+                    environment.sidebarVisible = false
+                }
                 .safeAreaInset(edge: .bottom) { if !wide { audioPlayer } }
                 .safeAreaInset(edge: libraryFixtureInsetEdge(wide: wide)) {
                     #if DEBUG
@@ -420,6 +451,7 @@ enum ChatComposerPresentation {
             var fixtureProjectionIsCurrent: (@MainActor @Sendable (AccountScope, UUID) -> Bool)? = nil
             var fixtureOptions: ChatOptionsFixtureContext? = nil
             var fixtureScrollMetricsChanged: (@MainActor (TranscriptViewportMetrics) -> Void)? = nil
+            var fixtureScrollStateChanged: (@MainActor (String) -> Void)? = nil
             var fixtureItemHorizontalGeometryChanged: (@MainActor (String, TranscriptItemHorizontalGeometry) -> Void)? =
                 nil
             var fixtureHorizontalScrollMetricsChanged: (@MainActor ([String: CGFloat]) -> Void)? = nil
@@ -434,6 +466,9 @@ enum ChatComposerPresentation {
         @State private var softwareKeyboardVisible: Bool?
         @State private var readingPosition = ScrollPosition(idType: String.self)
         @State private var turnFrames: [String: TranscriptTurnGeometry] = [:]
+        @State private var itemFrames: [String: TranscriptItemGeometry] = [:]
+        @State private var preparedItems: Set<PreparedItemKey> = []
+        @State private var tailGeometry: TranscriptTailGeometry?
         @State private var readingAnchor: ReadingAnchor?
         @State private var scrollMetrics = TranscriptScrollMetrics(returnRevision: 0)
         @State private var correctionTask: Task<Void, Never>?
@@ -443,17 +478,36 @@ enum ChatComposerPresentation {
         @State private var transcriptSpace = UUID()
         @State private var followPolicy = TranscriptScrollPolicy()
         @State private var userScrollPhase = false
+        @State private var directScrollPhase = false
         @State private var followTasks: [UUID: Task<Void, Never>] = [:]
         @State private var appendFollowTask: Task<Void, Never>?
         @State private var pendingAppendFollow: AppendFollowRequest?
         @State private var scrollGestureRevision = 0
+        @State private var historyPagination = TranscriptHistoryPagination()
+        @State private var historyLoadTask: Task<Void, Never>?
+        @State private var historyRestorePending = false
+        #if DEBUG
+            @State private var appliedAppendFollows = 0
+            private var fixtureScrollState: String {
+                guard fixtureScrollStateChanged != nil else { return "" }
+                let request = pendingAppendFollow
+                let tail = turns.last.flatMap { turnFrames[$0.id] }
+                return
+                    "visible \(runtime.isVisible); foreground \(runtime.isForeground); user \(userScrollPhase); direct \(directScrollPhase); reader-away \(followPolicy.isUserScrolling); anchor \(readingAnchor != nil); history-owned \(historyPagination.isLoadInFlight); loading \(runtime.isLoadingOlder); pending-append \(request != nil); applied \(appliedAppendFollows); tail-current \(tail?.lastMessageID == runtime.messages.last?.id); gesture-current \(request == nil || request?.gestureRevision == scrollGestureRevision); return-current \(request == nil || request?.returnRevision == menuState.returnRevision)"
+            }
+        #endif
 
         private struct ReadingAnchor {
             let token = UUID()
-            let turnID: String
+            let itemID: String
             let viewportY: CGFloat
             var restoring = false
             var corrections = 0
+        }
+        private struct PreparedItemKey: Hashable {
+            let itemID: String
+            let visibleItemID: String
+            let turnID: String
         }
         private struct AppendFollowRequest {
             let id = UUID()
@@ -461,6 +515,8 @@ enum ChatComposerPresentation {
             let storageOwner: UUID
             let returnRevision: Int
             let gestureRevision: Int
+            var fromPolling = false
+            var materialized = false
         }
         private struct TranscriptScrollMetrics: Equatable {
             var offset: CGFloat = 0
@@ -486,6 +542,40 @@ enum ChatComposerPresentation {
             let firstMessageID: String?
             let lastMessageID: String?
             let returnRevision: Int
+        }
+        private struct TranscriptTailGeometry: Equatable {
+            let itemID: String
+            let ready: Bool
+            let contentFrame: CGRect
+            let returnRevision: Int
+        }
+        private struct TranscriptItemGeometry: Equatable {
+            let itemID: String
+            let turnID: String
+            let anchorIDs: [String]
+            let visibleItemID: String
+            let ready: Bool
+            let contentFrame: CGRect
+            let firstMessageID: String?
+            let returnRevision: Int
+        }
+
+        private func isCurrentPreparation(_ key: PreparedItemKey) -> Bool {
+            guard let turn = turns.first(where: { $0.id == key.turnID }) else { return false }
+            return ChatTranscriptRow.rows(turn.items).contains {
+                $0.item.id == key.itemID && ($0.toolResult?.id ?? $0.item.id) == key.visibleItemID
+            }
+        }
+
+        private func historyTurnTarget(for anchor: ReadingAnchor) -> String? {
+            for turn in turns {
+                if ChatTranscriptRow.rows(turn.items).contains(where: {
+                    $0.historyAnchorIDs.contains(anchor.itemID)
+                }) {
+                    return turn.id
+                }
+            }
+            return nil
         }
 
         private var menuState: CompactMenuChatState {
@@ -527,14 +617,29 @@ enum ChatComposerPresentation {
             appendFollowTask = Task { @MainActor in
                 await Task.yield()
                 guard !Task.isCancelled, pendingAppendFollow?.id == request.id,
-                    currentProjection, !menuState.occluded,
+                    currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
                     runtime.snapshot.storageOwner == request.storageOwner,
                     menuState.returnRevision == request.returnRevision,
-                    scrollGestureRevision == request.gestureRevision, !followPolicy.isUserScrolling,
-                    !runtime.isLoadingOlder, readingAnchor == nil, !userScrollPhase,
-                    runtime.messages.last?.id == request.lastItemID,
-                    let lastTurnID = turns.last?.id, let sample = turnFrames[lastTurnID],
+                    scrollGestureRevision == request.gestureRevision,
+                    request.fromPolling || !followPolicy.isUserScrolling,
+                    !runtime.isLoadingOlder, !historyPagination.isLoadInFlight, readingAnchor == nil, !userScrollPhase,
+                    runtime.messages.last?.id == request.lastItemID, let lastTurnID = turns.last?.id
+                else { return }
+                if request.fromPolling, turnFrames[lastTurnID] == nil, !request.materialized {
+                    // Materialization shares every owner, gesture and history
+                    // fence with the final scroll. The lazy tail cannot report
+                    // its native layout until it joins the viewport.
+                    pendingAppendFollow?.materialized = true
+                    readingPosition.scrollTo(id: lastTurnID, anchor: .bottom)
+                    return
+                }
+                guard
+                    let tailGeometry, tailGeometry.itemID == request.lastItemID, tailGeometry.ready,
+                    tailGeometry.returnRevision == request.returnRevision,
+                    tailGeometry.contentFrame.minY.isFinite, tailGeometry.contentFrame.height > 0,
+                    let sample = turnFrames[lastTurnID],
                     sample.returnRevision == request.returnRevision,
+                    sample.contentFrame.maxY >= tailGeometry.contentFrame.maxY - 0.5,
                     let target = TranscriptScrollPolicy.appendedItemOffset(
                         expectedItemID: request.lastItemID, renderedItemID: sample.lastMessageID,
                         tailBottom: sample.contentFrame.maxY,
@@ -544,6 +649,9 @@ enum ChatComposerPresentation {
                 // the transcript. Consume this once so later text growth cannot
                 // keep dragging the reader to a moving bottom anchor.
                 pendingAppendFollow = nil
+                #if DEBUG
+                    appliedAppendFollows += 1
+                #endif
                 // The timeline scrolls vertically; nested rich-content scrollers
                 // must not let an implicit horizontal target move its gutters.
                 withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(x: 0, y: target) }
@@ -552,7 +660,10 @@ enum ChatComposerPresentation {
 
         private func followAppendedReplies(_ mutation: TranscriptScrollPolicy.Mutation) {
             let requests = followPolicy.receive(mutation)
-            guard currentProjection, !menuState.occluded, !runtime.isLoadingOlder, readingAnchor == nil else { return }
+            guard currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
+                !runtime.isLoadingOlder,
+                !historyPagination.isLoadInFlight, readingAnchor == nil
+            else { return }
             for request in requests {
                 if request == .appendedItem, let lastItemID = mutation.lastItemID {
                     pendingAppendFollow = AppendFollowRequest(
@@ -566,7 +677,8 @@ enum ChatComposerPresentation {
                 followTasks[id] = Task { @MainActor in
                     defer { followTasks.removeValue(forKey: id) }
                     try? await Task.sleep(for: .milliseconds(100))
-                    guard !Task.isCancelled, currentProjection, !menuState.occluded,
+                    guard !Task.isCancelled, currentProjection, !menuState.occluded, runtime.isVisible,
+                        runtime.isForeground,
                         runtime.snapshot.storageOwner == owner, menuState.returnRevision == returnRevision,
                         scrollGestureRevision == gestureRevision, !followPolicy.isUserScrolling,
                         !runtime.isLoadingOlder, readingAnchor == nil, !userScrollPhase,
@@ -622,7 +734,11 @@ enum ChatComposerPresentation {
                 await Task.yield()
                 guard !Task.isCancelled, !menuState.occluded, currentProjection,
                     var anchor = readingAnchor, anchor.token == token,
-                    let sample = turnFrames[anchor.turnID],
+                    let sample = itemFrames[anchor.itemID], sample.ready,
+                    isCurrentPreparation(
+                        PreparedItemKey(
+                            itemID: sample.itemID, visibleItemID: sample.visibleItemID,
+                            turnID: sample.turnID)),
                     sample.firstMessageID == runtime.messages.first?.id,
                     sample.returnRevision == menuState.returnRevision,
                     scrollMetrics.returnRevision == menuState.returnRevision,
@@ -632,15 +748,98 @@ enum ChatComposerPresentation {
                 // Content coordinates keep this target independent of a separately
                 // delivered scroll-offset update from another layout pass.
                 let point = max(0, sample.contentFrame.minY - anchor.viewportY + scrollMetrics.topInset)
-                guard point.isFinite, abs(point - (scrollMetrics.offset + scrollMetrics.topInset)) > 0.5 else {
+                guard point.isFinite else { return }
+                guard abs(point - (scrollMetrics.offset + scrollMetrics.topInset)) > 0.5 else {
+                    finishHistoryRestoration()
                     return
                 }
-                guard anchor.corrections < 64 else { readingAnchor = nil; return }
+                guard anchor.corrections < 64 else {
+                    readingAnchor = nil; historyRestorePending = false
+                    historyPagination.finishLoad()
+                    return
+                }
                 anchor.corrections += 1
                 readingAnchor = anchor
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { readingPosition.scrollTo(x: 0, y: point) }
+            }
+        }
+
+        private func visibleReadingAnchor(firstMessageID: String?, returnRevision: Int) -> ReadingAnchor? {
+            let visible = itemFrames.values.filter {
+                let frame = $0.contentFrame.offsetBy(dx: 0, dy: -scrollMetrics.offset)
+                return $0.firstMessageID == firstMessageID && $0.returnRevision == returnRevision
+                    && scrollMetrics.returnRevision == returnRevision
+                    && frame.maxY > 0 && frame.minY < scrollMetrics.height
+            }.min { $0.contentFrame.minY < $1.contentFrame.minY }
+            return visible.map {
+                ReadingAnchor(itemID: $0.itemID, viewportY: $0.contentFrame.minY - scrollMetrics.offset)
+            }
+        }
+
+        private func finishHistoryRestoration() {
+            guard historyRestorePending else { return }
+            historyRestorePending = false
+            let canLoad =
+                currentProjection && !menuState.occluded && runtime.isVisible && runtime.isForeground
+                && !runtime.isLoadingOlder && runtime.hasOlderMessages
+            historyPagination.finishLoad(preserveQueued: canLoad)
+            // The queue records a physical gesture at the previous boundary.
+            // The prepend's programmatic offset is not new forward intent.
+            if historyPagination.startQueuedLoad(canLoad: canLoad) { loadOlderMessages() }
+        }
+
+        private func loadOlderMessages() {
+            guard currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
+                !runtime.isLoadingOlder, runtime.hasOlderMessages
+            else {
+                return
+            }
+            cancelFollowTasks()
+            let previousFirst = runtime.messages.first?.id
+            let returnRevision = menuState.returnRevision
+            readingAnchor = visibleReadingAnchor(firstMessageID: previousFirst, returnRevision: returnRevision)
+            historyRestorePending = false
+            historyLoadTask?.cancel()
+            historyLoadTask = Task { @MainActor in
+                await runtime.loadOlderMessages()
+                guard !Task.isCancelled, currentProjection else { return }
+                guard runtime.messages.first?.id != previousFirst else {
+                    readingAnchor = nil; historyRestorePending = false; historyPagination.finishLoad(); return
+                }
+                // The reader may have made a second gesture while this page was
+                // pending. Prefer that latest visible position at commit time.
+                readingAnchor =
+                    visibleReadingAnchor(firstMessageID: previousFirst, returnRevision: returnRevision)
+                    ?? readingAnchor
+                historyRestorePending = true
+                guard let anchor = readingAnchor else {
+                    if turnFrames.values.contains(where: {
+                        $0.firstMessageID == runtime.messages.first?.id
+                            && $0.returnRevision == menuState.returnRevision
+                    }) {
+                        finishHistoryRestoration()
+                    }
+                    return
+                }
+                readingAnchor?.restoring = true
+                guard !menuState.occluded, runtime.isVisible, runtime.isForeground else {
+                    historyRestorePending = false; historyPagination.finishLoad(); return
+                }
+                let token = anchor.token
+                // The lazy stack registers turns before their children exist.
+                // Find the item's current turn only to materialize that row;
+                // its stable item geometry restores the exact reading position.
+                guard let target = historyTurnTarget(for: anchor) else {
+                    readingAnchor = nil; historyRestorePending = false; historyPagination.finishLoad(); return
+                }
+                readingPosition.scrollTo(id: target, anchor: .top)
+                await Task.yield()
+                guard !Task.isCancelled, currentProjection, !menuState.occluded, readingAnchor?.token == token else {
+                    return
+                }
+                scheduleAnchorCorrection()
             }
         }
 
@@ -663,7 +862,9 @@ enum ChatComposerPresentation {
                     pendingScrollMessage = nil
                 }
             } else if let anchor = readingAnchor, anchor.restoring {
-                readingPosition.scrollTo(id: anchor.turnID, anchor: .top)
+                if let target = historyTurnTarget(for: anchor) {
+                    readingPosition.scrollTo(id: target, anchor: .top)
+                }
                 scheduleAnchorCorrection()
             }
         }
@@ -691,46 +892,11 @@ enum ChatComposerPresentation {
                     ScrollViewReader { reader in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 24) {
-                                if runtime.hasOlderMessages {
-                                    Button(MapleStrings.text("Load earlier messages")) {
-                                        guard !runtime.isLoadingOlder else { return }
-                                        cancelFollowTasks()
-                                        let previousFirst = runtime.messages.first?.id
-                                        let returnRevision = menuState.returnRevision
-                                        let visible = turnFrames.filter {
-                                            let frame = $0.value.contentFrame.offsetBy(dx: 0, dy: -scrollMetrics.offset)
-                                            return $0.value.firstMessageID == previousFirst
-                                                && $0.value.returnRevision == returnRevision
-                                                && scrollMetrics.returnRevision == returnRevision
-                                                && frame.maxY > 0 && frame.minY < scrollMetrics.height
-                                        }.min { $0.value.contentFrame.minY < $1.value.contentFrame.minY }
-                                        readingAnchor = visible.map {
-                                            ReadingAnchor(
-                                                turnID: $0.key,
-                                                viewportY: $0.value.contentFrame.minY - scrollMetrics.offset)
-                                        }
-                                        let token = readingAnchor?.token
-                                        Task { @MainActor in
-                                            await runtime.loadOlderMessages()
-                                            guard currentProjection, readingAnchor?.token == token,
-                                                let anchor = readingAnchor
-                                            else { return }
-                                            guard runtime.messages.first?.id != previousFirst else {
-                                                readingAnchor = nil; return
-                                            }
-                                            readingAnchor?.restoring = true
-                                            guard !menuState.occluded else { return }
-                                            // A LazyVStack can evict the previously visible row while
-                                            // prepending. Materialize it before restoring its exact offset.
-                                            readingPosition.scrollTo(id: anchor.turnID, anchor: .top)
-                                            await Task.yield()
-                                            guard currentProjection, !menuState.occluded,
-                                                readingAnchor?.token == token
-                                            else { return }
-                                            scheduleAnchorCorrection()
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity)
+                                if runtime.isLoadingOlder {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                        .accessibilityLabel(MapleStrings.text("Loading earlier messages"))
+                                        .accessibilityIdentifier("chat.history.loading")
                                 }
                                 if runtime.messages.isEmpty, runtime.conversationID == nil {
                                     VStack(alignment: .leading, spacing: 12) {
@@ -749,6 +915,9 @@ enum ChatComposerPresentation {
                                     VStack(alignment: .leading, spacing: 24) {
                                         ForEach(ChatTranscriptRow.rows(turn.items)) { row in
                                             let item = row.item
+                                            let visibleItemID = row.toolResult?.id ?? item.id
+                                            let preparationKey = PreparedItemKey(
+                                                itemID: item.id, visibleItemID: visibleItemID, turnID: turn.id)
                                             TranscriptItem(
                                                 item: item, toolResult: row.toolResult,
                                                 generation: runtime.scope.generation,
@@ -760,9 +929,59 @@ enum ChatComposerPresentation {
                                                     && ChatTranscriptPresentation.isGenerating(runtime.phase),
                                                 speechAccess: account.speechAccess,
                                                 onReadAloud: { environment.readAloud(item, runtime: runtime) },
-                                                onSpeechUnavailable: { mediaNotice = .speech }
+                                                onSpeechUnavailable: { mediaNotice = .speech },
+                                                onPrepared: {
+                                                    guard currentProjection, runtime.scope == account.scope,
+                                                        runtime.messages.contains(where: { $0.id == visibleItemID }),
+                                                        isCurrentPreparation(preparationKey),
+                                                        !preparedItems.contains(preparationKey)
+                                                    else { return }
+                                                    preparedItems.insert(preparationKey)
+                                                }
                                             ) { url in
                                                 externalLink = url
+                                            }
+                                            .onGeometryChange(for: TranscriptItemGeometry.self) {
+                                                [
+                                                    itemID = item.id, turnID = turn.id,
+                                                    returnRevision = menuState.returnRevision,
+                                                    ready = preparedItems.contains(preparationKey),
+                                                    firstMessageID = runtime.messages.first?.id,
+                                                    anchorIDs = row.historyAnchorIDs, transcriptSpace
+                                                ] geometry in
+                                                TranscriptItemGeometry(
+                                                    itemID: itemID, turnID: turnID, anchorIDs: anchorIDs,
+                                                    visibleItemID: visibleItemID, ready: ready,
+                                                    contentFrame: geometry.frame(in: .named(transcriptSpace)),
+                                                    firstMessageID: firstMessageID,
+                                                    returnRevision: returnRevision)
+                                            } action: { sample in
+                                                guard currentProjection, !menuState.occluded,
+                                                    isCurrentPreparation(
+                                                        PreparedItemKey(
+                                                            itemID: sample.itemID, visibleItemID: sample.visibleItemID,
+                                                            turnID: sample.turnID)),
+                                                    sample.firstMessageID == runtime.messages.first?.id,
+                                                    sample.returnRevision == menuState.returnRevision
+                                                else { return }
+                                                for id in sample.anchorIDs { itemFrames[id] = sample }
+                                                scheduleAnchorCorrection()
+                                                if sample.visibleItemID == runtime.messages.last?.id {
+                                                    tailGeometry = TranscriptTailGeometry(
+                                                        itemID: sample.visibleItemID, ready: sample.ready,
+                                                        contentFrame: sample.contentFrame,
+                                                        returnRevision: sample.returnRevision)
+                                                    scheduleAppendFollow()
+                                                }
+                                            }
+                                            .onDisappear {
+                                                guard !menuState.occluded else { return }
+                                                for id in row.historyAnchorIDs
+                                                where itemFrames[id]?.itemID == item.id
+                                                    && itemFrames[id]?.turnID == turn.id
+                                                {
+                                                    itemFrames.removeValue(forKey: id)
+                                                }
                                             }
                                             #if DEBUG
                                                 .onGeometryChange(for: TranscriptItemHorizontalGeometry?.self) {
@@ -814,6 +1033,7 @@ enum ChatComposerPresentation {
                                             turnFrames[turn.id] != sample
                                         else { return }
                                         turnFrames[turn.id] = sample
+                                        if historyRestorePending, readingAnchor == nil { finishHistoryRestoration() }
                                         scheduleAnchorCorrection()
                                         scheduleAppendFollow()
                                     }
@@ -848,7 +1068,7 @@ enum ChatComposerPresentation {
                                 visibleMinY: geometry.visibleRect.minY, visibleHeight: geometry.visibleRect.height,
                                 boundsMinY: geometry.bounds.minY, boundsHeight: geometry.bounds.height,
                                 returnRevision: returnRevision)
-                        } action: { _, metrics in
+                        } action: { previous, metrics in
                             guard !menuState.occluded, metrics.returnRevision == menuState.returnRevision else {
                                 return
                             }
@@ -867,8 +1087,22 @@ enum ChatComposerPresentation {
                                             boundsMinY: metrics.boundsMinY, boundsHeight: metrics.boundsHeight))
                                 }
                             #endif
-                            if userScrollPhase {
+                            if userScrollPhase, readingAnchor?.restoring != true {
                                 followPolicy.readerScrolled(distanceFromBottom: metrics.distanceFromBottom)
+                                if runtime.isLoadingOlder, historyPagination.isLoadInFlight {
+                                    readingAnchor = visibleReadingAnchor(
+                                        firstMessageID: runtime.messages.first?.id,
+                                        returnRevision: menuState.returnRevision)
+                                }
+                                if historyPagination.shouldLoad(
+                                    previousOffset: previous.offset + previous.topInset,
+                                    offset: metrics.offset + metrics.topInset,
+                                    canLoad: currentProjection && runtime.hasOlderMessages,
+                                    requestInFlight: runtime.isLoadingOlder || readingAnchor?.restoring == true,
+                                    directUserInput: directScrollPhase)
+                                {
+                                    loadOlderMessages()
+                                }
                             }
                             scheduleAnchorCorrection()
                             scheduleAppendFollow()
@@ -894,17 +1128,34 @@ enum ChatComposerPresentation {
                                 callback(metrics)
                             }
                         #endif
-                        .onScrollPhaseChange { _, phase in
-                            if !menuState.occluded, phase == .tracking || phase == .interacting {
+                        .onScrollPhaseChange { previous, phase in
+                            if !menuState.occluded, phase == .tracking || phase == .interacting,
+                                previous != .tracking && previous != .interacting
+                            {
                                 readingAnchor = nil; correctionTask?.cancel()
                                 scrollGestureRevision += 1; cancelFollowTasks()
+                                historyPagination.gestureChanged(active: false)
+                                // A new reader gesture ends the previous
+                                // request's correction once its page is laid
+                                // out; it must not strand the owned gate.
+                                if historyRestorePending, !runtime.isLoadingOlder,
+                                    turnFrames.values.contains(where: {
+                                        $0.firstMessageID == runtime.messages.first?.id
+                                            && $0.returnRevision == menuState.returnRevision
+                                    })
+                                {
+                                    finishHistoryRestoration()
+                                }
                             }
                             if !menuState.occluded {
                                 let wasUserScrolling = userScrollPhase
                                 userScrollPhase = phase == .tracking || phase == .interacting || phase == .decelerating
+                                directScrollPhase = phase == .tracking || phase == .interacting
+                                historyPagination.gestureChanged(active: userScrollPhase)
                                 if userScrollPhase || wasUserScrolling {
                                     followPolicy.readerScrolled(distanceFromBottom: scrollMetrics.distanceFromBottom)
                                 }
+                                scheduleAppendFollow()
                             }
                         }
                         .accessibilityIdentifier("chat.transcript")
@@ -918,8 +1169,31 @@ enum ChatComposerPresentation {
                         .onChange(of: menuState.returnRevision) { _, _ in
                             resumeReadingAfterMenu(reader: reader)
                         }
+                        .onChange(of: runtime.isForeground) { _, foreground in
+                            if foreground {
+                                resumeReadingAfterMenu(reader: reader)
+                            } else {
+                                historyPagination.resetIntent()
+                            }
+                        }
+                        .onChange(of: runtime.isVisible) { _, visible in
+                            if !visible { historyPagination.resetIntent() }
+                        }
                         .onChange(of: transcriptMutation) { _, mutation in
                             followAppendedReplies(mutation)
+                        }
+                        .onChange(of: runtime.polledMessagesRevision) { _, _ in
+                            guard currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
+                                let last = runtime.messages.last?.id
+                            else {
+                                return
+                            }
+                            cancelFollowTasks(); readingAnchor = nil; correctionTask?.cancel()
+                            pendingAppendFollow = AppendFollowRequest(
+                                lastItemID: last, storageOwner: runtime.snapshot.storageOwner,
+                                returnRevision: menuState.returnRevision, gestureRevision: scrollGestureRevision,
+                                fromPolling: true)
+                            scheduleAppendFollow()
                         }
                         .onAppear { resumeReadingAfterMenu(reader: reader) }
                     }
@@ -929,6 +1203,12 @@ enum ChatComposerPresentation {
             .onDisappear {
                 correctionTask?.cancel(); correctionTask = nil
                 acceptedTurnScrollTask?.cancel(); acceptedTurnScrollTask = nil
+                historyPagination.resetIntent()
+                directScrollPhase = false
+                if !menuState.occluded {
+                    historyLoadTask?.cancel(); historyLoadTask = nil
+                    historyRestorePending = false; historyPagination.finishLoad()
+                }
                 cancelFollowTasks()
                 if !menuState.occluded { readingAnchor = nil; pendingScrollMessage = nil }
             }
@@ -956,6 +1236,11 @@ enum ChatComposerPresentation {
                 if occluded {
                     composerFocused = false; correctionTask?.cancel(); acceptedTurnScrollTask?.cancel()
                     cancelFollowTasks(); userScrollPhase = false
+                    directScrollPhase = false
+                    historyPagination.resetIntent()
+                    if historyRestorePending {
+                        historyRestorePending = false; historyPagination.finishLoad()
+                    }
                 } else {
                     presentContextLimitIfNeeded()
                 }
@@ -965,6 +1250,11 @@ enum ChatComposerPresentation {
                     composerFocused = true
                 }
             }
+            #if DEBUG
+                .onChange(of: fixtureScrollState, initial: true) { _, state in
+                    fixtureScrollStateChanged?(state)
+                }
+            #endif
             .onAppear {
                 environment.updatePresentationVisibility()
                 presentContextLimitIfNeeded()
@@ -1024,7 +1314,7 @@ enum ChatComposerPresentation {
                 // Selection replacement and account teardown still retire it normally.
                 guard !menuState.occluded else { return }
                 environment.setPresentationBlocked(false, id: browserPresentationID, scope: runtime.scope)
-                runtime.isVisible = false; Task { await runtime.saveDraft() }
+                environment.updatePresentationVisibility(); Task { await runtime.saveDraft() }
             }
             .sheet(isPresented: $queuePresented, onDismiss: compactMenuPresentationDismissed) {
                 QueueReview(runtime: runtime) { composerFocused = true }
@@ -1081,6 +1371,11 @@ enum ChatComposerPresentation {
                 if !runtime.isOnline {
                     Label(MapleStrings.text("Offline — your draft stays here"), systemImage: "wifi.slash")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                if !runtime.deletionFenceIDs.isEmpty, runtime.lastIssue != .conversationDeleting {
+                    Text(ChatRecoveryPresentation.deletionPauseMessage)
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("chat.deletion.paused")
                 }
                 if account.chatAccess != .allowed {
                     AccountAccessNotice(account: account)
@@ -1184,6 +1479,16 @@ enum ChatComposerPresentation {
                     guard environment.session.account?.scope == runtime.scope else { return nil }
                     return self.composerEditor(owner: runtime.snapshot.draft.id)
                 },
+                onPasteImages: { providers in
+                    guard runtime.scope == account.scope, runtime.snapshot.draft.id == owner,
+                        currentProjection, !menuState.occluded
+                    else { return true }
+                    guard !runtime.isEditingQueue else { return false }
+                    guard let importer = environment.imageImporters[ObjectIdentifier(runtime)] else { return true }
+                    guard account.imageAccess == .allowed else { mediaNotice = .images; return true }
+                    ClipboardImageSource.importImages(providers, using: importer, draftID: owner)
+                    return true
+                },
                 onSubmit: {
                     guard runtime.snapshot.draft.id == owner else { return }
                     send()
@@ -1212,13 +1517,33 @@ enum ChatComposerPresentation {
                     Image(systemName: "slider.horizontal.3")
                     Text(verbatim: modelShortName)
                         .font(.footnote.weight(.medium))
+                    if account.resolvedThinkingLevel.effective != .default {
+                        Text(verbatim: thinkingLevelLabel)
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
             }
             .accessibilityLabel(Text("Chat options", tableName: "Settings", bundle: .module))
-            .accessibilityValue(Text(verbatim: modelShortName))
+            .accessibilityValue(Text(verbatim: modelShortName + thinkingLevelSuffix))
             .accessibilityIdentifier("chat.model")
+        }
+        private var thinkingLevelSuffix: String {
+            let level = account.resolvedThinkingLevel.effective
+            return level == .default ? "" : ", " + thinkingLevelLabel
+        }
+        private var thinkingLevelLabel: String {
+            switch account.resolvedThinkingLevel.effective {
+            case .default: String(localized: "Default", table: "Settings", bundle: .module)
+            case .none: String(localized: "Off", table: "Settings", bundle: .module)
+            case .minimal: String(localized: "Minimal", table: "Settings", bundle: .module)
+            case .low: String(localized: "Low", table: "Settings", bundle: .module)
+            case .medium: String(localized: "Medium", table: "Settings", bundle: .module)
+            case .high: String(localized: "High", table: "Settings", bundle: .module)
+            case .xhigh: String(localized: "Extra high", table: "Settings", bundle: .module)
+            case .max: String(localized: "Max", table: "Settings", bundle: .module)
+            }
         }
         @ViewBuilder private var microphoneButton: some View {
             if let dictation = environment.dictation {
@@ -1259,12 +1584,12 @@ enum ChatComposerPresentation {
         }
 
         private func send() {
-            guard account.chatAccess == .allowed else { return }
+            guard !runtime.snapshot.draft.isEmpty, account.chatAccess == .allowed else { return }
             if environment.send(
                 runtime,
                 options: ChatSendOptions(
                     model: account.selectedModelID, webSearch: account.effectiveWebSearch,
-                    projectID: environment.selectedProjectID))
+                    projectID: environment.selectedProjectID, reasoningEffort: account.resolvedThinkingLevel.effort))
             {
                 composerFocused = false
             }
@@ -1284,12 +1609,25 @@ enum ChatComposerPresentation {
         let speechAccess: AccountAccess
         let onReadAloud: () -> Void
         let onSpeechUnavailable: () -> Void
+        let onPrepared: @MainActor @Sendable () -> Void
         let onOpenLink: (URL) -> Void
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var appeared = false
         @State private var copied = false
         @State private var copyRevision = UUID()
         @State private var thinkingPulse = false
+        @State private var legacyPrepared: ChatLegacyContent.Prepared?
+        @State private var readySource: ChatLegacyContent.Source?
+        @State private var readyFragments: Set<Int> = []
+        private var currentLegacySource: ChatLegacyContent.Source {
+            ChatLegacyContent.Source(
+                text: text, user: isUserMessage,
+                assistant: item.role == "assistant" && item.type == "message" && text.contains("<think>"),
+                streaming: isStreamingText, generation: generation)
+        }
+        private var legacyPresentation: ChatLegacyContent.Presentation {
+            ChatLegacyContent.presentation(source: currentLegacySource, prepared: legacyPrepared)
+        }
         private var text: String { (item.content ?? []).compactMap(\.text).joined(separator: "\n\n") }
         private var readableContent: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1304,6 +1642,41 @@ enum ChatComposerPresentation {
         private var isThinking: Bool {
             item.type == "reasoning" && isGenerating
                 && (["in_progress", "streaming"].contains(item.status ?? "") || item.status == nil)
+        }
+        private var isStreamingText: Bool {
+            isGenerating && ["in_progress", "streaming"].contains(item.status ?? "in_progress")
+        }
+        private var thinkingActive: Bool {
+            if isThinking { return true }
+            if case .assistant(let parts) = legacyPresentation { return parts.contains(where: \.isThinking) }
+            return legacyPresentation == .pendingThinking && isStreamingText
+        }
+        private var requiredFragments: Set<Int> {
+            if currentLegacySource.requiresPreparation, legacyPrepared?.source != currentLegacySource { return [] }
+            switch legacyPresentation {
+            case .document(let document):
+                var fragments: Set<Int> = [-1]
+                if !document.before.isEmpty { fragments.insert(-2) }
+                if !document.after.isEmpty { fragments.insert(-3) }
+                return fragments
+            case .assistant(let parts):
+                return parts.isEmpty ? [0] : Set(parts.map(\.id))
+            case .pendingDocument, .pendingThinking: return []
+            case .ordinary: return [0]
+            }
+        }
+        private func fragmentPrepared(_ id: Int, source: ChatLegacyContent.Source? = nil) {
+            let source = source ?? currentLegacySource
+            guard source == currentLegacySource else { return }
+            if readySource != source { readySource = source; readyFragments = [] }
+            if !readyFragments.contains(id) { readyFragments.insert(id) }
+            publishPreparationIfReady()
+        }
+        private func publishPreparationIfReady() {
+            let required = requiredFragments
+            if readySource == currentLegacySource, !required.isEmpty, required.isSubset(of: readyFragments) {
+                onPrepared()
+            }
         }
 
         var body: some View {
@@ -1337,16 +1710,32 @@ enum ChatComposerPresentation {
             }
             .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
             .opacity(readableContent && revealsContent && !appeared && !reduceMotion ? 0 : 1)
-            .onAppear { revealContent() }
+            .onAppear {
+                revealContent()
+                if text.isEmpty, !ChatTranscriptRow.isTool(item) { fragmentPrepared(0) }
+            }
             .onChange(of: readableContent) { _, _ in revealContent() }
             .task(id: copyRevision) {
                 guard copied else { return }
                 try? await Task<Never, Never>.sleep(nanoseconds: 2_000_000_000)
                 if !Task.isCancelled { copied = false }
             }
-            .onChange(of: isThinking, initial: true) { _, thinking in
+            .onChange(of: thinkingActive, initial: true) { _, thinking in
                 thinkingPulse = thinking
             }
+            .task(id: currentLegacySource) {
+                let source = currentLegacySource
+                guard source.requiresPreparation else { legacyPrepared = nil; return }
+                let work = Task.detached(priority: .userInitiated) {
+                    ChatLegacyContent.prepare(source)
+                }
+                let prepared = await work.value
+                guard !Task.isCancelled, currentLegacySource == source else { return }
+                legacyPrepared = prepared
+                if prepared.document != nil { fragmentPrepared(-1, source: source) }
+                if source.assistant, prepared.parts.isEmpty { fragmentPrepared(0, source: source) }
+            }
+            .onChange(of: requiredFragments) { _, _ in publishPreparationIfReady() }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier((item.role == "assistant" ? "assistant.message." : "message.") + item.id)
         }
@@ -1357,27 +1746,45 @@ enum ChatComposerPresentation {
                     MessageImages(content: item.content ?? [])
                 }
                 if item.type == "reasoning" {
-                    DisclosureGroup {
-                        MessageView(
-                            text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
-                    } label: {
-                        Text(ChatTranscriptPresentation.thinkingLabel(text: text, streaming: isThinking))
-                            .foregroundStyle(.secondary)
-                            .opacity(isThinking && thinkingPulse && !reduceMotion ? 0.5 : 1)
-                            .animation(
-                                isThinking && !reduceMotion
-                                    ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : nil,
-                                value: thinkingPulse)
-                    }
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("message.thinking." + item.id)
+                    thinkingContent(
+                        text, streaming: isThinking, identifier: "message.thinking." + item.id, fragmentID: 0)
                 } else if ChatTranscriptRow.isTool(item) {
                     ToolActivityView(
                         item: item, result: toolResult, theme: theme, font: font, generation: generation,
-                        onOpenLink: onOpenLink)
+                        onOpenLink: onOpenLink, onPrepared: { fragmentPrepared(0) })
                 } else if !text.isEmpty {
-                    MessageView(
-                        text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
+                    switch legacyPresentation {
+                    case .document(let document):
+                        if !document.before.isEmpty { ordinaryText(document.before, fragmentID: -2) }
+                        LegacyDocumentChip(document: document, itemID: item.id, generation: generation)
+                        if !document.after.isEmpty { ordinaryText(document.after, fragmentID: -3) }
+                    case .assistant(let parts):
+                        ForEach(parts) { part in
+                            if part.kind == .thinking {
+                                thinkingContent(
+                                    part.text, streaming: part.isThinking,
+                                    identifier: "message.thinking." + item.id + "." + String(part.id),
+                                    fragmentID: part.id)
+                            } else {
+                                ordinaryText(part.text, fragmentID: part.id)
+                            }
+                        }
+                    case .pendingDocument:
+                        ProgressView()
+                            .frame(minHeight: 44)
+                            .accessibilityLabel(libraryText("Loading..."))
+                            .accessibilityIdentifier("message.document.loading." + item.id)
+                    case .pendingThinking:
+                        HStack(spacing: 8) {
+                            Text(MapleStrings.text("Thinking")).foregroundStyle(.secondary)
+                            ProgressView().controlSize(.mini)
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("message.thinking.loading." + item.id)
+                    case .ordinary:
+                        ordinaryText(text)
+                    }
                 } else if item.role == "assistant", isGenerating,
                     !["completed", "incomplete", "failed"].contains(item.status ?? "")
                 {
@@ -1386,6 +1793,32 @@ enum ChatComposerPresentation {
                         .accessibilityIdentifier("message.pending." + item.id)
                 }
             }
+        }
+
+        private func ordinaryText(_ text: String, fragmentID: Int = 0) -> some View {
+            let source = currentLegacySource
+            return MessageView(
+                text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink
+            )
+            .onPrepared { fragmentPrepared(fragmentID, source: source) }
+        }
+
+        private func thinkingContent(_ text: String, streaming: Bool, identifier: String, fragmentID: Int) -> some View
+        {
+            let source = currentLegacySource
+            return DisclosureGroup {
+                ordinaryText(text, fragmentID: fragmentID)
+            } label: {
+                Text(ChatTranscriptPresentation.thinkingLabel(text: text, streaming: streaming))
+                    .foregroundStyle(.secondary)
+                    .opacity(streaming && thinkingPulse && !reduceMotion ? 0.5 : 1)
+                    .animation(
+                        streaming && !reduceMotion ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : nil,
+                        value: thinkingPulse)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier(identifier)
+            .onChange(of: source, initial: true) { _, value in fragmentPrepared(fragmentID, source: value) }
         }
 
         private var messageActions: some View {
@@ -1429,6 +1862,57 @@ enum ChatComposerPresentation {
         }
     }
 
+    private struct LegacyDocumentChip: View {
+        let document: ChatLegacyContent.Document
+        let itemID: String
+        let generation: UUID
+        @State private var presented = false
+        @Environment(\.compactMenuPresentationDismissed) private var compactMenuPresentationDismissed
+
+        var body: some View {
+            Button {
+                presented = true
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "doc.text").font(.title2)
+                    Text(verbatim: document.filename).font(.caption).lineLimit(1)
+                }
+                .frame(width: 64, height: 64).padding(8)
+                .background(MapleSurface.card, in: RoundedRectangle(cornerRadius: 12))
+                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(MapleSurface.border) }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                Text(
+                    String(
+                        localized: "chat.document-preview", defaultValue: "Preview document: \(document.filename)",
+                        table: "Localizable", bundle: .module))
+            )
+            .accessibilityIdentifier("message.document." + itemID)
+            .tracksChatPresentation(presented)
+            .onChange(of: generation) { _, _ in presented = false }
+            .sheet(isPresented: $presented, onDismiss: compactMenuPresentationDismissed) {
+                NavigationStack {
+                    ScrollView {
+                        Text(
+                            verbatim: document.text.isEmpty ? MapleStrings.text("No content available") : document.text
+                        )
+                        .font(.body).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding()
+                        .accessibilityIdentifier("message.document.content." + itemID)
+                    }
+                    .navigationTitle(document.filename).navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(MapleStrings.text("Done")) { presented = false }
+                                .frame(minWidth: 44, minHeight: 44)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private struct ToolActivityView: View {
         let item: ConversationItem
         let result: ConversationItem?
@@ -1436,42 +1920,57 @@ enum ChatComposerPresentation {
         let font: MessageRenderFont
         let generation: UUID
         let onOpenLink: (URL) -> Void
+        let onPrepared: @MainActor @Sendable () -> Void
         @State private var expanded = false
-        @State private var details = ""
+        @State private var details = ChatToolPresentation.Details(input: "", output: "")
+        @State private var outputExpanded = false
+        @State private var preparedTitle: String?
+        @State private var outputPreview = ""
         @State private var detailsRevision = UUID()
-        private var failed: Bool {
-            [item.status, result?.status].contains(where: { ["failed", "error"].contains($0 ?? "") })
-        }
+        private var status: ChatToolPresentation.Status { ChatToolPresentation.status(item: item, result: result) }
+        private var failed: Bool { status == .failed }
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    expanded.toggle()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(
-                            systemName: failed ? "exclamationmark.circle" : item.name == "open_urls" ? "link" : "globe"
-                        )
-                        .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(MapleAccent.foreground))
-                        Text(title).foregroundStyle(.primary)
-                        Spacer(minLength: 8)
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Group {
+                    if details.hasDetails {
+                        Button {
+                            expanded.toggle()
+                        } label: {
+                            summary
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(
+                            MapleStrings.text(expanded ? "Expanded" : "Collapsed") + ", " + statusLabel)
+                    } else {
+                        summary.accessibilityValue(statusLabel)
                     }
-                    .font(.footnote.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityValue(MapleStrings.text(expanded ? "Expanded" : "Collapsed"))
                 .accessibilityIdentifier("tool.activity." + item.id)
-                if expanded {
-                    Group {
-                        if !details.isEmpty {
+                if expanded, details.hasDetails {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !details.input.isEmpty {
+                            Text(MapleStrings.text("Input")).font(.caption.weight(.medium)).textCase(.uppercase)
+                            ScrollView {
+                                Text(verbatim: details.input).font(.caption.monospaced()).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                            }.frame(maxHeight: 224).background(MapleSurface.card, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        if !details.output.isEmpty {
+                            Text(MapleStrings.text("Output")).font(.caption.weight(.medium)).textCase(.uppercase)
                             MessageView(
-                                text: details, theme: theme, font: font, accountGeneration: generation,
-                                onOpenLink: onOpenLink)
-                        } else {
-                            Text(MapleStrings.text("No tool details available.")).foregroundStyle(.secondary)
+                                text: outputExpanded ? details.output : outputPreview,
+                                theme: theme, font: font, accountGeneration: generation,
+                                onOpenLink: onOpenLink
+                            )
+                            .onPrepared(onPrepared)
+                            if details.output.utf16.count > 150 {
+                                Button(MapleStrings.text(outputExpanded ? "Show less" : "Show more")) {
+                                    outputExpanded.toggle()
+                                }
+                                .font(.caption.weight(.medium)).frame(minHeight: 44)
+                                .accessibilityValue(MapleStrings.text(outputExpanded ? "Expanded" : "Collapsed"))
+                                .accessibilityIdentifier("tool.output.toggle." + item.id)
+                            }
                         }
                     }
                     .accessibilityElement(children: .contain)
@@ -1485,36 +1984,64 @@ enum ChatComposerPresentation {
             .onChange(of: item) { _, _ in detailsRevision = UUID() }
             .onChange(of: result) { _, _ in detailsRevision = UUID() }
             .task(id: detailsRevision) {
-                let arguments = item.arguments, output = item.output, result = result
+                let item = item, result = result, locale = Locale.current
                 let work = Task.detached(priority: .userInitiated) {
-                    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    var details = [arguments, output, result?.arguments, result?.output].compactMap {
-                        value -> String? in
-                        guard let value, let bytes = try? encoder.encode(value), bytes.count <= 1_048_576,
-                            let text = String(data: bytes, encoding: .utf8)
-                        else { return nil }
-                        return text
-                    }
-                    if let content = result?.content, !content.isEmpty,
-                        let bytes = try? encoder.encode(content), bytes.count <= 1_048_576,
-                        let text = String(data: bytes, encoding: .utf8)
-                    {
-                        details.append(text)
-                    }
-                    return details.joined(separator: "\n\n")
+                    let details = ChatToolPresentation.details(item: item, result: result)
+                    let title =
+                        ChatTranscriptRow.isToolOutput(item)
+                        ? MapleStrings.text("Tool result", locale: locale)
+                        : ChatToolPresentation.title(
+                            name: item.name, arguments: item.arguments,
+                            webSearch: item.type == "web_search_call", locale: locale)
+                    return (details, title, ChatToolPresentation.preview(details.output))
                 }
-                let value = await work.value
-                if !Task.isCancelled { details = value }
+                let (value, title, preview) = await work.value
+                if !Task.isCancelled {
+                    details = value; preparedTitle = title; outputPreview = preview
+                    if !expanded || value.output.isEmpty { onPrepared() }
+                }
+            }
+            .onChange(of: expanded) { _, value in if !value { onPrepared() } }
+        }
+        private var statusLabel: String {
+            switch status {
+            case .active: MapleStrings.text("In progress")
+            case .completed: MapleStrings.text("Completed")
+            case .incomplete: MapleStrings.text("Incomplete")
+            case .failed: MapleStrings.text("Failed")
             }
         }
-        private var title: String {
-            let search = item.name == "web_search" || item.type == "web_search_call"
-            if failed { return MapleStrings.text(search ? "Search failed" : "Tool failed") }
-            if item.name == "open_urls" { return MapleStrings.text("Opened pages") }
-            if search {
-                return MapleStrings.text(result != nil || item.status == "completed" ? "Search results" : "Web search")
+        private var summary: some View {
+            HStack(spacing: 8) {
+                Image(
+                    systemName: ChatToolPresentation.kind(name: item.name, webSearch: item.type == "web_search_call")
+                        .systemImage
+                )
+                .foregroundStyle(.secondary)
+                Text(verbatim: title).foregroundStyle(.primary).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(statusLabel).font(.caption).foregroundStyle(
+                    failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(.secondary))
+                if status == .active {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: status == .completed ? "checkmark" : "xmark")
+                        .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(.secondary))
+                }
+                if details.hasDetails {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
             }
-            return MapleStrings.text("Tool results")
+            .font(.footnote.weight(.medium))
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+        }
+        private var title: String {
+            if let preparedTitle { return preparedTitle }
+            if ChatTranscriptRow.isToolOutput(item) { return MapleStrings.text("Tool result") }
+            return ChatToolPresentation.title(
+                name: item.name, arguments: nil, webSearch: item.type == "web_search_call")
         }
     }
 

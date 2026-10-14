@@ -53,6 +53,7 @@
         var dragEnabled = true
         var dropDestination: LibraryConversationDestination? = nil
         var selectedChatID: String? = nil
+        var activity: ConversationActivity = .idle
         var body: some View {
             Group {
                 if selecting {
@@ -69,13 +70,16 @@
                                     ? "checkmark.circle.fill" : "circle")
                             ConversationTitle(
                                 conversation: conversation,
-                                emphasized: selectionLibrary.selectedIDs.contains(conversation.id))
+                                emphasized: selectionLibrary.selectedIDs.contains(conversation.id), activity: activity)
                             Spacer(minLength: 0)
                         }
                         .frame(minHeight: 50).contentShape(Rectangle()).foregroundStyle(.primary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("library.chat." + conversation.id)
+                    .accessibilityLabel(
+                        conversationActivityLabel(title: displayedTitle(conversation), activity: activity)
+                    )
                     .accessibilityAddTraits(selectionLibrary.selectedIDs.contains(conversation.id) ? [.isSelected] : [])
                     .disabled(library.isMutating || selectionLibrary.isMutating)
                 } else {
@@ -84,7 +88,7 @@
                         onSelectForSelection: {
                             selectionLibrary.selectedIDs.insert(conversation.id); selecting = true
                         }, leadingInset: leadingInset, contextMenuEnabled: dragContext == nil || !dragEnabled,
-                        selectedChatID: selectedChatID)
+                        selectedChatID: selectedChatID, activity: activity)
                 }
             }
             .modifier(
@@ -108,10 +112,15 @@
         @Bindable var library: LibraryModel
         @Binding var selecting: Bool
         var onMutation: (@MainActor () async -> Void)? = nil
+        var account: AccountEntitlements? = nil
         var onSettings: (@MainActor () -> Void)? = nil
+        var showsWordmarkMenu = true
         var compactRootBar = false
         var nativeRootBarHidden = false
         var nativeRootBarTrailing: AnyView? = nil
+        var selectionDeleteTitle = "Delete selected chats"
+        @Environment(\.colorScheme) private var colorScheme
+        @Environment(\.displayScale) private var displayScale
         @State private var moving = false
         @State private var deleting = false
         @State private var deletingAll = false
@@ -120,8 +129,10 @@
                 .modifier(LibraryChatDeletionConfirmation())
                 .toolbar {
                     if !compactRootBar {
-                        ToolbarItem(placement: .principal) { mapleMenu }
-                            .sharedBackgroundVisibility(.hidden)
+                        if showsWordmarkMenu {
+                            ToolbarItem(placement: .principal) { mapleMenu }
+                                .sharedBackgroundVisibility(.hidden)
+                        }
                         if selecting {
                             ToolbarItem(placement: .topBarLeading) { selectionDone }
                         }
@@ -150,7 +161,7 @@
                                 deleting = true
                             } label: {
                                 Label {
-                                    libraryText("Delete selected chats")
+                                    libraryText(selectionDeleteTitle)
                                 } icon: {
                                     Image(systemName: "trash")
                                 }
@@ -162,7 +173,10 @@
                     }
                 }
                 .confirmationDialog(
-                    Text("Delete selected chats?", tableName: "Library", bundle: .module), isPresented: $deleting,
+                    Text(
+                        String(
+                            localized: "Delete %lld chats?", defaultValue: "Delete \(library.selectedIDs.count) chats?",
+                            table: "Library", bundle: .module)), isPresented: $deleting,
                     titleVisibility: .visible
                 ) {
                     Button(role: .destructive) {
@@ -177,7 +191,13 @@
                         libraryText("Delete selected chats")
                     }
                 } message: {
-                    libraryText("Deleted chats cannot be restored.")
+                    Text(
+                        String(
+                            localized:
+                                "This will permanently delete %lld selected chats. This action cannot be undone.",
+                            defaultValue:
+                                "This will permanently delete \(library.selectedIDs.count) selected chats. This action cannot be undone.",
+                            table: "Library", bundle: .module))
                 }
                 .sheet(isPresented: $moving, onDismiss: { Task { await onMutation?() } }) {
                     NavigationStack {
@@ -190,8 +210,9 @@
                     NavigationStack {
                         DeleteLibraryContentView(
                             title: "Delete all chats",
-                            explanation:
+                            explanation: libraryText(
                                 "This deletes every chat in this account, including chats in projects. Projects remain."
+                            )
                         ) {
                             await library.deleteAllConversations()
                             let issue = library.issue
@@ -210,10 +231,12 @@
                             Label {
                                 libraryText("Settings")
                             } icon: {
-                                Image(systemName: "gearshape")
+                                settingsIcon
                             }
                         }
                         .accessibilityIdentifier("library.settings")
+                        .accessibilityLabel(settingsAccessibilityLabel)
+                        .accessibilityHint(settingsAttentionHint)
                     }
                     Button {
                         selecting.toggle(); if !selecting { library.selectedIDs = [] }
@@ -253,6 +276,42 @@
             .disabled(library.isMutating)
         }
 
+        private var settingsAccessibilityLabel: Text {
+            guard let attention = account.flatMap({ LibraryAccountAttention(team: $0.team.value) }) else {
+                return libraryText("Settings")
+            }
+            return Text(
+                String(
+                    localized: "Settings, %@", defaultValue: "Settings, \(attention.accessibilityLabel)",
+                    table: "Library", bundle: .module))
+        }
+
+        private var settingsAttentionHint: Text {
+            guard let attention = account.flatMap({ LibraryAccountAttention(team: $0.team.value) }) else {
+                return Text(verbatim: "")
+            }
+            return Text(verbatim: attention.accessibilityLabel)
+        }
+
+        private var settingsIcon: Image {
+            guard let account, LibraryAccountAttention(team: account.team.value) != nil else {
+                return Image(systemName: "gearshape")
+            }
+            // Native menus export one title and image from Label. Render the
+            // existing badge into that image so its color survives menu export.
+            let renderer = ImageRenderer(
+                content: Image(systemName: "gearshape").font(.system(size: 19)).foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+                    .overlay(alignment: .topTrailing) {
+                        LibraryAccountAttentionBadge(account: account).font(.system(size: 10))
+                            .background(.background, in: Circle()).offset(x: 3, y: -3)
+                    }
+                    .padding(3).environment(\.colorScheme, colorScheme))
+            renderer.scale = displayScale
+            guard let image = renderer.uiImage else { return Image(systemName: "exclamationmark.circle.fill") }
+            return Image(uiImage: image).renderingMode(.original)
+        }
+
         private var selectionDone: some View {
             Button {
                 selecting = false; library.selectedIDs = []
@@ -284,6 +343,7 @@
     struct ConversationTitle: View {
         let conversation: Conversation
         var emphasized = false
+        var activity: ConversationActivity = .idle
         var body: some View {
             let title = LibraryModel.title(conversation)
             HStack(spacing: 6) {
@@ -295,6 +355,106 @@
                 }
                 .fontWeight(emphasized ? .bold : .regular)
                 .lineLimit(1).truncationMode(.tail)
+                ConversationActivityIndicator(activity: activity)
+            }
+        }
+    }
+
+    struct ConversationActivityIndicator: View {
+        let activity: ConversationActivity
+        @ViewBuilder var body: some View {
+            switch activity {
+            case .idle: EmptyView()
+            case .running:
+                ProgressView().controlSize(.mini).tint(MapleAccent.action).accessibilityHidden(true)
+            case .unread:
+                Circle().fill(.green).frame(width: 8, height: 8).accessibilityHidden(true)
+            }
+        }
+    }
+
+    @MainActor private func displayedTitle(_ conversation: Conversation) -> String {
+        let title = LibraryModel.title(conversation)
+        return title.isEmpty ? String(localized: "Untitled chat", table: "Library", bundle: .module) : title
+    }
+
+    func conversationActivityLabel(title: String, activity: ConversationActivity) -> Text {
+        switch activity {
+        case .idle: Text(verbatim: title)
+        case .running:
+            Text(String(localized: "%@, running", defaultValue: "\(title), running", table: "Library", bundle: .module))
+        case .unread:
+            Text(
+                String(
+                    localized: "%@, completed, unread", defaultValue: "\(title), completed, unread", table: "Library",
+                    bundle: .module))
+        }
+    }
+
+    /// Like the project name form, rename remains open on validation or
+    /// service failure; a dismissed form cannot apply a later completion.
+    private struct RenameChatForm: View {
+        let conversation: Conversation
+        @Bindable var library: LibraryModel
+        let onMutation: (@MainActor () async -> Void)?
+        @Environment(\.dismiss) private var dismiss
+        @State private var name = ""
+        @State private var validation: String?
+        @State private var submitting = false
+        @State private var visible = false
+        @FocusState private var focused: Bool
+
+        var body: some View {
+            Form {
+                libraryText("Enter a new name for this chat conversation.")
+                TextField(text: $name) { libraryText("Chat Title") }
+                    .focused($focused).submitLabel(.done).onSubmit { submit() }
+                    .accessibilityIdentifier("library.rename-title")
+                if let validation {
+                    libraryText(validation).foregroundStyle(MapleRedText())
+                        .accessibilityIdentifier("library.rename-validation")
+                }
+                if let issue = library.issue { LibraryIssueView(issue: issue) }
+            }
+            .scrollContentBackground(.hidden).background(MapleSurface.canvas)
+            .navigationTitle(libraryText("Rename Chat"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        libraryText("Cancel")
+                    }.disabled(submitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: submit) { libraryText("Rename Chat") }
+                        .disabled(submitting || library.isMutating || !library.isActive)
+                        .accessibilityIdentifier("library.rename-save")
+                }
+            }
+            .interactiveDismissDisabled(submitting)
+            .disabled(submitting || !library.isActive)
+            .onAppear {
+                visible = true; name = LibraryModel.title(conversation); focused = true
+            }
+            .onDisappear { visible = false }
+            .onChange(of: name) { _, _ in validation = nil }
+        }
+
+        private func submit() {
+            guard visible, library.isActive, !submitting, !library.isMutating else { return }
+            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { validation = "Chat title cannot be empty."; return }
+            guard title != LibraryModel.title(conversation).trimmingCharacters(in: .whitespacesAndNewlines) else {
+                validation = "Please enter a different title."; return
+            }
+            validation = nil; submitting = true; focused = false
+            Task { @MainActor in
+                await library.renameConversation(id: conversation.id, title: title)
+                guard visible, library.isActive else { return }
+                submitting = false
+                if library.issue == nil { await onMutation?(); if visible, library.isActive { dismiss() } }
             }
         }
     }
@@ -303,6 +463,7 @@
     /// the list host, and capture the exact account owner before presenting it.
     @MainActor fileprivate struct LibraryChatDeletionRequest {
         let id: String
+        let title: String
         let library: LibraryModel
         let onMutation: (@MainActor () async -> Void)?
     }
@@ -327,7 +488,7 @@
                     pending = request
                 }
                 .alert(
-                    Text("Delete chat?", tableName: "Library", bundle: .module),
+                    Text("Are you sure you want to delete this chat?", tableName: "Library", bundle: .module),
                     isPresented: Binding(
                         get: { pending != nil }, set: { if !$0 { pending = nil } }),
                     presenting: pending
@@ -347,8 +508,13 @@
                     } label: {
                         libraryText("Delete")
                     }
-                } message: { _ in
-                    libraryText("Deleted chats cannot be restored.")
+                } message: { request in
+                    Text(
+                        String(
+                            localized: "This will permanently delete \"%@\". This action cannot be undone.",
+                            defaultValue:
+                                "This will permanently delete \"\(request.title)\". This action cannot be undone.",
+                            table: "Library", bundle: .module))
                 }
                 .onChange(of: pending?.library.isActive) { _, active in
                     if active == false { pending = nil }
@@ -366,9 +532,9 @@
         var leadingInset: CGFloat = 20
         var contextMenuEnabled = true
         var selectedChatID: String? = nil
+        var activity: ConversationActivity = .idle
         @Environment(\.requestChatDeletion) private var requestChatDeletion
         @State private var renaming = false
-        @State private var name = ""
         @State private var moving = false
         var body: some View {
             HStack(spacing: 0) {
@@ -402,7 +568,7 @@
                 .tint(.red)
                 .accessibilityIdentifier("library.swipe-delete." + conversation.id)
                 Button {
-                    name = LibraryModel.title(conversation); renaming = true
+                    renaming = true
                 } label: {
                     Label {
                         libraryText("Rename")
@@ -412,20 +578,10 @@
                 }
             }
             .disabled(library.isMutating)
-            .alert(Text("Rename chat", tableName: "Library", bundle: .module), isPresented: $renaming) {
-                TextField(text: $name) { libraryText("Chat name") }
-                Button(role: .cancel) {
-                } label: {
-                    libraryText("Cancel")
+            .sheet(isPresented: $renaming) {
+                NavigationStack {
+                    RenameChatForm(conversation: conversation, library: library, onMutation: onMutation)
                 }
-                Button {
-                    Task {
-                        await library.renameConversation(id: conversation.id, title: name); await changed()
-                    }
-                } label: {
-                    libraryText("Save")
-                }
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .sheet(isPresented: $moving, onDismiss: { Task { await changed() } }) {
                 NavigationStack { MoveChatsView(library: library, ids: [conversation.id]) }
@@ -444,12 +600,15 @@
             Button {
                 onSelect(conversation.id)
             } label: {
-                ConversationTitle(conversation: conversation, emphasized: selectedChatID == conversation.id)
-                    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
-                    .contentShape(Rectangle()).foregroundStyle(.primary)
+                ConversationTitle(
+                    conversation: conversation, emphasized: selectedChatID == conversation.id, activity: activity
+                )
+                .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+                .contentShape(Rectangle()).foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("library.chat." + conversation.id)
+            .accessibilityLabel(conversationActivityLabel(title: displayedTitle(conversation), activity: activity))
             .accessibilityAddTraits(selectedChatID == conversation.id ? [.isSelected] : [])
         }
         @ViewBuilder private var actions: some View {
@@ -483,7 +642,7 @@
                 }
             }
             Button {
-                name = LibraryModel.title(conversation); renaming = true
+                renaming = true
             } label: {
                 Label {
                     libraryText("Rename")
@@ -503,7 +662,8 @@
         }
         private func requestDeletion() {
             requestChatDeletion(
-                LibraryChatDeletionRequest(id: conversation.id, library: library, onMutation: onMutation))
+                LibraryChatDeletionRequest(
+                    id: conversation.id, title: displayedTitle(conversation), library: library, onMutation: onMutation))
         }
         private func changed() async { if library.issue == nil { await onMutation?() } }
     }
@@ -552,7 +712,8 @@
 
     struct DeleteLibraryContentView: View {
         let title: String
-        let explanation: String
+        var actionTitle: String? = nil
+        let explanation: Text
         let action: @MainActor () async -> LibraryIssue?
         @Environment(\.dismiss) private var dismiss
         @State private var confirmation = ""
@@ -560,7 +721,7 @@
         @State private var issue: LibraryIssue?
         var body: some View {
             List {
-                libraryText(explanation)
+                explanation
                 TextField(
                     text: $confirmation,
                     prompt: libraryText("Type DELETE to confirm").foregroundStyle(MapleFieldPrompt())
@@ -573,7 +734,7 @@
                         issue = await action(); working = false; if issue == nil { dismiss() }
                     }
                 } label: {
-                    libraryText(title)
+                    libraryText(actionTitle ?? title)
                 }.disabled(confirmation != "DELETE" || working)
                     .accessibilityIdentifier("library.delete-confirm")
                 if let issue { LibraryIssueView(issue: issue) }

@@ -168,6 +168,94 @@ import XCTest
         XCTAssertEqual(composer.value as? String, "Held draft B remains unsent")
     }
 
+    func testFreshSendAfterEmptyQueueProcessRestartDrainsTheNextQueuedMessage() throws {
+        launch(empty: true)
+        try sendAndDrainQueue(
+            direct: "First direct message", queued: "First queued message", held: "Held composer before restart",
+            startingPosts: 0)
+        checkpoint(); app.terminate(); launch(reset: false, empty: true)
+        waitLabel("chat.fixture.queue-state", "paused")
+        waitLabel("chat.fixture.queue-count", "Queued turns 0")
+        waitLabel("chat.fixture.posts", "POSTs 0")
+        XCTAssertEqual(composer.value as? String, "Held composer before restart")
+
+        try sendAndDrainQueue(
+            direct: "Fresh direct message after restart", queued: "Next queued message after restart",
+            held: "Newer composer after restart stays unsent", startingPosts: 0)
+    }
+
+    func testFreshSendAfterEmptyQueueReconnectDrainsTheNextQueuedMessage() throws {
+        launch(empty: true)
+        try sendAndDrainQueue(
+            direct: "First direct message", queued: "First queued message", held: "Held composer before reconnect",
+            startingPosts: 0)
+        tap("chat.fixture.connectivity")
+        waitLabel("chat.fixture.queue-state", "paused")
+        waitLabel("chat.fixture.queue-count", "Queued turns 0")
+        XCTAssertFalse(app.buttons["chat.send"].isEnabled)
+        tap("chat.fixture.connectivity")
+        waitLabel("chat.fixture.queue-state", "paused")
+        waitLabel("chat.fixture.posts", "POSTs 2")
+        XCTAssertEqual(composer.value as? String, "Held composer before reconnect")
+
+        try sendAndDrainQueue(
+            direct: "Fresh direct message after reconnect", queued: "Next queued message after reconnect",
+            held: "Newer composer after reconnect stays unsent", startingPosts: 2)
+    }
+
+    func testFreshSendAfterStoppingWithEmptyQueueDrainsTheNextQueuedMessage() throws {
+        launch(empty: true)
+        try sendAndDrainQueue(
+            direct: "First direct message", queued: "First queued message", held: "Held composer before Stop",
+            startingPosts: 0)
+        try replaceComposer("Active reply to stop"); tap("chat.send")
+        waitLabel("chat.fixture.posts", "POSTs 3")
+        tap("chat.fixture.created"); waitLabel("chat.fixture.phase", "streaming")
+        try replaceComposer("Newer draft survives Stop")
+        waitLabel("chat.fixture.queue-count", "Queued turns 0")
+        tap("chat.stop")
+        waitLabel("chat.fixture.cancels", "Cancels 1")
+        waitLabel("chat.fixture.phase", "idle")
+        waitLabel("chat.fixture.queue-count", "Queued turns 0")
+        waitLabel("chat.fixture.posts", "POSTs 3")
+        XCTAssertEqual(composer.value as? String, "Newer draft survives Stop")
+
+        try sendAndDrainQueue(
+            direct: "Newer draft survives Stop", queued: "Next queued message after Stop",
+            held: "Newer composer after Stop stays unsent", startingPosts: 3)
+    }
+
+    private func sendAndDrainQueue(direct: String, queued: String, held: String, startingPosts: Int) throws {
+        try replaceComposer(direct); tap("chat.send")
+        waitLabel("chat.fixture.posts", "POSTs \(startingPosts + 1)")
+        waitLabel("chat.fixture.durability", "durable")
+        let directMessageID = app.staticTexts["chat.fixture.message-id"].label
+        XCTAssertNotNil(UUID(uuidString: directMessageID))
+        waitLabel("chat.fixture.message." + directMessageID, direct)
+        tap("chat.fixture.created"); waitLabel("chat.fixture.phase", "streaming")
+        try replaceComposer(queued); tap("chat.send")
+        waitLabel("chat.fixture.queued", queued)
+        waitLabel("chat.fixture.queue-count", "Queued turns 1")
+        waitLabel("chat.fixture.queue-state", "running")
+        try replaceComposer(held)
+        tap("chat.fixture.complete")
+
+        waitLabel("chat.fixture.posts", "POSTs \(startingPosts + 2)")
+        waitLabel("chat.fixture.queue-count", "Queued turns 0")
+        waitLabel("chat.fixture.durability", "durable")
+        let queuedMessageID = app.staticTexts["chat.fixture.message-id"].label
+        XCTAssertNotNil(UUID(uuidString: queuedMessageID))
+        XCTAssertNotEqual(queuedMessageID, directMessageID)
+        waitLabel("chat.fixture.message." + queuedMessageID, queued)
+        XCTAssertEqual(composer.value as? String, held)
+        tap("chat.fixture.created"); waitLabel("chat.fixture.phase", "streaming")
+        tap("chat.fixture.complete"); waitLabel("chat.fixture.phase", "idle")
+        waitLabel("chat.fixture.queue-count", "Queued turns 0")
+        waitLabel("chat.fixture.posts", "POSTs \(startingPosts + 2)")
+        XCTAssertEqual(composer.value as? String, held)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+    }
+
     func testRestoredQueueEditDeletePreservesHeldDraftAndImagesAcrossNavigation() throws {
         launch(images: true)
         waitLabel("chat.fixture.image-counts", "Composer images 2; held images 0; queued images 1")

@@ -29,20 +29,39 @@ public struct SelectedImageSource: Sendable {
 /// is allowed; importing into a sent/retired draft or a replacement account is not.
 @MainActor @Observable public final class ImageImportController {
     public let runtime: ChatRuntime
-    public private(set) var issue: ImageImportIssue?
+    public private(set) var issue: ImageImportIssue? { didSet { scheduleIssueExpiry() } }
     public private(set) var importingDrafts: Set<UUID> = []
     @ObservationIgnored private let processor: any ImageProcessing
     @ObservationIgnored private let budget: ImageImportBudget
     @ObservationIgnored private let admission: @MainActor () -> Bool
+    @ObservationIgnored private let capacityIssue: @MainActor (ChatSnapshot) -> ImageImportIssue?
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private(set) var issueExpiry: Task<Void, Never>?
+    @ObservationIgnored private var issueOccurrence = UUID()
     @ObservationIgnored private var jobs: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var tickets: [UUID: UUID] = [:]
     private var valid = true
 
     public init(
         runtime: ChatRuntime, processor: any ImageProcessing, budget: ImageImportBudget = ImageImportBudget(),
+        capacityIssue: @escaping @MainActor (ChatSnapshot) -> ImageImportIssue? = { _ in nil },
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         admission: @escaping @MainActor () -> Bool = { true }
     ) {
-        self.runtime = runtime; self.processor = processor; self.budget = budget; self.admission = admission
+        self.runtime = runtime; self.processor = processor; self.budget = budget; self.sleep = sleep
+        self.admission = admission; self.capacityIssue = capacityIssue
+    }
+
+    private func scheduleIssueExpiry() {
+        issueExpiry?.cancel(); issueExpiry = nil
+        issueOccurrence = UUID()
+        guard valid, issue != nil else { return }
+        let occurrence = issueOccurrence, sleep = sleep
+        issueExpiry = Task { [weak self] in
+            do { try await sleep(.seconds(5)) } catch { return }
+            guard !Task.isCancelled, let self, valid, issueOccurrence == occurrence else { return }
+            issue = nil
+        }
     }
     public func waitForImports() async {
         for job in Array(jobs.values) { await job.value }
@@ -77,9 +96,7 @@ public struct SelectedImageSource: Sendable {
                         let proposed = proposedImages(imported + [image], draftID: draftID)
                     else { return }
                     guard admission() else { throw ImageImportIssue.unavailable }
-                    guard ChatResourceUsage(snapshots: [proposed]).fitsAccount,
-                        runtime.canAdmitSnapshot?(proposed) ?? true
-                    else { throw ImageImportIssue.attachmentLimit }
+                    try validateCapacity(proposed)
                     imported.append(image)
                 }
                 guard let self, valid, tickets[draftID] == ticket,
@@ -96,14 +113,22 @@ public struct SelectedImageSource: Sendable {
                     return
                 }
                 guard admission() else { throw ImageImportIssue.unavailable }
-                guard ChatResourceUsage(snapshots: [proposed]).fitsAccount,
-                    runtime.canAdmitSnapshot?(proposed) ?? true
-                else { throw ImageImportIssue.attachmentLimit }
+                try validateCapacity(proposed)
                 _ = runtime.updateOwnedDraft(current)
             } catch is CancellationError { return } catch {
                 guard let self, valid, tickets[draftID] == ticket else { return }
                 issue = (error as? ImageImportIssue) ?? .unavailable
             }
+        }
+    }
+
+    private func validateCapacity(_ proposed: ChatSnapshot) throws {
+        let usage = ChatResourceUsage(snapshots: [proposed])
+        if usage.images > 640 { throw ImageImportIssue.accountImageLimit }
+        if usage.imageBytes > 256 * 1_024 * 1_024 { throw ImageImportIssue.accountAttachmentLimit }
+        if let issue = capacityIssue(proposed) { throw issue }
+        guard usage.fitsAccount, runtime.canAdmitSnapshot?(proposed) ?? true else {
+            throw ImageImportIssue.attachmentLimit
         }
     }
 

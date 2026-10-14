@@ -625,18 +625,6 @@
         }
       }
     },
-    "Load earlier messages": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Load earlier messages"
-          }
-        }
-      }
-    },
     "Loading account…": {
       "comment": "Account settings startup or permanent chat-history deletion confirmation.",
       "extractionState": "manual",
@@ -745,18 +733,6 @@
         }
       }
     },
-    "No tool details available.": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No tool details available."
-          }
-        }
-      }
-    },
     "OK": {
       "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
       "extractionState": "manual",
@@ -813,18 +789,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open link"
-          }
-        }
-      }
-    },
-    "Opened pages": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Opened pages"
           }
         }
       }
@@ -1172,30 +1136,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Save changes"
-          }
-        }
-      }
-    },
-    "Search failed": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search failed"
-          }
-        }
-      }
-    },
-    "Search results": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search results"
           }
         }
       }
@@ -1584,30 +1524,6 @@
         }
       }
     },
-    "Tool failed": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tool failed"
-          }
-        }
-      }
-    },
-    "Tool results": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tool results"
-          }
-        }
-      }
-    },
     "Try again": {
       "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
       "extractionState": "manual",
@@ -1844,18 +1760,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your session has ended. Sign in again."
-          }
-        }
-      }
-    },
-    "Your team’s seat allocation needs attention.": {
-      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Your team’s seat allocation needs attention."
           }
         }
       }
@@ -2264,6 +2168,480 @@
           "stringUnit": {
             "state": "translated",
             "value": "Maple is responding"
+          }
+        }
+      }
+    },
+    "Chat drafts and queued attachments can use up to 256 MiB across your account": {
+      "comment": "Research account retained-attachment byte budget notice.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat drafts and queued attachments can use up to 256 MiB across your account"
+          }
+        }
+      }
+    },
+    "Chat drafts and queued messages can retain up to 640 images across your account": {
+      "comment": "Research account retained-image budget notice.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat drafts and queued messages can retain up to 640 images across your account"
+          }
+        }
+      }
+    },
+    "In progress": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In progress"
+          }
+        }
+      }
+    },
+    "Input": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Input"
+          }
+        }
+      }
+    },
+    "Open URL": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URL"
+          }
+        }
+      }
+    },
+    "Open URLs": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URLs"
+          }
+        }
+      }
+    },
+    "Output": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output"
+          }
+        }
+      }
+    },
+    "Read image": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read image"
+          }
+        }
+      }
+    },
+    "Show less": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show less"
+          }
+        }
+      }
+    },
+    "Show more": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show more"
+          }
+        }
+      }
+    },
+    "Tool call": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool call"
+          }
+        }
+      }
+    },
+    "chat.tool-image-title": {
+      "comment": "Tool card title. Placeholder is the image number.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read image: Image %@"
+          }
+        }
+      }
+    },
+    "chat.tool-named-query-title": {
+      "comment": "Unknown tool title. First placeholder is the tool name; second is its query.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: \"%2$@\""
+          }
+        }
+      }
+    },
+    "chat.tool-search-title": {
+      "comment": "Tool card title. Placeholder is the search query.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web Search: \"%@\""
+          }
+        }
+      }
+    },
+    "chat.tool-url-title": {
+      "comment": "Tool card title. Placeholder is the URL.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URL: %@"
+          }
+        }
+      }
+    },
+    "chat.tool-urls-title": {
+      "comment": "Tool card title for multiple pages.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open URLs: %lld pages"
+          }
+        }
+      }
+    },
+    "chat_issue_conversation_deleting": {
+      "comment": "Research deletion admission notice. Do not expose server error bodies.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending paused because this conversation is being deleted."
+          }
+        }
+      }
+    },
+    "Loading earlier messages": {
+      "comment": "Accessibility for the older-history loading spinner.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading earlier messages"
+          }
+        }
+      }
+    },
+    "No content available": {
+      "comment": "Empty legacy document history preview.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No content available"
+          }
+        }
+      }
+    },
+    "Tool result": {
+      "comment": "An orphan tool output card title.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool result"
+          }
+        }
+      }
+    },
+    "chat.document-preview": {
+      "comment": "History document chip. Placeholder is its original filename.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview document: %@"
+          }
+        }
+      }
+    },
+    "Team usage paused": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team usage paused"
+          }
+        }
+      }
+    },
+    "Seat count mismatch": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seat count mismatch"
+          }
+        }
+      }
+    },
+    "This team has more members than paid seats. Remove members to match the paid seat count and resume team usage.": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has more members than paid seats. Remove members to match the paid seat count and resume team usage."
+          }
+        }
+      }
+    },
+    "This team has more members than paid seats. Contact your team admin to resolve the seat count.": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has more members than paid seats. Contact your team admin to resolve the seat count."
+          }
+        }
+      }
+    },
+    "team.seat-mismatch-summary": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@members@, %#@seats@"
+          },
+          "substitutions": {
+            "members": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld member"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld members"
+                    }
+                  }
+                }
+              }
+            },
+            "seats": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seat"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seats"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "team.seat-mismatch-admin-message": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has %#@members@ but only %#@seats@. Remove members to match the paid seat count and resume team usage."
+          },
+          "substitutions": {
+            "members": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld member"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld members"
+                    }
+                  }
+                }
+              }
+            },
+            "seats": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seat"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seats"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "team.seat-mismatch-member-message": {
+      "comment": "Read-only mobile team seat mismatch notice. Member and paid-seat counts can independently be singular. No purchase or management action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This team has %#@members@ but only %#@seats@. Contact your team admin to resolve the seat count."
+          },
+          "substitutions": {
+            "members": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld member"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld members"
+                    }
+                  }
+                }
+              }
+            },
+            "seats": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seat"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld paid seats"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "chat.tool-search-name": {
+      "comment": "Research tool activity status or detail control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web Search"
           }
         }
       }

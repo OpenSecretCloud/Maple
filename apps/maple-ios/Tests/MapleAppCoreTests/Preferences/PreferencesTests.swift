@@ -11,6 +11,7 @@ import Testing
         let value = LocalPreferences()
         #expect(value.theme == .system && value.chatFont == .manrope)
         #expect(value.selectedModelID == "auto:quick" && value.webSearchPreferred)
+        #expect(value.thinkingLevel == .default)
         #expect(try JSONDecoder().decode(LocalPreferences.self, from: JSONEncoder().encode(value)).webSearchPreferred)
         #expect(value.voice == .casualFemale && value.playbackSpeed.rawValue == 1.2)
         #expect(value.sidebarIsOpen)
@@ -27,7 +28,7 @@ import Testing
             Set(object.keys)
                 == Set([
                     "theme", "chatFont", "selectedModelID", "webSearchPreferred", "voice", "playbackSpeed",
-                    "sidebarIsOpen",
+                    "sidebarIsOpen", "chatThinkingLevel",
                 ]))
     }
 
@@ -86,6 +87,35 @@ import Testing
         let decoded = try JSONDecoder().decode(LocalPreferences.self, from: JSONEncoder().encode(choice))
         #expect(decoded == choice)
         #expect(!decoded.sidebarIsOpen && decoded.playbackSpeed.rawValue == 1.2)
+    }
+
+    @Test(arguments: ["missing", "null", "obsolete"])
+    func oldThinkingChoiceDefaultsWithoutOverwritingTheOriginalRecord(kind: String) async throws {
+        let suite = "preferences-tests.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite)), owner = scope()
+        var record = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalPreferences(theme: .dark))) as? [String: Any])
+        record.removeValue(forKey: "chatThinkingLevel")
+        if kind == "null" { record["chatThinkingLevel"] = NSNull() }
+        if kind == "obsolete" { record["chatThinkingLevel"] = "obsolete-effort" }
+        let data = try JSONSerialization.data(withJSONObject: ["version": 1, "preferences": record])
+        let key = try PreferencesStore.key(owner)
+        defaults.set(data, forKey: key)
+        let store = PreferencesStore(suiteName: suite)
+        let loaded = try await store.activate(owner)
+        #expect(loaded.thinkingLevel == .default && loaded.theme == .dark)
+        #expect(defaults.data(forKey: key) == data)
+        var choice = loaded; choice.thinkingLevel = .xhigh
+        try await store.save(choice, scope: owner, revision: 1)
+        try await store.retire(owner)
+        let restarted = PreferencesStore(suiteName: suite)
+        #expect(try await restarted.activate(scope()) == choice)
+        let stored = try #require(defaults.data(forKey: key))
+        let object = try #require(JSONSerialization.jsonObject(with: stored) as? [String: Any])
+        let preferences = try #require(object["preferences"] as? [String: Any])
+        #expect(preferences["chatThinkingLevel"] as? String == "xhigh")
+        #expect(preferences["thinkingLevel"] == nil)
     }
 
     @Test func originAndPrincipalAreIsolatedAndLogoutRetainsChoicesAcrossRestart() async throws {
@@ -181,6 +211,11 @@ import Testing
         defaults.set(invalidWebSearch, forKey: key)
         await #expect(throws: PreferencesIssue.invalidRecord) { try await store.activate(owner) }
         #expect(defaults.data(forKey: key) == invalidWebSearch)
+        record["webSearchPreferred"] = true; record["chatThinkingLevel"] = 7
+        let invalidThinking = try JSONSerialization.data(withJSONObject: ["version": 1, "preferences": record])
+        defaults.set(invalidThinking, forKey: key)
+        await #expect(throws: PreferencesIssue.invalidRecord) { try await store.activate(owner) }
+        #expect(defaults.data(forKey: key) == invalidThinking)
     }
 
     @Test func confirmedOldAccountDeletionDoesNotDisturbAnotherSignedInAccount() async throws {
@@ -215,20 +250,25 @@ import Testing
         let scope = AccountScope(apiOrigin: "https://preferences.invalid", principalID: "fixture")
         let store = PreferencesStore(suiteName: suite), controller = PreferencesController(scope: scope, store: store)
         #expect(!controller.setTheme(.dark))
+        #expect(!controller.setThinkingLevel(.high))
         await controller.load()
         #expect(controller.setTheme(.dark))
         #expect(controller.setPlaybackSpeed(.double))
         #expect(controller.setVoice(.italianFemale))
         #expect(controller.setWebSearchPreferred(false))
         #expect(controller.setSidebarIsOpen(false))
+        #expect(controller.setThinkingLevel(.low))
+        #expect(controller.setThinkingLevel(.high))
         try await controller.retire()
         #expect(controller.state == .retired && !controller.setTheme(.light))
         #expect(!controller.setSidebarIsOpen(true))
+        #expect(!controller.setThinkingLevel(.none))
         let replacement = AccountScope(apiOrigin: scope.apiOrigin, principalID: scope.principalID)
         let retained = try await store.activate(replacement)
         #expect(retained.theme == .dark && retained.playbackSpeed == .double)
         #expect(retained.voice == .italianFemale && !retained.webSearchPreferred)
         #expect(!retained.sidebarIsOpen)
+        #expect(retained.thinkingLevel == .high)
     }
 
     @Test func lateLoadCannotPublishAfterRetirement() async throws {

@@ -103,6 +103,59 @@ import Testing
         runtime.invalidate()
     }
 
+    enum CancelledHistoryResult: CaseIterable, Sendable, Equatable {
+        case cancellationError, cancelledTransport, successfulPage
+    }
+
+    @Test(arguments: CancelledHistoryResult.allCases, [false, true])
+    func cancelledOlderReadKeepsFeedbackAndCursor(
+        _ result: CancelledHistoryResult, _ existingIssue: Bool
+    ) async {
+        let (runtime, service, _) = fixture(), gate = ChatTestGate()
+        await service.setPage(
+            APIPage(
+                data: [ConversationItem(id: "recent", type: "message", role: "assistant")],
+                lastId: "recent", hasMore: true))
+        await runtime.load(chatID: "conversation")
+        if existingIssue {
+            runtime.draftText = String(repeating: "x", count: 32 * 1_024 + 1)
+            #expect(!runtime.enqueueDraft() && runtime.lastIssue == .draftTooLarge)
+        }
+        let issue = runtime.lastIssue, issueID = runtime.lastIssueID
+        await service.setPage(APIPage(data: [ConversationItem(id: "older", type: "message", role: "assistant")]))
+        switch result {
+        case .cancellationError: await service.setPageError(CancellationError())
+        case .cancelledTransport: await service.setPageError(URLError(.cancelled))
+        case .successfulPage: break
+        }
+        await service.setPageGate(gate)
+        let loading = Task { await runtime.loadOlderMessages() }
+        await gate.waitForArrival()
+        if result != .cancellationError { loading.cancel() }
+        await gate.release(); await loading.value
+        #expect(runtime.messages.map(\.id) == ["recent"] && runtime.hasOlderMessages && !runtime.isLoadingOlder)
+        #expect(runtime.lastIssue == issue && runtime.lastIssueID == issueID)
+        await service.setPageGate(nil); await service.setPageError(nil)
+        await runtime.loadOlderMessages()
+        #expect(await service.pageRequests.last?.after == "recent")
+        #expect(runtime.messages.map(\.id) == ["older", "recent"] && !runtime.hasOlderMessages)
+        runtime.invalidate()
+    }
+
+    @Test func ordinaryOlderReadFailureStillReportsHistoryUnavailable() async {
+        let (runtime, service, _) = fixture()
+        await service.setPage(
+            APIPage(
+                data: [ConversationItem(id: "recent", type: "message", role: "assistant")],
+                lastId: "recent", hasMore: true))
+        await runtime.load(chatID: "conversation")
+        await service.setPageError(URLError(.networkConnectionLost))
+        await runtime.loadOlderMessages()
+        #expect(runtime.lastIssue == .historyUnavailable && runtime.hasOlderMessages && !runtime.isLoadingOlder)
+        #expect(runtime.messages.map(\.id) == ["recent"])
+        runtime.invalidate()
+    }
+
     @Test func staleCapacityRetryWriteFailureCannotChangeReplacementRecoveryDispatchState() async throws {
         let (runtime, service, store) = fixture(hooks: ChatRuntimeHooks(sleep: { _ in }))
         let gate = ChatTestGate(); await store.failDispatchSave(2, gate: gate)

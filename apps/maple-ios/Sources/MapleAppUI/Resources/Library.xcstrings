@@ -602,18 +602,6 @@
         }
       }
     },
-    "Rename chat": {
-      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rename chat"
-          }
-        }
-      }
-    },
     "Rename project": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -814,6 +802,486 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your sign-in changed. Reopen this screen to continue."
+          }
+        }
+      }
+    },
+    "Loading...": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading..."
+          }
+        }
+      }
+    },
+    "Resets Monthly": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets Monthly"
+          }
+        }
+      }
+    },
+    "Resets in less than 1 hour": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets in less than 1 hour"
+          }
+        }
+      }
+    },
+    "Resets Tomorrow": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets Tomorrow"
+          }
+        }
+      }
+    },
+    "Team usage paused": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team usage paused"
+          }
+        }
+      }
+    },
+    "Team setup required": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team setup required"
+          }
+        }
+      }
+    },
+    "library.usage.product-plan": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Plan"
+          }
+        }
+      }
+    },
+    "library.usage.percent-used": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@%% used"
+          }
+        }
+      }
+    },
+    "library.usage.credits": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%@ credits"
+          }
+        }
+      }
+    },
+    "library.usage.reset-date": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets %@"
+          }
+        }
+      }
+    },
+    "library.usage.reset-hours": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld hour"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld hours"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "library.usage.reset-days": {
+      "comment": "Read-only account summary. Usage appears in Settings; team attention stays in the library. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld day"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld days"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "View project": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View project"
+          }
+        }
+      }
+    },
+    "Rename Chat": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename Chat"
+          }
+        }
+      }
+    },
+    "Chat Title": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat Title"
+          }
+        }
+      }
+    },
+    "Chat title cannot be empty.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat title cannot be empty."
+          }
+        }
+      }
+    },
+    "Enter a new name for this chat conversation.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a new name for this chat conversation."
+          }
+        }
+      }
+    },
+    "Please enter a different title.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a different title."
+          }
+        }
+      }
+    },
+    "Please enter a different project name.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a different project name."
+          }
+        }
+      }
+    },
+    "Custom Instructions": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom Instructions"
+          }
+        }
+      }
+    },
+    "Set shared custom instructions that apply to chats in this project.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set shared custom instructions that apply to chats in this project."
+          }
+        }
+      }
+    },
+    "Loading instructions": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading instructions"
+          }
+        }
+      }
+    },
+    "e.g. Use concise bullet points. Focus on practical examples.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "e.g. Use concise bullet points. Focus on practical examples."
+          }
+        }
+      }
+    },
+    "Leave this empty to clear the project's custom instructions.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leave this empty to clear the project's custom instructions."
+          }
+        }
+      }
+    },
+    "Are you sure you want to delete this chat?": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Are you sure you want to delete this chat?"
+          }
+        }
+      }
+    },
+    "Delete this project?": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this project?"
+          }
+        }
+      }
+    },
+    "%@, running": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, running"
+          }
+        }
+      }
+    },
+    "%@, completed, unread": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, completed, unread"
+          }
+        }
+      }
+    },
+    "Shared instructions for chats in %@": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared instructions for chats in %@"
+          }
+        }
+      }
+    },
+    "This will permanently delete \"%@\". This action cannot be undone.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will permanently delete \"%@\". This action cannot be undone."
+          }
+        }
+      }
+    },
+    "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will permanently delete \"%@\" and any chats in it. Move chats out first if you want to keep them. This action cannot be undone."
+          }
+        }
+      }
+    },
+    "Delete %lld chats?": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Delete %lld chat?"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Delete %lld chats?"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "This will permanently delete %lld selected chats. This action cannot be undone.": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This will permanently delete %lld selected chat. This action cannot be undone."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This will permanently delete %lld selected chats. This action cannot be undone."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "New chat in %@": {
+      "comment": "Project detail action starting a new chat. The argument is the user-provided project name; preserve it as an interpolation value.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New chat in %@"
+          }
+        }
+      }
+    },
+    "No chats in this project yet.": {
+      "comment": "Research project detail empty state after its first chat page loads successfully.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No chats in this project yet."
+          }
+        }
+      }
+    },
+    "Settings, %@": {
+      "comment": "Accessibility label for Settings with a read-only team attention status. Keep the visible action title as Settings; the argument is localized status text.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings, %@"
           }
         }
       }

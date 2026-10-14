@@ -18,6 +18,12 @@ import Observation
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var searchActive = false
+    @ObservationIgnored private var recentsPoll: Task<Void, Never>?
+    @ObservationIgnored private var recentsPollTicket: UUID?
+    @ObservationIgnored private var recentsRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var recentsRefreshTicket: UUID?
+    @ObservationIgnored private var recentsVisible = false
+    @ObservationIgnored private var recentsForeground = true
 
     public init(root: LibraryModel, makeLibrary: @escaping @MainActor () -> LibraryModel) {
         self.root = root; scope = root.scope; self.makeLibrary = makeLibrary
@@ -91,6 +97,58 @@ import Observation
         }
     }
 
+    /// Mounted recents fetch only their latest page every minute. Loaded older
+    /// pages and an explicit menu refresh retain their existing owners.
+    public func updateRecentsPolling(
+        visible: Bool, foreground: Bool,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
+        let wasPolling = recentsVisible && recentsForeground
+        recentsVisible = visible; recentsForeground = foreground
+        guard active, visible, foreground else {
+            recentsPoll?.cancel(); recentsPoll = nil; recentsPollTicket = nil
+            if wasPolling || !foreground { cancelRecentsRefresh() }
+            return
+        }
+        guard recentsPoll == nil else { return }
+        let ticket = UUID(); recentsPollTicket = ticket
+        recentsPoll = Task { @MainActor [weak self] in
+            defer {
+                if self?.recentsPollTicket == ticket {
+                    self?.recentsPoll = nil; self?.recentsPollTicket = nil
+                }
+            }
+            await LibraryRecentsPolling.run(
+                shouldContinue: { [weak self] in
+                    guard let self else { return false }
+                    return active && recentsVisible && recentsForeground && recentsPollTicket == ticket
+                },
+                refresh: { [weak self] in await self?.refreshRecents() }, sleep: sleep)
+        }
+    }
+
+    /// Conversation creation updates recents immediately, including while the
+    /// menu is hidden. Backgrounding or retirement revokes an in-flight read.
+    public func refreshRecents() async {
+        guard active, recentsForeground, !Task.isCancelled else { return }
+        if let recentsRefreshTask { await recentsRefreshTask.value; return }
+        let ticket = UUID(); recentsRefreshTicket = ticket
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await recent.pollRecentConversations(shouldApply: { [weak self] in
+                guard let self else { return false }
+                return active && recentsForeground && recentsRefreshTicket == ticket
+            })
+        }
+        recentsRefreshTask = task
+        await task.value
+        if recentsRefreshTicket == ticket { recentsRefreshTask = nil; recentsRefreshTicket = nil }
+    }
+
+    private func cancelRecentsRefresh() {
+        recentsRefreshTask?.cancel(); recentsRefreshTask = nil; recentsRefreshTicket = nil
+    }
+
     /// Hiding the menu stops speculative folder reads without losing its
     /// query, loaded rows or cursors. The next visible refresh resumes search.
     public func cancelSearchLoading() {
@@ -99,6 +157,8 @@ import Observation
 
     public func invalidate() {
         active = false; refreshTask?.cancel(); searchTask?.cancel()
+        recentsPoll?.cancel(); recentsPoll = nil; recentsPollTicket = nil
+        cancelRecentsRefresh()
         refreshTask = nil; searchTask = nil; onModelCreated = nil
         pinned.invalidate(); recent.invalidate()
         for model in projects.values { model.invalidate() }
