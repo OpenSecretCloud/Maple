@@ -471,7 +471,12 @@
             historyRendering: ProcessInfo.processInfo.arguments.contains("--maple-shipping-history-rendering-proof"),
             streamWidth: ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof"),
             nativeNestedScroll: ProcessInfo.processInfo.arguments.contains(
-                "--maple-shipping-native-nested-scroll-proof"))
+                "--maple-shipping-native-nested-scroll-proof"),
+            paginationBoundary:
+                ProcessInfo.processInfo.arguments.contains("--maple-shipping-mid-turn-pagination-proof")
+                ? .reasoning
+                : ProcessInfo.processInfo.arguments.contains("--maple-shipping-tool-boundary-pagination-proof")
+                    ? .toolResult : nil)
         private let store: ShippingViewportStore
         let contextLimitProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-context-limit-proof")
         let draftLoadProof: Bool
@@ -480,6 +485,9 @@
         let historyRenderingProof = ProcessInfo.processInfo.arguments.contains(
             "--maple-shipping-history-rendering-proof")
         let streamWidthProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof")
+        private let paginationBoundaryProof =
+            ProcessInfo.processInfo.arguments.contains("--maple-shipping-mid-turn-pagination-proof")
+            || ProcessInfo.processInfo.arguments.contains("--maple-shipping-tool-boundary-pagination-proof")
         private let cachedProjection: ChatRuntime?
         private let cachedProjectionInstance = UUID()
         private(set) var projectionIsNewChat = true
@@ -687,7 +695,7 @@
             }
             ready =
                 preferences.state == .ready && account.chatAccess == .allowed
-                && runtime.messages.count == (historyRenderingProof ? 12 : 8)
+                && runtime.messages.count == (historyRenderingProof ? 12 : paginationBoundaryProof ? 20 : 8)
             failed = !ready
         }
         var selectedProjection: ChatRuntime {
@@ -858,12 +866,14 @@
     }
 
     private actor ShippingViewportService: ChatServing {
+        enum PaginationBoundary: Sendable { case reasoning, toolResult }
         static let chatID = "synthetic-viewport-chat"
         private let complexMarkup: Bool
         private let transcriptRows: Bool
         private let historyRendering: Bool
         private let streamWidth: Bool
         private let nativeNestedScroll: Bool
+        private let paginationBoundary: PaginationBoundary?
         private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
@@ -872,12 +882,13 @@
 
         init(
             complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false,
-            streamWidth: Bool = false, nativeNestedScroll: Bool = false
+            streamWidth: Bool = false, nativeNestedScroll: Bool = false, paginationBoundary: PaginationBoundary? = nil
         ) {
             self.complexMarkup = complexMarkup; self.transcriptRows = transcriptRows
             self.historyRendering = historyRendering
             self.streamWidth = streamWidth
             self.nativeNestedScroll = nativeNestedScroll
+            self.paginationBoundary = paginationBoundary
         }
 
         func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
@@ -913,17 +924,66 @@
             guard parameters.order == .desc else { throw ChatIssue.historyUnavailable }
             if parameters.after == nil {
                 if historyRendering { return Self.historyPage() }
+                if let paginationBoundary { return Self.boundaryPage(paginationBoundary, older: false) }
                 return transcriptRows
                     ? try Self.transcriptPage()
                     : Self.page(
                         20..<24, hasMore: true, complexMarkup: complexMarkup, nativeNestedScroll: nativeNestedScroll)
             }
-            guard parameters.after == "viewport-user-20", older == nil else { throw ChatIssue.historyUnavailable }
+            let boundaryID: String
+            switch paginationBoundary {
+            case .some(.reasoning): boundaryID = "viewport-reasoning-20"
+            case .some(.toolResult): boundaryID = "viewport-search-result-20"
+            case nil: boundaryID = "viewport-user-20"
+            }
+            guard parameters.after == boundaryID, older == nil else { throw ChatIssue.historyUnavailable }
             return try await withCheckedThrowingContinuation { older = $0 }
         }
         func releaseOlder() {
             let pending = older; older = nil
-            pending?.resume(returning: Self.page(10..<20, hasMore: false, complexMarkup: complexMarkup))
+            let page =
+                if let paginationBoundary { Self.boundaryPage(paginationBoundary, older: true) } else {
+                    Self.page(10..<20, hasMore: false, complexMarkup: complexMarkup)
+                }
+            pending?.resume(returning: page)
+        }
+        /// Twenty-item pages deliberately split a turn rather than aligning on
+        /// its user message. The tool variant also replaces a standalone result
+        /// row when its matching call becomes available in the older page.
+        private static func boundaryPage(_ boundary: PaginationBoundary, older: Bool) -> APIPage<ConversationItem> {
+            let user = ConversationItem(
+                id: "viewport-user-20", type: "message", status: "completed", role: "user",
+                content: [MessageContent(type: "input_text", text: "Viewport reading anchor 20")])
+            let assistant = ConversationItem(
+                id: "viewport-assistant-20", type: "message", status: "completed", role: "assistant",
+                content: [MessageContent(type: "output_text", text: "The same completed reply remains in this turn.")])
+            let ascending: [ConversationItem]
+            switch (boundary, older) {
+            case (.reasoning, false):
+                let reasoning = ConversationItem(
+                    id: "viewport-reasoning-20", type: "reasoning", status: "completed",
+                    content: [MessageContent(type: "reasoning_text", text: "Completed synthetic boundary reasoning.")])
+                ascending =
+                    [reasoning, assistant] + page(21..<30, hasMore: false, complexMarkup: false).data.reversed()
+            case (.reasoning, true):
+                ascending =
+                    Array(page(10..<20, hasMore: false, complexMarkup: false).data.reversed().dropFirst()) + [user]
+            case (.toolResult, false):
+                let output = ConversationItem(
+                    id: "viewport-search-result-20", type: "function_call_output", status: "completed",
+                    callId: "viewport-boundary-search",
+                    output: .string("The same completed search result survives pairing."))
+                ascending = [output, assistant] + page(21..<30, hasMore: false, complexMarkup: false).data.reversed()
+            case (.toolResult, true):
+                let call = ConversationItem(
+                    id: "viewport-search-20", type: "function_call", status: "completed", role: "assistant",
+                    callId: "viewport-boundary-search", name: "web_search",
+                    arguments: .string("{\"query\":\"synthetic boundary\"}"))
+                ascending = Array(page(10..<19, hasMore: false, complexMarkup: false).data.reversed()) + [user, call]
+            }
+            return APIPage(
+                data: Array(ascending.reversed()), firstId: ascending.last?.id,
+                lastId: ascending.first?.id, hasMore: !older)
         }
         /// Decode both API representations through the SDK item model. A
         /// conversation page uses function_call; retrieved Responses output

@@ -8,6 +8,13 @@ struct ChatTranscriptRow: Identifiable {
     let order: Int
     var id: String { item.id }
 
+    // A previously standalone output can be absorbed when pagination reveals
+    // its call. Both persisted IDs must keep referring to the rendered row.
+    var historyAnchorIDs: [String] {
+        guard let toolResult, toolResult.id != item.id else { return [item.id] }
+        return [item.id, toolResult.id]
+    }
+
     // Conversation pages use function_call/function_call_output, while a
     // retrieved Responses run uses tool_call/tool_output. Keep presentation
     // admission consistent for both SDK-decoded representations.
@@ -459,7 +466,8 @@ enum ChatComposerPresentation {
         @State private var softwareKeyboardVisible: Bool?
         @State private var readingPosition = ScrollPosition(idType: String.self)
         @State private var turnFrames: [String: TranscriptTurnGeometry] = [:]
-        @State private var preparedItems: Set<String> = []
+        @State private var itemFrames: [String: TranscriptItemGeometry] = [:]
+        @State private var preparedItems: Set<PreparedItemKey> = []
         @State private var tailGeometry: TranscriptTailGeometry?
         @State private var readingAnchor: ReadingAnchor?
         @State private var scrollMetrics = TranscriptScrollMetrics(returnRevision: 0)
@@ -491,10 +499,15 @@ enum ChatComposerPresentation {
 
         private struct ReadingAnchor {
             let token = UUID()
-            let turnID: String
+            let itemID: String
             let viewportY: CGFloat
             var restoring = false
             var corrections = 0
+        }
+        private struct PreparedItemKey: Hashable {
+            let itemID: String
+            let visibleItemID: String
+            let turnID: String
         }
         private struct AppendFollowRequest {
             let id = UUID()
@@ -535,6 +548,34 @@ enum ChatComposerPresentation {
             let ready: Bool
             let contentFrame: CGRect
             let returnRevision: Int
+        }
+        private struct TranscriptItemGeometry: Equatable {
+            let itemID: String
+            let turnID: String
+            let anchorIDs: [String]
+            let visibleItemID: String
+            let ready: Bool
+            let contentFrame: CGRect
+            let firstMessageID: String?
+            let returnRevision: Int
+        }
+
+        private func isCurrentPreparation(_ key: PreparedItemKey) -> Bool {
+            guard let turn = turns.first(where: { $0.id == key.turnID }) else { return false }
+            return ChatTranscriptRow.rows(turn.items).contains {
+                $0.item.id == key.itemID && ($0.toolResult?.id ?? $0.item.id) == key.visibleItemID
+            }
+        }
+
+        private func historyTurnTarget(for anchor: ReadingAnchor) -> String? {
+            for turn in turns {
+                if ChatTranscriptRow.rows(turn.items).contains(where: {
+                    $0.historyAnchorIDs.contains(anchor.itemID)
+                }) {
+                    return turn.id
+                }
+            }
+            return nil
         }
 
         private var menuState: CompactMenuChatState {
@@ -693,7 +734,11 @@ enum ChatComposerPresentation {
                 await Task.yield()
                 guard !Task.isCancelled, !menuState.occluded, currentProjection,
                     var anchor = readingAnchor, anchor.token == token,
-                    let sample = turnFrames[anchor.turnID],
+                    let sample = itemFrames[anchor.itemID], sample.ready,
+                    isCurrentPreparation(
+                        PreparedItemKey(
+                            itemID: sample.itemID, visibleItemID: sample.visibleItemID,
+                            turnID: sample.turnID)),
                     sample.firstMessageID == runtime.messages.first?.id,
                     sample.returnRevision == menuState.returnRevision,
                     scrollMetrics.returnRevision == menuState.returnRevision,
@@ -722,14 +767,14 @@ enum ChatComposerPresentation {
         }
 
         private func visibleReadingAnchor(firstMessageID: String?, returnRevision: Int) -> ReadingAnchor? {
-            let visible = turnFrames.filter {
-                let frame = $0.value.contentFrame.offsetBy(dx: 0, dy: -scrollMetrics.offset)
-                return $0.value.firstMessageID == firstMessageID && $0.value.returnRevision == returnRevision
+            let visible = itemFrames.values.filter {
+                let frame = $0.contentFrame.offsetBy(dx: 0, dy: -scrollMetrics.offset)
+                return $0.firstMessageID == firstMessageID && $0.returnRevision == returnRevision
                     && scrollMetrics.returnRevision == returnRevision
                     && frame.maxY > 0 && frame.minY < scrollMetrics.height
-            }.min { $0.value.contentFrame.minY < $1.value.contentFrame.minY }
+            }.min { $0.contentFrame.minY < $1.contentFrame.minY }
             return visible.map {
-                ReadingAnchor(turnID: $0.key, viewportY: $0.value.contentFrame.minY - scrollMetrics.offset)
+                ReadingAnchor(itemID: $0.itemID, viewportY: $0.contentFrame.minY - scrollMetrics.offset)
             }
         }
 
@@ -783,9 +828,13 @@ enum ChatComposerPresentation {
                     historyRestorePending = false; historyPagination.finishLoad(); return
                 }
                 let token = anchor.token
-                // Materialize the retained visible turn before restoring its
-                // exact content-space position after the history prepend.
-                readingPosition.scrollTo(id: anchor.turnID, anchor: .top)
+                // The lazy stack registers turns before their children exist.
+                // Find the item's current turn only to materialize that row;
+                // its stable item geometry restores the exact reading position.
+                guard let target = historyTurnTarget(for: anchor) else {
+                    readingAnchor = nil; historyRestorePending = false; historyPagination.finishLoad(); return
+                }
+                readingPosition.scrollTo(id: target, anchor: .top)
                 await Task.yield()
                 guard !Task.isCancelled, currentProjection, !menuState.occluded, readingAnchor?.token == token else {
                     return
@@ -813,7 +862,9 @@ enum ChatComposerPresentation {
                     pendingScrollMessage = nil
                 }
             } else if let anchor = readingAnchor, anchor.restoring {
-                readingPosition.scrollTo(id: anchor.turnID, anchor: .top)
+                if let target = historyTurnTarget(for: anchor) {
+                    readingPosition.scrollTo(id: target, anchor: .top)
+                }
                 scheduleAnchorCorrection()
             }
         }
@@ -865,6 +916,8 @@ enum ChatComposerPresentation {
                                         ForEach(ChatTranscriptRow.rows(turn.items)) { row in
                                             let item = row.item
                                             let visibleItemID = row.toolResult?.id ?? item.id
+                                            let preparationKey = PreparedItemKey(
+                                                itemID: item.id, visibleItemID: visibleItemID, turnID: turn.id)
                                             TranscriptItem(
                                                 item: item, toolResult: row.toolResult,
                                                 generation: runtime.scope.generation,
@@ -880,31 +933,55 @@ enum ChatComposerPresentation {
                                                 onPrepared: {
                                                     guard currentProjection, runtime.scope == account.scope,
                                                         runtime.messages.contains(where: { $0.id == visibleItemID }),
-                                                        !preparedItems.contains(visibleItemID)
+                                                        isCurrentPreparation(preparationKey),
+                                                        !preparedItems.contains(preparationKey)
                                                     else { return }
-                                                    preparedItems.insert(visibleItemID)
+                                                    preparedItems.insert(preparationKey)
                                                 }
                                             ) { url in
                                                 externalLink = url
                                             }
-                                            .onGeometryChange(for: TranscriptTailGeometry?.self) {
+                                            .onGeometryChange(for: TranscriptItemGeometry.self) {
                                                 [
+                                                    itemID = item.id, turnID = turn.id,
                                                     returnRevision = menuState.returnRevision,
-                                                    ready = preparedItems.contains(visibleItemID),
-                                                    lastItemID = runtime.messages.last?.id, transcriptSpace
+                                                    ready = preparedItems.contains(preparationKey),
+                                                    firstMessageID = runtime.messages.first?.id,
+                                                    anchorIDs = row.historyAnchorIDs, transcriptSpace
                                                 ] geometry in
-                                                guard visibleItemID == lastItemID else { return nil }
-                                                return TranscriptTailGeometry(
-                                                    itemID: visibleItemID, ready: ready,
+                                                TranscriptItemGeometry(
+                                                    itemID: itemID, turnID: turnID, anchorIDs: anchorIDs,
+                                                    visibleItemID: visibleItemID, ready: ready,
                                                     contentFrame: geometry.frame(in: .named(transcriptSpace)),
+                                                    firstMessageID: firstMessageID,
                                                     returnRevision: returnRevision)
                                             } action: { sample in
-                                                guard currentProjection, !menuState.occluded, let sample,
-                                                    sample.itemID == runtime.messages.last?.id,
+                                                guard currentProjection, !menuState.occluded,
+                                                    isCurrentPreparation(
+                                                        PreparedItemKey(
+                                                            itemID: sample.itemID, visibleItemID: sample.visibleItemID,
+                                                            turnID: sample.turnID)),
+                                                    sample.firstMessageID == runtime.messages.first?.id,
                                                     sample.returnRevision == menuState.returnRevision
                                                 else { return }
-                                                tailGeometry = sample
-                                                scheduleAppendFollow()
+                                                for id in sample.anchorIDs { itemFrames[id] = sample }
+                                                scheduleAnchorCorrection()
+                                                if sample.visibleItemID == runtime.messages.last?.id {
+                                                    tailGeometry = TranscriptTailGeometry(
+                                                        itemID: sample.visibleItemID, ready: sample.ready,
+                                                        contentFrame: sample.contentFrame,
+                                                        returnRevision: sample.returnRevision)
+                                                    scheduleAppendFollow()
+                                                }
+                                            }
+                                            .onDisappear {
+                                                guard !menuState.occluded else { return }
+                                                for id in row.historyAnchorIDs
+                                                where itemFrames[id]?.itemID == item.id
+                                                    && itemFrames[id]?.turnID == turn.id
+                                                {
+                                                    itemFrames.removeValue(forKey: id)
+                                                }
                                             }
                                             #if DEBUG
                                                 .onGeometryChange(for: TranscriptItemHorizontalGeometry?.self) {

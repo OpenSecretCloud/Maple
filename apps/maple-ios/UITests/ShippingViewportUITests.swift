@@ -698,6 +698,65 @@ final class ShippingViewportUITests: XCTestCase {
         capture("Shipping history prepend retains reading anchor and composer inset")
     }
 
+    func testShippingPaginationPreservesCompletedReasoningAtMidTurnBoundary() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-mid-turn-pagination-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 20")
+        let reasoning = app.descendants(matching: .any)["message.thinking.viewport-reasoning-20"].firstMatch
+        waitForBoundaryAnchor(reasoning)
+        XCTAssertFalse(app.buttons["message.copy.viewport-user-20"].exists)
+        // This descending page starts at completed reasoning, so prepending
+        // its missing user replaces the enclosing turn's original reasoning ID.
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
+        waitSummary("older 1; messages 20")
+        waitForBoundaryAnchor(reasoning)
+        let before = reasoning.frame.midY
+        capture("Completed reasoning at a held twenty-item mid-turn history boundary")
+        app.buttons["shipping-viewport.release-older"].tap()
+        waitSummary("older 0; messages 40")
+        waitForBoundaryAnchor(reasoning)
+        XCTAssertEqual(reasoning.frame.midY, before, accuracy: 3)
+        XCTAssertTrue(app.buttons["message.copy.viewport-user-20"].exists)
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
+        XCTAssertTrue(app.textViews["chat.composer"].isHittable)
+        capture("The same completed reasoning row retains its native reading position after its user arrives")
+    }
+
+    func testShippingPaginationPreservesToolOutputAfterItsEarlierCallArrives() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-tool-boundary-pagination-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 20")
+        let output = app.buttons["tool.activity.viewport-search-result-20"]
+        waitForBoundaryAnchor(output)
+        XCTAssertFalse(app.buttons["tool.activity.viewport-search-20"].exists)
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
+        waitSummary("older 1; messages 20")
+        waitForBoundaryAnchor(output)
+        let before = output.frame.midY
+        capture("Standalone completed tool output at a held twenty-item history boundary")
+        app.buttons["shipping-viewport.release-older"].tap()
+        waitSummary("older 0; messages 40")
+        let paired = app.buttons["tool.activity.viewport-search-20"]
+        waitForBoundaryAnchor(paired)
+        XCTAssertEqual(paired.frame.midY, before, accuracy: 3)
+        XCTAssertFalse(output.exists, "The earlier call absorbs its exact result into one visible row")
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
+        XCTAssertTrue(app.textViews["chat.composer"].isHittable)
+        paired.tap()
+        XCTAssertTrue(app.otherElements["tool.details.viewport-search-20"].waitForExistence(timeout: 10))
+        let resultText = app.textViews.matching(
+            NSPredicate(format: "value == %@", "The same completed search result survives pairing.")
+        ).firstMatch
+        XCTAssertTrue(resultText.waitForExistence(timeout: 10))
+        capture("The same persisted tool output retains its native reading position when its call becomes available")
+    }
+
     func testShippingPaginationCompletesBehindRetainedCompactMenu() throws {
         continueAfterFailure = false
         app = XCUIApplication()
@@ -1752,6 +1811,18 @@ final class ShippingViewportUITests: XCTestCase {
         // rendered StaticText beneath it can have a valid frame but no hit point.
         app.otherElements["message.viewport-user-\(index)"]
             .textViews.matching(NSPredicate(format: "value == %@", "Viewport reading anchor \(index)")).firstMatch
+    }
+
+    private func waitForBoundaryAnchor(_ anchor: XCUIElement) {
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                guard anchor.exists else { return false }
+                let frame = anchor.frame
+                return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
+                    && frame.width > 0 && frame.height > 0 && !frame.intersection(self.app.frame).isEmpty
+                    && anchor.isHittable
+            }, object: anchor)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
     }
 
     private func waitForReadingAnchor(_ anchor: XCUIElement, index: Int) {

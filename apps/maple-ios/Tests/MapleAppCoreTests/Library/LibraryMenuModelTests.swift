@@ -142,6 +142,47 @@ import Testing
         await next.release()
     }
 
+    @Test func failedPollingClockCanRestartWithoutHidingTheMenu() async {
+        let (menu, service) = fixture(), sleeping = ChatTestGate()
+        let failedClock = LibraryRecentsSleepRecorder(fails: true)
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await failedClock.sleep($0) })
+        let restartedClock = LibraryRecentsSleepRecorder(gates: [sleeping])
+        // Actor turns make progress without depending on an elapsed wall-clock
+        // delay. A retained completed task would prevent every restart attempt.
+        for _ in 0..<100 {
+            menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await restartedClock.sleep($0) })
+            if !(await restartedClock.delays).isEmpty { break }
+            await Task.yield()
+        }
+        #expect(await failedClock.delays == [.seconds(60)])
+        #expect(await restartedClock.delays == [.seconds(60)])
+        #expect(await service.conversationListCalls.isEmpty)
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        await sleeping.release(); menu.invalidate()
+    }
+
+    @Test func oldPollCompletionCannotClearItsVisibleReplacement() async {
+        let (menu, service) = fixture(), oldSleep = ChatTestGate(), newSleep = ChatTestGate()
+        let oldClock = LibraryRecentsSleepRecorder(gates: [oldSleep])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await oldClock.sleep($0) })
+        await oldSleep.waitForArrival()
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        let newClock = LibraryRecentsSleepRecorder(gates: [newSleep])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await newClock.sleep($0) })
+        await newSleep.waitForArrival(); await oldSleep.release()
+        let unexpectedClock = LibraryRecentsSleepRecorder(fails: true)
+        for _ in 0..<20 {
+            menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await unexpectedClock.sleep($0) })
+            _ = await unexpectedClock.delays
+            await Task.yield()
+        }
+        #expect(await newClock.delays == [.seconds(60)])
+        #expect(await unexpectedClock.delays.isEmpty)
+        #expect(await service.conversationListCalls.isEmpty)
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        await newSleep.release(); menu.invalidate()
+    }
+
     enum RecentsOwnerChange: CaseIterable, Sendable, Equatable { case hidden, backgrounded, retired }
 
     @Test(arguments: RecentsOwnerChange.allCases)

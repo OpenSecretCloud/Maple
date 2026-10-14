@@ -113,6 +113,11 @@ import Observation
         guard recentsPoll == nil else { return }
         let ticket = UUID(); recentsPollTicket = ticket
         recentsPoll = Task { @MainActor [weak self] in
+            defer {
+                if self?.recentsPollTicket == ticket {
+                    self?.recentsPoll = nil; self?.recentsPollTicket = nil
+                }
+            }
             await LibraryRecentsPolling.run(
                 shouldContinue: { [weak self] in
                     guard let self else { return false }

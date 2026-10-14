@@ -62,6 +62,7 @@ public final class ChatRuntime {
     @ObservationIgnored private var cancelTask: Task<Void, Never>?
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var oldestItemID: String?
+    @ObservationIgnored private var hasLoadedInitialHistory = false
     @ObservationIgnored private var paginationID: UUID?
     @ObservationIgnored private var newestSeenItemID: String?
     @ObservationIgnored private var itemPollID: UUID?
@@ -373,6 +374,7 @@ public final class ChatRuntime {
                 ?? (restored.storageKey == ChatSnapshot.newChatKey || restored.storageKey.hasPrefix("pending:"))
         else { return false }
         autosaveTask?.cancel(); operationID = hooks.uuid(); itemPollID = nil; newestSeenItemID = nil
+        hasLoadedInitialHistory = false
         snapshot = restored
         snapshot.storageOwnerID = restored.storageOwner
         snapshot.pendingRun?.phase = .recovering; changed()
@@ -388,6 +390,7 @@ public final class ChatRuntime {
         guard valid, deletionFenceIDs.isEmpty, !hasUnresolvedRun else { return }
         autosaveTask?.cancel()
         paginationID = nil; isLoadingOlder = false; itemPollID = nil; newestSeenItemID = nil
+        hasLoadedInitialHistory = false
         let operation = hooks.uuid(); operationID = operation; waitingForCapacity = false; isLoading = true
         let key = chatID ?? ChatSnapshot.newChatKey
         var loadingStorage = true
@@ -420,6 +423,7 @@ public final class ChatRuntime {
                 messages = Array(page.data.reversed())
                 for item in optimistic where !messages.contains(where: { $0.id == item.id }) { messages.append(item) }
                 oldestItemID = page.lastId; hasOlderMessages = page.hasMore
+                hasLoadedInitialHistory = true
                 newestSeenItemID = page.data.first { $0.status != "in_progress" }?.id
             }
         } catch {
@@ -431,7 +435,7 @@ public final class ChatRuntime {
     }
 
     public func loadOlderMessages() async {
-        guard valid, !isLoading, !isLoadingOlder, hasOlderMessages, let chatID = conversationID,
+        guard !Task.isCancelled, valid, !isLoading, !isLoadingOlder, hasOlderMessages, let chatID = conversationID,
             let cursor = oldestItemID
         else {
             return
@@ -444,11 +448,15 @@ public final class ChatRuntime {
         do {
             let page = try await service.listConversationItems(
                 conversationId: chatID, parameters: ListParameters(limit: 20, after: cursor, order: .desc))
-            guard owns(operation), conversationID == chatID, paginationID == request else { return }
+            guard !Task.isCancelled, owns(operation), conversationID == chatID, paginationID == request else { return }
             let existing = Set(messages.map(\.id))
             messages.insert(contentsOf: page.data.reversed().filter { !existing.contains($0.id) }, at: 0)
             oldestItemID = page.lastId; hasOlderMessages = page.hasMore
-        } catch { if owns(operation), paginationID == request { lastIssue = .historyUnavailable } }
+        } catch is CancellationError {
+            // Navigation cancels its page read without changing retained chat feedback.
+        } catch {
+            if !Task.isCancelled, owns(operation), paginationID == request { lastIssue = .historyUnavailable }
+        }
     }
 
     /// Poll only the selected, presented conversation. Failed refreshes leave
@@ -456,6 +464,7 @@ public final class ChatRuntime {
     public func pollNewItems() async {
         guard canPollItems, itemPollID == nil, let chatID = conversationID else { return }
         let operation = operationID, request = hooks.uuid(), cursor = newestSeenItemID
+        let priorHistoryIssueID = lastIssue == .historyUnavailable ? lastIssueID : nil
         itemPollID = request
         defer { if itemPollID == request { itemPollID = nil } }
         do {
@@ -466,8 +475,28 @@ public final class ChatRuntime {
                 itemPollID == request
             else { return }
             let chronological = cursor == nil ? Array(page.data.reversed()) : page.data
-            let existing = Set(messages.map(\.id))
+            let retainedOrder = messages.map(\.id), existing = Set(retainedOrder)
             mergeHistory(chronological, authoritative: false)
+            if cursor == nil, !hasLoadedInitialHistory {
+                // A failed initial read can leave only an optimistic turn. Put
+                // recovered history before it without discarding richer local
+                // payloads or moving a local user behind its checkpointed reply.
+                let merged = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let fetchedIDs = Set(chronological.map(\.id))
+                var included: Set<String> = []
+                var orderedIDs = chronological.compactMap { included.insert($0.id).inserted ? $0.id : nil }
+                for (index, id) in retainedOrder.enumerated() where included.insert(id).inserted {
+                    let next = retainedOrder.dropFirst(index + 1).first { fetchedIDs.contains($0) }
+                    let destination = next.flatMap { orderedIDs.firstIndex(of: $0) } ?? orderedIDs.endIndex
+                    orderedIDs.insert(id, at: destination)
+                }
+                messages = orderedIDs.compactMap { merged[$0] }
+                oldestItemID = page.lastId; hasOlderMessages = page.hasMore
+                hasLoadedInitialHistory = true
+                if let priorHistoryIssueID, lastIssue == .historyUnavailable, lastIssueID == priorHistoryIssueID {
+                    lastIssue = nil
+                }
+            }
             // An in-progress tail must be fetched again on the next tick.
             newestSeenItemID = chronological.last { $0.status != "in_progress" }?.id ?? newestSeenItemID
             if chronological.contains(where: { !existing.contains($0.id) }) { polledMessagesRevision &+= 1 }

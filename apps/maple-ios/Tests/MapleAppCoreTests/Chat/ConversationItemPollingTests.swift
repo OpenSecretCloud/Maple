@@ -157,6 +157,118 @@ private actor ConversationItemSleepRecorder {
         runtime.invalidate()
     }
 
+    @Test(arguments: [false, true])
+    func failedInitialReadPlacesPolledHistoryBeforePendingUser(_ checkpointIncludesUser: Bool) async throws {
+        let (runtime, service, _) = ChatRuntimeTests().fixture()
+        await service.setPageError(URLError(.networkConnectionLost)); await runtime.load(chatID: "conversation")
+        #expect(runtime.lastIssue == .historyUnavailable && !runtime.hasOlderMessages)
+        runtime.isVisible = true; runtime.draftText = "Keep the entire optimistic user message"
+        #expect(runtime.send()); await service.waitForPosts()
+        let pendingID = try #require(runtime.snapshot.pendingRun?.messageID)
+        let snapshot = runtime.snapshot
+        var descending = [item("recent"), item("older")]
+        if checkpointIncludesUser {
+            descending.insert(
+                ConversationItem(
+                    id: pendingID, type: "message", status: "completed", role: "user",
+                    content: [MessageContent(type: "input_text", text: "Keep")]), at: 0)
+        }
+        await service.setPageError(nil)
+        await service.setPage(APIPage(data: descending, lastId: "older", hasMore: true))
+        await runtime.pollNewItems()
+        #expect(runtime.messages.map(\.id) == ["older", "recent", pendingID])
+        #expect(runtime.messages.last?.content?.first?.text == "Keep the entire optimistic user message")
+        #expect(runtime.snapshot == snapshot && runtime.hasUnresolvedRun && runtime.hasOlderMessages)
+        let poll = try #require(await service.pageRequests.last)
+        #expect(poll.after == nil && poll.order == .desc && poll.limit == 20)
+        await service.setPage(APIPage(data: [item("earlier")], lastId: "earlier", hasMore: false))
+        await runtime.loadOlderMessages()
+        #expect(await service.pageRequests.last?.after == "older")
+        #expect(runtime.messages.map(\.id) == ["earlier", "older", "recent", pendingID])
+        await service.finish(error: URLError(.networkConnectionLost)); await runtime.waitForCurrentWork()
+        runtime.invalidate()
+    }
+
+    @Test(arguments: [false, true])
+    func initialPollKeepsRicherLocalReplyAndItsUserBeforeCheckpointedReply(_ checkpointIncludesUser: Bool) async throws
+    {
+        let (runtime, service, _) = ChatRuntimeTests().fixture()
+        await service.setPageError(URLError(.networkConnectionLost)); await runtime.load(chatID: "conversation")
+        runtime.isVisible = true
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let added = try decoder.decode(
+            ResponseItemEvent.self,
+            from: Data(
+                #"{"output_index":0,"item":{"id":"assistant","type":"message","role":"assistant","status":"in_progress","content":[]}}"#
+                    .utf8))
+        await service.setScript([
+            .created(try chatLifecycle(chatResponse("response", .inProgress))),
+            .outputItemAdded(added),
+            .outputTextDelta(try chatDelta("The complete locally received answer is longer than its checkpoint.")),
+        ])
+        runtime.draftText = "Synthetic turn"; #expect(runtime.send()); await runtime.waitForCurrentWork()
+        #expect(runtime.messages.last?.responseId == "response")
+        let pendingID = try #require(runtime.snapshot.pendingRun?.messageID)
+        let snapshot = runtime.snapshot, issueID = runtime.lastIssueID
+        var descending = [item("assistant", text: "Short"), item("history")]
+        if checkpointIncludesUser {
+            descending.insert(
+                ConversationItem(id: pendingID, type: "message", status: "completed", role: "user"), at: 1)
+        }
+        await service.setPageError(nil); await service.setPage(APIPage(data: descending, lastId: "history"))
+        await runtime.pollNewItems()
+        #expect(runtime.messages.map(\.id) == ["history", pendingID, "assistant"])
+        #expect(
+            runtime.messages.last?.content?.first?.text
+                == "The complete locally received answer is longer than its checkpoint.")
+        #expect(runtime.messages.last?.status == "completed" && runtime.messages.last?.responseId == "response")
+        #expect(runtime.snapshot == snapshot && runtime.hasUnresolvedRun && runtime.phase == .recovering)
+        #expect(runtime.lastIssue == .uncertainResponse && runtime.lastIssueID == issueID)
+        #expect(await service.pageRequests.last?.after == nil && runtime.polledMessagesRevision == 1)
+        runtime.invalidate()
+    }
+
+    @Test(arguments: [false, true])
+    func initialPollClearsOnlyTheHistoryIssueItActuallyRecovered(_ newerIssue: Bool) async {
+        let (runtime, service, _) = ChatRuntimeTests().fixture(), gate = ChatTestGate()
+        await service.setPageError(URLError(.networkConnectionLost)); await runtime.load(chatID: "conversation")
+        #expect(runtime.lastIssue == .historyUnavailable)
+        runtime.isVisible = true
+        await service.setPageError(nil); await service.setPage(APIPage(data: [item("recovered")]))
+        await service.setPageGate(gate)
+        let polling = Task { await runtime.pollNewItems() }
+        await gate.waitForArrival()
+        if newerIssue {
+            runtime.draftText = String(repeating: "x", count: 32 * 1_024 + 1)
+            #expect(!runtime.enqueueDraft() && runtime.lastIssue == .draftTooLarge)
+        }
+        let issueID = runtime.lastIssueID
+        await gate.release(); await polling.value
+        #expect(runtime.messages.map(\.id) == ["recovered"])
+        #expect(runtime.lastIssue == (newerIssue ? .draftTooLarge : nil))
+        #expect(runtime.lastIssueID == (newerIssue ? issueID : nil))
+        runtime.invalidate()
+    }
+
+    @Test func noCompletedCursorDoesNotReplaceAlreadyLoadedHistoryOrderOrOlderCursor() async {
+        let (runtime, service, _) = ChatRuntimeTests().fixture()
+        await service.setPage(
+            APIPage(
+                data: [item("recent", status: "in_progress"), item("older", status: "in_progress")],
+                lastId: "older", hasMore: true))
+        await runtime.load(chatID: "conversation"); runtime.isVisible = true
+        await service.setPage(
+            APIPage(data: [item("new", status: "in_progress"), item("recent", status: "in_progress")]))
+        await runtime.pollNewItems()
+        #expect(runtime.messages.map(\.id) == ["older", "recent", "new"] && runtime.hasOlderMessages)
+        #expect(await service.pageRequests.last?.after == nil)
+        await service.setPage(APIPage(data: [item("earlier")]))
+        await runtime.loadOlderMessages()
+        #expect(await service.pageRequests.last?.after == "older")
+        #expect(runtime.messages.map(\.id) == ["earlier", "older", "recent", "new"])
+        runtime.invalidate()
+    }
+
     @Test func duplicateUpdatesPreserveLongerTextAndComposerFeedback() async {
         let (runtime, service, _) = ChatRuntimeTests().fixture()
         runtime.isVisible = true
