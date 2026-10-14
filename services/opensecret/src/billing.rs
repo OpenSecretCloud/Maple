@@ -405,6 +405,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn included_paid_feature_does_not_depend_on_chat_credits() {
+        let (url, server) = deletion_server(Router::new().route(
+            "/v1/admin/check-usage",
+            get(|| async { Json(serde_json::json!({ "can_use": false, "is_free": false })) }),
+        ))
+        .await;
+        let client = BillingClient::new("synthetic-admin-key".into(), url);
+        assert!(client.is_user_paid(Uuid::new_v4()).await.unwrap());
+        assert!(!client
+            .can_user_use_paid_features(Uuid::new_v4())
+            .await
+            .unwrap());
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn account_deletion_requires_exact_ready_ack_and_sends_only_user_id() {
         use axum::{http::HeaderMap, routing::post};
         let user_id = Uuid::new_v4();

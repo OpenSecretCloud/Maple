@@ -399,6 +399,9 @@ pub enum ApiError {
     #[error("{0}")]
     UnsupportedReasoningEffort(web::model_request_policy::UnsupportedReasoningEffort),
 
+    #[error("{0}")]
+    Transcription(web::transcription::TranscriptionError),
+
     #[error("Bad Request")]
     BadRequest,
 
@@ -485,6 +488,7 @@ impl IntoResponse for ApiError {
             ApiError::ImageDescriptionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InferenceCapacity { status, .. } => *status,
             ApiError::InferenceProvider(error) => error.status(),
+            ApiError::Transcription(error) => error.status(),
             ApiError::SystemOneRequest(error) => error.status(),
             ApiError::UnsupportedReasoningEffort(_) => StatusCode::BAD_REQUEST,
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
@@ -515,6 +519,7 @@ impl IntoResponse for ApiError {
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
             ApiError::SystemOneRequest(error) => Some(error.code()),
+            ApiError::Transcription(error) => Some(error.code()),
             ApiError::UnsupportedReasoningEffort(_) => Some("unsupported_value"),
             _ => None,
         };
@@ -534,6 +539,7 @@ impl IntoResponse for ApiError {
             ApiError::InferenceCapacity { .. } => Some(INFERENCE_CAPACITY_ERROR_CODE),
             ApiError::InferenceProvider(error) => Some(error.code()),
             ApiError::SystemOneRequest(error) => Some(error.code()),
+            ApiError::Transcription(error) => Some(error.code()),
             _ => openai_error_code,
         };
         let message = self.to_string();
