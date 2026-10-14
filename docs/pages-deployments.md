@@ -7,10 +7,11 @@ administration, cutover, and recovery are operator procedures outside this
 public guide.
 
 `MAPLE_PAGES_PREVIEW_ENABLED` and `MAPLE_PAGES_PRODUCTION_ENABLED` must equal
-the literal string `true` for their respective jobs. A missing/false production
-variable also enables the legacy branch-promoter job; it does not itself
-configure Cloudflare's native builds. Merging source does not establish live
-publisher settings or deployed state.
+the literal string `true` for their respective jobs. A missing/false flag pauses
+that publication; it does not activate another publisher. `Publish Pages` owns
+Research publication, and Cloudflare's native Git builds must remain disabled.
+The `pages-production` branch still records the published source. Merging source
+does not establish live publisher settings or deployed state.
 
 ## Build and destination contract
 
@@ -143,6 +144,12 @@ be active even when later source/ref/status checks fail. A workflow failure
 therefore does not by itself establish that the previous deployment is still
 serving. Deployment-state checks and authenticated application smoke are
 separate evidence.
+
+Production recovery uses an explicitly authorized Cloudflare rollback to a
+recorded deployment, not a branch push or a switch to native Git builds. Keep
+the current project and attached domains: they share that deployment. The
+forward-only `pages-production` ref remains the publication checkpoint; do not
+rewind it to perform a hosting rollback.
 
 Offline checks from the repository root (use the host system for a local check):
 

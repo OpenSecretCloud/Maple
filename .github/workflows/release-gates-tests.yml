@@ -5,7 +5,6 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - ".github/workflows/release-gates-tests.yml"
-      - ".github/workflows/pages-production.yml"
       - ".github/workflows/proxy-rust.yml"
       - ".github/workflows/proxy-publish.yml"
       - ".github/workflows/zapstore-publish.yml"
@@ -35,7 +34,6 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - ".github/workflows/release-gates-tests.yml"
-      - ".github/workflows/pages-production.yml"
       - ".github/workflows/proxy-rust.yml"
       - ".github/workflows/proxy-publish.yml"
       - ".github/workflows/zapstore-publish.yml"

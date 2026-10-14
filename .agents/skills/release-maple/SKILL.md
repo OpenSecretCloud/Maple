@@ -28,12 +28,12 @@ commit, external effect, and authority provided by the user.
 - Creating a GitHub Release starts the cross-platform release workflow. A
   successful release workflow starts separate updater-metadata, Pages, and
   best-effort Zapstore workflows. These siblings never gate or change the core
-  Maple release. Pages has staged modes: `Promote Pages production` advances the
-  branch for native Cloudflare builds by default; when repository variable
-  `MAPLE_PAGES_PRODUCTION_ENABLED=true`, `Publish Pages` uploads the verified
-  existing release web artifact instead. Read
+  Maple release. With repository variable `MAPLE_PAGES_PRODUCTION_ENABLED=true`,
+  `Publish Pages` uploads the verified existing release web artifact. A missing
+  or false flag pauses production publication; Cloudflare native Git builds
+  remain disabled. Read
   [the Pages publisher architecture](../../../docs/pages-deployments.md) for
-  its source contract. Mode activation, environment administration, and
+  its source contract. Publisher activation, environment administration, and
   Cloudflare build controls belong to a separately authorized operator procedure.
 - The same Maple GitHub Release receives four native `maple-proxy` archives and
   their checksum manifest. Never create a separate proxy Release or proxy tag;
@@ -261,13 +261,7 @@ gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish updater metadata' 
   --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 
-pages_workflow='Promote Pages production'
-pages_enabled="$(gh variable list --repo MaplePrivacyLabs/Maple --json name,value \
-  --jq '.[] | select(.name == "MAPLE_PAGES_PRODUCTION_ENABLED") | .value')" || exit 1
-if [ "$pages_enabled" = true ]; then
-  pages_workflow='Publish Pages'
-fi
-gh run list --repo MaplePrivacyLabs/Maple --workflow "$pages_workflow" \
+gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish Pages' \
   --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
@@ -297,44 +291,33 @@ installer redirects; marketing follows the stable URLs without a redeploy.
 Treat incomplete assets, provenance failures and blocked download routes as
 publication failures, not reasons to alter updater metadata or weaken checks.
 Use the [updates service guide](../../../services/updates/README.md) for its
-one-time rollout and recovery boundaries. In legacy Pages mode, a successful
-promoter proves only the `pages-production` ref mutation; verify Cloudflare's
-separate build result. In owned-publisher mode, require the `production` job in
+one-time rollout and recovery boundaries. Require the `production` job in
 `Publish Pages` to succeed: it validates the release asset, uploads without a
 rebuild, checks CF stage/commit/active canonical deployment, and then advances
-the ref without force. Neither result proves browser login/chat or configuration.
+the ref without force. This does not prove browser login/chat or configuration.
 Report and repair sibling failures without altering completed release artifacts.
 
-Confirm the production ref in either mode:
+Confirm the production ref after that release's publication:
 
 ```bash
 pages_sha="$(gh api repos/MaplePrivacyLabs/Maple/git/ref/heads/pages-production --jq .object.sha)"
 [[ "$pages_sha" == "$head_sha" ]]
 ```
 
-In legacy mode only, inspect Cloudflare's exact-commit check:
-
-```bash
-gh api "repos/MaplePrivacyLabs/Maple/commits/$head_sha/check-runs" --jq '
-  [.check_runs[]
-   | select(.name == "Cloudflare Pages")
-   | select(.app.name == "Cloudflare Workers and Pages")
-   | {status, conclusion, started_at, completed_at, details_url}]'
-```
-
-Require the successful Cloudflare check for the production-branch promotion,
-not an older preview check on the same commit. In owned-publisher mode, inspect
-the `Publish Pages` production job summary and GitHub deployment instead; the
-old Cloudflare App check is no longer produced by this path. The summary names
-the deployment ID and SHA. A failed post-upload freshness/ref/status check can
+Inspect the `Publish Pages` production job summary and GitHub deployment. The
+summary names the deployment ID and SHA. A failed post-upload freshness/ref/status check can
 leave a new CF deployment already active: inspect actual canonical state before
 retrying, and follow the deployment guide's hold/rollback procedure.
 
 A raw `curl` from an automated VM may be denied by edge policy. An allowed-browser
 smoke is separate application evidence; do not turn an edge-policy 403 into a
-release failure. Once owned publishing is enabled, manually dispatch
-`Publish Pages` from master to retry the current verified stable release; never
-recreate a Release or rerun the core release merely to repair Pages.
+release failure. When authorized, manually dispatch `Publish Pages` from master
+to retry an eligible source under the
+[Pages source contract](../../../docs/pages-deployments.md#build-and-destination-contract).
+An older stable release cannot overwrite a newer published web commit. Recovery
+uses a recorded Cloudflare deployment rollback or a reviewed forward fix;
+do not rewind `pages-production` or enable native Git builds. Never recreate a
+Release or rerun the core release merely to repair Pages.
 
 On failure, read the failed logs before acting:
 

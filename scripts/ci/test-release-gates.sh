@@ -162,12 +162,10 @@ expect_failure "rejects an unknown argument" \
   bash "${classifier}" --unknown value
 
 release_json="${temp_root}/release.json"
-pages_production_json="${temp_root}/pages-production.json"
 proxy_rust_json="${temp_root}/proxy-rust.json"
 proxy_publish_json="${temp_root}/proxy-publish.json"
 zapstore_json="${temp_root}/zapstore-publish.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
-yq -o=json '.' "${repo_root}/.github/workflows/pages-production.yml" > "${pages_production_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-rust.yml" > "${proxy_rust_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-publish.yml" > "${proxy_publish_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/zapstore-publish.yml" > "${zapstore_json}"
@@ -200,7 +198,7 @@ if rg -n 'ghcr-(push|build-push|login)' "${repo_root}/proxy/justfile"; then
 fi
 pass "proxy container publication has one GitHub Actions writer"
 
-python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" "${proxy_publish_json}" "${zapstore_json}" <<'PY'
+python3 - "${release_json}" "${proxy_rust_json}" "${proxy_publish_json}" "${zapstore_json}" <<'PY'
 import json
 import re
 import sys
@@ -236,7 +234,7 @@ def secret_names(value):
     return found
 
 
-with open(sys.argv[5], encoding="utf-8") as handle:
+with open(sys.argv[4], encoding="utf-8") as handle:
     zapstore = json.load(handle)
 zapstore_steps = zapstore["jobs"]["publish"]["steps"]
 checkout = next(step for step in zapstore_steps if str(step.get("uses", "")).startswith("actions/checkout@"))
@@ -258,12 +256,9 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     release = json.load(handle)
 
 with open(sys.argv[2], encoding="utf-8") as handle:
-    pages_production = json.load(handle)
-
-with open(sys.argv[3], encoding="utf-8") as handle:
     proxy_rust = json.load(handle)
 
-with open(sys.argv[4], encoding="utf-8") as handle:
+with open(sys.argv[3], encoding="utf-8") as handle:
     proxy_container_publish = json.load(handle)
 
 release_jobs = release["jobs"]
@@ -422,65 +417,6 @@ check(
     in aggregate_runs,
     "Aggregate release verification must include proxy assets",
 )
-
-check(
-    pages_production.get("permissions") == {"contents": "read"},
-    "Pages production workflow must default to contents: read",
-)
-pages_on = pages_production.get("on", {})
-check("workflow_dispatch" in pages_on, "Pages production workflow must support manual retry")
-pages_workflow_run = pages_on.get("workflow_run", {})
-check(
-    pages_workflow_run.get("workflows") == ["Release"]
-    and pages_workflow_run.get("types") == ["completed"],
-    "Pages production workflow must follow completed Release workflows",
-)
-check(
-    pages_production.get("concurrency")
-    == {"group": "pages-production", "cancel-in-progress": False},
-    "Pages production workflow must serialize promotions without cancellation",
-)
-
-pages_jobs = pages_production.get("jobs", {})
-check(set(pages_jobs) == {"promote"}, "Pages production workflow must have one promotion job")
-pages_job = pages_jobs["promote"]
-check(
-    pages_job.get("permissions") == {"contents": "write"},
-    "Pages production promotion must have only contents: write permission",
-)
-check(not secret_names(pages_production), "Pages production workflow must not receive secrets")
-check("environment" not in pages_job, "Pages production promotion must not require a secret-bearing environment")
-
-pages_if = str(pages_job.get("if", ""))
-for required_gate in (
-    "vars.MAPLE_PAGES_PRODUCTION_ENABLED != 'true'",
-    "workflow_run.conclusion == 'success'",
-    "workflow_run.event == 'release'",
-    "workflow_run.path == '.github/workflows/release.yml'",
-    "workflow_run.head_repository.full_name == github.repository",
-):
-    check(required_gate in pages_if, f"Pages production job is missing gate: {required_gate}")
-
-pages_steps = pages_job.get("steps", [])
-check(len(pages_steps) == 1, "Pages production promotion must have one non-checkout step")
-pages_step = pages_steps[0]
-check("uses" not in pages_step, "Pages production promotion must not run a third-party action")
-pages_env = pages_step.get("env", {})
-check(
-    pages_env.get("PAGES_PRODUCTION_BRANCH") == "pages-production",
-    "Pages production branch must be hardcoded",
-)
-check(pages_env.get("GH_TOKEN") == "${{ github.token }}", "Pages promotion must use github.token")
-
-pages_run = str(pages_step.get("run", ""))
-for required_control in (
-    "repos/${REPOSITORY}/releases/latest",
-    "repos/${REPOSITORY}/compare/${release_sha}...master",
-    "repos/${REPOSITORY}/compare/${current_sha}...${release_sha}",
-    "repos/${REPOSITORY}/git/refs/heads/${PAGES_PRODUCTION_BRANCH}",
-    '-F force=false',
-):
-    check(required_control in pages_run, f"Pages production step is missing control: {required_control}")
 
 check(
     proxy_container_publish.get("permissions") == {"contents": "read"},

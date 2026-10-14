@@ -330,15 +330,16 @@ class PagesWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(control, production_if)
 
-    def test_legacy_and_direct_production_have_one_rollout_switch_and_lock(self):
-        legacy = workflow("pages-production.yml")
+    def test_production_has_one_explicitly_enabled_publisher_and_distinct_lock(self):
+        production_jobs = [
+            (path.name, job_id)
+            for path in sorted(WORKFLOWS.glob("*.yml"))
+            for job_id, job in workflow(path.name).get("jobs", {}).items()
+            if "vars.MAPLE_PAGES_PRODUCTION_ENABLED" in str(job.get("if", ""))
+        ]
+        # Disabling publication must not activate an alternate production writer.
+        self.assertEqual(production_jobs, [("pages-publish.yml", "production")])
         direct = workflow("pages-publish.yml")["jobs"]["production"]
-        self.assertTrue(
-            normalized(legacy["jobs"]["promote"]["if"]).startswith(
-                "vars.MAPLE_PAGES_PRODUCTION_ENABLED != 'true' &&"
-            )
-        )
-        self.assertEqual(direct["concurrency"], legacy["concurrency"])
         self.assertEqual(direct["concurrency"], {"group": "pages-production", "cancel-in-progress": False})
         self.assertEqual(
             workflow("pages-publish.yml")["jobs"]["preview"]["concurrency"],
