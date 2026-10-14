@@ -5,7 +5,7 @@ export const APP_ORIGIN = trimTrailingSlash(
 );
 
 export const MARKETING_ORIGIN = trimTrailingSlash(
-  import.meta.env.VITE_MARKETING_ORIGIN || "https://www.trymaple.ai"
+  import.meta.env.VITE_MARKETING_ORIGIN || "https://maple.ai"
 );
 
 export function appUrl(path = "/") {
