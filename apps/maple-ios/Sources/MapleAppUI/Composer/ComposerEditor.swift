@@ -34,7 +34,8 @@
         var onChange: (DictationEditorState, [DictationTextEdit]) -> Void = { _, _ in }
         var onEditingInteraction: () -> Bool = { true }
         var refreshAfterSubmit: (() -> ComposerEditor?)? = nil
-        var onPasteImages: (([NSItemProvider]) -> Void)? = nil
+        /// Return false to let UIKit paste the text representation instead.
+        var onPasteImages: (([NSItemProvider]) -> Bool)? = nil
         var onSubmit: () -> Void
 
         func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -724,6 +725,24 @@
                 }
             }
 
+            fileprivate func handlesImagePaste(_ providers: [NSItemProvider], in view: ComposerTextView) -> Bool {
+                let destinationOwner = owner, revision = textPasteRevision, installation = installationRevision
+                let window = view.window
+                guard let action = parent.onPasteImages else { return false }
+                if action(providers) { return true }
+                // A declined route may fall through only in the initiating
+                // editor. A callback can retire or replace it synchronously.
+                func matches() -> Bool {
+                    valid && !installing && self.view === view && view.delegate === self
+                        && owner == destinationOwner && textPasteRevision == revision
+                        && installationRevision == installation && view.window === window
+                        && view.isEditable && view.markedTextRange == nil
+                }
+                guard matches(), parent.isCurrentOwner(), matches(), parent.isCurrentPresentation(), matches()
+                else { return true }
+                return false
+            }
+
             func publish(completedInput: Bool = false) {
                 #if DEBUG
                     observeInputOrder(completedInput ? "complete" : "observe")
@@ -1239,8 +1258,7 @@
                 if !images.isEmpty, admitsImagePaste,
                     let coordinator = delegate as? ComposerEditor.Coordinator
                 {
-                    coordinator.parent.onPasteImages?(images)
-                    return
+                    if coordinator.handlesImagePaste(images, in: self) { return }
                 }
             }
             pastingText = true

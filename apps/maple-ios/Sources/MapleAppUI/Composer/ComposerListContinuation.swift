@@ -9,12 +9,12 @@ struct ComposerListEdit: Equatable, Sendable {
 }
 
 enum ComposerListContinuation {
-    private static let unordered = try? NSRegularExpression(pattern: #"^([ \t]*)([-+*])([ \t]+)(.*)$"#)
-    private static let taskMarker = try? NSRegularExpression(pattern: #"^\[([ xX])\]([ \t]*)(.*)$"#)
-    private static let ordered = try? NSRegularExpression(pattern: #"^([ \t]*)([0-9]+)([.)])([ \t]+)(.*)$"#)
+    private static let unordered = try? NSRegularExpression(pattern: #"^([ \t]*)([-+*])([ \t]+)(.*)\z"#)
+    private static let taskMarker = try? NSRegularExpression(pattern: #"^\[([ xX])\]([ \t]*)(.*)\z"#)
+    private static let ordered = try? NSRegularExpression(pattern: #"^([ \t]*)([0-9]+)([.)])([ \t]+)(.*)\z"#)
     private static let fenceOpening = try? NSRegularExpression(pattern: #"^[ ]{0,3}(`{3,}|~{3,})"#)
-    private static let fenceClosing = try? NSRegularExpression(pattern: #"^[ ]{0,3}(`+|~+)[ \t]*$"#)
-    private static let rule = try? NSRegularExpression(pattern: #"^((?:-\s*){3,}|(?:\*\s*){3,})$"#)
+    private static let fenceClosing = try? NSRegularExpression(pattern: #"^[ ]{0,3}(`+|~+)[ \t]*\z"#)
+    private static let rule = try? NSRegularExpression(pattern: #"^((?:-\s*){3,}|(?:\*\s*){3,})\z"#)
 
     private struct Marker {
         let indentation: String

@@ -1481,11 +1481,13 @@ enum ChatComposerPresentation {
                 },
                 onPasteImages: { providers in
                     guard runtime.scope == account.scope, runtime.snapshot.draft.id == owner,
-                        currentProjection, !menuState.occluded, !runtime.isEditingQueue,
-                        let importer = environment.imageImporters[ObjectIdentifier(runtime)]
-                    else { return }
-                    guard account.imageAccess == .allowed else { mediaNotice = .images; return }
+                        currentProjection, !menuState.occluded
+                    else { return true }
+                    guard !runtime.isEditingQueue else { return false }
+                    guard let importer = environment.imageImporters[ObjectIdentifier(runtime)] else { return true }
+                    guard account.imageAccess == .allowed else { mediaNotice = .images; return true }
                     ClipboardImageSource.importImages(providers, using: importer, draftID: owner)
+                    return true
                 },
                 onSubmit: {
                     guard runtime.snapshot.draft.id == owner else { return }
@@ -1582,7 +1584,7 @@ enum ChatComposerPresentation {
         }
 
         private func send() {
-            guard account.chatAccess == .allowed else { return }
+            guard !runtime.snapshot.draft.isEmpty, account.chatAccess == .allowed else { return }
             if environment.send(
                 runtime,
                 options: ChatSendOptions(

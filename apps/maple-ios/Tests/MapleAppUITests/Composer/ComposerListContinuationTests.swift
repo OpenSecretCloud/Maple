@@ -86,6 +86,18 @@ import Testing
         #expect(edit(tildes)?.text == tildes + "\n2. ")
     }
 
+    @Test(arguments: ["\r", "\u{2028}", "\u{2029}"])
+    func trailingLineTerminatorsDoNotPartiallyMatchListMarkers(_ terminator: String) {
+        for prefix in ["- item", "- [x]", "3. item"] {
+            #expect(edit(prefix + terminator) == nil)
+        }
+    }
+
+    @Test(arguments: ["\r", "\u{2028}", "\u{2029}"])
+    func aClosingFenceMustMatchTheWholeLineLikeResearch(_ terminator: String) {
+        #expect(edit("```\ncode\n```" + terminator + "\n- still fenced") == nil)
+    }
+
     @Test func nativeRangesUseUTF16AndInvalidOrSplitSurrogatesFailClosed() {
         let text = "Intro 🐝\n- café 🐝"
         let emoji = (text as NSString).range(of: "🐝", options: .backwards)

@@ -775,6 +775,7 @@
                 callbacks += 1
                 expectedProvider =
                     providers.count == 1 && providers[0].hasItemConformingToTypeIdentifier(UTType.png.identifier)
+                return true
             }
             let image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).pngData { context in
                 context.cgContext.setFillColor(UIColor.black.cgColor)
@@ -816,6 +817,79 @@
                 harness.view.selectedRange == NSRange(location: caret + 1, length: 0),
                 label: "paste.text.caret", check: check)
             labeledCheck(harness.capture.submitted.isEmpty, label: "paste.noSubmit", check: check)
+
+            // Queue editing declines image import, but must keep a mixed
+            // clipboard's text. A consumed image/upgrade action keeps precedence.
+            for route in ["declined", "handled", "replacement", "reinstalled", "retired", "composition", "occluded"] {
+                let candidate = Harness(text: "old", marker: 3, focus: true)
+                defer { candidate.close() }
+                wireNativeInput(candidate)
+                candidate.view.selectedRange = NSRange(location: 3, length: 0)
+                let original = candidate.coordinator.parent, next = Capture(text: "Successor", marker: 9)
+                let pasted = "\n* pasted 🐝"
+                var callbacks = 0, expectedProvider = false, expectedText = "old"
+                candidate.coordinator.parent.onPasteImages = { providers in
+                    callbacks += 1
+                    expectedProvider = providers.count == 1
+                    if route == "replacement" || route == "reinstalled" {
+                        let successor = ComposerEditor(
+                            text: Binding(get: { next.text }, set: { next.text = $0 }),
+                            focused: .constant(true), ownerID: UUID(), accountGeneration: UUID(),
+                            placeholder: "Synthetic successor", onChange: { next.receive($0, $1) }, onSubmit: {})
+                        candidate.coordinator.install(successor, in: candidate.view)
+                        if route == "reinstalled" { candidate.coordinator.install(original, in: candidate.view) }
+                    } else if route == "retired" {
+                        candidate.coordinator.valid = false
+                    } else if route == "composition" {
+                        candidate.view.setMarkedText("IME", selectedRange: NSRange(location: 3, length: 0))
+                    } else if route == "occluded" {
+                        candidate.coordinator.parent.isCurrentPresentation = { false }
+                    }
+                    expectedText = candidate.view.text ?? ""
+                    return route == "handled"
+                }
+                board.setItems(
+                    [[UTType.png.identifier: image, UTType.utf8PlainText.identifier: Data(pasted.utf8)]],
+                    options: [.localOnly: true])
+                candidate.view.paste(nil)
+                if route != "declined" {
+                    labeledCheck(
+                        candidate.coordinator.pendingTextPasteReads == 0,
+                        label: "paste.mixed.\(route).noFallbackRead", check: check)
+                }
+                let routeDeadline = clock.now.advanced(by: .seconds(2))
+                while clock.now < routeDeadline, !Task.isCancelled,
+                    candidate.coordinator.pendingTextPasteReads > 0
+                        || (route == "declined" && candidate.capture.edits.isEmpty)
+                {
+                    do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
+                }
+                labeledCheck(expectedProvider, label: "paste.mixed.\(route).provider", check: check)
+                labeledCheck(callbacks == 1, label: "paste.mixed.\(route).routedOnce", check: check)
+                if route == "declined" {
+                    labeledCheck(
+                        candidate.capture.text == "old" + pasted
+                            && candidate.capture.edits == [
+                                DictationTextEdit(
+                                    beforeText: "old", rangeUTF16: NSRange(location: 3, length: 0), replacement: pasted)
+                            ], label: "paste.mixed.declined.exactText", check: check)
+                    labeledCheck(
+                        candidate.capture.marker?.offsetUTF16 == 3 + pasted.utf16.count
+                            && candidate.view.selectedRange == NSRange(location: 3 + pasted.utf16.count, length: 0)
+                            && candidate.capture.rebaseFailures == 0,
+                        label: "paste.mixed.declined.caretAndAnchor", check: check)
+                } else {
+                    labeledCheck(
+                        candidate.view.text == expectedText && next.text == "Successor" && next.edits.isEmpty,
+                        label: "paste.mixed.\(route).ownerUnchanged", check: check)
+                    if route == "composition" {
+                        labeledCheck(
+                            candidate.view.markedTextRange != nil,
+                            label: "paste.mixed.composition.retained", check: check)
+                    }
+                }
+                labeledCheck(candidate.capture.submitted.isEmpty, label: "paste.mixed.\(route).noSubmit", check: check)
+            }
 
             for boundary in ["replacement", "reinstalled", "retired", "composition"] {
                 let candidate = Harness(text: "old", marker: 3, focus: true)
