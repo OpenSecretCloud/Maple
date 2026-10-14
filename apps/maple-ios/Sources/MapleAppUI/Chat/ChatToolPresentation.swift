@@ -2,6 +2,21 @@ import Foundation
 import MapleSDK
 
 enum ChatToolPresentation {
+    enum Kind: Equatable, Sendable {
+        case shell, fileRead, fileWrite, web, mcp, generic
+
+        var systemImage: String {
+            switch self {
+            case .shell: "terminal"
+            case .fileRead: "doc.text.magnifyingglass"
+            case .fileWrite: "square.and.pencil"
+            case .web: "globe"
+            case .mcp: "square.stack.3d.up"
+            case .generic: "wrench"
+            }
+        }
+    }
+
     enum Status: String, Equatable, Sendable {
         case active = "In progress", completed = "Completed", incomplete = "Incomplete", failed = "Failed"
     }
@@ -9,6 +24,25 @@ enum ChatToolPresentation {
         let input: String
         let output: String
         var hasDetails: Bool { !input.isEmpty || !output.isEmpty }
+    }
+
+    /// Presentation of stored call names only; it does not enable new tools.
+    static func kind(name: String?, webSearch: Bool = false) -> Kind {
+        if webSearch { return .web }
+        var name = name ?? ""
+        if let separator = name.range(of: "__") {
+            if name[..<separator.lowerBound] != "developer" { return .mcp }
+            name = String(name[separator.upperBound...])
+        }
+        switch name {
+        case "shell": return .shell
+        case "read", "read_file", "read_image", "list_files", "glob", "grep": return .fileRead
+        case "edit", "write", "edit_file", "write_file", "text_editor", "str_replace_editor",
+            "str_replace_based_edit_tool", "apply_patch":
+            return .fileWrite
+        case "web_search", "open_url", "open_urls": return .web
+        default: return .generic
+        }
     }
 
     static func arguments(_ value: JSONValue?) -> JSONValue? {

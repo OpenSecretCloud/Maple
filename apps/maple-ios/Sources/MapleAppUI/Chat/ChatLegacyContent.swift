@@ -3,6 +3,26 @@ import Foundation
 /// Presentation-only compatibility with Research's stored document and think
 /// tags. Invalid/incomplete documents keep their original selectable text.
 enum ChatLegacyContent {
+    struct Source: Equatable, Sendable {
+        let text: String
+        let user: Bool
+        let assistant: Bool
+        let streaming: Bool
+        let generation: UUID
+
+        var requiresPreparation: Bool { assistant || (user && text.contains("{\"document\":")) }
+    }
+
+    struct Prepared: Equatable, Sendable {
+        let source: Source
+        let document: Document?
+        let parts: [Part]
+    }
+
+    enum Presentation: Equatable, Sendable {
+        case ordinary, document(Document), assistant([Part]), pendingDocument, pendingThinking
+    }
+
     struct Document: Equatable, Sendable {
         let filename: String
         let text: String
@@ -16,6 +36,32 @@ enum ChatLegacyContent {
         let kind: Kind
         let text: String
         let isThinking: Bool
+    }
+
+    static func prepare(_ source: Source) -> Prepared {
+        Prepared(
+            source: source, document: source.user ? document(in: source.text) : nil,
+            parts: source.assistant ? assistantParts(source.text, streaming: source.streaming) : [])
+    }
+
+    /// Pending compatibility work must not expose document JSON or opening
+    /// think tags as ordinary text. Streaming appends may keep their last rich
+    /// presentation, but only an exact source can publish preparation receipts.
+    static func presentation(source: Source, prepared: Prepared?) -> Presentation {
+        guard source.requiresPreparation else { return .ordinary }
+        if let prepared, prepared.source == source {
+            if source.assistant { return .assistant(prepared.parts) }
+            return prepared.document.map(Presentation.document) ?? .ordinary
+        }
+        if source.assistant {
+            if let prepared, prepared.source.assistant, prepared.source.streaming, source.streaming,
+                prepared.source.generation == source.generation, source.text.hasPrefix(prepared.source.text)
+            {
+                return .assistant(prepared.parts)
+            }
+            return .pendingThinking
+        }
+        return .pendingDocument
     }
 
     static func document(in text: String) -> Document? {

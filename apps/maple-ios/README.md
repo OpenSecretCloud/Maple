@@ -78,7 +78,9 @@ nix develop --no-update-lock-file .#apple -c env -u LD -u LDPLUSPLUS -u CC -u CX
 This example requires the standard software keyboard to be visible and uses
 synthetic in-memory text; it does not require account credentials or services.
 Rebuild after relevant source changes and record the selected method, artifact,
-simulator and authoritative test result.
+simulator and authoritative test result. Hardware Return sends on iPhone;
+software Return and Shift-Return insert newlines and continue Markdown lists.
+An empty draft does not submit or create a failure notice.
 
 `build.sh test-simulator local` instead builds and runs the **entire** UI target;
 it does not accept a test selector. That target also contains input-delivery
@@ -129,9 +131,10 @@ The main menu remembers explicitly expanded projects in an account-scoped,
 protected local file excluded from backups. These presentation choices survive
 relaunch and sign-out, never sync to the server, and are removed after account
 deletion. Search can reveal project contents without changing the saved choice.
-Project titles open the existing scoped detail view; the separate disclosure
-keeps folder expansion available. Detail shares chat selection and instructions
-editing with the library. Running and completed-unread indicators follow the
+Project titles expand or collapse their folders; View project in the context
+menu opens the existing scoped detail view. Detail reuses the library’s chat
+selection controls and instructions editor. Its search stays separate from the
+retained sidebar query. Running and completed-unread indicators follow the
 account-owned runtimes, including pending project chat creation; selecting or
 showing a completed chat clears its unread indicator.
 

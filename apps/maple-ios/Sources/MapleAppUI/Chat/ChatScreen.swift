@@ -1616,22 +1616,17 @@ enum ChatComposerPresentation {
         @State private var copied = false
         @State private var copyRevision = UUID()
         @State private var thinkingPulse = false
-        @State private var legacyDocument: ChatLegacyContent.Document?
-        @State private var legacyParts: [ChatLegacyContent.Part] = []
-        @State private var legacySource: LegacySource?
+        @State private var legacyPrepared: ChatLegacyContent.Prepared?
+        @State private var readySource: ChatLegacyContent.Source?
         @State private var readyFragments: Set<Int> = []
-        private struct LegacySource: Equatable, Sendable {
-            let text: String
-            let user: Bool
-            let assistant: Bool
-            let streaming: Bool
-            let generation: UUID
-        }
-        private var currentLegacySource: LegacySource {
-            LegacySource(
+        private var currentLegacySource: ChatLegacyContent.Source {
+            ChatLegacyContent.Source(
                 text: text, user: isUserMessage,
                 assistant: item.role == "assistant" && item.type == "message" && text.contains("<think>"),
                 streaming: isStreamingText, generation: generation)
+        }
+        private var legacyPresentation: ChatLegacyContent.Presentation {
+            ChatLegacyContent.presentation(source: currentLegacySource, prepared: legacyPrepared)
         }
         private var text: String { (item.content ?? []).compactMap(\.text).joined(separator: "\n\n") }
         private var readableContent: Bool {
@@ -1652,31 +1647,36 @@ enum ChatComposerPresentation {
             isGenerating && ["in_progress", "streaming"].contains(item.status ?? "in_progress")
         }
         private var thinkingActive: Bool {
-            isThinking || (item.role == "assistant" && legacyParts.contains(where: \.isThinking))
+            if isThinking { return true }
+            if case .assistant(let parts) = legacyPresentation { return parts.contains(where: \.isThinking) }
+            return legacyPresentation == .pendingThinking && isStreamingText
         }
         private var requiredFragments: Set<Int> {
-            if isUserMessage, text.contains("{\"document\":") {
-                guard legacySource == currentLegacySource else { return [] }
-                if let document = legacyDocument {
-                    var fragments: Set<Int> = [-1]
-                    if !document.before.isEmpty { fragments.insert(-2) }
-                    if !document.after.isEmpty { fragments.insert(-3) }
-                    return fragments
-                }
+            if currentLegacySource.requiresPreparation, legacyPrepared?.source != currentLegacySource { return [] }
+            switch legacyPresentation {
+            case .document(let document):
+                var fragments: Set<Int> = [-1]
+                if !document.before.isEmpty { fragments.insert(-2) }
+                if !document.after.isEmpty { fragments.insert(-3) }
+                return fragments
+            case .assistant(let parts):
+                return parts.isEmpty ? [0] : Set(parts.map(\.id))
+            case .pendingDocument, .pendingThinking: return []
+            case .ordinary: return [0]
             }
-            if currentLegacySource.assistant {
-                guard legacySource?.generation == generation, legacySource?.assistant == true else { return [] }
-                return legacyParts.isEmpty ? [0] : Set(legacyParts.map(\.id))
-            }
-            return [0]
         }
-        private func fragmentPrepared(_ id: Int) {
+        private func fragmentPrepared(_ id: Int, source: ChatLegacyContent.Source? = nil) {
+            let source = source ?? currentLegacySource
+            guard source == currentLegacySource else { return }
+            if readySource != source { readySource = source; readyFragments = [] }
             if !readyFragments.contains(id) { readyFragments.insert(id) }
             publishPreparationIfReady()
         }
         private func publishPreparationIfReady() {
             let required = requiredFragments
-            if !required.isEmpty, required.isSubset(of: readyFragments) { onPrepared() }
+            if readySource == currentLegacySource, !required.isEmpty, required.isSubset(of: readyFragments) {
+                onPrepared()
+            }
         }
 
         var body: some View {
@@ -1725,18 +1725,15 @@ enum ChatComposerPresentation {
             }
             .task(id: currentLegacySource) {
                 let source = currentLegacySource
+                guard source.requiresPreparation else { legacyPrepared = nil; return }
                 let work = Task.detached(priority: .userInitiated) {
-                    (
-                        source.user ? ChatLegacyContent.document(in: source.text) : nil,
-                        source.assistant
-                            ? ChatLegacyContent.assistantParts(source.text, streaming: source.streaming) : []
-                    )
+                    ChatLegacyContent.prepare(source)
                 }
-                let (document, parts) = await work.value
-                guard !Task.isCancelled else { return }
-                legacyDocument = document; legacyParts = parts; legacySource = source
-                if document != nil { fragmentPrepared(-1) }
-                if source.assistant, parts.isEmpty { fragmentPrepared(0) }
+                let prepared = await work.value
+                guard !Task.isCancelled, currentLegacySource == source else { return }
+                legacyPrepared = prepared
+                if prepared.document != nil { fragmentPrepared(-1, source: source) }
+                if source.assistant, prepared.parts.isEmpty { fragmentPrepared(0, source: source) }
             }
             .onChange(of: requiredFragments) { _, _ in publishPreparationIfReady() }
             .accessibilityElement(children: .contain)
@@ -1756,12 +1753,13 @@ enum ChatComposerPresentation {
                         item: item, result: toolResult, theme: theme, font: font, generation: generation,
                         onOpenLink: onOpenLink, onPrepared: { fragmentPrepared(0) })
                 } else if !text.isEmpty {
-                    if isUserMessage, legacySource == currentLegacySource, let document = legacyDocument {
+                    switch legacyPresentation {
+                    case .document(let document):
                         if !document.before.isEmpty { ordinaryText(document.before, fragmentID: -2) }
                         LegacyDocumentChip(document: document, itemID: item.id, generation: generation)
                         if !document.after.isEmpty { ordinaryText(document.after, fragmentID: -3) }
-                    } else if currentLegacySource.assistant, legacySource?.generation == generation {
-                        ForEach(legacyParts) { part in
+                    case .assistant(let parts):
+                        ForEach(parts) { part in
                             if part.kind == .thinking {
                                 thinkingContent(
                                     part.text, streaming: part.isThinking,
@@ -1771,7 +1769,20 @@ enum ChatComposerPresentation {
                                 ordinaryText(part.text, fragmentID: part.id)
                             }
                         }
-                    } else {
+                    case .pendingDocument:
+                        ProgressView()
+                            .frame(minHeight: 44)
+                            .accessibilityLabel(libraryText("Loading..."))
+                            .accessibilityIdentifier("message.document.loading." + item.id)
+                    case .pendingThinking:
+                        HStack(spacing: 8) {
+                            Text(MapleStrings.text("Thinking")).foregroundStyle(.secondary)
+                            ProgressView().controlSize(.mini)
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("message.thinking.loading." + item.id)
+                    case .ordinary:
                         ordinaryText(text)
                     }
                 } else if item.role == "assistant", isGenerating,
@@ -1785,13 +1796,17 @@ enum ChatComposerPresentation {
         }
 
         private func ordinaryText(_ text: String, fragmentID: Int = 0) -> some View {
-            MessageView(text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
-                .onPrepared { fragmentPrepared(fragmentID) }
+            let source = currentLegacySource
+            return MessageView(
+                text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink
+            )
+            .onPrepared { fragmentPrepared(fragmentID, source: source) }
         }
 
         private func thinkingContent(_ text: String, streaming: Bool, identifier: String, fragmentID: Int) -> some View
         {
-            DisclosureGroup {
+            let source = currentLegacySource
+            return DisclosureGroup {
                 ordinaryText(text, fragmentID: fragmentID)
             } label: {
                 Text(ChatTranscriptPresentation.thinkingLabel(text: text, streaming: streaming))
@@ -1803,7 +1818,7 @@ enum ChatComposerPresentation {
             }
             .frame(minHeight: 44)
             .accessibilityIdentifier(identifier)
-            .onAppear { fragmentPrepared(fragmentID) }
+            .onChange(of: source, initial: true) { _, value in fragmentPrepared(fragmentID, source: value) }
         }
 
         private var messageActions: some View {
@@ -1998,8 +2013,11 @@ enum ChatComposerPresentation {
         }
         private var summary: some View {
             HStack(spacing: 8) {
-                Image(systemName: item.name == "read_image" ? "doc.text.magnifyingglass" : "globe")
-                    .foregroundStyle(.secondary)
+                Image(
+                    systemName: ChatToolPresentation.kind(name: item.name, webSearch: item.type == "web_search_call")
+                        .systemImage
+                )
+                .foregroundStyle(.secondary)
                 Text(verbatim: title).foregroundStyle(.primary).lineLimit(1)
                 Spacer(minLength: 8)
                 Text(statusLabel).font(.caption).foregroundStyle(

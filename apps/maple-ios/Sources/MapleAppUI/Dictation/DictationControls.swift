@@ -37,11 +37,11 @@
                                 Text("Insert", tableName: "Dictation", bundle: .module)
                             }.accessibilityIdentifier("dictation.insert")
                         case .failed:
-                            if coordinator.issue(for: runtime) != nil {
-                                Text(
-                                    "Failed to transcribe audio. Please try again.", tableName: "Dictation",
-                                    bundle: .module)
-                            }
+                            Text(
+                                "Failed to transcribe audio. Please try again.", tableName: "Dictation",
+                                bundle: .module
+                            )
+                            .accessibilityIdentifier("dictation.failed")
                             Button(action: { coordinator.retry(runtime: runtime) }) {
                                 Text("Retry", tableName: "Dictation", bundle: .module)
                             }.accessibilityIdentifier("dictation.retry")

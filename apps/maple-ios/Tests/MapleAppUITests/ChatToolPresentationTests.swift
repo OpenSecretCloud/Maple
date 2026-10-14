@@ -6,6 +6,20 @@ import Testing
 @Suite struct ChatToolPresentationTests {
     private let english = Locale(identifier: "en")
 
+    @Test func storedToolNamesUseResearchKindsWithoutEnablingTools() {
+        let cases: [(String?, ChatToolPresentation.Kind)] = [
+            ("shell", .shell), ("developer__shell", .shell), ("read_image", .fileRead),
+            ("read_file", .fileRead), ("glob", .fileRead), ("grep", .fileRead),
+            ("apply_patch", .fileWrite), ("developer__str_replace_editor", .fileWrite),
+            ("web_search", .web), ("open_urls", .web), ("open_url", .web),
+            ("calendar__read_file", .mcp), ("unknown", .generic), (nil, .generic),
+        ]
+        for (name, expected) in cases { #expect(ChatToolPresentation.kind(name: name) == expected) }
+        #expect(ChatToolPresentation.kind(name: nil, webSearch: true) == .web)
+        #expect(ChatToolPresentation.kind(name: "unknown").systemImage == "wrench")
+        #expect(ChatToolPresentation.kind(name: "open_urls").systemImage == "globe")
+    }
+
     @Test func titlesDecodeStringArgumentsAndKeepUserValuesVerbatim() {
         #expect(
             ChatToolPresentation.title(

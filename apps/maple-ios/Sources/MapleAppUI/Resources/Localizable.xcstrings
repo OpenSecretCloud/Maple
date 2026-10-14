@@ -625,18 +625,6 @@
         }
       }
     },
-    "Load earlier messages": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Load earlier messages"
-          }
-        }
-      }
-    },
     "Loading account…": {
       "comment": "Account settings startup or permanent chat-history deletion confirmation.",
       "extractionState": "manual",
@@ -745,18 +733,6 @@
         }
       }
     },
-    "No tool details available.": {
-      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No tool details available."
-          }
-        }
-      }
-    },
     "OK": {
       "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
       "extractionState": "manual",
@@ -813,18 +789,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open link"
-          }
-        }
-      }
-    },
-    "Opened pages": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Opened pages"
           }
         }
       }
@@ -1172,30 +1136,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Save changes"
-          }
-        }
-      }
-    },
-    "Search failed": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search failed"
-          }
-        }
-      }
-    },
-    "Search results": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search results"
           }
         }
       }
@@ -1580,30 +1520,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "This selection exceeds your current attachment limits. Existing images are unchanged."
-          }
-        }
-      }
-    },
-    "Tool failed": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tool failed"
-          }
-        }
-      }
-    },
-    "Tool results": {
-      "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tool results"
           }
         }
       }
@@ -2280,42 +2196,6 @@
         }
       }
     },
-    "Default": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Default"
-          }
-        }
-      }
-    },
-    "Extra high": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Extra high"
-          }
-        }
-      }
-    },
-    "High": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "High"
-          }
-        }
-      }
-    },
     "In progress": {
       "comment": "Research tool activity status or detail control.",
       "extractionState": "manual",
@@ -2336,66 +2216,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Input"
-          }
-        }
-      }
-    },
-    "Low": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Low"
-          }
-        }
-      }
-    },
-    "Max": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Max"
-          }
-        }
-      }
-    },
-    "Medium": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Medium"
-          }
-        }
-      }
-    },
-    "Minimal": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Minimal"
-          }
-        }
-      }
-    },
-    "Off": {
-      "comment": "Research thinking-level option shown beside the chat options trigger.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Off"
           }
         }
       }
