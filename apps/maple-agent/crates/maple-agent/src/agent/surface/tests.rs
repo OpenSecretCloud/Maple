@@ -90,7 +90,7 @@ async fn a_surface_task_is_unlisted_until_prompted_and_discarded_untouched() {
 }
 
 #[tokio::test]
-async fn a_surface_task_runs_without_desktop_tools() {
+async fn a_surface_task_shares_host_tools_and_events() {
     let harness = Harness::new().await;
     let created = harness
         .handle
@@ -116,21 +116,17 @@ async fn a_surface_task_runs_without_desktop_tools() {
         .map(|tool| tool.name)
         .collect();
     assert!(declared.contains(&"bash".to_string()), "{declared:?}");
-    let desktop = ["todo_write", "request_user_input"]
-        .into_iter()
-        .chain(crate::agent::external_agents::EXTERNAL_AGENT_TOOLS);
-    for name in desktop {
-        assert!(!declared.contains(&name.to_string()), "{declared:?}");
+    for name in ["todo_write", "request_user_input"] {
+        assert!(declared.contains(&name.to_string()), "{declared:?}");
     }
-    // A surface's run is the surface's alone: the host hears none of it.
-    assert!(!harness.recorder.events().iter().any(
+    assert!(harness.recorder.events().iter().any(
         |event| matches!(event, AgentServiceEvent::Run { run_id, .. } if *run_id == run.run_id)
     ));
     created.lease.release().await;
 }
 
 #[tokio::test]
-async fn the_desktop_waits_for_a_surface_to_release_its_task() {
+async fn desktop_and_two_surfaces_share_one_task() {
     let harness = Harness::new().await;
     let task = harness.create_task().await;
     let attached = harness
@@ -140,21 +136,19 @@ async fn the_desktop_waits_for_a_surface_to_release_its_task() {
         .unwrap();
     assert_eq!(attached.detail.session.id, task);
     let access = attached.lease.access();
-    let refused = harness
-        .handle
-        .send_message(prompt(&task, "From the desktop"))
-        .await
-        .err()
-        .unwrap();
-    assert_eq!(refused, SURFACE_CONTROLLED_ERROR);
-    // A second surface cannot hold it either.
     let second = harness
         .handle
         .attach_surface_session(&task, Vec::new())
         .await
-        .err()
         .unwrap();
-    assert_eq!(second, SURFACE_CONTROLLED_ERROR);
+    harness.faux.push_text("From the shared host.");
+    let mut desktop = harness
+        .handle
+        .send_message(prompt(&task, "From the desktop"))
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut desktop).await, AgentRunTerminal::Completed);
+    second.lease.release().await;
 
     let runtime = harness.runtime().await;
     harness.faux.push_text("Loaded.");
@@ -170,7 +164,7 @@ async fn the_desktop_waits_for_a_surface_to_release_its_task() {
     // is the desktop's again.
     attached.lease.release().await;
     assert!(!runtime.surface_holds(&access));
-    assert!(runtime.loaded_session(&task).await.is_none());
+    assert!(runtime.loaded_session(&task).await.is_some());
     let gone = harness
         .handle
         .send_surface_message(&access, prompt(&task, "Again"), CancellationToken::new())
@@ -194,7 +188,7 @@ async fn the_desktop_waits_for_a_surface_to_release_its_task() {
 }
 
 #[tokio::test]
-async fn cancelling_a_surface_send_stops_its_run() {
+async fn detaching_does_not_stop_a_run_but_explicit_cancel_does() {
     let harness =
         Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(10))).await;
     let created = harness
@@ -216,6 +210,8 @@ async fn cancelling_a_surface_send_stops_its_run() {
         .unwrap();
     crate::agent::tests::eventually(|| !harness.faux.requests().is_empty()).await;
     cancellation.cancel();
+    assert!(run.terminal.borrow().is_none());
+    harness.handle.cancel_session(&task).await.unwrap();
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Cancelled);
     // The next prompt runs once the stopped one has ended.
     harness.faux.push_text("Ready.");
@@ -284,7 +280,7 @@ async fn a_surface_brings_its_own_mcp_servers() {
 }
 
 #[test]
-fn a_surface_server_takes_the_place_of_a_saved_one_of_its_name() {
+fn a_surface_server_cannot_replace_a_saved_binding() {
     let server = |name: &str, url: &str| AgentMcpServer {
         name: name.to_string(),
         description: String::new(),
@@ -303,20 +299,13 @@ fn a_surface_server_takes_the_place_of_a_saved_one_of_its_name() {
         ],
         vec![server("github", "https://client.example/github")],
     );
-    let urls: Vec<String> = servers
-        .iter()
-        .map(|server| match &server.transport {
-            AgentMcpTransport::StreamableHttp { url, .. } => url.clone(),
-            AgentMcpTransport::Stdio { .. } => unreachable!(),
-        })
-        .collect();
-    assert_eq!(
-        urls,
-        [
-            "https://saved.example/docs",
-            "https://client.example/github"
-        ]
-    );
+    assert!(servers.unwrap_err().contains("conflicts"));
+    let distinct = with_surface_servers(
+        vec![server("Docs", "https://saved.example/docs")],
+        vec![server("Client", "https://client.example/tool")],
+    )
+    .unwrap();
+    assert_eq!(distinct.len(), 2);
 }
 
 #[tokio::test]

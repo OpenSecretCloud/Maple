@@ -1,797 +1,202 @@
-//! Backend boundary for the gpui frontend.
-//!
-//! This is the only module that imports `maple_agent`. It owns a private
-//! Tokio runtime and exposes an async facade plus an event stream. The UI
-//! never touches the agent runtime directly, so this seam can later be moved
-//! behind a process or socket boundary without touching UI code.
-
-// This module is the desktop frontend's boundary. A headless build (no
-// `desktop` feature) uses only a few entry points, so the rest is unused
-// there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
-use std::collections::HashMap;
-use std::future::Future;
-use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
-use std::process::Command;
-use std::sync::Arc;
+//! Desktop and CLI facade for the profile's shared local host.
+//! The host implementation retains the existing backend operations in `local`;
+//! only this module knows about IPC. GPUI never owns a second agent runtime.
 
-use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
-    AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectRootRegistration,
-    AgentProjectTrustStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
-    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
-    AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
-    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources,
-    MapleAgentService, RecentProjectRoot,
-};
-use maple_agent::maple_api::{
-    MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
-};
-use maple_agent::open_secret_config::configured_pcr0_environment;
-use maple_sdk::OpenSecretClient;
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
-use uuid::Uuid;
-
-use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
-
-#[derive(Debug, Clone)]
-pub struct PendingQuestion {
-    pub session_id: String,
-    pub request_id: String,
-    /// One or more related questions answered together in one card.
-    pub questions: Vec<maple_agent::agent::AgentQuestion>,
-}
-
-// Re-exported for the settings screens; a headless build has no reader.
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
-pub use maple_agent::maple_api::{
-    MapleAccount, MapleAccountError, MapleApiKey, MapleApiKeyCreated, MapleLoginMethod,
-};
+pub use local::*;
+pub(crate) mod local;
 
-/// The signed-in account identity.
-#[derive(Debug, Clone)]
-pub struct AuthSession {
-    pub user_id: String,
-}
-
-/// Result of the background credential validation started by
-/// [`AgentBackend::restore_in_background`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RestoreOutcome {
-    /// The server accepted the saved credentials; the session is installed.
-    Valid(String),
-    /// The server rejected the saved credentials; they were cleared.
-    Rejected,
-    /// Offline, timeout, or a server fault. The credentials may still be
-    /// good, so they are kept for the next launch.
-    Unavailable,
-}
-
-/// Everything the chat screen can show before any network call: the saved
-/// project root, the task list, the recent roots, and the newest task's
-/// transcript. Read in one backend call so it all lands before a runtime
-/// start takes the lifecycle lock for its network round trips.
-pub struct LocalBootstrap {
-    pub project_root: Option<String>,
-    pub sessions: Vec<AgentSessionSummary>,
-    pub recent_roots: Vec<String>,
-    pub latest: Option<AgentSessionDetail>,
-}
+use crate::host::{RemoteClient, protocol::Request};
+use maple_agent::agent::*;
+use serde::{Serialize, de::DeserializeOwned};
+use std::{collections::HashMap, future::Future, sync::Arc};
+use tokio::{runtime::Runtime, sync::mpsc};
 
 pub struct AgentBackend {
     runtime: Runtime,
-    service: MapleAgentService,
-    auth: MapleApiAuthState,
+    client: BackendClient,
     api_url: String,
-    persisted_auth: Arc<PersistedAuthStore>,
-    pending_oauth: Arc<PendingOAuthStore>,
-    client_id: Uuid,
-    event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
-    billing: crate::billing::BillingClient,
-    /// Cached billing JWT per user id. Replaced after a 401.
-    billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
-    /// Open handle to the app-owned tool summary store; keyed by account
-    /// scope path so a user switch reopens it.
-    summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
-    /// True while a background credential restore runs. Calls that need a
-    /// validated session wait on it (see `session_for`); local reads do not.
-    restore_pending: (
-        tokio::sync::watch::Sender<bool>,
-        tokio::sync::watch::Receiver<bool>,
-    ),
 }
 
-fn configured_client_id() -> Uuid {
-    client_id_from(Some(&crate::profile::runtime_value(
-        "MAPLE_CLIENT_ID",
-        crate::profile::CLIENT_ID,
-    )))
+enum BackendClient {
+    Host(RemoteClient),
+    #[cfg(test)]
+    InProcess(Box<LocalBackend>),
 }
 
-/// The client id to send: local `MAPLE_CLIENT_ID` when it is a UUID, else the
-/// compiled public project id. A malformed local override is logged instead of silently
-/// pointing a test build at production.
-fn client_id_from(configured: Option<&str>) -> Uuid {
-    let default = || DEFAULT_CLIENT_ID.parse().expect("valid uuid");
-    let Some(value) = configured else {
-        return default();
+// Borrowed facade parameters become owned messages at the process boundary.
+macro_rules! wire_type {
+    ((&str)) => { String };
+    ((Option<&str>)) => { Option<String> };
+    (($ty:ty)) => { $ty };
+}
+macro_rules! local_arg {
+    ($value:ident, (&str)) => {
+        &$value
     };
-    match value.parse() {
-        Ok(id) => id,
-        Err(error) => {
-            log::warn!(
-                "MAPLE_CLIENT_ID {value:?} is not a UUID ({error}); using the default client id"
-            );
-            default()
+    ($value:ident, (Option<&str>)) => {
+        $value.as_deref()
+    };
+    ($value:ident, ($ty:ty)) => {
+        $value
+    };
+}
+macro_rules! authorize_arg {
+    ($backend:ident, user_id, $value:ident) => {
+        $backend.authorize_account(&$value)?;
+    };
+    ($backend:ident, $name:ident, $value:ident) => {};
+}
+macro_rules! operations {
+    ($( $name:ident ( $( $arg:ident : $ty:tt ),* ) -> $result:ty; )*) => {
+        impl AgentBackend {
+            $(pub async fn $name(&self, $($arg: unpack_type!($ty)),*) -> Result<$result, String> {
+                self.call(stringify!($name), ($($arg,)* )).await
+            })*
         }
-    }
-}
-
-struct ChannelEventSink(mpsc::UnboundedSender<AgentServiceEvent>);
-
-impl AgentEventSink for ChannelEventSink {
-    fn emit(&self, event: &AgentServiceEvent) {
-        // The channel is unbounded, so sends only fail after the UI dropped
-        // the receiver (window closed). The runtime tolerates missing
-        // notifications for that case; surface it once for diagnosis.
-        if self.0.send(event.clone()).is_err() {
-            log::debug!("agent event receiver is gone; dropping further events");
-        }
-    }
-}
-
-pub(crate) const APP_DIR_NAME: &str = crate::profile::DATA_NAMESPACE;
-/// Directory name used before the package rename. An existing directory is
-/// adopted in place on first start; see [`adopt_legacy_app_dirs`].
-const LEGACY_APP_DIR_NAME: &str = "maple-gpui";
-
-/// Rename state written under the previous directory name into the current
-/// one, once per distinct root, before anything opens files. Only a missing
-/// current directory is filled: an already-current or partially migrated
-/// layout is never touched. Returns one line per root for the caller to log
-/// once logging is up.
-pub fn adopt_legacy_app_dirs() -> Vec<String> {
-    if crate::profile::PACKAGED {
-        return Vec::new();
-    }
-    let mut notes = Vec::new();
-    let mut seen: Vec<PathBuf> = Vec::new();
-    for root in [config_root(), local_data_root()] {
-        if seen.contains(&root) {
-            continue;
-        }
-        if let Some(note) = adopt_legacy_app_dir(&root, !crate::profile::PACKAGED) {
-            notes.push(note);
-        }
-        seen.push(root);
-    }
-    notes
-}
-
-fn adopt_legacy_app_dir(root: &Path, allow_legacy: bool) -> Option<String> {
-    if !allow_legacy {
-        return None;
-    }
-    let legacy = root.parent()?.join(LEGACY_APP_DIR_NAME);
-    if root.exists() || !legacy.is_dir() {
-        return None;
-    }
-    Some(match std::fs::rename(&legacy, root) {
-        Ok(()) => format!("adopted {} as {}", legacy.display(), root.display()),
-        Err(error) => format!(
-            "could not adopt {} as {}: {error}",
-            legacy.display(),
-            root.display()
-        ),
-    })
-}
-
-/// Maple's public OpenSecret project id. The backend rejects unknown
-/// client ids, so this must match the registered project.
-const DEFAULT_CLIENT_ID: &str = crate::profile::CLIENT_ID;
-
-/// OAuth providers supported by the OpenSecret backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OAuthProvider {
-    Github,
-    Google,
-    Apple,
-}
-
-impl OAuthProvider {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Github => "GitHub",
-            Self::Google => "Google",
-            Self::Apple => "Apple",
-        }
-    }
-}
-
-const OAUTH_CANCELLED_MESSAGE: &str = "Sign in was cancelled. Start again.";
-
-/// V2 binds the provider callback to the SDK session that started it. Keep
-/// that exact client until the one permitted completion, and revoke work
-/// already in flight when the user cancels or starts another sign-in.
-struct OAuthAttempt {
-    provider: OAuthProvider,
-    client: Arc<OpenSecretClient>,
-    cancelled: tokio::sync::watch::Sender<bool>,
-}
-
-impl OAuthAttempt {
-    async fn while_active<T>(
-        &self,
-        operation: impl Future<Output = Result<T, String>>,
-    ) -> Result<T, String> {
-        let mut cancelled = self.cancelled.subscribe();
-        if *cancelled.borrow() {
-            return Err(OAUTH_CANCELLED_MESSAGE.to_string());
-        }
-        tokio::select! {
-            biased;
-            _ = cancelled.changed() => Err(OAUTH_CANCELLED_MESSAGE.to_string()),
-            result = operation => result,
-        }
-    }
-}
-
-struct PendingOAuth {
-    attempt: Arc<OAuthAttempt>,
-    state: Option<String>,
-    completing: bool,
-    handoff: Option<HostedHandoff>,
-}
-
-struct HostedHandoff {
-    listener: HandoffListener,
-    prepared: maple_sdk::PreparedNativeOAuthHandoff,
-}
-
-#[derive(Default)]
-struct PendingOAuthStore(std::sync::Mutex<Option<PendingOAuth>>);
-
-impl PendingOAuthStore {
-    fn begin(&self, provider: OAuthProvider, client: OpenSecretClient) -> Arc<OAuthAttempt> {
-        let attempt = Arc::new(OAuthAttempt {
-            provider,
-            client: Arc::new(client),
-            cancelled: tokio::sync::watch::channel(false).0,
-        });
-        let mut pending = self.0.lock().expect("pending OAuth lock");
-        if let Some(previous) = pending.replace(PendingOAuth {
-            attempt: Arc::clone(&attempt),
-            state: None,
-            completing: false,
-            handoff: None,
-        }) {
-            previous.attempt.cancelled.send_replace(true);
-        }
-        attempt
-    }
-
-    fn set_state(&self, attempt: &Arc<OAuthAttempt>, state: String) -> Result<(), String> {
-        let mut pending = self.0.lock().expect("pending OAuth lock");
-        let flow = pending
-            .as_mut()
-            .filter(|flow| Arc::ptr_eq(&flow.attempt, attempt))
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
-        flow.state = Some(state);
-        Ok(())
-    }
-
-    fn complete(&self, provider: OAuthProvider, state: &str) -> Result<Arc<OAuthAttempt>, String> {
-        let mut pending = self.0.lock().expect("pending OAuth lock");
-        let flow = pending
-            .as_mut()
-            .filter(|flow| {
-                flow.attempt.provider == provider
-                    && flow.state.as_deref() == Some(state)
-                    && !flow.completing
-                    && flow.handoff.is_none()
-            })
-            .ok_or_else(|| {
-                "This callback does not match the pending sign in. Start again.".to_string()
-            })?;
-        flow.completing = true;
-        Ok(Arc::clone(&flow.attempt))
-    }
-
-    fn set_handoff(
-        self: &Arc<Self>,
-        attempt: &Arc<OAuthAttempt>,
-        handoff: HostedHandoff,
-    ) -> Result<(), String> {
-        let mut pending = self.0.lock().expect("pending OAuth lock");
-        let flow = pending
-            .as_mut()
-            .filter(|flow| Arc::ptr_eq(&flow.attempt, attempt))
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
-        flow.handoff = Some(handoff);
-        drop(pending);
-        self.expire_handoff_after(attempt, ATTEMPT_TIMEOUT);
-        Ok(())
-    }
-
-    fn expire_handoff_after(
-        self: &Arc<Self>,
-        attempt: &Arc<OAuthAttempt>,
-        timeout: std::time::Duration,
-    ) {
-        // Expire even if the UI is closed or never begins waiting. Weak
-        // references cannot keep a backend or completed attempt alive.
-        let store = Arc::downgrade(self);
-        let weak_attempt = Arc::downgrade(attempt);
-        let mut cancelled = attempt.cancelled.subscribe();
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = cancelled.changed() => {},
-                _ = tokio::time::sleep(timeout) => {
-                    if let (Some(store), Some(attempt)) = (store.upgrade(), weak_attempt.upgrade()) {
-                        store.clear(&attempt);
-                    }
-                }
+        async fn dispatch_inner(backend: &LocalBackend, request: Request) -> Result<serde_json::Value, String> {
+            match request.method.as_str() {
+                $(stringify!($name) => {
+                    let ($($arg,)*): ($(wire_type!($ty),)*) = serde_json::from_value(request.params)
+                        .map_err(|_| "Invalid host request parameters".to_string())?;
+                    $(authorize_arg!(backend, $arg, $arg);)*
+                    let value = backend.$name($(local_arg!($arg, $ty)),*).await?;
+                    serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
+                })*
+                _ => dispatch_special(backend, request).await,
             }
-        });
-    }
-
-    fn take_handoff(
-        &self,
-        provider: OAuthProvider,
-    ) -> Result<(Arc<OAuthAttempt>, HostedHandoff), String> {
-        let mut pending = self.0.lock().expect("pending OAuth lock");
-        let flow = pending
-            .as_mut()
-            .filter(|flow| flow.attempt.provider == provider && !flow.completing)
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
-        let handoff = flow
-            .handoff
-            .take()
-            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
-        flow.completing = true;
-        Ok((Arc::clone(&flow.attempt), handoff))
-    }
-
-    fn clear(&self, attempt: &Arc<OAuthAttempt>) {
-        let mut pending = self.0.lock().expect("pending OAuth lock");
-        if pending
-            .as_ref()
-            .is_some_and(|flow| Arc::ptr_eq(&flow.attempt, attempt))
-            && let Some(flow) = pending.take()
-        {
-            flow.attempt.cancelled.send_replace(true);
-        }
-    }
-
-    fn cancel(&self) {
-        if let Some(flow) = self.0.lock().expect("pending OAuth lock").take() {
-            flow.attempt.cancelled.send_replace(true);
         }
     }
 }
-
-/// A dropped initiation/completion must not leave a usable pending flow.
-/// Clearing is scoped to this attempt so late cleanup preserves a replacement.
-struct OAuthAttemptGuard<'a> {
-    store: &'a PendingOAuthStore,
-    attempt: &'a Arc<OAuthAttempt>,
-    retain: bool,
+macro_rules! unpack_type {
+    (($ty:ty)) => {
+        $ty
+    };
 }
 
-impl Drop for OAuthAttemptGuard<'_> {
-    fn drop(&mut self) {
-        if !self.retain {
-            self.store.clear(self.attempt);
-        }
-    }
+operations! {
+    login(email: (String), password: (String)) -> AuthSession;
+    logout_and_clear(user_id: (&str)) -> ();
+    oauth_start(provider: (OAuthProvider)) -> String;
+    oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
+    oauth_complete(provider: (OAuthProvider), redirected_url: (String)) -> AuthSession;
+    account(user_id: (&str)) -> MapleAccount;
+    request_verification_email(user_id: (&str)) -> ();
+    change_password(user_id: (&str), current_password: (String), new_password: (String)) -> ();
+    request_account_deletion(user_id: (&str)) -> String;
+    confirm_account_deletion(user_id: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
+    list_api_keys(user_id: (&str)) -> Vec<MapleApiKey>;
+    create_api_key(user_id: (&str), name: (String)) -> MapleApiKeyCreated;
+    delete_api_key(user_id: (&str), name: (&str)) -> ();
+    plan_usage(user_id: (&str)) -> Option<crate::billing::PlanUsage>;
+    billing_status(user_id: (&str)) -> crate::billing::BillingStatus;
+    billing_products() -> Vec<crate::billing::Product>;
+    open_billing_portal(user_id: (&str)) -> ();
+    start_checkout(user_id: (&str), product_id: (String)) -> ();
+    start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
+    stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
+    recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
+    select_project_root(user_id: (&str), path: (String)) -> AgentProjectRootRegistration;
+    list_sessions(user_id: (&str), project_root: (Option<String>)) -> Vec<AgentSessionSummary>;
+    local_bootstrap(user_id: (&str)) -> LocalBootstrap;
+    create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
+    load_session(user_id: (&str), session_id: (&str)) -> AgentSessionDetail;
+    set_session_state(user_id: (&str), session_id: (&str), state: (AgentTaskState)) -> AgentSessionSummary;
+    delete_session(user_id: (&str), session_id: (&str)) -> ();
+    remove_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
+    rename_session(user_id: (&str), session_id: (&str), title: (String)) -> AgentSessionSummary;
+    project_trust(user_id: (&str), path: (String)) -> AgentProjectTrustStatus;
+    set_project_trust(user_id: (&str), path: (String), trusted: (bool)) -> AgentProjectTrustStatus;
+    cancel_queued_message(user_id: (&str), session_id: (&str), queue_id: (&str)) -> AgentDesktopQueueSnapshot;
+    begin_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
+    end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
+    send_message(user_id: (&str), request: (AgentSendMessageRequest)) -> String;
+    read_image_attachment(user_id: (&str), session_id: (&str), attachment_id: (&str)) -> Vec<u8>;
+    cancel_run(user_id: (&str), run_id: (&str)) -> ();
+    available_model_ids(user_id: (&str)) -> Vec<String>;
+    model_catalog_entry(user_id: (&str), model: (&str)) -> Option<maple_agent::agent::CatalogEntry>;
+    audio_capabilities(user_id: (&str)) -> maple_agent::agent::AudioCapabilities;
+    synthesize_speech(user_id: (&str), text: (String), voice: (String), speed: (f32)) -> Vec<u8>;
+    transcribe_audio(user_id: (&str), wav: (Vec<u8>)) -> String;
+    list_session_mcp_servers(user_id: (&str), session_id: (&str)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
+    set_session_mcp_server_enabled(user_id: (&str), session_id: (&str), name: (&str), kind: (maple_agent::agent::AgentSessionIntegrationKind), enabled: (bool)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
+    list_mcp_servers(user_id: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
+    list_integrations(user_id: (&str)) -> Vec<AgentIntegration>;
+    set_integration_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentIntegration>;
+    setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
+    save_mcp_servers(user_id: (&str), servers: (Vec<maple_agent::agent::AgentMcpServer>)) -> Vec<maple_agent::agent::AgentMcpServer>;
+    set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
+    compact_session(user_id: (&str), session_id: (&str)) -> ();
+    session_subagents(user_id: (&str), session_id: (&str)) -> Vec<AgentSubagent>;
+    cancel_external_agent(user_id: (&str), session_id: (&str), agent_id: (&str)) -> ();
+    list_slash_commands(user_id: (&str), working_dir: (Option<String>)) -> Vec<AgentSlashCommand>;
+    resolve_slash_command(user_id: (&str), working_dir: (Option<String>), command: (String), args: (String)) -> Option<String>;
+    summarize_tool_call(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>), output_text: (String)) -> Option<String>;
+    summarize_thinking(user_id: (&str), session_id: (&str), thinking_text: (String)) -> Option<String>;
+    ask_side_question(user_id: (&str), session_id: (&str), request_id: (String), prior: (Vec<maple_agent::agent::SideQuestionTurn>), question: (String)) -> ();
+    context_usage(user_id: (&str), session_id: (&str), model: (Option<&str>)) -> Option<(i64, i64)>;
+    answer_question(user_id: (&str), request_id: (&str), answer: (String)) -> bool;
+    thinking_state(user_id: (&str), session_id: (Option<&str>), model: (&str)) -> maple_agent::agent::AgentThinkingState;
+    set_thinking_level(user_id: (&str), session_id: (Option<&str>), model: (&str), level: (maple_agent::agent::ThinkingLevel)) -> maple_agent::agent::AgentThinkingState;
+    save_default_model(user_id: (&str), model: (String)) -> ();
 }
 
 impl AgentBackend {
-    /// The account scope (sha of the user id) used for on-disk layout.
-    pub fn account_scope(&self, user_id: &str) -> Option<String> {
-        maple_agent::maple_api::account_scope(user_id).ok()
-    }
-}
-
-/// App configuration root (XDG-style), also used by the settings store.
-pub fn app_config_root() -> PathBuf {
-    config_root()
-}
-
-/// Path to the app-owned store of model-written tool call summaries for
-/// one account scope. Lives next to the agent data so it is removed with
-/// the account.
-fn account_summary_db(account_scope: &str) -> PathBuf {
-    local_data_root()
-        .join("agent")
-        .join("accounts")
-        .join(account_scope)
-        .join("tool_summaries.db")
-}
-
-/// Open (and create) the tool summary store.
-fn open_summary_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-    }
-    let conn = rusqlite::Connection::open(path)
-        .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; \
-         CREATE TABLE IF NOT EXISTS tool_summaries ( \
-             session_id TEXT NOT NULL, \
-             item_id TEXT NOT NULL, \
-             summary TEXT NOT NULL, \
-             PRIMARY KEY (session_id, item_id) \
-         );",
-    )
-    .map_err(|error| format!("Cannot init {}: {error}", path.display()))?;
-    Ok(conn)
-}
-
-/// Root for configuration that may roam between machines. Mirrors Tauri's
-/// `app_config_dir`: `~/.config` on Linux, `~/Library/Application Support`
-/// on macOS, `%APPDATA%` on Windows. `XDG_CONFIG_HOME` overrides it on
-/// every platform so tests and portable installs can redirect it.
-fn config_root() -> PathBuf {
-    let base = env_dir("XDG_CONFIG_HOME")
-        .or_else(dirs::config_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(APP_DIR_NAME)
-}
-
-/// Root for device-local data: session history, attachments, logs, and
-/// credentials. Mirrors Tauri's `app_local_data_dir`: `~/.local/share` on
-/// Linux, `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on
-/// Windows. `XDG_DATA_HOME` overrides it on every platform.
-pub fn local_data_root() -> PathBuf {
-    let base = env_dir("XDG_DATA_HOME")
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(APP_DIR_NAME)
-}
-
-fn env_dir(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-}
-
-/// Root the desktop app opens when the account has no saved root and the
-/// Documents/Maple workspace cannot be created. The GUI must not depend on
-/// the directory it was launched from: that is the job of the `maple acp`
-/// command, not a windowed app started from a launcher.
-fn fallback_project_root() -> Option<String> {
-    home_dir().map(|path| path.to_string_lossy().to_string())
-}
-
-/// Root for a GUI start: the saved folder when it still exists and was not
-/// removed, otherwise Documents/Maple unless the user removed it. Home is
-/// only the last resort. Never the process working directory. The
-/// workspace may not exist yet: `gui_start_root` creates it.
-fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let workspace = maple_agent::agent::default_maple_workspace_path();
-    maple_agent::agent::startup_project_root(config, workspace.as_deref())
-        .or_else(fallback_project_root)
-}
-
-/// `gui_project_root` for a runtime start, which needs the folder on disk.
-/// Documents/Maple is created here, the first time a start uses it. If
-/// that fails (Documents access denied, for example), the start uses home.
-fn gui_start_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let root = gui_project_root(config)?;
-    if !maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&root)) {
-        return Some(root);
-    }
-    match maple_agent::agent::ensure_default_maple_workspace() {
-        Ok(path) => Some(path.to_string_lossy().to_string()),
-        Err(error) => {
-            log::warn!("{error}");
-            fallback_project_root()
-        }
-    }
-}
-
-/// Recent projects, with the default Maple workspace offered when the user
-/// has not removed it. Existing saved order is left as it is. Listing does
-/// not create the folder; choosing or opening it does.
-fn offered_project_roots(
-    config: &maple_agent::agent::AgentConfig,
-    roots: Vec<RecentProjectRoot>,
-) -> Vec<RecentProjectRoot> {
-    let workspace = maple_agent::agent::default_maple_workspace_path();
-    maple_agent::agent::include_default_maple_workspace(
-        roots,
-        &config.removed_project_roots,
-        workspace.as_deref(),
-    )
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-struct PersistedAuthRecord {
-    user_id: String,
-    api_url: String,
-    access_token: String,
-    refresh_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    revision: Option<u64>,
-}
-
-impl PersistedAuthRecord {
-    fn from_snapshot(api_url: &str, snapshot: &MapleApiAuthSnapshot) -> Self {
-        Self {
-            user_id: snapshot.user_id.clone(),
-            api_url: api_url.to_string(),
-            access_token: snapshot.access_token.clone(),
-            refresh_token: snapshot.refresh_token.clone(),
-            session_id: Some(snapshot.session_id.clone()),
-            revision: Some(snapshot.revision),
-        }
-    }
-
-    fn owns_snapshot(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
-        self.user_id == snapshot.user_id
-            && self.session_id.as_deref() == Some(snapshot.session_id.as_str())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PersistedAuthOwner {
-    user_id: String,
-    session_id: String,
-    revision: u64,
-}
-
-impl PersistedAuthOwner {
-    fn from_snapshot(snapshot: &MapleApiAuthSnapshot) -> Self {
-        Self {
-            user_id: snapshot.user_id.clone(),
-            session_id: snapshot.session_id.clone(),
-            revision: snapshot.revision,
-        }
-    }
-
-    fn matches(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
-        self.user_id == snapshot.user_id && self.session_id == snapshot.session_id
-    }
-}
-
-#[derive(Default)]
-struct PersistedAuthState {
-    owner: Option<PersistedAuthOwner>,
-}
-
-/// Serializes persisted credential ownership with token-rotation callbacks.
-/// A queued callback may update only the exact in-memory auth session that
-/// currently owns the file; sign-out compare-clears that same opaque session.
-struct PersistedAuthStore {
-    path: PathBuf,
-    api_url: String,
-    state: std::sync::Mutex<PersistedAuthState>,
-}
-
-impl PersistedAuthStore {
-    fn new(path: PathBuf, api_url: String) -> Self {
-        Self {
-            path,
-            api_url,
-            state: std::sync::Mutex::new(PersistedAuthState::default()),
-        }
-    }
-
-    fn read_record(&self) -> Option<PersistedAuthRecord> {
-        let bytes = std::fs::read(&self.path).ok()?;
-        let record: PersistedAuthRecord = serde_json::from_slice(&bytes).ok()?;
-        (record.api_url == self.api_url).then_some(record)
-    }
-
-    fn load(&self) -> Option<PersistedAuthRecord> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let record = self.read_record()?;
-        state.owner = record
-            .session_id
-            .as_ref()
-            .map(|session_id| PersistedAuthOwner {
-                user_id: record.user_id.clone(),
-                session_id: session_id.clone(),
-                revision: record.revision.unwrap_or(0),
-            });
-        Some(record)
-    }
-
-    fn claim_and_persist(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.matches(snapshot) && snapshot.revision < owner.revision)
-        {
-            log::debug!(
-                "ignoring stale persisted auth claim (revision {})",
-                snapshot.revision
-            );
-            return false;
-        }
-        state.owner = Some(PersistedAuthOwner::from_snapshot(snapshot));
-        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot))
-    }
-
-    fn persist_rotation(&self, snapshot: &MapleApiAuthSnapshot) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(owner) = state.owner.as_mut() else {
-            log::debug!(
-                "ignoring rotated credentials for an unowned persisted auth session (revision {})",
-                snapshot.revision
-            );
-            return;
-        };
-        if !owner.matches(snapshot) || snapshot.revision < owner.revision {
-            log::debug!(
-                "ignoring stale rotated credentials (revision {})",
-                snapshot.revision
-            );
-            return;
-        }
-        owner.revision = snapshot.revision;
-        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot));
-    }
-
-    fn clear_if_owned(&self, snapshot: &MapleApiAuthSnapshot) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.matches(snapshot))
-        {
-            state.owner = None;
-        }
-        if self
-            .read_record()
-            .is_some_and(|record| record.owns_snapshot(snapshot))
-        {
-            self.remove_locked();
-        }
-    }
-
-    fn clear_record_if_unchanged(&self, expected: &PersistedAuthRecord) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.read_record().as_ref() != Some(expected) {
-            return;
-        }
-        if state
-            .owner
-            .as_ref()
-            .is_some_and(|owner| expected.session_id.as_deref() == Some(owner.session_id.as_str()))
-        {
-            state.owner = None;
-        }
-        self.remove_locked();
-    }
-
-    fn write_locked(&self, record: &PersistedAuthRecord) -> bool {
-        if let Err(error) = maple_agent::private_file::write_private_json(&self.path, record) {
-            log::error!(
-                "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
-                self.path.display()
-            );
-            return false;
-        }
-        true
-    }
-
-    fn remove_locked(&self) {
-        if let Err(error) = std::fs::remove_file(&self.path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            log::error!(
-                "Cannot remove credentials at {}: {error}",
-                self.path.display()
-            );
-        }
-    }
-}
-
-struct PersistAuthSink {
-    store: Arc<PersistedAuthStore>,
-}
-
-impl MapleApiAuthEventSink for PersistAuthSink {
-    fn auth_changed(&self, snapshot: &MapleApiAuthSnapshot) {
-        // Tokens never reach the log; only the revision does.
-        log::debug!(
-            "persisting rotated credentials (revision {})",
-            snapshot.revision
-        );
-        // Keep this small write synchronous with the session publication. A
-        // detached writer could run after sign-out and resurrect credentials;
-        // the store mutex also orders it against compare-and-clear.
-        self.store.persist_rotation(snapshot);
-    }
-}
-
-impl AgentBackend {
-    pub fn new(api_url: String, harness_instructions: String) -> Result<Self, String> {
-        // Enforce the credential-bearing URL policy before any client is
-        // built, including the login-time SDK client.
-        let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let paths =
-            maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
-        let service = MapleAgentService::new(MapleAgentHostResources::new(
-            paths,
-            Arc::new(ChannelEventSink(event_tx)),
-            harness_instructions,
-        ));
-        let runtime =
-            Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?;
-        let persisted_auth = Arc::new(PersistedAuthStore::new(Self::auth_file(), api_url.clone()));
-        // reqwest clients must be built inside a Tokio runtime context; one
-        // built outside never completes a request.
-        let billing = {
-            let _guard = runtime.enter();
-            crate::billing::BillingClient::new(crate::billing::configured_billing_api_url())?
-        };
+    /// UI state tests have no authenticated host and must not launch processes
+    /// or attach to a developer's session. Runtime/IPC contracts are tested separately.
+    #[cfg(test)]
+    pub fn for_test(api_url: String, instructions: String) -> Result<Self, String> {
+        let runtime = Runtime::new().map_err(|e| e.to_string())?;
+        let guard = runtime.enter();
+        let mut backend = LocalBackend::new(api_url.clone(), instructions)?;
+        backend.ui_fixture = true;
+        drop(guard);
         Ok(Self {
             runtime,
-            service,
-            auth: MapleApiAuthState::new(),
+            client: BackendClient::InProcess(Box::new(backend)),
             api_url,
-            persisted_auth,
-            pending_oauth: Arc::new(PendingOAuthStore::default()),
-            client_id: configured_client_id(),
-            event_rx: tokio::sync::Mutex::new(Some(event_rx)),
-            billing,
-            billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
-            summary_db: std::sync::Mutex::new(None),
-            restore_pending: tokio::sync::watch::channel(false),
         })
     }
 
-    /// Replace the opening system prompt text for tasks this app hosts.
-    /// Applies to agents built after the call, so to a task's next fresh
-    /// agent, not to one already loaded.
-    pub fn set_harness_instructions(&self, harness_instructions: String) {
-        self.service.set_harness_instructions(harness_instructions);
+    pub fn new(api_url: String, _harness_instructions: String) -> Result<Self, String> {
+        let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
+        let runtime = Runtime::new().map_err(|e| format!("Could not start host client: {e}"))?;
+        let client = runtime.block_on(RemoteClient::connect(&api_url))?;
+        Ok(Self {
+            runtime,
+            client: BackendClient::Host(client),
+            api_url,
+        })
     }
 
-    pub fn api_url(&self) -> &str {
-        &self.api_url
+    async fn call<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<R, String> {
+        match &self.client {
+            BackendClient::Host(client) => client.call(method, params).await,
+            #[cfg(test)]
+            BackendClient::InProcess(backend) => {
+                let value = dispatch_inner(
+                    backend,
+                    Request {
+                        id: 0,
+                        method: method.into(),
+                        send_id: None,
+                        params: serde_json::to_value(params).map_err(|e| e.to_string())?,
+                    },
+                )
+                .await?;
+                serde_json::from_value(value).map_err(|e| e.to_string())
+            }
+        }
     }
-
-    /// The backend runtime, for command-line modes that block on one call.
     pub fn runtime_handle(&self) -> tokio::runtime::Handle {
         self.runtime.handle().clone()
     }
-
-    /// Run a backend future on the backend runtime. The returned handle is a
-    /// plain future, so the UI executor can await it without owning Tokio.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -799,1400 +204,86 @@ impl AgentBackend {
     {
         self.runtime.spawn(future)
     }
-
-    /// Take the backend event stream. Only the first caller receives it.
-    pub async fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentServiceEvent>> {
-        self.event_rx.lock().await.take()
-    }
-
-    fn normalize_email(email: &str) -> Result<String, String> {
-        let email = email.trim().to_ascii_lowercase();
-        if email.is_empty() {
-            return Err("Enter an email address".to_string());
+    pub async fn take_events(&self) -> Option<mpsc::Receiver<AgentServiceEvent>> {
+        match &self.client {
+            BackendClient::Host(client) => client.take_events().await,
+            #[cfg(test)]
+            BackendClient::InProcess(backend) => {
+                let mut source = backend.take_events().await?;
+                let (sender, receiver) = mpsc::channel(256);
+                self.spawn(async move {
+                    while let Some(event) = source.recv().await {
+                        if sender.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                Some(receiver)
+            }
         }
-        Ok(email)
+    }
+    pub fn api_url(&self) -> &str {
+        &self.api_url
     }
 
-    /// Sign in with email and password through the OpenSecret SDK, then hand
-    /// the validated credentials to the agent runtime.
-    pub async fn login(&self, email: String, password: String) -> Result<AuthSession, String> {
-        let email = Self::normalize_email(&email)?;
-        if password.is_empty() {
-            return Err("Enter a password".to_string());
-        }
-        self.cancel_oauth();
-        let environment = configured_pcr0_environment()?;
-        let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())?;
-        let response = client
-            .login(email.clone(), password, self.client_id)
-            .await
-            .map_err(|_| "Sign in failed. Check your email and password.".to_string())?;
-        let user_id = response.id.to_string();
-        let snapshot = self
-            .auth
-            .set_auth(
-                self.auth_sink(),
-                MapleApiAuthRequest {
-                    user_id: user_id.clone(),
-                    api_url: self.api_url.clone(),
-                    access_token: response.access_token,
-                    refresh_token: Some(response.refresh_token),
-                },
-            )
-            .await
-            .map_err(|message| {
-                // Keep validation detail out of the UI; it can echo the
-                // configured URL back to the user.
-                log::debug!("set_auth failed during sign in: {message}");
-                "Sign in failed. Try again.".to_string()
-            })?;
-        self.persist_auth(&snapshot);
-        Ok(AuthSession { user_id })
-    }
-
-    /// Credentials are device-local, like the web app's `localStorage`.
-    /// They must not sit in a roaming profile (`%APPDATA%`), so they live in
-    /// the local data root rather than next to `settings.json`.
-    fn auth_file() -> std::path::PathBuf {
-        local_data_root().join("auth.json")
-    }
-
-    fn persist_auth(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
-        self.persisted_auth.claim_and_persist(snapshot)
-    }
-
-    /// The sink the runtime calls when the SDK rotates the token pair
-    /// during an API call. It writes the new pair to `auth.json` so the
-    /// next launch does not restore stale tokens.
-    fn auth_sink(&self) -> Arc<dyn MapleApiAuthEventSink> {
-        Arc::new(PersistAuthSink {
-            store: Arc::clone(&self.persisted_auth),
-        })
-    }
-
-    fn load_persisted_auth(&self) -> Option<PersistedAuthRecord> {
-        self.persisted_auth.load()
-    }
-
-    /// The account id saved by a previous sign-in, without validating it.
-    /// A local file read, so the UI may show the account's data at once
-    /// while [`Self::restore_in_background`] validates the credentials.
     pub fn saved_user_id(&self) -> Option<String> {
-        self.load_persisted_auth().map(|record| record.user_id)
-    }
-
-    /// Restore a persisted session before the UI starts. Validates the
-    /// credentials against the backend; returns the account id on success.
-    pub fn restore_now(&self) -> Option<String> {
-        match self.runtime.block_on(self.validate_persisted_auth()) {
-            RestoreOutcome::Valid(user_id) => Some(user_id),
-            RestoreOutcome::Rejected | RestoreOutcome::Unavailable => None,
+        match &self.client {
+            BackendClient::Host(client) => client.user_id(),
+            #[cfg(test)]
+            BackendClient::InProcess(_) => None,
         }
     }
-
-    /// Validate the persisted credentials on the backend runtime while the
-    /// UI already shows the account's local data. Calls that need the
-    /// session wait for this to finish (see `session_for`).
-    pub fn restore_in_background(self: &Arc<Self>) -> tokio::task::JoinHandle<RestoreOutcome> {
-        let _ = self.restore_pending.0.send(true);
-        let this = self.clone();
-        self.runtime.spawn(async move {
-            let outcome = this.validate_persisted_auth().await;
-            let _ = this.restore_pending.0.send(false);
-            outcome
-        })
-    }
-
-    /// Validate the saved credentials with the server and install the
-    /// session on success. Definitive rejections clear the saved file.
-    async fn validate_persisted_auth(&self) -> RestoreOutcome {
-        self.cancel_oauth();
-        let Some(persisted) = self.load_persisted_auth() else {
-            return RestoreOutcome::Rejected;
-        };
-        let request_record = persisted.clone();
-        let request = MapleApiAuthRequest {
-            user_id: request_record.user_id,
-            api_url: self.api_url.clone(),
-            access_token: request_record.access_token,
-            refresh_token: request_record.refresh_token,
-        };
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            self.auth.set_auth(self.auth_sink(), request),
-        )
-        .await
-        {
-            Ok(Ok(snapshot)) => Ok(snapshot),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err("timeout".to_string()),
-        };
-        match result {
-            Ok(snapshot) => {
-                self.persist_auth(&snapshot);
-                RestoreOutcome::Valid(snapshot.user_id)
-            }
-            Err(error) if maple_agent::maple_api::is_auth_rejection(&error) => {
-                log::debug!("persisted auth rejected: {error:?}");
-                self.persisted_auth.clear_record_if_unchanged(&persisted);
-                RestoreOutcome::Rejected
-            }
-            Err(error) => {
-                // Offline, timeout, or a server fault: the credentials may
-                // still be good, so keep them for the next launch.
-                log::warn!("persisted auth could not be validated: {error}");
-                RestoreOutcome::Unavailable
-            }
-        }
-    }
-
-    /// The validated session for `user_id`, waiting first for a background
-    /// credential restore that is still in flight. Local reads never call
-    /// this; only backend requests that spend the credentials do.
-    async fn session_for(
-        &self,
-        user_id: &str,
-    ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
-        self.wait_for_restore().await;
-        self.auth.session_for(user_id).await
-    }
-
-    async fn wait_for_restore(&self) {
-        let mut pending = self.restore_pending.1.clone();
-        while *pending.borrow() {
-            if pending.changed().await.is_err() {
-                break;
-            }
-        }
-    }
-
-    /// Sign out completely: invalidate the live session first, then remove
-    /// only the persisted credentials that this sign-out observed.
-    pub async fn logout_and_clear(&self, user_id: &str) -> Result<(), String> {
-        self.clear_session(user_id, true).await
-    }
-
-    /// Drop the live session and the persisted record. `revoke` also sends
-    /// `POST /logout`; a deleted account has no session left to report.
-    async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
-        self.cancel_oauth();
-        self.wait_for_restore().await;
-        let auth_snapshot = self.auth.auth_snapshot_for(user_id).await.ok();
-        let persisted_without_session = auth_snapshot
-            .is_none()
-            .then(|| self.load_persisted_auth())
-            .flatten();
-
-        // Report the sign-out to the server first, best effort: an offline
-        // sign-out must still complete locally, and the session is
-        // invalidated below whatever the server said. (The backend's
-        // logout route does not revoke the refresh token yet.)
-        if revoke
-            && auth_snapshot.is_some()
-            && let Ok(session) = self.auth.session_for(user_id).await
-        {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), session.logout()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => log::debug!("server logout failed: {error}"),
-                Err(_) => log::debug!("server logout timed out"),
-            }
-        }
-
-        let result = self.auth.clear_auth(user_id).await;
-        if result.is_ok() {
-            if let Some(snapshot) = auth_snapshot.as_ref() {
-                self.persisted_auth.clear_if_owned(snapshot);
-            } else if let Some(persisted) = persisted_without_session.as_ref() {
-                // Preserve the old offline/logout behavior without letting a
-                // concurrent sign-in's replacement record be removed.
-                self.persisted_auth.clear_record_if_unchanged(persisted);
-            }
-        }
-        result
-    }
-
-    fn oauth_client(&self) -> Result<OpenSecretClient, String> {
-        let environment = configured_pcr0_environment()?;
-        OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
-            .map_err(|_| "Maple API authentication failed".to_string())
-    }
-
-    async fn publish_session(
-        &self,
-        user_id: String,
-        access_token: String,
-        refresh_token: Option<String>,
-    ) -> Result<AuthSession, String> {
-        self.publish_session_with_persistence(user_id, access_token, refresh_token)
-            .await
-            .map(|(session, _)| session)
-    }
-
-    async fn publish_session_with_persistence(
-        &self,
-        user_id: String,
-        access_token: String,
-        refresh_token: Option<String>,
-    ) -> Result<(AuthSession, bool), String> {
-        self.auth
-            .set_auth(
-                self.auth_sink(),
-                MapleApiAuthRequest {
-                    user_id,
-                    api_url: self.api_url.clone(),
-                    access_token,
-                    refresh_token,
-                },
-            )
-            .await
-            .map_err(|message| {
-                // Keep validation detail out of the UI; it can echo the
-                // configured URL back to the user.
-                log::debug!("set_auth failed during sign in: {message}");
-                "Sign in failed. Try again.".to_string()
-            })
-            .map(|snapshot| {
-                let persisted = self.persist_auth(&snapshot);
-                (
-                    AuthSession {
-                        user_id: snapshot.user_id.clone(),
-                    },
-                    persisted,
-                )
-            })
-    }
-
     pub fn uses_hosted_oauth(&self) -> bool {
         crate::profile::AUTH_ORIGIN.is_some()
     }
-    /// Begin an OAuth flow: returns the authorization URL to open in a
-    /// browser (also opens it via the system browser).
-    pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
-        let attempt = self.pending_oauth.begin(provider, self.oauth_client()?);
-        let mut guard = OAuthAttemptGuard {
-            store: &self.pending_oauth,
-            attempt: &attempt,
-            retain: false,
-        };
-        let client = &attempt.client;
-        if let Some(origin) = crate::profile::AUTH_ORIGIN {
-            let auth_url = attempt
-                .while_active(async {
-                    let prepared = client
-                        .prepare_native_oauth_handoff()
-                        .await
-                        .map_err(|_| "Could not prepare browser sign-in. Try again.".to_string())?;
-                    let listener = HandoffListener::bind()?;
-                    let provider_name = match provider {
-                        OAuthProvider::Github => "github",
-                        OAuthProvider::Google => "google",
-                        OAuthProvider::Apple => "apple",
-                    };
-                    let url = listener.start_url(
-                        origin,
-                        provider_name,
-                        prepared.session_id(),
-                        prepared.request_id(),
-                    );
-                    self.pending_oauth
-                        .set_handoff(&attempt, HostedHandoff { listener, prepared })?;
-                    Ok(url)
-                })
-                .await?;
-            if webbrowser::open(&auth_url).is_err() {
-                return Err(
-                    "Could not open your browser. Check your default browser and try again."
-                        .to_string(),
-                );
-            }
-            guard.retain = true;
-            return Ok(auth_url);
+    pub fn configured_model(&self) -> Option<String> {
+        std::env::var("MAPLE_MODEL").ok()
+    }
+    pub fn default_start_request(&self) -> AgentStartRequest {
+        AgentStartRequest {
+            project_root: None,
+            model: self.configured_model(),
         }
-        let client_id = self.client_id;
-        let (auth_url, state) = attempt
-            .while_active(async {
-                Ok(match provider {
-                    OAuthProvider::Github => {
-                        let response = client
-                            .initiate_github_auth(client_id, None)
-                            .await
-                            .map_err(|_| "Could not start GitHub sign in".to_string())?;
-                        (response.auth_url, response.state)
-                    }
-                    OAuthProvider::Google => {
-                        let response = client
-                            .initiate_google_auth(client_id, None)
-                            .await
-                            .map_err(|_| "Could not start Google sign in".to_string())?;
-                        (response.auth_url, response.state)
-                    }
-                    OAuthProvider::Apple => {
-                        let response = client
-                            .initiate_apple_auth(client_id, None)
-                            .await
-                            .map_err(|_| "Could not start Apple sign in".to_string())?;
-                        (response.auth_url, response.state)
-                    }
-                })
-            })
-            .await?;
-        self.pending_oauth.set_state(&attempt, state)?;
-        if webbrowser::open(&auth_url).is_err() {
-            // No system browser available: the UI still shows the URL.
-            log::debug!("failed to open system browser for OAuth");
-        }
-        guard.retain = true;
-        Ok(auth_url)
     }
 
-    pub fn cancel_oauth(&self) {
-        self.pending_oauth.cancel();
-    }
-
-    /// Wait on the existing listener and consume exactly the SDK handle that
-    /// created the advertised target. Cancellation closes the listener/socket;
-    /// malformed callbacks leave it available until the attempt deadline.
-    pub async fn oauth_wait_for_handoff(
-        &self,
-        provider: OAuthProvider,
-    ) -> Result<AuthSession, String> {
-        let (attempt, handoff) = self.pending_oauth.take_handoff(provider)?;
-        let _guard = OAuthAttemptGuard {
-            store: &self.pending_oauth,
-            attempt: &attempt,
-            retain: false,
-        };
-        attempt
-            .while_active(async {
-                let HostedHandoff { listener, prepared } = handoff;
-                let (grant, browser) = listener.receive(&prepared).await?;
-                let outcome = async {
-                    let response = attempt
-                        .client
-                        .redeem_native_oauth_handoff(prepared, grant)
-                        .await
-                        .map_err(|_| {
-                            "Browser sign-in failed or expired. Start again.".to_string()
-                        })?;
-                    self.publish_session_with_persistence(
-                        response.id.to_string(),
-                        response.access_token,
-                        Some(response.refresh_token),
-                    )
-                    .await
-                }
-                .await;
-                drop(listener);
-                browser.finish(
-                    outcome
-                        .as_ref()
-                        .map(|(_, persisted)| *persisted)
-                        .map_err(|_| ()),
-                );
-                // No await after native publication: a late Back or failed browser
-                // response must not hide an already committed account from the UI.
-                outcome.map(|(session, _)| session)
-            })
-            .await
-    }
-
-    /// Complete an OAuth flow from the redirected URL (pasted by the user or
-    /// captured from a loopback redirect).
-    pub async fn oauth_complete(
-        &self,
-        provider: OAuthProvider,
-        redirected_url: String,
-    ) -> Result<AuthSession, String> {
-        let Some((code, state)) = parse_oauth_callback(&redirected_url) else {
-            return Err(
-                "Paste the full URL you were redirected to (it contains code and state)"
-                    .to_string(),
-            );
-        };
-        let attempt = self.pending_oauth.complete(provider, &state)?;
-        let _guard = OAuthAttemptGuard {
-            store: &self.pending_oauth,
-            attempt: &attempt,
-            retain: false,
-        };
-        attempt
-            .while_active(async {
-                let client = &attempt.client;
-                let response = match provider {
-                    OAuthProvider::Github => client
-                        .handle_github_callback(code, state, String::new())
-                        .await
-                        .map_err(|_| "GitHub sign in failed".to_string())?,
-                    OAuthProvider::Google => client
-                        .handle_google_callback(code, state, String::new())
-                        .await
-                        .map_err(|_| "Google sign in failed".to_string())?,
-                    OAuthProvider::Apple => client
-                        .handle_apple_callback(code, state, String::new())
-                        .await
-                        .map_err(|_| "Apple sign in failed".to_string())?,
-                };
-                self.publish_session(
-                    response.id.to_string(),
-                    response.access_token,
-                    Some(response.refresh_token),
-                )
+    pub fn restore_in_background(self: &Arc<Self>) -> tokio::task::JoinHandle<RestoreOutcome> {
+        let backend = self.clone();
+        self.spawn(async move {
+            backend
+                .call("restore_auth", ())
                 .await
-            })
-            .await
-    }
-
-    /// The signed-in account's profile from the backend.
-    pub async fn account(&self, user_id: &str) -> Result<MapleAccount, String> {
-        let session = self.session_for(user_id).await?;
-        session
-            .account()
-            .await
-            .map_err(|error| account_error_message(error, "Could not load the account"))
-    }
-
-    /// Email a fresh verification code to the account's address.
-    pub async fn request_verification_email(&self, user_id: &str) -> Result<(), String> {
-        let session = self.session_for(user_id).await?;
-        session
-            .request_verification_email()
-            .await
-            .map_err(|error| account_error_message(error, "Could not send the verification email"))
-    }
-
-    /// Change the account password. The rotated token pair is persisted
-    /// through the auth sink before this returns.
-    pub async fn change_password(
-        &self,
-        user_id: &str,
-        current_password: String,
-        new_password: String,
-    ) -> Result<(), String> {
-        if current_password.is_empty() {
-            return Err("Enter your current password".to_string());
-        }
-        validate_new_password(&new_password)?;
-        let session = self.session_for(user_id).await?;
-        session
-            .change_password(current_password, new_password)
-            .await
-            .map_err(|error| match error {
-                // The route answers 401 for a wrong current password; a
-                // dead session would have failed the session lookup first.
-                MapleAccountError::Unauthorized => "The current password is incorrect".to_string(),
-                other => account_error_message(other, "Could not change the password"),
-            })
-    }
-
-    /// Start deleting the account: the server emails a confirmation code.
-    /// Returns the client-held secret the confirmation step must present.
-    pub async fn request_account_deletion(&self, user_id: &str) -> Result<String, String> {
-        let session = self.session_for(user_id).await?;
-        let (plaintext, hashed) = maple_agent::maple_api::new_confirmation_secret();
-        session
-            .request_account_deletion(hashed)
-            .await
-            .map_err(|error| account_error_message(error, "Could not start account deletion"))?;
-        Ok(plaintext)
-    }
-
-    /// Delete the account for good. The agent runtime stops first, then
-    /// the server deletes the account, then the local credentials go. A
-    /// server failure leaves the session usable.
-    pub async fn confirm_account_deletion(
-        &self,
-        user_id: &str,
-        confirmation_code: String,
-        plaintext_secret: String,
-    ) -> Result<(), String> {
-        let code = confirmation_code.trim().to_string();
-        if code.is_empty() {
-            return Err("Enter the confirmation code from the email".to_string());
-        }
-        let session = self.session_for(user_id).await?;
-        self.stop_runtime(user_id).await?;
-        session
-            .confirm_account_deletion(code, plaintext_secret)
-            .await
-            .map_err(|error| match error {
-                MapleAccountError::Status(400) => {
-                    "That confirmation code is wrong or has expired".to_string()
-                }
-                other => account_error_message(other, "Could not delete the account"),
-            })?;
-        if let Err(error) = self.clear_session(user_id, false).await {
-            log::warn!("local sign-out after account deletion failed: {error}");
-        }
-        Ok(())
-    }
-
-    /// The account's API keys, newest first.
-    pub async fn list_api_keys(&self, user_id: &str) -> Result<Vec<MapleApiKey>, String> {
-        let session = self.session_for(user_id).await?;
-        let mut keys = session
-            .list_api_keys()
-            .await
-            .map_err(|error| api_key_error_message(error, "Could not load the API keys"))?;
-        keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        Ok(keys)
-    }
-
-    /// Create an API key named `name`. The key value in the result is the
-    /// only copy; the server never returns it again.
-    pub async fn create_api_key(
-        &self,
-        user_id: &str,
-        name: String,
-    ) -> Result<MapleApiKeyCreated, String> {
-        let name = validate_api_key_name(&name)?;
-        let session = self.session_for(user_id).await?;
-        session
-            .create_api_key(name)
-            .await
-            .map_err(|error| api_key_error_message(error, "Could not create the API key"))
-    }
-
-    pub async fn delete_api_key(&self, user_id: &str, name: &str) -> Result<(), String> {
-        let session = self.session_for(user_id).await?;
-        session
-            .delete_api_key(name)
-            .await
-            .map_err(|error| api_key_error_message(error, "Could not delete the API key"))
-    }
-
-    /// Plan usage for the sidebar card from the Maple billing API. Returns
-    /// `None` when the subscription has no token meter.
-    pub async fn plan_usage(
-        &self,
-        user_id: &str,
-    ) -> Result<Option<crate::billing::PlanUsage>, String> {
-        let status = self.billing_status(user_id).await?;
-        let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
-        log::debug!("plan usage: {plan:?}");
-        Ok(plan)
-    }
-
-    /// The full subscription status for the Billing section.
-    pub async fn billing_status(
-        &self,
-        user_id: &str,
-    ) -> Result<crate::billing::BillingStatus, String> {
-        self.billing_call(user_id, |billing, token| async move {
-            billing.subscription_status(&token).await
+                .unwrap_or(RestoreOutcome::Unavailable)
         })
-        .await
     }
-
-    /// The plans on sale. Public on the billing API, no token needed.
-    pub async fn billing_products(&self) -> Result<Vec<crate::billing::Product>, String> {
-        tokio::time::timeout(std::time::Duration::from_secs(20), self.billing.products())
-            .await
-            .unwrap_or_else(|_| {
-                Err(crate::billing::BillingError::Other(
-                    "billing request timed out".to_string(),
-                ))
-            })
-            .map_err(|error| error.to_string())
-    }
-
-    /// Open the Stripe customer portal in the system browser.
-    pub async fn open_billing_portal(&self, user_id: &str) -> Result<(), String> {
-        let url = self
-            .billing_call(user_id, |billing, token| async move {
-                billing
-                    .portal_url(&token, crate::billing::PORTAL_RETURN_URL)
-                    .await
-            })
-            .await
-            .map_err(|error| billing_failure(error, "Could not open the subscription portal"))?;
-        open_in_browser(&url, "the subscription portal")
-    }
-
-    /// Start a Stripe checkout for `product_id` in the system browser. The
-    /// account email is sent when there is one; guests check out without.
-    pub async fn start_checkout(&self, user_id: &str, product_id: String) -> Result<(), String> {
-        let email = self.account(user_id).await?.email.unwrap_or_default();
-        let request = Arc::new(crate::billing::CheckoutRequest {
-            email,
-            product_id,
-            success_url: crate::billing::CHECKOUT_SUCCESS_URL.to_string(),
-            cancel_url: crate::billing::CHECKOUT_CANCEL_URL.to_string(),
-            quantity: None,
+    pub fn set_harness_instructions(self: &Arc<Self>, instructions: String) {
+        let backend = self.clone();
+        self.spawn(async move {
+            if let Err(error) = backend
+                .call::<()>("set_harness_instructions", (instructions,))
+                .await
+            {
+                log::warn!("Could not update host instructions: {error}");
+            }
         });
-        let url = self
-            .billing_call(user_id, |billing, token| {
-                let request = Arc::clone(&request);
-                async move { billing.checkout_url(&token, &request).await }
-            })
-            .await
-            .map_err(|error| billing_failure(error, "Could not start checkout"))?;
-        open_in_browser(&url, "checkout")
     }
-
-    /// Run one billing request with the cached token, minting a token
-    /// first when there is none and once more after a 401.
-    async fn billing_call<T, F, Fut>(&self, user_id: &str, request: F) -> Result<T, String>
-    where
-        F: Fn(crate::billing::BillingClient, String) -> Fut,
-        Fut: Future<Output = Result<T, crate::billing::BillingError>>,
-    {
-        use crate::billing::BillingError;
-        let session = self.session_for(user_id).await?;
-        let cached = self.billing_tokens.lock().await.get(user_id).cloned();
-        let mut token = match cached {
-            Some(token) => token,
-            None => self.mint_billing_token(&session, user_id).await?,
-        };
-        let mut result = self
-            .timed_billing(request(self.billing.clone(), token))
-            .await;
-        if matches!(result, Err(BillingError::Unauthorized)) {
-            // The cached token expired or was revoked: mint one and retry once.
-            token = self.mint_billing_token(&session, user_id).await?;
-            result = self
-                .timed_billing(request(self.billing.clone(), token))
-                .await;
-        }
-        match result {
-            Ok(value) => Ok(value),
-            Err(BillingError::Unauthorized) => {
-                self.billing_tokens.lock().await.remove(user_id);
-                Err(BillingError::Unauthorized.to_string())
-            }
-            Err(BillingError::Other(error)) => Err(error),
-        }
+    pub fn cancel_oauth(self: &Arc<Self>) {
+        let backend = self.clone();
+        self.spawn(async move {
+            let _ = backend.call::<()>("cancel_oauth", ()).await;
+        });
     }
-
-    async fn timed_billing<T>(
-        &self,
-        request: impl Future<Output = Result<T, crate::billing::BillingError>>,
-    ) -> Result<T, crate::billing::BillingError> {
-        tokio::time::timeout(std::time::Duration::from_secs(20), request)
-            .await
-            .unwrap_or_else(|_| {
-                Err(crate::billing::BillingError::Other(
-                    "billing request timed out".to_string(),
-                ))
-            })
+    pub fn begin_integration_setup(&self, id: &str) -> Result<AgentIntegrationPermissions, String> {
+        // Native permission prompts remain on the signed app's UI thread.
+        maple_agent::agent::begin_integration_setup(&AgentSetupIntegrationRequest { id: id.into() })
     }
-
-    async fn mint_billing_token(
-        &self,
-        session: &Arc<maple_agent::maple_api::MapleApiSession>,
-        user_id: &str,
-    ) -> Result<String, String> {
-        let token = session
-            .third_party_token(self.billing.base_url().to_string())
-            .await?;
-        self.billing_tokens
-            .lock()
-            .await
-            .insert(user_id.to_string(), token.clone());
-        Ok(token)
-    }
-
-    pub async fn start_runtime(
-        &self,
-        user_id: &str,
-        request: Option<AgentStartRequest>,
-    ) -> Result<AgentRuntimeStatus, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let session = self.session_for(user_id).await?;
-        // The agent falls back to the process working directory when no root
-        // is given. That is right for `maple acp`, not for the GUI: pick the
-        // saved root or Documents/Maple instead.
-        let request = match request {
-            Some(AgentStartRequest {
-                project_root: None,
-                model,
-            }) => {
-                let config = handle.load_config().await?;
-                Some(AgentStartRequest {
-                    project_root: gui_start_root(&config),
-                    model,
-                })
-            }
-            other => other,
-        };
-        // A wedged enclave connection must surface as an error, not an
-        // eternal spinner.
-        tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            handle.start(session, request),
-        )
-        .await
-        .map_err(|_| "Runtime start timed out. Check your connection and retry.".to_string())?
-    }
-
-    pub async fn stop_runtime(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
-        self.service.handle_for_user(user_id).await?.stop().await
-    }
-
-    /// Serve ACP on stdin/stdout for `user_id` until the peer closes stdin.
-    /// Starts the runtime first, rooted at the process working directory,
-    /// and stops it when the connection ends.
-    #[cfg(feature = "acp")]
-    pub fn run_acp_stdio(&self, user_id: &str) -> Result<(), String> {
-        self.runtime.block_on(async {
-            let handle = self.service.handle_for_user(user_id).await?;
-            let session = self.session_for(user_id).await?;
-            // Start the runtime concurrently instead of before the handshake:
-            // `initialize` answers immediately and the first `session/new`
-            // awaits this shared start.
-            let starting = handle.clone();
-            let runtime_start = maple_agent::acp::shared_runtime_start(async move {
-                starting.start(session, None).await.map(|_| ())
-            });
-            let config = maple_agent::acp::load_acp_config(&local_data_root(), user_id)?;
-            let result = maple_agent::acp::serve_stdio(handle.clone(), config, runtime_start).await;
-            if let Err(error) = handle.stop().await {
-                log::warn!("failed to stop the agent runtime after ACP: {error}");
-            }
-            result
-        })
-    }
-
-    /// Roots recently used by this account, most recent first.
-    pub async fn recent_project_roots(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<RecentProjectRoot>, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let config = handle.load_config().await?;
-        let roots = handle.list_recent_project_roots().await?;
-        Ok(offered_project_roots(&config, roots))
-    }
-
-    /// Register and select the default root for new tasks.
-    ///
-    /// The account runtime is deliberately not restarted: existing tasks own
-    /// their persisted working directories and may keep running under other
-    /// roots while the UI moves between projects.
-    ///
-    /// Choosing a folder does not record a trust decision. Home, the
-    /// process launch directory, and the default Maple workspace are
-    /// already trusted with no saved answer; every other root keeps `None`
-    /// until the one-time prompt. A saved "do not trust" answer stays.
-    pub async fn select_project_root(
-        &self,
-        user_id: &str,
-        path: String,
-    ) -> Result<AgentProjectRootRegistration, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        // The listed Maple workspace is created the first time it is chosen.
-        if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path.trim())) {
-            maple_agent::agent::ensure_default_maple_workspace()?;
-        }
-        let mut registration = handle.save_recent_project_root(path).await?;
-        // The screen shows these roots as they are: offer the workspace in
-        // them the same way the project list does.
-        registration.roots = offered_project_roots(
-            &registration.config,
-            std::mem::take(&mut registration.roots),
-        );
-        Ok(registration)
-    }
-
-    pub async fn list_sessions(
-        &self,
-        user_id: &str,
-        project_root: Option<String>,
-    ) -> Result<Vec<AgentSessionSummary>, String> {
-        let mut sessions = self
-            .service
-            .handle_for_user(user_id)
-            .await?
-            .list_sessions(project_root)
-            .await?;
-        // Tasks that an ACP client created belong to that client's UI, not
-        // to the desktop task list.
-        sessions.retain(|session| !session.acp);
-        Ok(sessions)
-    }
-
-    /// Read everything the chat screen can show without the network: the
-    /// saved project root, the task list, the recent roots, and the newest
-    /// task's transcript. Call it before `start_runtime`: the runtime start
-    /// holds the lifecycle lock across its network round trips, and these
-    /// reads would queue behind it.
-    pub async fn local_bootstrap(&self, user_id: &str) -> Result<LocalBootstrap, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let config = handle.load_config().await?;
-        let project_root = gui_project_root(&config);
-        let mut sessions = handle.list_sessions(None).await?;
-        // Tasks that an ACP client created belong to that client's UI, not
-        // to the desktop task list.
-        sessions.retain(|session| !session.acp);
-        let recent_roots =
-            offered_project_roots(&config, handle.list_recent_project_roots().await?)
-                .into_iter()
-                .map(|root| root.path)
-                .collect();
-        // Same choice the screen's auto-select makes: the newest unarchived
-        // task under the root that the runtime will start in. An empty task
-        // is a draft an older build persisted; the screen's own new-task
-        // draft stands in for it.
-        let latest_id = sessions
-            .iter()
-            .find(|session| {
-                session.state != AgentTaskState::Archived
-                    && session.message_count > 0
-                    && Some(&session.project_root) == project_root.as_ref()
-            })
-            .map(|session| session.id.clone());
-        let latest = match latest_id {
-            Some(id) => handle.load_session(id).await.ok(),
-            None => None,
-        };
-        Ok(LocalBootstrap {
-            project_root,
-            sessions,
-            recent_roots,
-            latest,
-        })
-    }
-
-    pub async fn create_session(
-        &self,
-        user_id: &str,
-        request: Option<AgentCreateSessionRequest>,
-    ) -> Result<AgentSessionDetail, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .create_session(request)
-            .await
-    }
-
-    pub async fn load_session(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<AgentSessionDetail, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .load_session(session_id.to_string())
-            .await
-    }
-
-    /// Move a task between active, settled, and archived. The runtime
-    /// refuses to settle or archive a task while it runs.
-    pub async fn set_session_state(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        state: AgentTaskState,
-    ) -> Result<AgentSessionSummary, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_session_state(session_id.to_string(), state)
-            .await
-    }
-
-    /// Delete a task and everything stored for it. The runtime refuses
-    /// while the task runs or an external surface holds it.
-    pub async fn delete_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .delete_session(session_id.to_string())
-            .await
-    }
-
-    /// Drop a root from the recent list. `fallback` becomes the runtime
-    /// root when the removed one was current.
-    pub async fn remove_project_root(
-        &self,
-        user_id: &str,
-        path: String,
-        fallback: Option<String>,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .remove_project_root(path, fallback)
-            .await
-            .map(|_| ())
-    }
-
-    pub async fn rename_session(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        title: String,
-    ) -> Result<AgentSessionSummary, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let session = self.session_for(user_id).await?;
-        handle
-            .rename_session(
-                session,
-                AgentRenameSessionRequest {
-                    session_id: session_id.to_string(),
-                    title,
-                },
-            )
-            .await
-    }
-
-    /// Whether the project at `path` has skills or other guidance that
-    /// need a trust decision, and what the saved decision is.
-    pub async fn project_trust(
-        &self,
-        user_id: &str,
-        path: String,
-    ) -> Result<AgentProjectTrustStatus, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .get_project_trust(path)
-            .await
-    }
-
-    pub async fn set_project_trust(
-        &self,
-        user_id: &str,
-        path: String,
-        trusted: bool,
-    ) -> Result<AgentProjectTrustStatus, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_project_trust(path, trusted)
-            .await
-    }
-
-    /// Drop a message that waits behind the active run.
-    pub async fn cancel_queued_message(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        queue_id: &str,
-    ) -> Result<AgentDesktopQueueSnapshot, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .cancel_queued_message(AgentQueueControlRequest {
-                session_id: session_id.to_string(),
-                queue_id: queue_id.to_string(),
-            })
-            .await
-    }
-
-    /// Hold a queued message while the user edits it: it is not promoted
-    /// into the run until the edit ends.
-    pub async fn begin_queued_message_edit(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        queue_id: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .begin_queued_message_edit(AgentQueueControlRequest {
-                session_id: session_id.to_string(),
-                queue_id: queue_id.to_string(),
-            })
-            .await
-    }
-
-    /// Release a queued message held by [`Self::begin_queued_message_edit`]
-    /// without changing it.
-    pub async fn end_queued_message_edit(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        queue_id: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .end_queued_message_edit(AgentQueueControlRequest {
-                session_id: session_id.to_string(),
-                queue_id: queue_id.to_string(),
-            })
-            .await
-    }
-
-    pub async fn send_message(
-        &self,
-        user_id: &str,
-        request: AgentSendMessageRequest,
-    ) -> Result<String, String> {
-        let run_id = self
-            .service
-            .handle_for_user(user_id)
-            .await?
-            .send_message(request)
-            .await?
-            .run_id;
-        Ok(run_id)
-    }
-
-    /// Bytes of an image the user attached to a message in `session_id`.
-    pub async fn read_image_attachment(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<u8>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .read_image_attachment(session_id.to_string(), attachment_id.to_string())
-            .await
-    }
-
-    pub async fn cancel_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .cancel_desktop_run(run_id.to_string())
-            .await
-    }
-
-    pub async fn available_model_ids(&self, user_id: &str) -> Result<Vec<String>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .available_model_ids()
-            .await
-    }
-
-    /// What the catalog says about a model: its vision and context window.
-    /// None when the catalog cannot be read.
-    pub async fn model_catalog_entry(
-        &self,
-        user_id: &str,
-        model: &str,
-    ) -> Result<Option<maple_agent::agent::CatalogEntry>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .model_catalog_entry(model)
-            .await
-    }
-
-    /// Which voice endpoints the account offers.
-    pub async fn audio_capabilities(
-        &self,
-        user_id: &str,
-    ) -> Result<maple_agent::agent::AudioCapabilities, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .audio_capabilities()
-            .await
-    }
-
-    /// WAV audio for `text` in the given voice.
-    pub async fn synthesize_speech(
-        &self,
-        user_id: &str,
-        text: String,
-        voice: String,
-        speed: f32,
-    ) -> Result<Vec<u8>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .synthesize_speech(&text, &voice, speed)
-            .await
-    }
-
-    /// Transcript text for a WAV recording.
-    pub async fn transcribe_audio(&self, user_id: &str, wav: Vec<u8>) -> Result<String, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .transcribe_audio(wav)
-            .await
-    }
-
-    /// MCP servers configured for the account, with the session's enabled
-    /// state for each.
-    pub async fn list_session_mcp_servers(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_session_mcp_servers(session_id.to_string())
-            .await
-    }
-
-    pub async fn set_session_mcp_server_enabled(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        name: &str,
-        kind: maple_agent::agent::AgentSessionIntegrationKind,
-        enabled: bool,
-    ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_session_mcp_server_enabled(maple_agent::agent::AgentSetSessionMcpServerRequest {
-                session_id: session_id.to_string(),
-                name: name.to_string(),
-                kind,
-                enabled,
-            })
-            .await
-    }
-
-    pub async fn list_mcp_servers(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_mcp_servers()
-            .await
-    }
-
-    pub async fn list_integrations(&self, user_id: &str) -> Result<Vec<AgentIntegration>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_integrations()
-            .await
-    }
-
-    pub async fn set_integration_enabled(
-        &self,
-        user_id: &str,
-        id: &str,
-        enabled: bool,
-    ) -> Result<Vec<AgentIntegration>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_integration_enabled(AgentSetIntegrationEnabledRequest {
-                id: id.to_string(),
-                enabled,
-            })
-            .await
-    }
-
-    /// Start a curated integration's host-owned permission flow from the UI
-    /// thread that received the user's setup action.
-    pub fn begin_integration_setup(
-        &self,
-        id: &str,
-    ) -> Result<maple_agent::agent::AgentIntegrationPermissions, String> {
-        maple_agent::agent::begin_integration_setup(&AgentSetupIntegrationRequest {
-            id: id.to_string(),
-        })
-    }
-
-    /// Persist a curated integration after its host-owned permission flow.
-    pub async fn setup_integration(
-        &self,
-        user_id: &str,
-        id: &str,
-        permissions: AgentIntegrationPermissions,
-    ) -> Result<Vec<AgentIntegration>, String> {
-        open_integration_setup_settings(&permissions).await?;
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .setup_integration(AgentSetupIntegrationRequest { id: id.to_string() })
-            .await
-    }
-
-    pub async fn save_mcp_servers(
-        &self,
-        user_id: &str,
-        servers: Vec<maple_agent::agent::AgentMcpServer>,
-    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .save_mcp_servers(servers)
-            .await
-    }
-
-    /// Turn the web tools on or off for a session (next turn onward).
-    pub async fn set_session_web_enabled(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        enabled: bool,
-    ) -> Result<AgentSessionSummary, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_session_web_enabled(maple_agent::agent::AgentSetSessionWebRequest {
-                session_id: session_id.to_string(),
-                enabled,
-            })
-            .await
-    }
-
-    /// Compact a session's history now; reload the session afterwards.
-    pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .compact_session(session_id.to_string())
-            .await
-    }
-
-    /// The subagents still working for a task. A task whose run ended can
-    /// still have a background subagent; this rebuilds the card for it.
-    pub async fn session_subagents(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<Vec<AgentSubagent>, String> {
-        Ok(self
-            .service
-            .handle_for_user(user_id)
-            .await?
-            .session_subagents(session_id)
-            .await)
-    }
-
-    /// Interrupt an external agent (Codex) from its row. The agent keeps
-    /// its thread so the task can continue it later.
-    pub async fn cancel_external_agent(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .cancel_external_agent(session_id, agent_id)
-            .await
-    }
-
-    /// Slash commands (installed skills) for a working directory. Filesystem
-    /// scan, so it runs on a blocking thread.
-    pub async fn list_slash_commands(
-        &self,
-        user_id: &str,
-        working_dir: Option<String>,
-    ) -> Result<Vec<AgentSlashCommand>, String> {
-        let service = self.service.clone();
-        let user_id = user_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            service.list_slash_commands(Some(&user_id), working_dir.as_deref())
-        })
-        .await
-        .map_err(|error| format!("Slash command scan failed: {error}"))
-    }
-
-    /// Expand `/command args` into the skill or prompt template's prompt;
-    /// `None` when the command matches neither.
-    pub async fn resolve_slash_command(
-        &self,
-        user_id: &str,
-        working_dir: Option<String>,
-        command: String,
-        args: String,
-    ) -> Result<Option<String>, String> {
-        let service = self.service.clone();
-        let user_id = user_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            service.resolve_slash_command(Some(&user_id), working_dir.as_deref(), &command, &args)
-        })
-        .await
-        .map_err(|error| format!("Slash command resolve failed: {error}"))?
-    }
-
-    /// One-line summary of a completed tool call from the cheap title model.
-    pub async fn summarize_tool_call(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        tool_name: String,
-        input: Option<serde_json::Value>,
-        output_text: String,
-    ) -> Result<Option<String>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .summarize_tool_call(session_id, &tool_name, input.as_ref(), &output_text)
-            .await
-    }
-
-    /// One-line summary of a finished thinking block from the cheap title
-    /// model.
-    pub async fn summarize_thinking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        thinking_text: String,
-    ) -> Result<Option<String>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .summarize_thinking(session_id, &thinking_text)
-            .await
-    }
-    /// Stream the answer to a `/btw` side question; see
-    /// `AgentRuntimeHandle::ask_side_question`.
-    pub async fn ask_side_question(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        request_id: String,
-        prior: Vec<maple_agent::agent::SideQuestionTurn>,
-        question: String,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .ask_side_question(session_id, request_id, prior, question)
-            .await
-    }
-    /// Run `f` against the summary store of `user_id`. Blocking: call from
-    /// `spawn_blocking`.
-    fn with_summary_db<T>(
-        &self,
-        user_id: &str,
-        f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let scope = self
-            .account_scope(user_id)
-            .ok_or_else(|| "No account scope".to_string())?;
-        let db = account_summary_db(&scope);
-        let mut guard = self.summary_db.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-            *guard = Some((db.clone(), open_summary_db(&db)?));
-        }
-        f(&guard.as_ref().expect("summary db opened above").1)
-    }
-
-    /// Stored summaries for one session, keyed by timeline item id.
-    /// Blocking.
     pub fn load_tool_summaries_blocking(
         &self,
         user_id: &str,
         session_id: &str,
     ) -> Result<HashMap<String, String>, String> {
-        self.with_summary_db(user_id, |conn| {
-            let mut stmt = conn
-                .prepare("SELECT item_id, summary FROM tool_summaries WHERE session_id = ?1")
-                .map_err(|error| error.to_string())?;
-            let rows = stmt
-                .query_map([session_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|error| error.to_string())?;
-            rows.collect::<Result<HashMap<_, _>, _>>()
-                .map_err(|error| error.to_string())
-        })
+        self.runtime
+            .block_on(self.call("load_tool_summaries", (user_id, session_id)))
     }
-
-    /// Persist one summary. Blocking.
     pub fn store_tool_summary_blocking(
         &self,
         user_id: &str,
@@ -2200,690 +291,82 @@ impl AgentBackend {
         item_id: &str,
         summary: &str,
     ) -> Result<(), String> {
-        self.with_summary_db(user_id, |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO tool_summaries (session_id, item_id, summary) \
-                 VALUES (?1, ?2, ?3)",
-                [session_id, item_id, summary],
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-        })
+        self.runtime.block_on(self.call(
+            "store_tool_summary",
+            (user_id, session_id, item_id, summary),
+        ))
     }
-
-    /// A session's context usage: (context tokens, context limit). The
-    /// tokens are the runtime's count of the task's context; the limit comes
-    /// from the model catalog for the selected model; MAPLE_CONTEXT_LIMIT is
-    /// a manual override; 200k is the fallback when the catalog lacks the
-    /// model.
-    pub async fn context_usage(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        model: Option<&str>,
-    ) -> Result<Option<(i64, i64)>, String> {
-        if self.account_scope(user_id).is_none() {
-            return Ok(None);
-        }
-        let handle = self.service.handle_for_user(user_id).await?;
-        let limit: i64 = match std::env::var("MAPLE_CONTEXT_LIMIT")
-            .ok()
-            .and_then(|value| value.parse().ok())
-        {
-            Some(limit) if limit > 0 => limit,
-            _ => match model {
-                Some(model) => handle
-                    .context_limit_for_model(model)
-                    .await?
-                    .unwrap_or(200_000),
-                None => 200_000,
-            },
-        };
-        let tokens = handle.session_context_tokens(session_id).await?;
-        Ok(tokens.map(|tokens| (i64::try_from(tokens).unwrap_or(i64::MAX), limit)))
-    }
-
-    /// Deliver the user's answer to an ask_user question. Returns false
-    /// when no question was pending.
-    pub async fn answer_question(
-        &self,
-        user_id: &str,
-        request_id: &str,
-        answer: String,
-    ) -> Result<bool, String> {
-        let _service = self.service.clone();
-        let request_id = request_id.to_string();
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .answer_question_via_handle(&request_id, answer)
-            .await
-    }
-
-    /// Standard start request for this app: the saved project root (see
-    /// `start_runtime`) with the configured model.
-    pub fn default_start_request(&self) -> AgentStartRequest {
-        AgentStartRequest {
-            project_root: None,
-            model: std::env::var("MAPLE_MODEL").ok(),
-        }
-    }
-
-    pub async fn thinking_state(
-        &self,
-        user_id: &str,
-        session_id: Option<&str>,
-        model: &str,
-    ) -> Result<maple_agent::agent::AgentThinkingState, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .thinking_state(session_id, model)
-            .await
-    }
-
-    pub async fn set_thinking_level(
-        &self,
-        user_id: &str,
-        session_id: Option<&str>,
-        model: &str,
-        level: maple_agent::agent::ThinkingLevel,
-    ) -> Result<maple_agent::agent::AgentThinkingState, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_thinking_level(session_id, model, level)
-            .await
-    }
-
-    /// Persist the UI's model choice as the account's default model.
-    pub async fn save_default_model(&self, user_id: &str, model: String) -> Result<(), String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let mut config = handle.load_config().await?;
-        config.default_model = model;
-        handle.save_config(config).await
-    }
-
-    /// Model the UI should select initially: MAPLE_MODEL when set.
-    pub fn configured_model(&self) -> Option<String> {
-        std::env::var("MAPLE_MODEL").ok()
-    }
-
-    /// The account's saved default model, if any.
     pub async fn saved_model(&self, user_id: &str) -> Option<String> {
-        let handle = self.service.handle_for_user(user_id).await.ok()?;
-        let config = handle.load_config().await.ok()?;
-        Some(config.default_model).filter(|model| !model.is_empty())
+        self.call("saved_model", (user_id,)).await.ok().flatten()
     }
 }
 
-const MACOS_ACCESSIBILITY_SETTINGS_URL: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
-const MACOS_SCREEN_RECORDING_SETTINGS_URL: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
-
-/// The settings pane that grants the permission the integration still needs.
-///
-/// Which permission that is comes from `AgentIntegrationPermissions`, so the
-/// pane Maple opens and the notice telling the user what to do there cannot
-/// disagree about the order.
-fn next_integration_setup_settings_url(
-    permissions: &AgentIntegrationPermissions,
-) -> Option<&'static str> {
-    match permissions.first_missing()? {
-        AgentIntegrationPermissionKind::Accessibility => Some(MACOS_ACCESSIBILITY_SETTINGS_URL),
-        AgentIntegrationPermissionKind::ScreenRecording => {
-            Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
-        }
-        // The user installs a compositor helper themselves; there is no
-        // settings pane that grants it.
-        AgentIntegrationPermissionKind::DesktopHelper => None,
-    }
-}
-
-async fn open_integration_setup_settings(
-    permissions: &AgentIntegrationPermissions,
-) -> Result<(), String> {
-    let Some(url) = next_integration_setup_settings_url(permissions) else {
-        return Ok(());
+async fn dispatch_special(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, String> {
+    let invalid = |_| "Invalid host request parameters".to_string();
+    let encode = |value| {
+        serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
     };
-    #[cfg(target_os = "macos")]
-    {
-        let status =
-            tokio::task::spawn_blocking(move || Command::new("/usr/bin/open").arg(url).status())
-                .await
-                .map_err(|error| format!("Failed to start macOS System Settings: {error}"))?
-                .map_err(|error| format!("Failed to open macOS System Settings: {error}"))?;
-        if !status.success() {
-            return Err(format!(
-                "Failed to open macOS System Settings (exit status {:?})",
-                status.code()
-            ));
+    match request.method.as_str() {
+        "restore_auth" => {
+            serde_json::to_value(backend.validate_persisted_auth().await).map_err(|e| e.to_string())
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = url;
-    Ok(())
-}
-
-/// Extract `code` and `state` query parameters from an OAuth redirect URL.
-/// Values are form-decoded: Google codes carry `%2F`, and a browser may
-/// encode a space in `state` as `+`.
-fn parse_oauth_callback(url: &str) -> Option<(String, String)> {
-    let query = url.split_once('?')?.1;
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split(['&', '#']) {
-        if let Some((key, value)) = pair.split_once('=') {
-            match key {
-                "code" => code = Some(decode_query_value(value)),
-                "state" => state = Some(decode_query_value(value)),
-                _ => {}
-            }
+        "cancel_oauth" => {
+            backend.cancel_oauth();
+            Ok(serde_json::Value::Null)
         }
-    }
-    Some((code?, state?))
-}
-
-/// `application/x-www-form-urlencoded` decoding of one query value.
-fn decode_query_value(value: &str) -> String {
-    let spaced = value.replace('+', " ");
-    percent_encoding::percent_decode_str(&spaced)
-        .decode_utf8_lossy()
-        .into_owned()
-}
-
-/// A user-facing message for a failed billing action; the server detail
-/// goes to the log, not the screen.
-fn billing_failure(error: String, fallback: &str) -> String {
-    log::warn!("{fallback}: {error}");
-    format!("{fallback}. Try again, or use the pricing page on the web.")
-}
-
-/// Hand a billing URL to the system browser. Only `https` URLs are opened:
-/// the billing API is trusted, but a bad deploy must not launch anything
-/// else through the browser handler.
-pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        log::warn!("refusing to open a non-https {what} URL");
-        return Err(format!("Could not open {what}: unexpected link"));
-    }
-    webbrowser::open(url).map_err(|error| {
-        log::warn!("failed to open {what} in the browser: {error}");
-        format!("Could not open {what} in your browser")
-    })
-}
-
-/// The server's API key name rule: 1 to 50 characters after trimming.
-pub const MAX_API_KEY_NAME_LENGTH: usize = 50;
-
-pub fn validate_api_key_name(name: &str) -> Result<String, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("Give the key a name".to_string());
-    }
-    if name.chars().count() > MAX_API_KEY_NAME_LENGTH {
-        return Err(format!(
-            "Use at most {MAX_API_KEY_NAME_LENGTH} characters for the key name"
-        ));
-    }
-    Ok(name.to_string())
-}
-
-/// API key errors by status, matching the web app's wording.
-fn api_key_error_message(error: MapleAccountError, fallback: &str) -> String {
-    match error {
-        MapleAccountError::Unauthorized => "API keys need a Pro, Max, or Team plan".to_string(),
-        MapleAccountError::Status(409) => "A key with that name already exists".to_string(),
-        MapleAccountError::Status(400) => "That key name is not allowed".to_string(),
-        MapleAccountError::Status(404) => "That key no longer exists".to_string(),
-        MapleAccountError::Status(429) => "You have reached the API key limit".to_string(),
-        other => account_error_message(other, fallback),
-    }
-}
-
-/// Minimum password length, the same rule as Maple's web forms.
-pub const MIN_PASSWORD_LENGTH: usize = 8;
-
-/// The web app's password rule: at least eight characters.
-pub fn validate_new_password(password: &str) -> Result<(), String> {
-    if password.chars().count() < MIN_PASSWORD_LENGTH {
-        return Err(format!(
-            "Use at least {MIN_PASSWORD_LENGTH} characters for the new password"
-        ));
-    }
-    Ok(())
-}
-
-/// A user-facing message for an account call that failed. Backend detail
-/// stays in the log; the status alone picks the wording.
-fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
-    match error {
-        MapleAccountError::Unauthorized => {
-            maple_agent::maple_api::AUTH_REJECTED_MESSAGE.to_string()
+        "set_harness_instructions" => {
+            let (instructions,): (String,) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.set_harness_instructions(instructions);
+            Ok(serde_json::Value::Null)
         }
-        MapleAccountError::Status(status) => {
-            log::debug!("account request failed with status {status}");
-            format!("{fallback}. Try again.")
+        "saved_model" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user_id)?;
+            serde_json::to_value(backend.saved_model(&user_id).await).map_err(|e| e.to_string())
         }
-        MapleAccountError::Other(message) => {
-            log::debug!("account request failed: {message}");
-            format!("{fallback}. Check your connection and try again.")
+        "load_tool_summaries" => {
+            let (user_id, session_id): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user_id)?;
+            encode(backend.load_tool_summaries_blocking(&user_id, &session_id)?)
         }
+        "store_tool_summary" => {
+            let (user_id, session_id, item_id, summary): (String, String, String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user_id)?;
+            backend.store_tool_summary_blocking(&user_id, &session_id, &item_id, &summary)?;
+            Ok(serde_json::Value::Null)
+        }
+        _ => Err("Unknown Maple host operation".into()),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn oauth_test_client() -> OpenSecretClient {
-        // Construct the SDK without making any network request.
-        OpenSecretClient::new("http://127.0.0.1:1").unwrap()
+pub(crate) async fn dispatch(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, String> {
+    // Authentication changes cannot interleave with an operation admitted for
+    // the previous account. Cancelling an OAuth wait must remain independent.
+    if request.method == "cancel_oauth" {
+        return dispatch_inner(backend, request).await;
     }
-
-    #[tokio::test]
-    async fn oauth_completion_keeps_the_originating_client_and_consumes_only_its_callback() {
-        let store = PendingOAuthStore::default();
-        let started = store.begin(OAuthProvider::Github, oauth_test_client());
-        store
-            .set_state(&started, "fixture-state".to_string())
-            .unwrap();
-
-        assert!(
-            store
-                .complete(OAuthProvider::Google, "fixture-state")
-                .is_err()
-        );
-        assert!(
-            store
-                .complete(OAuthProvider::Github, "other-state")
-                .is_err()
-        );
-        let completed = store
-            .complete(OAuthProvider::Github, "fixture-state")
-            .unwrap();
-        assert!(Arc::ptr_eq(&started.client, &completed.client));
-        assert!(
-            store
-                .complete(OAuthProvider::Github, "fixture-state")
-                .is_err()
-        );
-        store.clear(&completed);
-        assert!(
-            store
-                .complete(OAuthProvider::Github, "fixture-state")
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn hosted_deadline_cancels_its_attempt_but_not_a_replacement() {
-        let store = Arc::new(PendingOAuthStore::default());
-        let expired = store.begin(OAuthProvider::Google, oauth_test_client());
-        store.expire_handoff_after(&expired, std::time::Duration::from_millis(10));
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            expired.while_active(std::future::pending::<Result<(), String>>()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, Err(OAUTH_CANCELLED_MESSAGE.to_string()));
-        assert!(store.0.lock().unwrap().is_none());
-
-        let old = store.begin(OAuthProvider::Google, oauth_test_client());
-        store.expire_handoff_after(&old, std::time::Duration::from_millis(10));
-        let replacement = store.begin(OAuthProvider::Apple, oauth_test_client());
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert!(!*replacement.cancelled.borrow());
-        assert!(Arc::ptr_eq(
-            &store.0.lock().unwrap().as_ref().unwrap().attempt,
-            &replacement
-        ));
-        // Waiting on the hosted path cannot claim or consume a legacy attempt.
-        assert!(store.take_handoff(OAuthProvider::Apple).is_err());
-        store
-            .set_state(&replacement, "fixture-state".to_string())
-            .unwrap();
-        assert!(
-            store
-                .complete(OAuthProvider::Apple, "fixture-state")
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn oauth_replacement_rejects_late_start_and_preserves_new_attempt_during_old_cleanup() {
-        let store = PendingOAuthStore::default();
-        let old = store.begin(OAuthProvider::Github, oauth_test_client());
-        let old_guard = OAuthAttemptGuard {
-            store: &store,
-            attempt: &old,
-            retain: false,
-        };
-        let current = store.begin(OAuthProvider::Google, oauth_test_client());
-        assert!(store.set_state(&old, "old-state".to_string()).is_err());
-        drop(old_guard);
-        store
-            .set_state(&current, "current-state".to_string())
-            .unwrap();
-        let completed = store
-            .complete(OAuthProvider::Google, "current-state")
-            .unwrap();
-        assert!(Arc::ptr_eq(&completed.client, &current.client));
-
-        assert!(
-            old.while_active::<()>(async { panic!("cancelled work must not run") })
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn oauth_cancellation_discards_an_inflight_completion_before_publication() {
-        let store = Arc::new(PendingOAuthStore::default());
-        let attempt = store.begin(OAuthProvider::Apple, oauth_test_client());
-        store
-            .set_state(&attempt, "fixture-state".to_string())
-            .unwrap();
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let published = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let task_store = Arc::clone(&store);
-        let task_published = Arc::clone(&published);
-        let task = tokio::spawn(async move {
-            let attempt = task_store
-                .complete(OAuthProvider::Apple, "fixture-state")
-                .unwrap();
-            let _guard = OAuthAttemptGuard {
-                store: &task_store,
-                attempt: &attempt,
-                retain: false,
-            };
-            attempt
-                .while_active(async {
-                    entered_tx.send(()).unwrap();
-                    release_rx.await.unwrap();
-                    task_published.store(true, std::sync::atomic::Ordering::SeqCst);
-                    Ok(())
-                })
-                .await
-        });
-        entered_rx.await.unwrap();
-        store.cancel();
-        let _ = release_tx.send(());
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(result, Err(OAUTH_CANCELLED_MESSAGE.to_string()));
-        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(
-            store
-                .complete(OAuthProvider::Apple, "fixture-state")
-                .is_err()
-        );
-    }
-
-    fn auth_snapshot(
-        user_id: &str,
-        session_id: &str,
-        revision: u64,
-        access_token: &str,
-    ) -> MapleApiAuthSnapshot {
-        MapleApiAuthSnapshot {
-            user_id: user_id.to_string(),
-            access_token: access_token.to_string(),
-            refresh_token: Some(format!("refresh-{access_token}")),
-            native_instance_id: "native-test".to_string(),
-            session_id: session_id.to_string(),
-            revision,
-        }
-    }
-
-    #[test]
-    fn persisted_auth_compare_clear_preserves_a_new_session_and_rejects_late_rotation() {
-        let root = std::env::temp_dir().join(format!(
-            "maple-persisted-auth-race-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("auth.json");
-        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
-        let old = auth_snapshot("same-user", "session-old", 2, "old-token");
-        let new = auth_snapshot("same-user", "session-new", 1, "new-token");
-
-        store.claim_and_persist(&old);
-        let mut newer_old = old.clone();
-        newer_old.revision = 3;
-        newer_old.access_token = "newer-old-token".to_string();
-        store.persist_rotation(&newer_old);
-        store.claim_and_persist(&old);
-        assert_eq!(
-            store.read_record().unwrap().access_token,
-            "newer-old-token",
-            "a late same-session claim must not roll back a newer rotation"
-        );
-
-        store.claim_and_persist(&new);
-        store.clear_if_owned(&old);
-        assert_eq!(
-            store.read_record().unwrap().access_token,
-            "new-token",
-            "a delayed old logout must not erase a new same-account session"
-        );
-
-        let mut late_old = old.clone();
-        late_old.revision = 3;
-        late_old.access_token = "late-old-token".to_string();
-        store.persist_rotation(&late_old);
-        assert_eq!(store.read_record().unwrap().access_token, "new-token");
-
-        store.clear_if_owned(&new);
-        assert!(!path.exists());
-        let mut late_new = new;
-        late_new.revision = 2;
-        late_new.access_token = "late-new-token".to_string();
-        store.persist_rotation(&late_new);
-        assert!(
-            !path.exists(),
-            "a rotation published after sign-out must not recreate auth.json"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn persistence_reports_write_failure_and_successful_restore() {
-        let root = std::env::temp_dir().join(format!("maple-auth-persistence-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("auth.json");
-        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
-        let snapshot = auth_snapshot("fixture-user", "fixture-session", 1, "fixture-token");
-        std::fs::create_dir(&path).unwrap();
-        assert!(
-            !store.claim_and_persist(&snapshot),
-            "a directory cannot be replaced by credentials"
-        );
-        assert!(store.load().is_none());
-        std::fs::remove_dir(&path).unwrap();
-        assert!(store.claim_and_persist(&snapshot));
-        let restored = PersistedAuthStore::new(path, "https://api.example".to_string())
-            .load()
-            .unwrap();
-        assert_eq!(restored.user_id, snapshot.user_id);
-        assert_eq!(restored.access_token, snapshot.access_token);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn rejected_restore_clears_only_the_record_that_was_loaded() {
-        let root = std::env::temp_dir().join(format!(
-            "maple-persisted-auth-restore-race-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("auth.json");
-        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
-        let old = auth_snapshot("old-user", "session-old", 1, "old-token");
-        let new = auth_snapshot("new-user", "session-new", 1, "new-token");
-
-        store.claim_and_persist(&old);
-        let loaded = store.load().unwrap();
-        store.claim_and_persist(&new);
-        store.clear_record_if_unchanged(&loaded);
-        assert_eq!(store.read_record().unwrap().user_id, "new-user");
-
-        store.clear_if_owned(&new);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn oauth_callback_values_are_form_decoded() {
-        let url = "http://localhost/cb?state=ab%20cd+ef&code=4%2F0AX4XfWh%3Dz&x=1#frag";
-        assert_eq!(
-            parse_oauth_callback(url),
-            Some(("4/0AX4XfWh=z".to_string(), "ab cd ef".to_string()))
-        );
-        assert_eq!(
-            parse_oauth_callback("http://localhost/cb?code=plain&state=s"),
-            Some(("plain".to_string(), "s".to_string()))
-        );
-        assert_eq!(parse_oauth_callback("http://localhost/cb?code=only"), None);
-        assert_eq!(parse_oauth_callback("http://localhost/cb"), None);
-    }
-
-    #[test]
-    fn malformed_client_id_falls_back_to_default() {
-        let default: Uuid = DEFAULT_CLIENT_ID.parse().unwrap();
-        assert_eq!(client_id_from(None), default);
-        assert_eq!(client_id_from(Some("not-a-uuid")), default);
-        let custom = "123e4567-e89b-12d3-a456-426614174000";
-        assert_eq!(
-            client_id_from(Some(custom)),
-            custom.parse::<Uuid>().unwrap()
-        );
-    }
-
-    fn macos_permissions(
-        accessibility: bool,
-        screen_recording: bool,
-    ) -> AgentIntegrationPermissions {
-        AgentIntegrationPermissions::default()
-            .with(AgentIntegrationPermissionKind::Accessibility, accessibility)
-            .with(
-                AgentIntegrationPermissionKind::ScreenRecording,
-                screen_recording,
-            )
-    }
-
-    #[test]
-    fn integration_setup_opens_one_missing_permission_at_a_time() {
-        assert_eq!(
-            next_integration_setup_settings_url(&macos_permissions(false, false)),
-            Some(MACOS_ACCESSIBILITY_SETTINGS_URL)
-        );
-        assert_eq!(
-            next_integration_setup_settings_url(&macos_permissions(true, false)),
-            Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
-        );
-        assert_eq!(
-            next_integration_setup_settings_url(&macos_permissions(true, true)),
-            None
-        );
-    }
-}
-
-#[cfg(test)]
-mod app_dir_tests {
-    use super::{APP_DIR_NAME, LEGACY_APP_DIR_NAME, adopt_legacy_app_dir};
-
-    #[test]
-    fn legacy_app_dir_is_adopted_only_when_the_current_one_is_absent() {
-        let base = std::env::temp_dir().join(format!(
-            "maple-agent-adopt-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::UNIX_EPOCH
-                .elapsed()
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        let legacy = base.join(LEGACY_APP_DIR_NAME);
-        let root = base.join(APP_DIR_NAME);
-        std::fs::create_dir_all(legacy.join("logs")).unwrap();
-        std::fs::write(legacy.join("auth.json"), "saved").unwrap();
-
-        let note = adopt_legacy_app_dir(&root, true).expect("first start adopts the legacy dir");
-        assert!(note.starts_with("adopted "), "{note}");
-        assert_eq!(
-            std::fs::read_to_string(root.join("auth.json")).unwrap(),
-            "saved"
-        );
-        assert!(root.join("logs").is_dir());
-        assert!(!legacy.exists());
-
-        // Nothing to do once the current directory exists.
-        assert_eq!(adopt_legacy_app_dir(&root, true), None);
-
-        // A legacy directory that reappears next to a current one is left alone.
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("auth.json"), "stale").unwrap();
-        assert_eq!(adopt_legacy_app_dir(&root, true), None);
-        assert_eq!(
-            std::fs::read_to_string(root.join("auth.json")).unwrap(),
-            "saved"
-        );
-        assert!(legacy.join("auth.json").is_file());
-
-        // No legacy directory: nothing happens and nothing is created.
-        let fresh = base.join("fresh").join(APP_DIR_NAME);
-        std::fs::create_dir_all(fresh.parent().unwrap()).unwrap();
-        assert_eq!(adopt_legacy_app_dir(&fresh, true), None);
-        assert!(!fresh.exists());
-
-        std::fs::remove_dir_all(&base).unwrap();
-    }
-
-    #[test]
-    fn packaged_profiles_never_adopt_legacy_local_or_research_state() {
-        let base = std::env::temp_dir().join(format!(
-            "maple-agent-profile-isolation-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::UNIX_EPOCH
-                .elapsed()
-                .unwrap()
-                .as_nanos()
-        ));
-        for namespace in [
-            "maple-gpui",
-            "maple-agent",
-            "cloud.opensecret.maple",
-            "cloud.opensecret.maple.dev",
-        ] {
-            let path = base.join(namespace);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("auth.json"), namespace).unwrap();
-        }
-        for namespace in ["maple-agent-dev", "maple-agent-prod"] {
-            let root = base.join(namespace);
-            assert!(adopt_legacy_app_dir(&root, false).is_none());
-            assert!(!root.exists());
-            std::fs::create_dir_all(&root).unwrap();
-            std::fs::write(root.join("auth.json"), namespace).unwrap();
-        }
-        for namespace in [
-            "maple-gpui",
-            "maple-agent",
-            "cloud.opensecret.maple",
-            "cloud.opensecret.maple.dev",
-            "maple-agent-dev",
-            "maple-agent-prod",
-        ] {
-            assert_eq!(
-                std::fs::read_to_string(base.join(namespace).join("auth.json")).unwrap(),
-                namespace
-            );
-        }
-        assert_eq!(APP_DIR_NAME, crate::profile::DATA_NAMESPACE);
-        std::fs::remove_dir_all(base).unwrap();
+    if matches!(
+        request.method.as_str(),
+        "login"
+            | "logout_and_clear"
+            | "oauth_wait_for_handoff"
+            | "oauth_complete"
+            | "restore_auth"
+            | "confirm_account_deletion"
+    ) {
+        let _account = backend.account_gate.write().await;
+        dispatch_inner(backend, request).await
+    } else {
+        let _account = backend.account_gate.read().await;
+        dispatch_inner(backend, request).await
     }
 }

@@ -18,7 +18,9 @@ use super::{INSTRUCTIONS, INSTRUCTIONS_SECTION, missing_permission_message};
 use crate::agent::integrations::{
     CUA_CARD_DESCRIPTION, CUA_CARD_NAME, CUA_INTEGRATION_ID, cua_default, is_cua_identity,
 };
-use crate::agent::store::{TaskKind, TaskRow};
+#[cfg(test)]
+use crate::agent::store::TaskKind;
+use crate::agent::store::TaskRow;
 use crate::agent::{AgentRuntimeHandle, AgentSessionIntegrationKind, AgentSessionMcpServer};
 
 /// The task setting that records the task's choice.
@@ -63,9 +65,6 @@ pub(in crate::agent) fn session_row(
     device: Option<bool>,
     ready: bool,
 ) -> Option<AgentSessionMcpServer> {
-    if row.kind != TaskKind::Desktop {
-        return None;
-    }
     let choice = task_choice(row);
     let set_up = choice.is_some() || device.is_some();
     Some(AgentSessionMcpServer {
@@ -238,12 +237,6 @@ impl AgentRuntimeHandle {
         let row = store
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
-        if row.kind != TaskKind::Desktop {
-            return Err(
-                "Built-in CUA is available only to tasks running in the Maple desktop app"
-                    .to_string(),
-            );
-        }
         let not_found = || format!("Failed to find Agent task {session_id}");
         let loaded = runtime.loaded_cua(session_id).await;
         if !enabled {
@@ -346,6 +339,10 @@ mod tests {
         assert!(on.enabled && !on.available);
         assert_eq!(on.transport, "embedded");
 
-        assert!(session_row(&row(TaskKind::Acp, Some(true)), Some(true), true).is_none());
+        assert!(
+            session_row(&row(TaskKind::Acp, Some(true)), Some(true), true)
+                .unwrap()
+                .enabled
+        );
     }
 }

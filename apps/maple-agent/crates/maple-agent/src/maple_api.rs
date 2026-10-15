@@ -23,7 +23,7 @@ pub struct MapleApiAuthRequest {
 }
 
 /// Account profile as reported by the backend (`GET /protected/user`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MapleAccount {
     pub user_id: String,
     pub email: Option<String>,
@@ -34,7 +34,7 @@ pub struct MapleAccount {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MapleLoginMethod {
     Email,
     Github,
@@ -86,7 +86,7 @@ impl From<maple_sdk::AppUser> for MapleAccount {
 }
 
 /// One API key as listed by the backend; the key value is never listed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MapleApiKey {
     pub name: String,
     /// RFC 3339 creation time.
@@ -94,7 +94,7 @@ pub struct MapleApiKey {
 }
 
 /// A freshly created API key. `key` is shown once and never again.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MapleApiKeyCreated {
     pub name: String,
     pub key: String,

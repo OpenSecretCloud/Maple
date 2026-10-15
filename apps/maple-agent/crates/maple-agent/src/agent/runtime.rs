@@ -28,12 +28,10 @@ use super::provider::{CatalogEntry, catalog_entry, maple_model, maple_model_regi
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
-use super::surface::{
-    AgentSurfaceAccess, SURFACE_CONTROLLED_ERROR, SurfaceTask, with_surface_servers,
-};
+use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
 use super::{
-    AgentMcpServer, AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources,
-    emit_agent_event, login_path, tools,
+    AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources, emit_agent_event, login_path,
+    tools,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -106,7 +104,7 @@ pub(super) struct AgentRuntime {
     /// The tasks a calling surface holds, by task id. Changed, and read for
     /// a session's build, under the sessions' lock, so a session is built
     /// with what the task has.
-    surfaces: Mutex<HashMap<String, SurfaceTask>>,
+    surfaces: Mutex<HashMap<String, HashMap<u64, SurfaceTask>>>,
     pub(super) runs: Runs,
     pub(super) failures: Failures,
     /// The external agents of the account's tasks.
@@ -260,17 +258,30 @@ impl AgentRuntime {
             .await
             .map_err(|error| error.to_string())
             .and_then(|saved| saved);
-        // A calling surface's own servers run beside the task's, in place of
-        // a saved one of the same name.
-        let surface_servers = self.surface_mcp_servers(session_id);
-        match saved {
-            Ok(saved) => mcp.sync(with_surface_servers(
-                task_servers(&saved, &row),
-                surface_servers,
-            )),
-            Err(error) => {
-                log::warn!("Failed to read the account's MCP servers: {error}");
-                if !surface_servers.is_empty() {
+        // Synchronize under the attachment lock. Detach revokes under this
+        // same lock before disabling its servers, so a stale snapshot cannot
+        // resurrect client credentials after disconnection.
+        {
+            let surfaces = lock(&self.surfaces);
+            let surface_servers = surfaces
+                .get(session_id)
+                .into_iter()
+                .flat_map(|tasks| tasks.values())
+                .filter(|task| !task.revoked.is_cancelled())
+                .flat_map(|task| task.mcp_servers.clone())
+                .collect();
+            match saved {
+                Ok(saved) => {
+                    match with_surface_servers(task_servers(&saved, &row), surface_servers) {
+                        Ok(servers) => mcp.sync(servers),
+                        Err(error) => {
+                            mcp.sync(Vec::new());
+                            return Some(error);
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Failed to read the account's MCP servers: {error}");
                     mcp.sync(surface_servers);
                 }
             }
@@ -290,7 +301,7 @@ impl AgentRuntime {
     /// binding failed, if it did.
     async fn start_task_cua(&self, row: &TaskRow, vision: bool) -> Option<String> {
         let task_cua = self.loaded_cua(&row.id).await?;
-        if self.driven_kind(row) == TaskKind::Desktop && cua::task_choice(row) == Some(true) {
+        if cua::task_choice(row) == Some(true) {
             task_cua.bind(vision).await.err()
         } else {
             if task_cua.is_bound() {
@@ -300,101 +311,75 @@ impl AgentRuntime {
         }
     }
 
-    /// Whether a calling surface holds the task.
-    pub(super) fn is_surfaced(&self, session_id: &str) -> bool {
-        lock(&self.surfaces).contains_key(session_id)
-    }
-
-    /// How a task is driven: as a calling surface's while one holds it,
-    /// whichever surface created it.
-    pub(super) fn driven_kind(&self, row: &TaskRow) -> TaskKind {
-        if self.is_surfaced(&row.id) {
-            TaskKind::Acp
-        } else {
-            row.kind
-        }
-    }
-
-    /// The MCP servers the surface that holds the task gave it.
-    pub(super) fn surface_mcp_servers(&self, session_id: &str) -> Vec<AgentMcpServer> {
-        lock(&self.surfaces)
-            .get(session_id)
-            .map(|task| task.mcp_servers.clone())
-            .unwrap_or_default()
-    }
-
-    /// Whether `access` still holds its task.
     pub(super) fn surface_holds(&self, access: &AgentSurfaceAccess) -> bool {
         lock(&self.surfaces)
             .get(access.session_id())
-            .is_some_and(|task| {
-                task.installation == access.installation() && !task.revoked.is_cancelled()
-            })
+            .and_then(|tasks| tasks.get(&access.installation()))
+            .is_some_and(|task| !task.revoked.is_cancelled())
     }
 
-    /// Give a calling surface its hold on a task. The task's loaded session,
-    /// built for whoever drove it before, is unloaded, so its next run
-    /// builds it for the surface. Refused while the task runs or another
-    /// surface holds it.
     pub(super) async fn install_surface(
         &self,
         session_id: &str,
         task: SurfaceTask,
     ) -> Result<(), String> {
-        let unloaded = {
-            let mut sessions = self.sessions.lock().await;
-            if self.lifetime.is_cancelled() {
-                return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
-            }
-            if self.runs.is_running(session_id) {
-                return Err("Stop the running agent before opening this task here".to_string());
-            }
-            let mut surfaces = lock(&self.surfaces);
-            if surfaces.contains_key(session_id) {
-                return Err(SURFACE_CONTROLLED_ERROR.to_string());
-            }
-            surfaces.insert(session_id.to_string(), task);
-            drop(surfaces);
-            sessions.remove(session_id)
-        };
-        if let Some(task) = unloaded {
-            task.session.shutdown().await;
+        if self.lifetime.is_cancelled() {
+            return Err(super::RUNTIME_NOT_RUNNING_ERROR.into());
         }
+        // Host and client servers must never silently replace each other.
+        let saved = read_saved_servers(&self.host.paths, &self.user_id)?;
+        let mut surfaces = lock(&self.surfaces);
+        let attached = surfaces.entry(session_id.to_string()).or_default();
+        for server in &task.mcp_servers {
+            let key = super::mcp::name_to_key(&server.name);
+            if saved
+                .iter()
+                .any(|other| super::mcp::name_to_key(&other.name) == key)
+                || attached
+                    .values()
+                    .flat_map(|other| &other.mcp_servers)
+                    .any(|other| super::mcp::name_to_key(&other.name) == key)
+            {
+                return Err(format!(
+                    "MCP server {} is already configured on this task",
+                    server.name
+                ));
+            }
+        }
+        attached.insert(task.installation, task);
         Ok(())
     }
 
-    /// End the hold `installation` has on a task, if it still has it: the
-    /// task's run stops, and its session is unloaded, so whoever drives it
-    /// next builds it afresh.
+    /// Detach only this interface. Shared runs and the host-owned task survive.
+    /// Client MCP bindings disappear from the next server synchronization.
     pub(super) async fn release_surface(&self, session_id: &str, installation: u64) {
-        let held = |surfaces: &HashMap<String, SurfaceTask>| {
-            surfaces
+        let names: Vec<String> = {
+            let surfaces = lock(&self.surfaces);
+            match surfaces
                 .get(session_id)
-                .is_some_and(|task| task.installation == installation)
+                .and_then(|tasks| tasks.get(&installation))
+            {
+                Some(task) => {
+                    task.revoked.cancel();
+                    task.mcp_servers
+                        .iter()
+                        .map(|server| super::mcp::name_to_key(&server.name))
+                        .collect()
+                }
+                None => Vec::new(),
+            }
         };
-        if !held(&lock(&self.surfaces)) {
-            return;
+        if let Some(mcp) = self.loaded_mcp(session_id).await {
+            for name in names {
+                mcp.disable(&name).await;
+            }
         }
-        self.stop_task_run(session_id, super::runs::RUN_SHUTDOWN_TIMEOUT)
-            .await;
-        let unloaded = {
-            let mut sessions = self.sessions.lock().await;
-            let mut surfaces = lock(&self.surfaces);
-            if !held(&surfaces) {
-                return;
+        let mut surfaces = lock(&self.surfaces);
+        if let Some(tasks) = surfaces.get_mut(session_id) {
+            tasks.remove(&installation);
+            if tasks.is_empty() {
+                surfaces.remove(session_id);
             }
-            surfaces.remove(session_id);
-            drop(surfaces);
-            // A run that would not stop keeps its session, with the
-            // surface's hold already ended.
-            if self.runs.is_running(session_id) {
-                None
-            } else {
-                sessions.remove(session_id)
-            }
-        };
-        if let Some(task) = unloaded {
-            task.session.shutdown().await;
         }
     }
 
@@ -547,14 +532,8 @@ impl AgentRuntime {
         if self.lifetime.is_cancelled() {
             return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
         }
-        // A task a calling surface holds runs without the desktop's own
-        // tools.
-        let kind = self.driven_kind(row);
-        let providers = if kind == TaskKind::Desktop {
-            task_providers(&agents_on, row)
-        } else {
-            Vec::new()
-        };
+        // Every interface drives the same host-owned tools.
+        let providers = task_providers(&agents_on, row);
         if let Some(LoadedTask {
             session, agents, ..
         }) = sessions.get(&row.id)
@@ -591,10 +570,8 @@ impl AgentRuntime {
         let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
         let tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
-            kind,
-            // A calling surface's commands keep the PATH its client started
-            // Maple with.
-            login_path: search_path.clone().filter(|_| kind == TaskKind::Desktop),
+            kind: TaskKind::Desktop,
+            login_path: search_path.clone(),
             questions: self.questions.clone(),
             web: self.api.clone(),
             web_enabled: row.web_enabled,
@@ -610,19 +587,16 @@ impl AgentRuntime {
         options.builtin_tools = Some(tools.builtin);
         options.tools = tools.maple;
         options.extensions.push(tools.extension);
-        // External agents work for tasks in the desktop app.
         let agents = TaskProviders::default();
-        if kind == TaskKind::Desktop {
-            options
-                .tools
-                .extend(external_agent_tools(ExternalAgentToolsFor {
-                    registry: Arc::clone(&self.external_agents),
-                    session_id: row.id.clone(),
-                    working_dir: PathBuf::from(&row.project_root),
-                    login_path: search_path.clone(),
-                    providers: agents.clone(),
-                }));
-        }
+        options
+            .tools
+            .extend(external_agent_tools(ExternalAgentToolsFor {
+                registry: Arc::clone(&self.external_agents),
+                session_id: row.id.clone(),
+                working_dir: PathBuf::from(&row.project_root),
+                login_path: search_path.clone(),
+                providers: agents.clone(),
+            }));
         let mcp = TaskMcp::new(Path::new(&row.project_root), search_path);
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());

@@ -73,6 +73,17 @@ stdio MCP server configured in Settings > Integrations.
 | A1 | ACP agent mode | A stdio ACP client: `session/new`, a tool prompt, `session/list`, `session/load`, cancel, `/compact` | No modes advertised, zero `session/request_permission` for tools, the trust chooser on an untrusted project, no task left by a session closed before its first prompt, and every turn on the model's catalog vision and context window, which `usage_update` reports (**automated**: `acp::tests`) |
 | A2 | Proxy, `login`, `--version` | Run each mode | Each works as the README says |
 
+## Shared local host
+
+| # | Scenario | How | Pass when |
+|---|---|---|---|
+| H1 | Concurrent startup | Start desktop and ACP for the same profile together | One host owns the profile; both attach |
+| H2 | Join a running task | Start a tool turn in one interface, load it in the other during streaming | The partial reply appears once; later text and tools follow |
+| H3 | Detach and stop | Close the originating ACP pipe with desktop open; cancel from desktop; then close all clients | Detach preserves the run, cancel ends it, last-client exit shuts down the host |
+| H4 | Profile/version mismatch | Connect another backend or build using the same state roots | A clear rejection; the active host is untouched |
+| H5 | ACP steering | Call advertised `_session/steering` during a tool turn | The next model step receives the new instruction; idle `promptRequired` consumes nothing |
+| H6 | Shared questions | Attach desktop and form-capable ACP, answer one question | First answer wins and the other interface dismisses it |
+
 ## Side models and the rest
 
 | # | Scenario | How | Pass when |

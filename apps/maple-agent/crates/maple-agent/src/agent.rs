@@ -49,6 +49,7 @@ pub use config::{
 };
 pub use integrations::begin_integration_setup;
 pub use provider::CatalogEntry;
+pub use questions::QuestionResponder;
 pub use runs::AgentRunHandle;
 use runtime::AgentRuntime;
 use store::TaskStore;
@@ -112,15 +113,20 @@ pub trait AgentEventSink: Send + Sync + 'static {
 #[derive(Clone)]
 pub(crate) struct AgentEventDispatcher {
     sink: Arc<dyn AgentEventSink>,
+    subscribers: tokio::sync::broadcast::Sender<AgentServiceEvent>,
 }
 
 impl AgentEventDispatcher {
     pub(crate) fn new(sink: Arc<dyn AgentEventSink>) -> Self {
-        Self { sink }
+        Self {
+            sink,
+            subscribers: tokio::sync::broadcast::channel(256).0,
+        }
     }
 }
 
 pub(crate) fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
+    let _ = events.subscribers.send(event.clone());
     events.sink.emit(&event);
 }
 
@@ -211,6 +217,16 @@ impl MapleAgentService {
         }
     }
 
+    pub fn manage_question_availability(&self) {
+        self.state.questions.manage_availability();
+    }
+    pub fn question_responder(&self) -> QuestionResponder {
+        self.state.questions.responder()
+    }
+    pub async fn pending_questions(&self) -> Vec<AgentServiceEvent> {
+        self.state.questions.snapshot().await
+    }
+
     /// Bind operations to one Maple account and its current data generation.
     pub async fn handle_for_user(&self, user_id: &str) -> Result<AgentRuntimeHandle, String> {
         let account_scope = account_scope(user_id)?;
@@ -297,6 +313,31 @@ impl MapleAgentService {
             .store(AGENT_SERVICE_DRAINING, Ordering::Release);
     }
 
+    /// Drain the profile's runtime during host shutdown, regardless of which
+    /// frontend or account originally started it.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.begin_draining();
+        let _lifecycle = self.state.lifecycle.lock().await;
+        let runtime = self.state.runtime.lock().await.take();
+        if let Some(runtime) = runtime {
+            runtime.shutdown().await;
+        }
+        Ok(())
+    }
+
+    /// Stop and invalidate account handles before changing profile identity.
+    pub async fn sign_out(&self, user_id: &str) -> Result<(), String> {
+        let scope = account_scope(user_id)?;
+        let _lifecycle = self.state.lifecycle.lock().await;
+        self.advance_generation(&scope);
+        emit_agent_event(&self.host.events, AgentServiceEvent::AccountChanged(None));
+        let runtime = self.state.runtime.lock().await.take();
+        if let Some(runtime) = runtime {
+            runtime.shutdown().await;
+        }
+        Ok(())
+    }
+
     /// Admit work again after a shutdown that did not happen.
     pub fn reopen_after_failed_shutdown(&self) {
         self.state
@@ -344,7 +385,6 @@ impl MapleAgentService {
         self.state.questions.clone()
     }
 
-    #[cfg(test)]
     fn advance_generation(&self, account_scope: &str) {
         let mut generations = self
             .state
@@ -356,6 +396,19 @@ impl MapleAgentService {
 }
 
 impl AgentRuntimeHandle {
+    /// Subscribe before reading a task snapshot; projections reconcile updates
+    /// by their existing timeline item identities.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<AgentServiceEvent> {
+        self.service.host.events.subscribers.subscribe()
+    }
+
+    pub fn question_responder(&self) -> QuestionResponder {
+        self.service.question_responder()
+    }
+    pub async fn pending_questions(&self) -> Vec<AgentServiceEvent> {
+        self.service.pending_questions().await
+    }
+
     pub async fn verify_generation(&self) -> Result<(), String> {
         if self.service.generation(&self.account_scope) == self.generation {
             Ok(())
@@ -725,6 +778,7 @@ impl AgentRuntimeHandle {
         request_id: &str,
         answer: String,
     ) -> Result<bool, String> {
+        self.verify_generation().await?;
         Ok(self.service.answer_question(request_id, answer).await)
     }
 

@@ -1,16 +1,6 @@
-//! Tasks a calling surface drives, such as an ACP client's sessions.
-//!
-//! A surface holds each task it drives with a lease. While the lease lasts,
-//! the task's runs are the surface's alone, and the desktop's own tools stay
-//! out of it: the plan and questions, external agents and computer use. The
-//! surface's own MCP servers run beside the task's. Releasing the lease ends
-//! its hold at once and unloads the task's session, so whoever drives the
-//! task next builds it afresh.
-//!
-//! A task a surface creates is provisional until its first prompt: no list
-//! shows it, and releasing the lease of an untouched one discards it. A crash
-//! can strand one; the next runtime start removes those older than ten
-//! minutes.
+//! ACP attachments to host-owned tasks. A lease identifies temporary client
+//! bindings; it never grants exclusive execution ownership. Dropping it detaches
+//! that client without cancelling shared work. Unprompted drafts stay unlisted.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -34,9 +24,6 @@ use super::{
 /// Refused when a surface's lease no longer holds its task: the lease was
 /// released, or the task is gone.
 pub const AGENT_SURFACE_INACTIVE_ERROR: &str = "Agent surface access is no longer active";
-/// Refused to anyone else while a surface holds the task.
-pub(super) const SURFACE_CONTROLLED_ERROR: &str =
-    "This Agent task is controlled by another Agent surface";
 /// The task setting that marks a surface's task before its first prompt.
 const PROVISIONAL: &str = "surfaceProvisional";
 /// How old a provisional task is before a runtime start removes it.
@@ -98,8 +85,7 @@ impl AgentSurfaceLease {
         self.revoked.cancel();
     }
 
-    /// Release the task: end the hold, stop the task's run and unload its
-    /// session.
+    /// Detach this client without stopping the shared task.
     pub async fn release(mut self) {
         self.settled = true;
         self.revoke();
@@ -142,23 +128,25 @@ impl Drop for AgentSurfaceLease {
     }
 }
 
-/// The servers a task runs: its own, and the surface's in place of one of
-/// its own with the same name.
+/// Merge distinct host and client bindings. Conflicts are unavailable until
+/// explicitly reconfigured; neither interface may replace the other's tool.
 pub(super) fn with_surface_servers(
-    task: Vec<AgentMcpServer>,
+    mut task: Vec<AgentMcpServer>,
     surface: Vec<AgentMcpServer>,
-) -> Vec<AgentMcpServer> {
-    let mut servers: Vec<AgentMcpServer> = task
-        .into_iter()
-        .filter(|server| {
-            let key = name_to_key(&server.name);
-            !surface
-                .iter()
-                .any(|surface| name_to_key(&surface.name) == key)
-        })
-        .collect();
-    servers.extend(surface);
-    servers
+) -> Result<Vec<AgentMcpServer>, String> {
+    for server in surface {
+        if task
+            .iter()
+            .any(|saved| name_to_key(&saved.name) == name_to_key(&server.name))
+        {
+            return Err(format!(
+                "MCP server '{}' conflicts with another binding",
+                server.name
+            ));
+        }
+        task.push(server);
+    }
+    Ok(task)
 }
 
 fn is_provisional(row: &TaskRow) -> bool {
@@ -301,6 +289,7 @@ impl AgentRuntimeHandle {
         };
         Ok(AgentSurfaceSession {
             detail: AgentSessionDetail {
+                timeline_revision: 0,
                 session: row.summary(),
                 timeline: Vec::new(),
                 mcp_errors: Vec::new(),

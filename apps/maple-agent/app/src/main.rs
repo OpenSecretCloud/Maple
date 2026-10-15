@@ -11,6 +11,7 @@ mod billing;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod env;
+mod host;
 mod hosted_oauth;
 #[cfg(feature = "desktop")]
 mod keymap;
@@ -64,6 +65,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 enum Mode {
+    /// Manage the local shared host. `serve` is normally started automatically.
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
     /// Serve the Agent Client Protocol on stdio.
     ///
     /// Trailing arguments belong to the ACP client and are ignored.
@@ -76,6 +82,14 @@ enum Mode {
     Proxy(ProxyArgs),
     /// Sign in with email and password and save the session for `acp`.
     Login(LoginArgs),
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+enum HostCommand {
+    #[command(hide = true)]
+    Serve,
+    /// Stop this profile's host and all its running tasks.
+    Stop,
 }
 
 /// Settings for `maple-agent login`. The password is always prompted for
@@ -162,6 +176,17 @@ fn main() {
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());
     match cli.mode {
+        Some(Mode::Host { command }) => {
+            init_logging(LogOutput::FileOnly);
+            let result = match command {
+                HostCommand::Serve => host::run(configured_api_url()),
+                HostCommand::Stop => host::stop(&configured_api_url()),
+            };
+            if let Err(error) = result {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         Some(Mode::Acp { .. }) => {
             // stdout is the ACP channel. Logs go to the log file only, so
             // the client's stderr capture stays quiet. An inherited
@@ -298,12 +323,7 @@ fn configured_api_url() -> String {
 /// the desktop app does not need to run.
 #[cfg(feature = "acp")]
 fn run_acp() -> Result<(), String> {
-    let harness_instructions = settings::load_settings().effective_harness_instructions();
-    let backend = AgentBackend::new(configured_api_url(), harness_instructions)?;
-    let user_id = backend.restore_now().ok_or_else(|| {
-        "No saved Maple sign-in. Open the desktop app and sign in first.".to_string()
-    })?;
-    backend.run_acp_stdio(&user_id)
+    host::acp(&configured_api_url())
 }
 
 /// `maple-agent login`: sign in from a terminal. The saved session is the

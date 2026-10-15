@@ -2,7 +2,10 @@
 //! and its conversions and checks one by one.
 
 use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config};
-use super::convert::{acp_tool_update, client_supports_form_elicitation, timeline_tool_text};
+use super::convert::{
+    acp_session_config_options, acp_tool_update, client_supports_form_elicitation,
+    timeline_tool_text,
+};
 use super::session::completed_runtime_start;
 use super::transport::is_session_update_line;
 use super::*;
@@ -682,14 +685,6 @@ async fn session_operation_cancellation_keeps_close_behind_the_active_fence() {
     drop(closing);
 }
 
-#[test]
-fn timed_out_close_keeps_its_resurrection_fence() {
-    assert!(close_registration_may_be_released(true, true, true));
-    assert!(!close_registration_may_be_released(false, true, true));
-    assert!(!close_registration_may_be_released(true, false, true));
-    assert!(!close_registration_may_be_released(true, true, false));
-}
-
 fn row(
     id: &str,
     item_type: &str,
@@ -698,6 +693,7 @@ fn row(
     merge: &str,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id: id.to_string(),
         item_type: item_type.to_string(),
         role: role.map(str::to_string),
@@ -714,6 +710,7 @@ fn row(
 #[test]
 fn completed_replayed_tool_prefers_result_over_request_summary() {
     let item = AgentTimelineItem {
+        revision: 0,
         id: "tool-1".to_string(),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
@@ -769,6 +766,7 @@ fn available_commands_lead_with_the_built_ins_plus_skills() {
 fn failed_replayed_tool_preserves_result_and_failure_badge_message() {
     let mut projection = AcpProjection::default();
     let pending = AgentTimelineItem {
+        revision: 0,
         id: "tool-1".to_string(),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
@@ -1219,4 +1217,172 @@ fn retained_terminal_results_preserve_all_stop_states() {
         serde_json::to_value(failed).unwrap()["stopReason"],
         "end_turn"
     );
+}
+
+#[tokio::test]
+async fn eof_detaches_from_an_active_shared_run_and_another_client_can_cancel_it() {
+    let harness = Harness::new().await;
+    harness.faux.push_hang();
+    let (mut first, first_serving) = connect(&harness.handle, no_answers());
+    let initialize = first.initialize(json!({})).await;
+    assert!(initialize["agentCapabilities"]["sessionCapabilities"]["close"].is_null());
+    let task = first.new_session(harness.project.path()).await;
+    first
+        .request(
+            "session/prompt",
+            json!({"sessionId": task, "prompt": [{"type": "text", "text": "Wait"}]}),
+        )
+        .await;
+    crate::agent::tests::eventually(|| !harness.faux.requests().is_empty()).await;
+    drop(first);
+    finish(first_serving).await;
+    assert!(
+        harness
+            .handle
+            .status()
+            .await
+            .unwrap()
+            .active_runs
+            .contains_key(&task)
+    );
+
+    let (mut second, second_serving) = connect(&harness.handle, no_answers());
+    second.initialize(json!({})).await;
+    second
+        .call(
+            "session/load",
+            json!({"sessionId": task, "cwd": harness.project.path(), "mcpServers": []}),
+        )
+        .await;
+    second
+        .send_line(
+            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": task}}),
+        )
+        .await;
+    // A subsequent request is ordered after the cancellation notification.
+    second.call("session/list", json!({})).await;
+    assert!(
+        !harness
+            .handle
+            .status()
+            .await
+            .unwrap()
+            .active_runs
+            .contains_key(&task)
+    );
+    drop(second);
+    finish(second_serving).await;
+}
+
+#[tokio::test]
+async fn steering_uses_the_shared_adapter_extension_and_preserves_idle_fallback() {
+    let harness = Harness::new().await;
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    let initialize = client.initialize(json!({})).await;
+    assert_eq!(initialize["_meta"]["steering"]["supported"], true);
+    let task = client.new_session(harness.project.path()).await;
+    let idle = client.call("_session/steering", json!({"sessionId": task, "prompt": [{"type":"text", "text":"not consumed"}], "_meta":{"steering":{"idleBehavior":"promptRequired"}}})).await;
+    assert_eq!(idle["outcome"], "promptRequired");
+    assert!(harness.faux.requests().is_empty());
+
+    harness.faux.push_message(vec![faux_tool_call(
+        "bash",
+        json!({"command": "sleep 0.5"}),
+    )]);
+    harness
+        .faux
+        .push_text("I followed the updated instruction.");
+    let prompt_id = client
+        .request(
+            "session/prompt",
+            json!({"sessionId": task, "prompt": [{"type": "text", "text": "Start"}]}),
+        )
+        .await;
+    crate::agent::tests::eventually(|| !harness.faux.requests().is_empty()).await;
+    let steered = client.call("_session/steering", json!({"sessionId": task, "prompt": [{"type": "text", "text": "Now use the updated instruction"}]})).await;
+    assert_eq!(steered["outcome"], "injected");
+    assert_eq!(
+        client.response(prompt_id).await["result"]["stopReason"],
+        "end_turn"
+    );
+    let detail = harness.handle.load_session(task).await.unwrap();
+    assert!(detail.timeline.iter().any(|item| {
+        item.role.as_deref() == Some("user")
+            && item
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("updated instruction"))
+    }));
+    drop(client);
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn joining_a_stream_replays_partial_once_then_follows_live_text() {
+    let harness = Harness::with_faux(
+        pi_ai::faux::FauxProvider::new().with_chunk_delay(Duration::from_millis(25)),
+    )
+    .await;
+    let reply = "A running desktop task can be joined from an editor while its response is streaming, without losing the prefix or duplicating any later chunks.";
+    harness.faux.push_text(reply);
+    let task = harness.create_task().await;
+    let _run = harness.send(&task, "Explain shared tasks").await;
+    let snapshot = loop {
+        let detail = harness.handle.load_session(task.clone()).await.unwrap();
+        if detail.timeline.iter().any(|row| {
+            row.role.as_deref() == Some("assistant")
+                && row.text.as_ref().is_some_and(|text| !text.is_empty())
+        }) {
+            break detail;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let partial = snapshot
+        .timeline
+        .iter()
+        .find(|row| row.role.as_deref() == Some("assistant"))
+        .unwrap();
+    assert!(partial.revision > 0 && snapshot.timeline_revision >= partial.revision);
+    assert!(reply.starts_with(partial.text.as_deref().unwrap()));
+    assert!(partial.text.as_ref().unwrap().len() < reply.len());
+
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    client
+        .call(
+            "session/load",
+            json!({"sessionId": task, "cwd": harness.project.path(), "mcpServers": []}),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            client.call("session/list", json!({})).await;
+            if !harness
+                .handle
+                .status()
+                .await
+                .unwrap()
+                .active_runs
+                .contains_key(&task)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Flush observer notifications issued before the final request.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.call("session/list", json!({})).await;
+    let texts = client.texts("agent_message_chunk");
+    assert_eq!(
+        texts
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<String>(),
+        reply
+    );
+    client.shutdown().await;
+    finish(serving).await;
 }

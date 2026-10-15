@@ -27,16 +27,15 @@ use super::attachments::{AgentImageAttachment, image_prompt, split_image_prompt}
 use super::config::{account_attachment_store, unix_ms};
 use super::runtime::AgentRuntime;
 use super::store::SessionFacts;
-use super::surface::{AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess, SURFACE_CONTROLLED_ERROR};
+use super::surface::{AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess};
 use super::timeline::{
     LiveTimeline, MAPLE_NOTICE_ENTRY, STOPPED_NOTICE_TEXT, error_item, notice_entry_data,
     notice_item,
 };
 use super::{
     AgentDesktopQueueSnapshot, AgentEventDispatcher, AgentQueueControlRequest, AgentQueuedMessage,
-    AgentRunEvent, AgentRunSurface, AgentRunTerminal, AgentRunUsage, AgentRuntimeHandle,
-    AgentSendMessageRequest, AgentServiceEvent, AgentTaskState, AgentTimelineItem,
-    emit_agent_event,
+    AgentRunEvent, AgentRunTerminal, AgentRunUsage, AgentRuntimeHandle, AgentSendMessageRequest,
+    AgentServiceEvent, AgentTaskState, AgentTimelineItem, emit_agent_event,
 };
 
 const AGENT_RUN_EVENT_CAPACITY: usize = 256;
@@ -49,6 +48,8 @@ const EMPTY_PROMPT_ERROR: &str = "Prompt cannot be empty";
 const STOP_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
 /// How long Stop and shutdown wait for a run to end before aborting it.
 pub(super) const RUN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+static NEXT_TIMELINE_REVISION: AtomicU64 = AtomicU64::new(1);
 
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_QUEUE_ID: AtomicU64 = AtomicU64::new(1);
@@ -188,15 +189,6 @@ impl AgentRunHandle {
     }
 }
 
-/// Whether a run's events also go to the host's event sink. A calling
-/// surface that follows its runs through [`AgentRunHandle::events`] keeps
-/// them from the desktop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HostEvents {
-    Publish,
-    Suppress,
-}
-
 /// Publishes one run's events, in order, to the host and to the run's own
 /// bounded channel. A slow reader of the channel never holds the run back:
 /// events that do not fit are dropped and the overflow is flagged.
@@ -206,9 +198,14 @@ pub(super) struct RunEvents {
     session_id: Arc<str>,
     run_id: Arc<str>,
     sender: mpsc::Sender<AgentRunEvent>,
-    host: HostEvents,
     overflowed: Arc<AtomicBool>,
-    order: Arc<Mutex<()>>,
+    order: Arc<Mutex<LiveSnapshot>>,
+}
+
+#[derive(Default)]
+struct LiveSnapshot {
+    epoch: u64,
+    items: Vec<AgentTimelineItem>,
 }
 
 impl RunEvents {
@@ -216,7 +213,6 @@ impl RunEvents {
         dispatcher: AgentEventDispatcher,
         session_id: &str,
         run_id: &str,
-        host: HostEvents,
     ) -> (Self, mpsc::Receiver<AgentRunEvent>) {
         let (sender, receiver) = mpsc::channel(AGENT_RUN_EVENT_CAPACITY);
         (
@@ -225,23 +221,43 @@ impl RunEvents {
                 session_id: Arc::from(session_id),
                 run_id: Arc::from(run_id),
                 sender,
-                host,
                 overflowed: Arc::new(AtomicBool::new(false)),
-                order: Arc::new(Mutex::new(())),
+                order: Arc::new(Mutex::new(LiveSnapshot::default())),
             },
             receiver,
         )
     }
 
     pub(super) fn publish(&self, event: AgentRunEvent) {
-        let _order = lock(&self.order);
-        if self.host == HostEvents::Publish {
+        let mut live = lock(&self.order);
+        let mut shared = event.clone();
+        match &mut shared {
+            AgentRunEvent::TimelineItem(item)
+            | AgentRunEvent::Error(item)
+            | AgentRunEvent::QueuePromoted { item, .. } => {
+                super::timeline::merge_into(&mut live.items, item.clone());
+                let full = live
+                    .items
+                    .iter_mut()
+                    .find(|full| full.id == item.id)
+                    .expect("merged row");
+                full.merge = "replace".into();
+                full.revision = NEXT_TIMELINE_REVISION.fetch_add(1, Ordering::SeqCst);
+                *item = full.clone();
+            }
+            AgentRunEvent::HistoryReplaced => {
+                live.items.clear();
+                live.epoch += 1;
+            }
+            _ => {}
+        }
+        {
             emit_agent_event(
                 &self.dispatcher,
                 AgentServiceEvent::Run {
                     session_id: self.session_id.to_string(),
                     run_id: self.run_id.to_string(),
-                    event: event.clone(),
+                    event: shared,
                 },
             );
         }
@@ -254,7 +270,6 @@ impl RunEvents {
 /// A run that has started and not yet finished.
 struct ActiveRun {
     session_id: String,
-    surface: AgentRunSurface,
     /// Cancelled by Stop.
     stopped: CancellationToken,
     /// Whether staged messages may still join the run. False once the run
@@ -270,7 +285,7 @@ struct ActiveRun {
 
 impl ActiveRun {
     fn stageable(&self) -> bool {
-        self.surface == AgentRunSurface::Desktop && self.accepting && !self.stopped.is_cancelled()
+        self.accepting && !self.stopped.is_cancelled()
     }
 
     fn steer(&mut self, message: Outgoing) {
@@ -448,6 +463,44 @@ impl RunsState {
 }
 
 impl Runs {
+    pub(super) fn while_idle<T>(
+        &self,
+        session_id: &str,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let state = self.state();
+        if state.run_of(session_id).is_some() {
+            return Err("The task is running; its model cannot change".into());
+        }
+        action()
+    }
+
+    pub(super) fn snapshot_marker(&self, session_id: &str) -> Option<(String, u64)> {
+        self.state()
+            .run_of(session_id)
+            .map(|(id, run)| (id.clone(), lock(&run.events.order).epoch))
+    }
+
+    pub(super) fn live_snapshot(
+        &self,
+        session_id: &str,
+    ) -> (Option<(String, u64)>, u64, Vec<AgentTimelineItem>) {
+        let state = self.state();
+        if let Some((id, run)) = state.run_of(session_id) {
+            let live = lock(&run.events.order);
+            return (
+                Some((id.clone(), live.epoch)),
+                NEXT_TIMELINE_REVISION.load(Ordering::SeqCst) - 1,
+                live.items.clone(),
+            );
+        }
+        (
+            None,
+            NEXT_TIMELINE_REVISION.load(Ordering::SeqCst) - 1,
+            Vec::new(),
+        )
+    }
+
     fn state(&self) -> MutexGuard<'_, RunsState> {
         lock(&self.state)
     }
@@ -457,7 +510,6 @@ impl Runs {
         self.state()
             .runs
             .iter()
-            .filter(|(_, run)| run.surface == AgentRunSurface::Desktop)
             .map(|(run_id, run)| (run.session_id.clone(), run_id.clone()))
             .collect()
     }
@@ -627,7 +679,45 @@ impl AgentRuntimeHandle {
         let Some(runtime) = self.current_runtime().await? else {
             return Ok(());
         };
-        runtime.stop_run(&run_id, AgentRunSurface::Desktop)
+        runtime.stop_run(&run_id)
+    }
+
+    /// Stop the shared task regardless of the interface that admitted it.
+    pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
+        let runtime = self.runtime().await?;
+        runtime
+            .stop_task_run(session_id, RUN_SHUTDOWN_TIMEOUT)
+            .await;
+        Ok(())
+    }
+
+    /// Inject at Pi's next steering boundary without starting a new turn.
+    /// False means the run settled before admission and consumed no message.
+    pub async fn steer_surface_message(
+        &self,
+        access: &AgentSurfaceAccess,
+        request: AgentSendMessageRequest,
+    ) -> Result<bool, String> {
+        let runtime = self.runtime().await?;
+        if request.session_id != access.session_id() || !runtime.surface_holds(access) {
+            return Err(AGENT_SURFACE_INACTIVE_ERROR.into());
+        }
+        let message = runtime.outgoing(&request).await?;
+        if message.is_empty() {
+            return Err(EMPTY_PROMPT_ERROR.into());
+        }
+        let mut state = runtime.runs.state();
+        let Some(run) = state
+            .runs
+            .values_mut()
+            .find(|run| run.session_id == request.session_id && run.stageable())
+        else {
+            return Ok(false);
+        };
+        run.steers
+            .send(message)
+            .map_err(|_| "The task stopped before accepting steering".to_string())?;
+        Ok(true)
     }
 
     /// Send a calling surface's prompt to a task it holds: a run of its own,
@@ -679,52 +769,19 @@ impl AgentRuntime {
         if message.is_empty() {
             return Err(EMPTY_PROMPT_ERROR.to_string());
         }
-        // A run the surface stopped may still be ending.
-        let run = loop {
-            let finished = self.runs.finished.notified();
-            tokio::pin!(finished);
-            finished.as_mut().enable();
-            {
-                let mut state = self.runs.state();
-                if state.run_of(&session_id).is_none() {
-                    break self.register_run(
-                        &mut state,
-                        &session_id,
-                        vec![message.clone()],
-                        Vec::new(),
-                        AgentRunSurface::CallingSurface,
-                    );
-                }
+        let run = {
+            let mut state = self.runs.state();
+            if cancellation.is_cancelled() {
+                return Err("The prompt was cancelled before admission".into());
             }
-            tokio::select! {
-                _ = &mut finished => {}
-                _ = cancellation.cancelled() => {
-                    return Err("The Agent run was cancelled before it started".to_string());
-                }
-                _ = self.lifetime.cancelled() => {
-                    return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
-                }
+            if state.run_of(&session_id).is_some() {
+                return Err("This task already has an active run".into());
             }
+            self.register_run(&mut state, &session_id, vec![message], Vec::new())
         };
-        // The caller's cancellation stops the run, from its setup on, until
-        // the run ends.
-        let stopped = run.stopped.clone();
-        let (follow_tx, follow_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let follow = async move {
-                let Ok(mut terminal) = follow_rx.await else {
-                    return;
-                };
-                wait_for_terminal(&mut terminal).await;
-            };
-            tokio::select! {
-                _ = cancellation.cancelled() => stopped.cancel(),
-                _ = follow => {}
-            }
-        });
+        // Once admitted, work belongs to the host. Transport cancellation or
+        // EOF affects only the projection; explicit Stop uses cancel_session.
         let handle = self.start_run(&request, run).await?;
-        let _ = follow_tx.send(handle.terminal.clone());
-        // Prompted, the task is the surface's for good.
         self.settle_provisional(&session_id);
         Ok(handle)
     }
@@ -758,14 +815,11 @@ impl AgentRuntime {
         }
     }
 
-    pub(super) fn stop_run(&self, run_id: &str, surface: AgentRunSurface) -> Result<(), String> {
+    pub(super) fn stop_run(&self, run_id: &str) -> Result<(), String> {
         let mut state = self.runs.state();
         let Some(run) = state.runs.get_mut(run_id) else {
             return Ok(());
         };
-        if run.surface != surface {
-            return Err("Agent run is controlled by another Agent surface".to_string());
-        }
         run.accepting = false;
         run.stopped.cancel();
         if let Some(session) = &run.session {
@@ -780,9 +834,6 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle, String> {
         if request.queue_id.is_some() && !request.attachments.is_empty() {
             return Err(QUEUED_MESSAGE_ATTACHMENTS_ERROR.to_string());
-        }
-        if self.is_surfaced(&request.session_id) {
-            return Err(SURFACE_CONTROLLED_ERROR.to_string());
         }
         let message = self.outgoing(&request).await?;
         loop {
@@ -852,9 +903,6 @@ impl AgentRuntime {
         let mut state = self.runs.state();
         let joinable = match state.run_of(session_id) {
             Some((run_id, run)) if run.stageable() => Some(run_id.clone()),
-            Some((_, run)) if run.surface != AgentRunSurface::Desktop => {
-                return Err("This Agent task is controlled by another Agent surface".to_string());
-            }
             Some(_) => return Ok(Plan::Wait),
             None => None,
         };
@@ -961,13 +1009,9 @@ impl AgentRuntime {
                 (prompts, consumed)
             }
         };
-        Ok(Plan::Start(self.register_run(
-            &mut state,
-            session_id,
-            prompts,
-            consumed,
-            AgentRunSurface::Desktop,
-        )))
+        Ok(Plan::Start(
+            self.register_run(&mut state, session_id, prompts, consumed),
+        ))
     }
 
     /// Register a run of `surface` for `session_id`, to start with
@@ -978,15 +1022,9 @@ impl AgentRuntime {
         session_id: &str,
         prompts: Vec<Outgoing>,
         consumed: Vec<String>,
-        surface: AgentRunSurface,
     ) -> NewRun {
         let run_id = next_run_id();
-        let host = match surface {
-            AgentRunSurface::Desktop => HostEvents::Publish,
-            AgentRunSurface::CallingSurface => HostEvents::Suppress,
-        };
-        let (events, receiver) =
-            RunEvents::new(self.host.events.clone(), session_id, &run_id, host);
+        let (events, receiver) = RunEvents::new(self.host.events.clone(), session_id, &run_id);
         // Stopping the runtime stops the run, also before it has a task.
         let stopped = self.lifetime.child_token();
         let (steers, steering) = mpsc::unbounded_channel();
@@ -994,7 +1032,6 @@ impl AgentRuntime {
             run_id.clone(),
             ActiveRun {
                 session_id: session_id.to_string(),
-                surface,
                 stopped: stopped.clone(),
                 accepting: true,
                 events: events.clone(),
@@ -1047,9 +1084,6 @@ impl AgentRuntime {
         custom_type: &'static str,
         text: String,
     ) -> Result<(), String> {
-        if self.is_surfaced(session_id) {
-            return Err(SURFACE_CONTROLLED_ERROR.to_string());
-        }
         let message = Outgoing::hidden(custom_type, text);
         loop {
             let finished = self.runs.finished.notified();
@@ -1067,11 +1101,6 @@ impl AgentRuntime {
                         let queue = state.snapshot(session_id);
                         Plan::Joined(AgentRunHandle::joined(run_id, None, queue))
                     }
-                    Some((_, run)) if run.surface != AgentRunSurface::Desktop => {
-                        return Err(
-                            "This Agent task is controlled by another Agent surface".to_string()
-                        );
-                    }
                     Some(_) => Plan::Wait,
                     // Chips left from an earlier run wait for the user's
                     // next send; the message goes alone.
@@ -1080,7 +1109,6 @@ impl AgentRuntime {
                         session_id,
                         vec![message.clone()],
                         Vec::new(),
-                        AgentRunSurface::Desktop,
                     )),
                 }
             };
@@ -1500,15 +1528,6 @@ impl AgentRuntime {
     }
 }
 
-/// Wait until `terminal` says how the run ended, or its run is gone.
-async fn wait_for_terminal(terminal: &mut watch::Receiver<Option<AgentRunTerminal>>) {
-    while terminal.borrow_and_update().is_none() {
-        if terminal.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
 /// Poll the prompt and the run's steering inbox together. Only this future
 /// drains the inbox, so async input handlers cannot reorder accepted steers.
 async fn with_steering(
@@ -1736,9 +1755,7 @@ mod tests {
                 ));
             }
             if stop {
-                runtime
-                    .stop_run(&run.run_id, AgentRunSurface::Desktop)
-                    .unwrap();
+                runtime.stop_run(&run.run_id).unwrap();
             } else {
                 harness.faux.push_text("Done.");
             }

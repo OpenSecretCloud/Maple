@@ -34,8 +34,11 @@ pub(super) struct AcpConnectionContext {
     pub(super) stats: Arc<AgentAcpStats>,
     pub(super) sessions: Mutex<HashMap<String, AcpSession>>,
     pub(super) session_operations: Mutex<HashMap<String, Arc<AcpSessionOperation>>>,
-    pub(super) closing_sessions: Mutex<HashSet<String>>,
     pub(super) prompt_states: Mutex<HashMap<String, AcpPromptState>>,
+    pub(super) owned_runs: Mutex<HashMap<String, String>>,
+    pub(super) observing: AtomicBool,
+    pub(super) eliciting: Mutex<HashSet<String>>,
+    pub(super) question_responder: Mutex<Option<crate::agent::QuestionResponder>>,
     pub(super) background_tasks: Mutex<tokio::task::JoinSet<()>>,
     pub(super) finalization: Mutex<()>,
     pub(super) lifetime: CancellationToken,
@@ -52,6 +55,8 @@ pub(super) struct AcpSession {
     /// for each turn and for `usage_update`. `None` until the catalog is
     /// read, and again after a model switch.
     pub(super) catalog: Option<CatalogEntry>,
+    pub(super) thinking: Option<crate::agent::AgentThinkingState>,
+    pub(super) projection: super::convert::AcpProjection,
     /// The session title last advertised to the caller; semantic-title
     /// updates are only sent when the title moves past this.
     pub(super) advertised_title: Option<String>,
@@ -107,19 +112,6 @@ pub(super) struct AcpSessionOperation {
     pub(super) cancellation: CancellationToken,
 }
 
-pub(super) fn close_registration_may_be_released(
-    cancellation_completed: bool,
-    operation_drained: bool,
-    cleanup_completed: bool,
-) -> bool {
-    // A timed-out load may already have passed its final core cancellation
-    // check. Keep both its exact operation registration and the closing
-    // tombstone until connection teardown so it can never publish a lease
-    // after session/close has returned. The same fence stays in place while
-    // run cancellation or exact-match lease cleanup is still settling.
-    cancellation_completed && operation_drained && cleanup_completed
-}
-
 impl AcpSessionOperation {
     pub(super) fn new(connection_lifetime: &CancellationToken) -> Arc<Self> {
         Arc::new(Self {
@@ -131,7 +123,12 @@ impl AcpSessionOperation {
 
 impl AcpSession {
     pub(super) fn config_options(&self) -> Vec<SessionConfigOption> {
-        acp_session_config_options(&self.model, &self.available_models, self.message_count)
+        let mut options =
+            acp_session_config_options(&self.model, &self.available_models, self.message_count);
+        if let Some(state) = &self.thinking {
+            super::convert::add_thinking_option(&mut options, state);
+        }
+        options
     }
 }
 

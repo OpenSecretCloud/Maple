@@ -33,7 +33,7 @@ use super::super::config::{account_config_dir_path, load_agent_config_file};
 use super::super::cua;
 use super::super::external_agents;
 use super::super::integrations::{cua_default, is_cua_identity};
-use super::super::store::{TaskKind, TaskRow};
+use super::super::store::TaskRow;
 use super::super::timeline::bounded_timeline_text;
 use super::super::{
     AgentIntegration, AgentMcpServer, AgentMcpTransport, AgentPathLayout, AgentRuntimeHandle,
@@ -857,20 +857,14 @@ impl AgentRuntimeHandle {
             row
         };
         let row = row.ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
-        let cards = match row.kind {
-            TaskKind::Desktop => self.external_agent_cards().await?,
-            TaskKind::Acp => Vec::new(),
-        };
+        let cards = self.external_agent_cards().await?;
         Ok(self.menu_rows_with(&saved, &cards, &row))
     }
 
     /// A task's whole MCP menu, read now.
     async fn menu_rows(&self, row: &TaskRow) -> Result<Vec<AgentSessionMcpServer>, String> {
         let saved = self.list_mcp_servers().await?;
-        let cards = match row.kind {
-            TaskKind::Desktop => self.external_agent_cards().await?,
-            TaskKind::Acp => Vec::new(),
-        };
+        let cards = self.external_agent_cards().await?;
         Ok(self.menu_rows_with(&saved, &cards, row))
     }
 
@@ -884,11 +878,9 @@ impl AgentRuntimeHandle {
     ) -> Vec<AgentSessionMcpServer> {
         let mut rows = session_rows(saved, row);
         rows.extend(external_agents::session_rows(agent_cards, row));
-        if row.kind == TaskKind::Desktop {
-            let device = cua_default(self.paths(), &self.user_id);
-            let ready = (device.is_some() || cua::task_choice(row).is_some()) && cua::ready();
-            rows.extend(cua::session_row(row, device, ready));
-        }
+        let device = cua_default(self.paths(), &self.user_id);
+        let ready = (device.is_some() || cua::task_choice(row).is_some()) && cua::ready();
+        rows.extend(cua::session_row(row, device, ready));
         rows
     }
 }

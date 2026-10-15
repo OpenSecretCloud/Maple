@@ -186,7 +186,7 @@ impl Harness {
         }
     }
 
-    pub(super) async fn send(&self, session_id: &str, text: &str) -> AgentRunHandle {
+    pub(crate) async fn send(&self, session_id: &str, text: &str) -> AgentRunHandle {
         self.handle
             .send_message(self.request(session_id, text))
             .await

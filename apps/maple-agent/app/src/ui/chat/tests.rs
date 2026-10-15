@@ -46,6 +46,7 @@ mod state_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            revision: 0,
             id: id.to_string(),
             item_type: item_type.to_string(),
             role: None,
@@ -75,7 +76,7 @@ mod state_tests {
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         // This gpui's test scheduler flags activity on other threads unless
@@ -105,8 +106,11 @@ mod state_tests {
         let backend = {
             let _guard = SETTINGS_LOCK.lock();
             std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             )
         };
         chat_window_in(cx, backend, setup)
@@ -436,7 +440,7 @@ mod state_tests {
         let screen = cx.new(|cx| {
             ChatScreen::new_inner(
                 std::sync::Arc::new(
-                    crate::backend::AgentBackend::new(
+                    crate::backend::AgentBackend::for_test(
                         "http://127.0.0.1:9".to_string(),
                         String::new(),
                     )
@@ -714,7 +718,7 @@ mod state_tests {
                     cx,
                 );
                 let backend = Arc::new(
-                    AgentBackend::new("http://127.0.0.1:9".into(), String::new()).unwrap(),
+                    AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
                 );
                 cx.open_window(
                     gpui::WindowOptions {
@@ -1068,8 +1072,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -1297,11 +1304,15 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
             // Running tools are not summarized.
-            let index = this.apply_timeline_item("s1", long_tool("tool-1", "running"));
+            let index = this
+                .apply_timeline_item("s1", long_tool("tool-1", "running"))
+                .unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.is_empty());
             // Completed tools with long output are queued once.
-            let index = this.apply_timeline_item("s1", long_tool("tool-1", "completed"));
+            let index = this
+                .apply_timeline_item("s1", long_tool("tool-1", "completed"))
+                .unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-1"));
             assert_eq!(this.pending_summaries, 1);
@@ -1312,14 +1323,14 @@ mod state_tests {
             short.status = Some("completed".to_string());
             short.input = Some(serde_json::json!({"q": 1}));
             short.output = Some(serde_json::json!({"stdout": "ok"}));
-            let index = this.apply_timeline_item("s1", short);
+            let index = this.apply_timeline_item("s1", short).unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-2"));
             let mut empty = item("tool-3", "tool", None);
             empty.status = Some("completed".to_string());
             empty.input = Some(serde_json::json!({"q": 1}));
             empty.output = Some(serde_json::json!({"stdout": "  "}));
-            let index = this.apply_timeline_item("s1", empty);
+            let index = this.apply_timeline_item("s1", empty).unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(!this.summary_requests.contains("tool-3"));
         });
@@ -1334,8 +1345,9 @@ mod state_tests {
             this.active_runs
                 .insert("s1".to_string(), "run-1".to_string());
             let long_thought = "x".repeat(600);
-            let index =
-                this.apply_timeline_item("s1", item("th-1", "thinking", Some(&long_thought)));
+            let index = this
+                .apply_timeline_item("s1", item("th-1", "thinking", Some(&long_thought)))
+                .unwrap();
             // The newest item of an active run is still streaming.
             this.maybe_summarize_thinking(index, cx);
             assert!(this.summary_requests.is_empty());
@@ -1356,8 +1368,9 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
             for n in 0..5 {
-                let index =
-                    this.apply_timeline_item("s1", long_tool(&format!("t{n}"), "completed"));
+                let index = this
+                    .apply_timeline_item("s1", long_tool(&format!("t{n}"), "completed"))
+                    .unwrap();
                 this.maybe_summarize_tool(index, cx);
             }
             // Three ride at once; the rest wait instead of being dropped.
@@ -2442,8 +2455,10 @@ mod state_tests {
                 std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
                 std::env::set_var("XDG_DATA_HOME", dir.join("data"));
             }
-            let backend =
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new());
+            let backend = crate::backend::AgentBackend::for_test(
+                "http://127.0.0.1:9".to_string(),
+                String::new(),
+            );
             unsafe {
                 match previous_config {
                     Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
@@ -2815,10 +2830,12 @@ mod state_tests {
 
             this.apply_bootstrap(
                 crate::backend::LocalBootstrap {
+                    questions: Vec::new(),
                     project_root: Some("/work/alpha".to_string()),
                     sessions: vec![old.clone()],
                     recent_roots: Vec::new(),
                     latest: Some(maple_agent::agent::AgentSessionDetail {
+                        timeline_revision: 0,
                         session: old.clone(),
                         timeline: vec![user_item("u1", "earlier")],
                         mcp_errors: Vec::new(),
@@ -3076,15 +3093,15 @@ mod state_tests {
         screen.update(cx, |this, _cx| {
             assert_eq!(
                 this.apply_timeline_item("s1", item("a", "message", Some("1"))),
-                0
+                Some(0)
             );
             assert_eq!(
                 this.apply_timeline_item("s1", item("b", "message", Some("2"))),
-                1
+                Some(1)
             );
             assert_eq!(
                 this.apply_timeline_item("s1", item("a", "message", Some("3"))),
-                0
+                Some(0)
             );
             assert_eq!(this.timeline_index.get("a"), Some(&(0, 1)));
             assert_eq!(this.timeline_index.get("b"), Some(&(1, 0)));
@@ -4833,8 +4850,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
@@ -4942,8 +4962,11 @@ mod state_tests {
         let chat = cx.new(move |cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
@@ -5087,8 +5110,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             ChatScreen::new(backend, "user".to_string(), cx)
         });
@@ -5176,8 +5202,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_inner(backend, "user".to_string(), cx);
@@ -5277,8 +5306,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5370,8 +5402,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5563,8 +5598,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5656,8 +5694,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5721,8 +5762,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);

@@ -55,6 +55,16 @@ impl MapleApp {
         events: Vec<maple_agent::agent::AgentServiceEvent>,
         cx: &mut Context<Self>,
     ) {
+        for event in &events {
+            if let maple_agent::agent::AgentServiceEvent::AccountChanged(user_id) = event
+                && &self.user_id != user_id
+            {
+                match user_id {
+                    Some(user_id) => self.open_chat(user_id.clone(), cx),
+                    None => self.show_login(cx),
+                }
+            }
+        }
         let chat = match &self.screen {
             Screen::Chat(chat) => Some(chat.clone()),
             _ => self.parked_chat.clone(),

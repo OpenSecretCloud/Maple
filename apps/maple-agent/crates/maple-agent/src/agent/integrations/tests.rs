@@ -445,3 +445,44 @@ mod probes {
         }
     }
 }
+
+#[tokio::test]
+async fn acp_created_tasks_inherit_the_hosts_computer_use_default() {
+    let harness = crate::agent::tests::Harness::new().await;
+    save_stored_integrations(
+        harness.handle.paths(),
+        &harness.handle.user_id,
+        &StoredIntegrations {
+            integrations: vec![StoredIntegration {
+                id: CUA_INTEGRATION_ID.into(),
+                enabled: true,
+                backend: StoredBackend::Embedded,
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let session = harness
+        .handle
+        .create_surface_session(
+            crate::agent::AgentCreateSessionRequest {
+                project_root: Some(harness.project.path().to_string_lossy().into_owned()),
+                title: None,
+                model: None,
+                context_limit: None,
+                mcp_server_names: None,
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+    let row = harness
+        .handle
+        .store()
+        .unwrap()
+        .get(&session.detail.session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(crate::agent::cua::task_choice(&row), Some(true));
+    session.lease.discard_created_if_untouched().await;
+}

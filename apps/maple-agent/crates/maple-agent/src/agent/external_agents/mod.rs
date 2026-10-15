@@ -2126,6 +2126,7 @@ fn activity_row_item(
         _ => "completed",
     };
     AgentTimelineItem {
+        revision: 0,
         id: row_id.to_string(),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),

@@ -76,7 +76,7 @@ pub struct AgentProjectTrust {
     pub trusted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentProjectTrustFeature {
     Skills,
@@ -85,7 +85,7 @@ pub enum AgentProjectTrustFeature {
     SystemPrompt,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProjectTrustStatus {
     pub path: String,
@@ -136,7 +136,7 @@ pub struct AgentMcpServer {
 /// Integration discovery is intentionally separate from MCP configuration:
 /// an integration may be installed without being enabled, and device-local
 /// launch details must not leak into the account's roaming configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentIntegration {
     pub id: String,
@@ -176,7 +176,7 @@ pub enum AgentIntegrationBackend {
 /// can be read before use, while portal-based desktops grant capability per
 /// session at first use and therefore require none up front. Callers must not
 /// re-derive that per-platform knowledge; ask [`AgentIntegrationPermissions`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentIntegrationPermissionKind {
     Accessibility,
@@ -214,7 +214,7 @@ impl AgentIntegrationPermissionKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentIntegrationPermission {
     pub kind: AgentIntegrationPermissionKind,
@@ -227,7 +227,7 @@ pub struct AgentIntegrationPermission {
 /// An empty requirement list means the platform needs no pre-flight grant, so
 /// [`AgentIntegrationPermissions::ready`] is true. That is the single place
 /// where "may this integration run" is decided.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentIntegrationPermissions {
     pub required: Vec<AgentIntegrationPermission>,
@@ -261,7 +261,7 @@ impl AgentIntegrationPermissions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentIntegrationAvailability {
     NotDetected,
@@ -269,14 +269,14 @@ pub enum AgentIntegrationAvailability {
     Available,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetIntegrationEnabledRequest {
     pub id: String,
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetupIntegrationRequest {
     pub id: String,
@@ -287,7 +287,7 @@ pub(super) fn default_mcp_timeout_seconds() -> u64 {
 }
 
 /// A skill-derived slash command the composer can offer.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSlashCommand {
     pub name: String,
@@ -296,7 +296,7 @@ pub struct AgentSlashCommand {
 }
 
 /// One answer choice, mirroring codex's request_user_input option.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestionOption {
     pub label: String,
@@ -306,7 +306,7 @@ pub struct AgentQuestionOption {
 /// One question in a request_user_input call: one to three related
 /// questions ride a single call and are answered together. The client adds
 /// a free-form "Other" answer next to these options.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestion {
     pub multi_select: bool,
@@ -316,7 +316,7 @@ pub struct AgentQuestion {
     pub options: Vec<AgentQuestionOption>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMcpConnectionError {
     pub name: String,
@@ -327,7 +327,7 @@ pub(super) const TTS_MODEL: &str = "voxtral-tts";
 pub(super) const TRANSCRIPTION_MODEL: &str = "whisper-large-v3";
 
 /// Voice endpoints the signed-in account can use.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioCapabilities {
     pub transcription: bool,
     pub speech: bool,
@@ -448,7 +448,7 @@ pub enum AgentSessionIntegrationKind {
     ExternalAgent,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionMcpServer {
     pub name: String,
@@ -460,7 +460,7 @@ pub struct AgentSessionMcpServer {
     pub available: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetSessionMcpServerRequest {
     pub session_id: String,
@@ -477,7 +477,7 @@ pub struct AgentStartRequest {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeStatus {
     pub running: bool,
@@ -494,7 +494,7 @@ pub struct RecentProjectRoot {
     pub last_used_ms: u128,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProjectRootRegistration {
     pub project_root: String,
@@ -502,7 +502,7 @@ pub struct AgentProjectRootRegistration {
     pub config: AgentConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCreateSessionRequest {
     pub project_root: Option<String>,
@@ -513,7 +513,7 @@ pub struct AgentCreateSessionRequest {
     pub mcp_server_names: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSendMessageRequest {
     pub session_id: String,
@@ -531,7 +531,7 @@ pub struct AgentSendMessageRequest {
     pub attachments: Vec<AgentImageUpload>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRenameSessionRequest {
     pub session_id: String,
@@ -558,20 +558,20 @@ pub(crate) enum AgentPermissionDecision {
 
 /// Which surface owns a run: Maple Desktop, or a calling surface such as
 /// ACP that keeps its own run handle, cancellation scope and live timeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentRunSurface {
     Desktop,
     CallingSurface,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetSessionWebRequest {
     pub session_id: String,
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQueuedMessage {
     pub queue_id: String,
@@ -582,28 +582,28 @@ pub struct AgentQueuedMessage {
     pub created_ms: u128,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDesktopQueueSnapshot {
     pub revision: u64,
     pub items: Vec<AgentQueuedMessage>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQueueControlRequest {
     pub session_id: String,
     pub queue_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentRunTerminal {
     Completed,
     Cancelled,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRunUsage {
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
@@ -612,7 +612,7 @@ pub struct AgentRunUsage {
     pub(crate) cached_write_tokens: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentRunEvent {
     SessionUpdated(AgentSessionSummary),
     Started,
@@ -656,8 +656,12 @@ pub enum AgentRunEvent {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentServiceEvent {
+    /// Profile sign-in changed in the authoritative host.
+    AccountChanged(Option<String>),
+    /// The local frontend must reconnect and reload before sending again.
+    HostDisconnected,
     RuntimeStatus(AgentRuntimeStatus),
     /// The agent asked the user one or more related questions (ask_user
     /// tool); every question in the batch is answered in one card.
@@ -665,6 +669,13 @@ pub enum AgentServiceEvent {
         session_id: String,
         request_id: String,
         questions: Vec<AgentQuestion>,
+    },
+    QuestionResolved {
+        request_id: String,
+    },
+    ThinkingChanged {
+        session_id: String,
+        state: AgentThinkingState,
     },
     SessionCreated(AgentSessionSummary),
     SessionUpdated {
@@ -693,7 +704,7 @@ pub enum AgentServiceEvent {
 
 /// One external agent that is still working for a task. A caller that
 /// opens the task after the run ended reads these to rebuild its live view.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSubagent {
     /// Row ID of the agent, shared by every event about it.
@@ -711,7 +722,7 @@ pub struct AgentSubagent {
 }
 
 /// Which external agent a subagent row stands for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalAgentRef {
     pub provider: String,
@@ -778,13 +789,13 @@ pub struct ActivityTodo {
 
 /// One finished exchange of a `/btw` thread, replayed on a follow-up so
 /// the model sees the earlier side questions and answers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SideQuestionTurn {
     pub question: String,
     pub answer: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SideQuestionEvent {
     Chunk(String),
     Finished,
@@ -817,7 +828,7 @@ impl AgentTaskState {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
     pub id: String,
@@ -835,18 +846,24 @@ pub struct AgentSessionSummary {
     pub acp: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionDetail {
+    /// All live timeline updates through this revision are in the snapshot.
+    #[serde(default)]
+    pub timeline_revision: u64,
     pub session: AgentSessionSummary,
     pub timeline: Vec<AgentTimelineItem>,
     pub mcp_errors: Vec<AgentMcpConnectionError>,
     pub queue: AgentDesktopQueueSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTimelineItem {
+    /// Host-local update order; zero for persisted or locally constructed rows.
+    #[serde(default)]
+    pub revision: u64,
     pub id: String,
     pub item_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -912,7 +929,7 @@ mod speech_body_tests {
 }
 
 /// The selected model's supported levels and the task's actual Pi setting.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentThinkingState {
     pub levels: Vec<ThinkingLevel>,
     pub current: ThinkingLevel,
