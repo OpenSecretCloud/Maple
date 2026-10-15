@@ -242,6 +242,21 @@ impl AcpConnectionContext {
             }
             _ => return Ok(()),
         };
+        // Titles do not touch history projection. Waiting on its gate while
+        // our own prompt holds it would stop this observer from draining the
+        // broadcast stream for the entire turn, even for a fast client.
+        if let Some(update) = direct {
+            return self
+                .send_session_update(
+                    cx,
+                    SessionNotification::new(session_id, update),
+                    &self.lifetime,
+                )
+                .await;
+        }
+        let Some(item) = item else {
+            return Ok(());
+        };
         let operation = self
             .session_operations
             .lock()
@@ -260,13 +275,9 @@ impl AcpConnectionContext {
             let Some(session) = sessions.get_mut(&session_id) else {
                 return Ok(());
             };
-            direct.or_else(|| {
-                item.as_ref()
-                    .filter(|item| {
-                        item.revision == 0 || item.revision > session.projection.snapshot_revision
-                    })
-                    .and_then(|item| timeline_update(item, &mut session.projection, true))
-            })
+            (item.revision == 0 || item.revision > session.projection.snapshot_revision)
+                .then(|| timeline_update(&item, &mut session.projection, true))
+                .flatten()
         };
         if let Some(update) = update {
             self.send_session_update(

@@ -88,9 +88,12 @@ executing the built binary). A different profile is intentionally a different ho
 The source baseline inspected for this change is Paseo `b2ca7dcf` (2026-10-15).
 Its generic ACP provider supports the normal create/resume, prompt, tool streaming,
 model/thought-level and cancellation path. It does not call `_session/steering`
-and rejects an active second turn itself. It also does not render every idle
-update from other interfaces. These are client limits; opening the task again
-loads the host history. ACP cannot retract already rendered history on compaction;
+and rejects an active second turn itself. Live validation with Paseo 0.11.1 also
+confirmed desktop-originated user and assistant messages reach an already attached,
+idle Paseo client, which can then continue the task without reopening it. Stable
+ACP v1 does not supply a separate running/idle lifecycle for turns started by
+another client, so transcript delivery does not establish full desktop status parity.
+ACP cannot retract already rendered history on compaction;
 reload is the authoritative view after history replacement. No Paseo-specific
 wire shims or separate task database are added.
 

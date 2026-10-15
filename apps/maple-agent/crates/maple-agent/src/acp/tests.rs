@@ -1386,3 +1386,100 @@ async fn joining_a_stream_replays_partial_once_then_follows_live_text() {
     client.shutdown().await;
     finish(serving).await;
 }
+
+#[tokio::test]
+async fn title_updates_during_long_prompts_preserve_shared_session_delivery() {
+    let harness = Harness::with_faux(
+        pi_ai::faux::FauxProvider::new().with_chunk_delay(Duration::from_millis(2)),
+    )
+    .await;
+    // More chunks than the runtime's broadcast capacity, while the client
+    // keeps reading. A metadata update must not stall the observer behind
+    // the originating prompt's whole-turn history gate.
+    let reply = "word".repeat(400);
+    harness.faux.push_text(&reply);
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let task = client.new_session(harness.project.path()).await;
+    let first = client
+        .request(
+            "session/prompt",
+            json!({"sessionId": task, "prompt": [{"type": "text", "text": "First turn"}]}),
+        )
+        .await;
+    eventually(|| !harness.faux.requests().is_empty()).await;
+    let title = "A title arriving while the reply streams";
+    // Repeating an unchanged title must also leave the observer draining.
+    for _ in 0..2 {
+        harness
+            .handle
+            .rename_session(
+                crate::maple_api::test_maple_api_session("slice@example.com"),
+                crate::agent::AgentRenameSessionRequest {
+                    session_id: task.clone(),
+                    title: title.into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        client.response(first).await["result"]["stopReason"],
+        "end_turn"
+    );
+    let title_position = client
+        .updates
+        .iter()
+        .position(|update| update["update"]["title"] == title)
+        .expect("the new title is delivered during the reply");
+    let last_text = client
+        .updates
+        .iter()
+        .rposition(|update| update["update"]["sessionUpdate"] == "agent_message_chunk")
+        .unwrap();
+    assert!(title_position < last_text);
+    assert_eq!(client.texts("agent_message_chunk")[0].1, reply);
+
+    // Continue through the desktop's runtime handle, then return to the
+    // original ACP connection. Both the external exchange and next prompt
+    // must be delivered without reopening or replaying the session.
+    harness.faux.push_text("Desktop reply");
+    let mut desktop = harness.send(&task, "Desktop message").await;
+    crate::agent::tests::finished(&mut desktop).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            client.call("session/list", json!({})).await;
+            let received: String = client
+                .updates
+                .iter()
+                .filter(|update| update["update"]["sessionUpdate"] == "agent_message_chunk")
+                .filter_map(|update| update["update"]["content"]["text"].as_str())
+                .collect();
+            if received == "Desktop reply" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the desktop reply reaches the idle ACP client");
+    assert!(
+        client
+            .texts("user_message_chunk")
+            .iter()
+            .any(|(_, text)| text == "Desktop message")
+    );
+    harness.faux.push_text("ACP follow-up reply");
+    assert_eq!(
+        client.prompt(&task, "ACP follow-up").await["stopReason"],
+        "end_turn"
+    );
+    assert!(
+        client
+            .texts("agent_message_chunk")
+            .iter()
+            .any(|(_, text)| text == "ACP follow-up reply")
+    );
+    client.shutdown().await;
+    finish(serving).await;
+}
