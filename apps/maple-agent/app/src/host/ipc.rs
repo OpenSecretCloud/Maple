@@ -142,13 +142,14 @@ impl Endpoint {
 }
 
 fn private_directory(path: &std::path::Path) -> Result<(), String> {
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let result = {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    match builder.create(path) {
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    };
+    #[cfg(not(unix))]
+    let result = std::fs::create_dir(path);
+    match result {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(format!("Cannot create host directory: {e}")),

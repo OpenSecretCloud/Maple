@@ -31,7 +31,21 @@ mount=""
 cleanup() {
     local status=$?
     trap - EXIT INT TERM HUP
-    [[ -z "$mount" ]] || /usr/bin/hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+    if [[ -n "$mount" ]]; then
+        # The shared host exits shortly after the GUI probe's last client.
+        # Give it time to release the mounted executable before removing files.
+        for attempt in {1..10}; do
+            if /usr/bin/hdiutil detach "$mount" -quiet >/dev/null 2>&1; then
+                mount=""
+                break
+            fi
+            sleep 1
+        done
+        if [[ -n "$mount" ]]; then
+            echo "Could not detach verification image; leaving $temporary intact" >&2
+            exit 1
+        fi
+    fi
     rm -rf -- "$temporary"
     exit "$status"
 }
