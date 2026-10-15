@@ -165,8 +165,9 @@ documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 
 Settings > Integrations also keeps custom MCP servers: a command Maple starts
 (stdio) or a Streamable HTTP endpoint, each with environment variables,
-headers, and a per-request timeout. New tasks inherit each server's Settings
-switch unless their project has a saved choice. Switching a custom MCP server
+headers, and a per-request timeout. New tasks, including those created over
+ACP, inherit each server's Settings switch unless their project has a saved
+choice. Switching a custom MCP server
 in a new-task draft saves that project's choice on this machine; switching one
 in an existing task changes only that task. Switching projects on a draft
 reloads the target project's choices. Off servers remain in the menu.
@@ -419,7 +420,8 @@ Both interfaces use the same sign-in, tasks, tools, history, and one active run
 per task. Logs go to the profile log; stdout contains only ACP frames.
 Sign in through desktop or `maple-agent login` first.
 
-`session/new` creates a draft in the client's working directory. Its first
+`session/new` creates a draft in the client's working directory. Account MCP
+servers use the Settings defaults with that project's saved choices applied. Its first
 accepted prompt makes it visible in desktop and ACP lists. `session/load`
 replays a task's history, including the partial answer of a running task.
 Closing the ACP pipe detaches the client. Explicit `session/cancel` stops shared
