@@ -116,9 +116,24 @@ impl Endpoint {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
-            let stream = tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(self.address())
-                .map_err(|e| e.to_string())?;
+            use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+            // A concurrent client can take the available pipe instance before
+            // accept creates the next one. Busy is not a missing host: wait
+            // briefly without blocking the executor or starting another host.
+            let stream = tokio::time::timeout(super::START_TIMEOUT, async {
+                loop {
+                    match tokio::net::windows::named_pipe::ClientOptions::new().open(self.address())
+                    {
+                        Ok(stream) => return Ok(stream),
+                        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+            })
+            .await
+            .map_err(|_| "Maple host pipe remained busy".to_string())??;
             verify_pipe_owner(stream.as_raw_handle())?;
             Ok(Box::new(stream))
         }

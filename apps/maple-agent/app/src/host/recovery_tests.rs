@@ -256,6 +256,38 @@ async fn a_lost_send_response_queries_the_receipt_without_resending() {
     server.await.unwrap();
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn concurrent_clients_wait_for_the_next_pipe_instance() {
+    use std::{future::Future, task::Poll};
+    let (_root, endpoint) = endpoint();
+    let mut listener = endpoint.bind().unwrap();
+    let _first_client = endpoint.connect().await.unwrap();
+    // Keep the first connection unaccepted so the only pipe instance is busy.
+    // The next open must wait, rather than reporting that the host is absent.
+    let waiting = endpoint.connect();
+    tokio::pin!(waiting);
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let _first_server = listener.accept().await.unwrap();
+    let (second_client, second_server) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(waiting, listener.accept())
+    })
+    .await
+    .unwrap();
+    let mut second_client = second_client.unwrap();
+    let mut second_server = second_server.unwrap();
+    let (sent, received) = tokio::join!(
+        protocol::write(&mut second_client, &"second-client"),
+        protocol::read::<String>(&mut second_server)
+    );
+    sent.unwrap();
+    assert_eq!(received.unwrap(), "second-client");
+}
+
 #[tokio::test]
 async fn unexpected_disconnect_keeps_the_host_alive_but_explicit_stop_still_wins() {
     let (root, endpoint) = endpoint();
