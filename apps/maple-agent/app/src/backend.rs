@@ -349,8 +349,11 @@ pub(crate) async fn dispatch(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
-    // Authentication changes cannot interleave with an operation admitted for
-    // the previous account. Cancelling an OAuth wait must remain independent.
+    // Account switches cannot interleave with an operation admitted for the
+    // previous account. Restoring that same account is a reader: its network
+    // validation must not prevent local history, configuration, or stop calls.
+    // The restore mutex still serializes credential validation/publication.
+    // Cancelling an OAuth wait must remain independent.
     if request.method == "cancel_oauth" {
         return dispatch_inner(backend, request).await;
     }
@@ -360,7 +363,6 @@ pub(crate) async fn dispatch(
             | "logout_and_clear"
             | "oauth_wait_for_handoff"
             | "oauth_complete"
-            | "restore_auth"
             | "confirm_account_deletion"
     ) {
         let _account = backend.account_gate.write().await;

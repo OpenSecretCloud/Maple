@@ -1527,7 +1527,9 @@ impl LocalBackend {
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let account = self.account_gate.write().await;
+        // Joining the existing account is not an account switch. Keep local
+        // desktop operations available while saved credentials are validated.
+        let account = self.account_gate.read().await;
         let user_id = match self.validate_persisted_auth().await {
             RestoreOutcome::Valid(user_id) => user_id,
             _ => {
@@ -2439,6 +2441,94 @@ fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn credential_validation_and_acp_attachment_do_not_block_local_operations() {
+        use std::{future::Future, task::Poll};
+
+        let root = tempfile::tempdir().unwrap();
+        let api_url = "http://127.0.0.1:1".to_string();
+        let mut backend = LocalBackend::new(api_url.clone(), String::new()).unwrap();
+        let (events, _) = mpsc::unbounded_channel();
+        backend.service = MapleAgentService::new(MapleAgentHostResources::new(
+            maple_agent::agent::AgentPathLayout::from_app_roots(
+                root.path().join("config"),
+                root.path().join("data"),
+            ),
+            Arc::new(ChannelEventSink(events)),
+            String::new(),
+        ));
+        backend.persisted_auth = Arc::new(PersistedAuthStore::new(
+            root.path().join("auth.json"),
+            api_url,
+        ));
+        backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token",
+        ));
+        let request = |method: &str, params| crate::host::protocol::Request {
+            id: 1,
+            method: method.into(),
+            params,
+            send_id: None,
+        };
+
+        // Hold the credential-validation boundary rather than relying on a
+        // network timeout. Both entry points have acquired their account guard
+        // by the time this poll returns Pending.
+        let _validation = backend.restore_lock.lock().await;
+        let restore =
+            super::super::dispatch(&backend, request("restore_auth", serde_json::Value::Null));
+        tokio::pin!(restore);
+        std::future::poll_fn(|cx| {
+            assert!(restore.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        #[cfg(feature = "acp")]
+        let mut attach = Box::pin(backend.serve_acp(tokio::io::empty(), tokio::io::sink()));
+        #[cfg(feature = "acp")]
+        std::future::poll_fn(|cx| {
+            assert!(attach.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        for method in ["local_bootstrap", "stop_runtime"] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                super::super::dispatch(
+                    &backend,
+                    request(method, serde_json::json!(["fixture-user"])),
+                ),
+            )
+            .await
+            .expect("local work must not wait for credential validation")
+            .unwrap();
+        }
+        assert!(
+            super::super::dispatch(
+                &backend,
+                request("local_bootstrap", serde_json::json!(["different-user"])),
+            )
+            .await
+            .unwrap_err()
+            .contains("account changed")
+        );
+
+        // Real account changes must still wait; releasing the credential
+        // serialization alone cannot let a switch overtake admitted work.
+        let switch =
+            super::super::dispatch(&backend, request("login", serde_json::json!(["", ""])));
+        tokio::pin!(switch);
+        std::future::poll_fn(|cx| {
+            assert!(switch.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
 
     fn oauth_test_client() -> OpenSecretClient {
         // Construct the SDK without making any network request.
