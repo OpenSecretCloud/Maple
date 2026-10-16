@@ -6,6 +6,12 @@ account configuration, task files, the task index, Pi runs, tools and child
 processes. Desktop owns presentation and native permission prompts. ACP projects
 host operations and events onto the client protocol. Pi itself is unchanged.
 
+Project MCP defaults are also host-owned, account-scoped and device-local.
+Desktop draft switches save through the host; new desktop and ACP tasks take
+the same project defaults. Existing tasks keep their own choices. Reconnecting
+desktop reloads the draft's defaults and preserves unsent text and local choices;
+a first send waiting on that reload is not resumed after a disconnect.
+
 ## Lifetime and isolation
 
 Opening an ACP editor can start the host without opening a window. Desktop joins

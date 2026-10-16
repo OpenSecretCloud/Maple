@@ -2516,6 +2516,120 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn project_mcp_operations_use_the_host_account_and_shared_settings_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let project = project.path().to_string_lossy().into_owned();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token",
+        ));
+        let request = |method: &str, params| crate::host::protocol::Request {
+            id: 1,
+            method: method.into(),
+            params,
+            send_id: None,
+        };
+        let server = |name: &str| maple_agent::agent::AgentMcpServer {
+            name: name.into(),
+            description: String::new(),
+            enabled: true,
+            timeout_seconds: 30,
+            transport: maple_agent::agent::AgentMcpTransport::StreamableHttp {
+                url: "http://127.0.0.1:1/mcp".into(),
+                headers: Vec::new(),
+                environment: Vec::new(),
+            },
+        };
+        super::super::dispatch(
+            &backend,
+            request(
+                "save_mcp_servers",
+                serde_json::json!(["fixture-user", [server("Files"), server("Docs")]]),
+            ),
+        )
+        .await
+        .unwrap();
+
+        // Local settings do not wait on credential validation. Two clients'
+        // independent switches must not overwrite each other's sidecar edits.
+        let _validation = backend.restore_lock.lock().await;
+        let (files, docs) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                super::super::dispatch(
+                    &backend,
+                    request(
+                        "set_project_mcp_server_enabled",
+                        serde_json::json!(["fixture-user", project, "Files", false])
+                    )
+                ),
+                super::super::dispatch(
+                    &backend,
+                    request(
+                        "set_project_mcp_server_enabled",
+                        serde_json::json!(["fixture-user", project, "Docs", false])
+                    )
+                )
+            )
+        })
+        .await
+        .expect("settings must not wait for credential validation");
+        files.unwrap();
+        docs.unwrap();
+        let rows = super::super::dispatch(
+            &backend,
+            request(
+                "list_project_mcp_servers",
+                serde_json::json!(["fixture-user", project]),
+            ),
+        )
+        .await
+        .unwrap();
+        let rows: Vec<maple_agent::agent::AgentMcpServer> = serde_json::from_value(rows).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| !row.enabled));
+
+        for (method, params) in [
+            (
+                "list_project_mcp_servers",
+                serde_json::json!(["different-user", project]),
+            ),
+            (
+                "set_project_mcp_server_enabled",
+                serde_json::json!(["different-user", project, "Files", true]),
+            ),
+        ] {
+            assert!(
+                super::super::dispatch(&backend, request(method, params))
+                    .await
+                    .unwrap_err()
+                    .contains("account changed")
+            );
+        }
+        assert!(
+            backend
+                .list_project_mcp_servers("different-user", &project)
+                .await
+                .unwrap()
+                .is_empty(),
+            "rejected writes must not create another account's defaults"
+        );
+        // Reopening host-owned storage retains both overrides without any
+        // frontend-owned persistence or live authentication request.
+        let reopened = LocalBackend::isolated_for_test(root.path());
+        assert_eq!(
+            reopened
+                .list_project_mcp_servers("fixture-user", &project)
+                .await
+                .unwrap(),
+            rows
+        );
+    }
+
+    #[tokio::test]
     async fn credential_validation_and_acp_attachment_do_not_block_local_operations() {
         use std::{future::Future, task::Poll};
 

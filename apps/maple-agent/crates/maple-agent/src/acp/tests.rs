@@ -274,6 +274,124 @@ async fn sessions_offer_the_model_selector_and_no_modes() {
     assert!(harness.handle.load_session(desktop).await.is_ok());
 }
 
+#[tokio::test]
+async fn acp_and_desktop_share_project_mcp_defaults_but_keep_task_choices() {
+    use crate::agent::{
+        AgentMcpServer, AgentMcpTransport, AgentSessionIntegrationKind,
+        AgentSetSessionMcpServerRequest,
+    };
+
+    let harness = Harness::new().await;
+    let project = harness.project.path().to_string_lossy().into_owned();
+    harness
+        .handle
+        .save_mcp_servers(vec![AgentMcpServer {
+            name: "Docs".into(),
+            description: String::new(),
+            enabled: true,
+            timeout_seconds: 30,
+            transport: AgentMcpTransport::StreamableHttp {
+                url: "http://127.0.0.1:1/mcp".into(),
+                headers: Vec::new(),
+                environment: Vec::new(),
+            },
+        }])
+        .await
+        .unwrap();
+    harness
+        .handle
+        .set_project_mcp_server_enabled(project.clone(), "Docs".into(), false)
+        .await
+        .unwrap();
+
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let acp_task = client.new_session(harness.project.path()).await;
+    let desktop_task = harness.create_task().await;
+    for task in [&acp_task, &desktop_task] {
+        let rows = harness
+            .handle
+            .list_session_mcp_servers(task.clone())
+            .await
+            .unwrap();
+        assert!(!rows.iter().find(|row| row.name == "Docs").unwrap().enabled);
+    }
+
+    harness
+        .handle
+        .set_project_mcp_server_enabled(project.clone(), "Docs".into(), true)
+        .await
+        .unwrap();
+    let next_acp_task = client.new_session(harness.project.path()).await;
+    let next_desktop_task = harness.create_task().await;
+    for (task, expected) in [
+        (&acp_task, false),
+        (&desktop_task, false),
+        (&next_acp_task, true),
+        (&next_desktop_task, true),
+    ] {
+        let rows = harness
+            .handle
+            .list_session_mcp_servers(task.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.iter().find(|row| row.name == "Docs").unwrap().enabled,
+            expected
+        );
+    }
+
+    // Changing an ACP-created task through the desktop runtime is task-only;
+    // reattaching ACP must retain that selection rather than reapply defaults.
+    harness
+        .handle
+        .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
+            session_id: next_acp_task.clone(),
+            name: "Docs".into(),
+            kind: AgentSessionIntegrationKind::Mcp,
+            enabled: false,
+        })
+        .await
+        .unwrap();
+    harness
+        .faux
+        .push_text("The task keeps its own MCP selection.");
+    client
+        .prompt(&next_acp_task, "Confirm the task selection.")
+        .await;
+    client.shutdown().await;
+    finish(serving).await;
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    client
+        .call(
+            "session/load",
+            json!({"sessionId": next_acp_task, "cwd": project, "mcpServers": []}),
+        )
+        .await;
+    assert!(
+        !harness
+            .handle
+            .list_session_mcp_servers(next_acp_task)
+            .await
+            .unwrap()
+            .iter()
+            .find(|row| row.name == "Docs")
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        harness
+            .handle
+            .list_project_mcp_servers(project)
+            .await
+            .unwrap()[0]
+            .enabled
+    );
+    client.shutdown().await;
+    finish(serving).await;
+}
+
 /// `session/set_mode` is answered with `invalid_params` for every mode id,
 /// including the ids older builds advertised.
 #[tokio::test]

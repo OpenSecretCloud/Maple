@@ -3145,6 +3145,94 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn reconnect_cancels_a_draft_catalog_wait_and_reloads_project_defaults(
+        cx: &mut TestAppContext,
+    ) {
+        let backend =
+            backend_with_mcp_servers(cx, "project-mcp-reconnect", vec![mcp_server("docs", true)]);
+        let root = mcp_project("project-mcp-reconnect");
+        let (chat, cx) = chat_window_in(cx, backend.clone(), |this, cx| {
+            this.project_root = Some(root.clone());
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "initial project defaults", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            // A first send is waiting for its draft's catalog, before any task
+            // or prompt has reached the host.
+            this.draft_mcp_defaults = None;
+            this.session_setup_pending = true;
+            this.first_send_waiting_for_mcp = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "keep this unsent message".into(),
+                steer: false,
+            });
+            this.fill_empty_composer("keep this unsent message", cx);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(
+                !this.session_setup_pending,
+                "a disconnected catalog wait must end"
+            );
+            assert!(!this.first_send_waiting_for_mcp);
+            assert!(
+                this.pending_first_send.is_none(),
+                "recovery must not send later"
+            );
+        });
+
+        // Another client changes the host-owned default while desktop is away.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let target = root.clone();
+        backend.clone().spawn(async move {
+            let _ = sender.send(
+                backend
+                    .set_project_mcp_server_enabled("user", &target, "docs", false)
+                    .await,
+            );
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        chat.update(cx, |this, cx| {
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: Some(root.clone()),
+                        recent_roots: Vec::new(),
+                        latest: None,
+                        sessions: Vec::new(),
+                        questions: Vec::new(),
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: true,
+                        project_root: Some(root),
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+        });
+        wait_until(&chat, cx, "project defaults after reconnect", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            assert_eq!(this.draft_mcp_names(), Some(Vec::new()));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("keep this unsent message")
+            );
+            assert!(this.selected_session.is_none());
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+        });
+    }
+
+    #[gpui::test]
     fn test_removing_project_cancels_catalog_wait_and_opens_empty_fallback(
         cx: &mut TestAppContext,
     ) {

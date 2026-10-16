@@ -1867,12 +1867,14 @@ impl ChatScreen {
         cx.notify();
         if self.draft
             && self.draft_mcp_defaults.is_none()
-            && self
-                .project_mcp_saves
-                .iter()
-                .any(|save| self.project_root.as_deref() == Some(save.root.as_str()))
+            && (!self.draft_mcp_changes.is_empty()
+                || self
+                    .project_mcp_saves
+                    .iter()
+                    .any(|save| self.project_root.as_deref() == Some(save.root.as_str())))
         {
-            // A fresh draft cannot fall back to an intermediate queued save.
+            // A fresh or recovering draft must include local choices even
+            // when their save is pending or failed during a connection loss.
             self.session_setup_pending = true;
             self.first_send_waiting_for_mcp = true;
             self.refresh_draft_mcp(cx);
@@ -4976,6 +4978,9 @@ impl ChatScreen {
             }
         }
         self.sync_sidebar(cx);
+        if self.draft {
+            self.refresh_draft_mcp(cx);
+        }
     }
 
     /// Apply one event; returns false when nothing visible changed.
@@ -4985,6 +4990,17 @@ impl ChatScreen {
                 self.host_recovery.epoch += 1;
                 self.host_recovery.unavailable = true;
                 self.host_recovery.events = None;
+                if self.first_send_waiting_for_mcp {
+                    // Nothing was sent. Keep the text, but never resume this
+                    // action automatically when a new connection arrives.
+                    self.fail_new_session(
+                        "Message not sent: the Maple host disconnected. Send again after reconnecting.".into(),
+                        cx,
+                    );
+                }
+                if self.draft {
+                    self.draft_mcp_defaults = None;
+                }
                 self.begin_navigation();
                 self.runtime_error =
                     Some("Connection lost. Reconnecting to the Maple host…".into());

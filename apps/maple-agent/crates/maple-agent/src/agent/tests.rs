@@ -1868,13 +1868,20 @@ async fn a_tasks_mcp_servers_give_the_model_their_tools() {
     harness
         .handle
         .save_mcp_servers(vec![
-            http_mcp_server("Fake", &fake.url, true),
+            http_mcp_server("Fake", &fake.url, false),
             http_mcp_server("Spare", &fake.url, false),
         ])
         .await
         .unwrap();
 
-    // A new task gets the servers switched on for new tasks.
+    harness
+        .handle
+        .set_project_mcp_server_enabled(path_string(harness.project.path()), "Fake".into(), true)
+        .await
+        .unwrap();
+
+    // The project's override reaches actual MCP connections and model tools,
+    // even when the global new-task default is off.
     let task = harness.create_task().await;
     let rows = harness
         .handle
