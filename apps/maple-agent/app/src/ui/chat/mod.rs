@@ -220,6 +220,12 @@ struct DraftMcpChange {
     enabled: bool,
 }
 
+struct ProjectMcpSave {
+    root: String,
+    name: String,
+    enabled: bool,
+}
+
 /// What the composer shows that a task just created does not have yet.
 /// Applied before the first send.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +269,24 @@ fn integration_key(name: &str) -> String {
         .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect()
+}
+
+fn is_custom_mcp(name: &str, kind: AgentSessionIntegrationKind) -> bool {
+    kind == AgentSessionIntegrationKind::Mcp
+        && integration_key(name) != integration_key(CUA_DRIVER_ID)
+}
+
+fn same_integration(
+    name: &str,
+    kind: AgentSessionIntegrationKind,
+    other_name: &str,
+    other_kind: AgentSessionIntegrationKind,
+) -> bool {
+    kind == other_kind
+        && (name == other_name
+            || (is_custom_mcp(name, kind)
+                && is_custom_mcp(other_name, other_kind)
+                && AgentMcpServer::key_for_name(name) == AgentMcpServer::key_for_name(other_name)))
 }
 
 /// The rows the draft's integrations chip shows: what a new task would
@@ -336,6 +360,8 @@ pub struct ChatScreen {
     finished_runs: std::collections::VecDeque<String>,
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
+    /// Waiting for the draft's MCP choices before starting a create.
+    first_send_waiting_for_mcp: bool,
     /// The new-task screen is a draft the user started (or the auto-select
     /// fell back to). Nothing is selected while it shows, and no session
     /// list or boot fallback may open a task over it: the text typed into
@@ -354,6 +380,11 @@ pub struct ChatScreen {
     /// into the create request's name list; the rest are applied to the
     /// new task the way the chip applies them to a live one.
     draft_mcp_changes: Vec<DraftMcpChange>,
+    /// Latest draft catalog read; a stale response must not restore old rows.
+    draft_mcp_generation: u64,
+    /// Save clicks in order, coalescing changes that have not started yet.
+    project_mcp_saves: std::collections::VecDeque<ProjectMcpSave>,
+    project_mcp_save_pending: bool,
     /// An ask_user question waiting for the user's text answer.
     /// Questions waiting for the user, oldest first. The model can issue
     /// several ask_user calls in one turn; every card must be answerable.
@@ -1019,10 +1050,14 @@ impl ChatScreen {
             completed_unread_sessions: HashSet::new(),
             finished_runs: std::collections::VecDeque::new(),
             session_setup_pending: false,
+            first_send_waiting_for_mcp: false,
             draft: false,
             pending_first_send: None,
             draft_mcp_defaults: None,
             draft_mcp_changes: Vec::new(),
+            draft_mcp_generation: 0,
+            project_mcp_saves: std::collections::VecDeque::new(),
+            project_mcp_save_pending: false,
             pending_questions: Vec::new(),
             pending_question_input: None,
             context_fraction: None,
@@ -1228,9 +1263,10 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.handle_service_events(boot.questions, cx);
-        self.project_root = boot.project_root;
-        self.project_root_changed(cx);
-        self.check_project_trust(cx);
+        if !self.set_project_context(boot.project_root, cx) {
+            self.project_root_changed(cx);
+            self.check_project_trust(cx);
+        }
         self.recent_roots = boot.recent_roots;
         self.sessions = boot.sessions;
         self.sync_sidebar(cx);
@@ -1454,6 +1490,19 @@ impl ChatScreen {
             return false;
         }
         self.project_root = project_root;
+        if self.draft {
+            self.draft_mcp_defaults = None;
+            self.draft_mcp_changes
+                .retain(|change| !is_custom_mcp(&change.name, change.kind));
+            let rows = self
+                .session_mcp
+                .iter()
+                .filter(|row| !is_custom_mcp(&row.name, row.kind))
+                .cloned()
+                .collect();
+            self.set_session_mcp(rows);
+            self.refresh_draft_mcp(cx);
+        }
         self.project_root_changed(cx);
         self.check_project_trust(cx);
         self.refresh_slash_commands(cx);
@@ -1788,8 +1837,7 @@ impl ChatScreen {
         self.loading_session = None;
         self.clear_selected_session_presentation(cx);
         self.draft = true;
-        // The draft starts from the settings defaults; the chips edit it
-        // on screen only, until the task exists.
+        // The draft starts from this project's defaults.
         self.web_enabled = self.default_web_enabled;
         self.refresh_draft_mcp(cx);
         self.refresh_selected_title();
@@ -1817,6 +1865,21 @@ impl ChatScreen {
         };
         self.pending_first_send = Some(action);
         cx.notify();
+        if self.draft
+            && self.draft_mcp_defaults.is_none()
+            && (!self.draft_mcp_changes.is_empty()
+                || self
+                    .project_mcp_saves
+                    .iter()
+                    .any(|save| self.project_root.as_deref() == Some(save.root.as_str())))
+        {
+            // A fresh or recovering draft must include local choices even
+            // when their save is pending or failed during a connection loss.
+            self.session_setup_pending = true;
+            self.first_send_waiting_for_mcp = true;
+            self.refresh_draft_mcp(cx);
+            return;
+        }
         self.create_session(request, cx);
     }
 
@@ -1856,6 +1919,10 @@ impl ChatScreen {
     /// opened never shows it and the late create has nothing to put back
     /// (its task is deleted when it lands).
     fn withdraw_first_send(&mut self, cx: &mut Context<Self>) {
+        if self.first_send_waiting_for_mcp {
+            self.first_send_waiting_for_mcp = false;
+            self.session_setup_pending = false;
+        }
         let Some(action) = self.pending_first_send.take() else {
             return;
         };
@@ -1899,7 +1966,7 @@ impl ChatScreen {
         self.session_setup_pending = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        let requested_mcp = request.mcp_server_names.clone();
+        let task_mcp = self.created_task_mcp(request.mcp_server_names.as_deref());
         self.call(
             async move {
                 backend
@@ -1910,7 +1977,6 @@ impl ChatScreen {
             cx,
             move |this, result, cx| match result {
                 Ok(session) => {
-                    let task_mcp = this.created_task_mcp(requested_mcp.as_deref());
                     this.settle_new_session(session, task_mcp, selection_generation, cx);
                 }
                 Err(message) => this.fail_new_session(message, cx),
@@ -1929,10 +1995,14 @@ impl ChatScreen {
             .map(|row| {
                 let enabled = match row.kind {
                     AgentSessionIntegrationKind::Mcp => match requested {
-                        Some(names) => names.iter().any(|name| name == &row.name),
+                        Some(names) => names
+                            .iter()
+                            .any(|name| same_integration(name, row.kind, &row.name, row.kind)),
                         None => defaults
                             .iter()
-                            .find(|default| default.name == row.name && default.kind == row.kind)
+                            .find(|default| {
+                                same_integration(&default.name, default.kind, &row.name, row.kind)
+                            })
                             .is_some_and(|default| default.enabled),
                     },
                     AgentSessionIntegrationKind::ExternalAgent => false,
@@ -1963,7 +2033,9 @@ impl ChatScreen {
                 .filter(|row| {
                     let has = task_mcp
                         .iter()
-                        .find(|state| state.name == row.name && state.kind == row.kind)
+                        .find(|state| {
+                            same_integration(&state.name, state.kind, &row.name, row.kind)
+                        })
                         .is_some_and(|state| state.enabled);
                     row.enabled != has
                 })
@@ -2034,7 +2106,7 @@ impl ChatScreen {
                     let mut task_mcp = task_mcp;
                     for change in applied {
                         task_mcp.retain(|state| {
-                            !(state.name == change.name && state.kind == change.kind)
+                            !same_integration(&state.name, state.kind, &change.name, change.kind)
                         });
                         task_mcp.push(change);
                     }
@@ -2052,6 +2124,7 @@ impl ChatScreen {
     /// draft meanwhile, in the history).
     fn fail_new_session(&mut self, message: String, cx: &mut Context<Self>) {
         self.session_setup_pending = false;
+        self.first_send_waiting_for_mcp = false;
         self.notice = Some(message.into());
         if let Some(action) = self.pending_first_send.take() {
             self.give_back_first_send(action, cx);
@@ -2648,6 +2721,9 @@ impl ChatScreen {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self.first_send_waiting_for_mcp {
+            self.withdraw_first_send(cx);
+        }
         let left = self.selected_session.clone();
         if self.btw.is_some() {
             self.close_side_thread(cx);
@@ -2887,10 +2963,20 @@ impl ChatScreen {
     fn refresh_draft_mcp(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let root = self.project_root.clone();
+        let requested_root = root.clone();
+        self.draft_mcp_generation += 1;
+        let generation = self.draft_mcp_generation;
+        let selection_generation = self.selection_generation;
         self.call(
             async move {
                 let (servers, integrations) = tokio::join!(
-                    backend.list_mcp_servers(&user_id),
+                    async {
+                        match root {
+                            Some(root) => backend.list_project_mcp_servers(&user_id, &root).await,
+                            None => backend.list_mcp_servers(&user_id).await,
+                        }
+                    },
                     backend.list_integrations(&user_id)
                 );
                 // The configured servers are the chip's floor; a catalog
@@ -2903,11 +2989,27 @@ impl ChatScreen {
             },
             cx,
             move |this, result, cx| {
-                if !this.draft {
+                if !this.draft
+                    || this.project_root != requested_root
+                    || this.draft_mcp_generation != generation
+                    || this.selection_generation != selection_generation
+                {
                     return;
                 }
                 match result {
-                    Ok(rows) => this.set_draft_mcp_defaults(rows),
+                    Ok(rows) => {
+                        this.set_draft_mcp_defaults(rows);
+                        if this.first_send_waiting_for_mcp {
+                            this.first_send_waiting_for_mcp = false;
+                            if let Some(action) = this.pending_first_send.take() {
+                                this.create_for_first_send(action, cx);
+                            }
+                        }
+                    }
+                    Err(message) if this.first_send_waiting_for_mcp => this.fail_new_session(
+                        format!("Could not load project integrations: {message}"),
+                        cx,
+                    ),
                     Err(message) => log::debug!("mcp list failed: {message}"),
                 }
                 cx.notify();
@@ -2921,14 +3023,28 @@ impl ChatScreen {
         self.draft_mcp_changes.retain(|change| {
             defaults
                 .iter()
-                .any(|row| row.name == change.name && row.kind == change.kind)
+                .any(|row| same_integration(&row.name, row.kind, &change.name, change.kind))
         });
         let mut rows = defaults.clone();
+        for save in &self.project_mcp_saves {
+            if self.project_root.as_deref() == Some(save.root.as_str())
+                && let Some(row) = rows.iter_mut().find(|row| {
+                    same_integration(
+                        &row.name,
+                        row.kind,
+                        &save.name,
+                        AgentSessionIntegrationKind::Mcp,
+                    )
+                })
+            {
+                row.enabled = save.enabled;
+            }
+        }
         for row in &mut rows {
             if let Some(change) = self
                 .draft_mcp_changes
                 .iter()
-                .find(|change| change.name == row.name && change.kind == row.kind)
+                .find(|change| same_integration(&change.name, change.kind, &row.name, row.kind))
             {
                 row.enabled = change.enabled;
             }
@@ -2960,12 +3076,11 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         let Some(session_id) = self.selected_session.clone() else {
-            // The draft: flip the row on screen; the task applies it when
-            // it is created.
+            // The draft: custom choices also become this project's defaults.
             if let Some(server) = self
                 .session_mcp
                 .iter_mut()
-                .find(|server| server.name == name && server.kind == kind)
+                .find(|server| same_integration(&server.name, server.kind, &name, kind))
             {
                 server.enabled = enabled;
             }
@@ -2975,12 +3090,41 @@ impl ChatScreen {
                 .filter(|server| server.enabled)
                 .count();
             self.draft_mcp_changes
-                .retain(|change| !(change.name == name && change.kind == kind));
+                .retain(|change| !same_integration(&change.name, change.kind, &name, kind));
             self.draft_mcp_changes.push(DraftMcpChange {
-                name,
+                name: name.clone(),
                 kind,
                 enabled,
             });
+            if self.draft
+                && is_custom_mcp(&name, kind)
+                && let Some(root) = self.project_root.clone()
+            {
+                let pending = usize::from(self.project_mcp_save_pending);
+                if let Some(save) = self
+                    .project_mcp_saves
+                    .iter_mut()
+                    .skip(pending)
+                    .find(|save| {
+                        save.root == root
+                            && same_integration(
+                                &save.name,
+                                AgentSessionIntegrationKind::Mcp,
+                                &name,
+                                kind,
+                            )
+                    })
+                {
+                    save.enabled = enabled;
+                } else {
+                    self.project_mcp_saves.push_back(ProjectMcpSave {
+                        root,
+                        name,
+                        enabled,
+                    });
+                }
+                self.save_next_project_mcp(cx);
+            }
             cx.notify();
             return;
         };
@@ -3003,6 +3147,53 @@ impl ChatScreen {
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
+            },
+        );
+    }
+
+    fn save_next_project_mcp(&mut self, cx: &mut Context<Self>) {
+        if self.project_mcp_save_pending {
+            return;
+        }
+        let Some(save) = self.project_mcp_saves.front() else {
+            return;
+        };
+        let root = save.root.clone();
+        let name = save.name.clone();
+        let enabled = save.enabled;
+        self.project_mcp_save_pending = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let target = root.clone();
+        let server = name.clone();
+        self.call(
+            async move {
+                backend
+                    .set_project_mcp_server_enabled(&user_id, &target, &server, enabled)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.project_mcp_saves.pop_front();
+                this.project_mcp_save_pending = false;
+                match result {
+                    Err(message) => {
+                        this.notice = Some(
+                            format!(
+                                "Could not save {name} for {}: {message}",
+                                root_display_name(&root)
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    }
+                    Ok(()) if this.draft && this.project_root.as_deref() == Some(root.as_str()) => {
+                        // A read begun before this save must not restore its old default.
+                        this.refresh_draft_mcp(cx);
+                    }
+                    Ok(()) => {}
+                }
+                this.save_next_project_mcp(cx);
             },
         );
     }
@@ -4787,6 +4978,9 @@ impl ChatScreen {
             }
         }
         self.sync_sidebar(cx);
+        if self.draft {
+            self.refresh_draft_mcp(cx);
+        }
     }
 
     /// Apply one event; returns false when nothing visible changed.
@@ -4796,6 +4990,17 @@ impl ChatScreen {
                 self.host_recovery.epoch += 1;
                 self.host_recovery.unavailable = true;
                 self.host_recovery.events = None;
+                if self.first_send_waiting_for_mcp {
+                    // Nothing was sent. Keep the text, but never resume this
+                    // action automatically when a new connection arrives.
+                    self.fail_new_session(
+                        "Message not sent: the Maple host disconnected. Send again after reconnecting.".into(),
+                        cx,
+                    );
+                }
+                if self.draft {
+                    self.draft_mcp_defaults = None;
+                }
                 self.begin_navigation();
                 self.runtime_error =
                     Some("Connection lost. Reconnecting to the Maple host…".into());

@@ -2460,12 +2460,10 @@ mod state_tests {
         }
     }
 
-    /// Chip changes on the empty screen are draft state: nothing is
-    /// persisted. The servers switched on go into the create request by
-    /// name, so one switched off never starts, and a reload of the rows
-    /// keeps the switches.
+    /// The first task uses the displayed switches even before project saves
+    /// complete, and refreshing the catalog preserves draft edits.
     #[gpui::test]
-    fn test_draft_chips_change_only_the_screen(cx: &mut TestAppContext) {
+    fn test_draft_chips_preserve_the_first_tasks_selection(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -2543,6 +2541,75 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn test_draft_mcp_spelling_changes_preserve_pending_choices(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            let root = absolute_fixture_root("work");
+            this.project_root = Some(root.clone());
+            this.selected_session = None;
+            this.draft = true;
+            this.web_enabled = true;
+            this.project_mcp_save_pending = true;
+            for enabled in [true, false] {
+                this.project_mcp_saves.push_back(ProjectMcpSave {
+                    root: root.clone(),
+                    name: "Docs".into(),
+                    enabled,
+                });
+            }
+            this.draft_mcp_changes = ["Docs", "docs-extra"]
+                .into_iter()
+                .map(|name| DraftMcpChange {
+                    name: name.into(),
+                    kind: AgentSessionIntegrationKind::Mcp,
+                    enabled: false,
+                })
+                .collect();
+            this.set_draft_mcp_defaults(vec![
+                draft_mcp_row(mcp_server("D o c s", true)),
+                draft_mcp_row(mcp_server("docs-extra", true)),
+                draft_mcp_row(mcp_server("docsextra", true)),
+            ]);
+            assert_eq!(this.draft_mcp_changes.len(), 2);
+            assert!(!this.session_mcp[0].enabled, "the renamed server keeps OFF");
+            assert!(!this.session_mcp[1].enabled);
+            assert!(
+                this.session_mcp[2].enabled,
+                "distinct server keys remain separate"
+            );
+            assert_eq!(this.draft_mcp_names(), Some(vec!["docsextra".into()]));
+            let task_mcp = this.created_task_mcp(Some(&["Docs".into(), "docsextra".into()]));
+            assert_eq!(
+                this.new_session_changes(&summary_at("created", "New Task", &root), &task_mcp)
+                    .mcp,
+                vec![DraftMcpChange {
+                    name: "D o c s".into(),
+                    kind: AgentSessionIntegrationKind::Mcp,
+                    enabled: false,
+                }],
+                "an ON selection under the old spelling still needs its OFF restriction"
+            );
+        });
+        screen.update(cx, |this, cx| {
+            for enabled in [true, false] {
+                this.toggle_session_mcp(
+                    "D o c s".into(),
+                    AgentSessionIntegrationKind::Mcp,
+                    enabled,
+                    cx,
+                );
+            }
+            assert_eq!(
+                this.project_mcp_saves.len(),
+                2,
+                "the same queued identity coalesces"
+            );
+            assert!(!this.project_mcp_saves.back().unwrap().enabled);
+            assert_eq!(this.draft_mcp_changes.len(), 2);
+        });
+    }
+
     /// Run the executor until `done` holds. Backend calls answer from the
     /// tokio runtime, which the test executor does not drive, so the wait
     /// polls with a bound instead of parking once.
@@ -2614,6 +2681,15 @@ mod state_tests {
             .expect("servers saved");
         cx.executor().allow_parking();
         backend
+    }
+
+    fn mcp_project(tag: &str) -> String {
+        let root = std::env::temp_dir().join(format!(
+            "maple-agent-test-mcp-project-{tag}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap().to_string_lossy().to_string()
     }
 
     /// Choosing another folder keeps the Maple workspace in the roots the
@@ -2797,7 +2873,7 @@ mod state_tests {
             vec![mcp_server("docs", true), mcp_server("wiki", false)],
         );
         let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
-            this.project_root = Some(absolute_fixture_root("work"));
+            this.project_root = Some(mcp_project("draft-chip"));
             this.selected_session = None;
             this.new_session(cx);
         });
@@ -2885,6 +2961,319 @@ mod state_tests {
                 "the text is back in the composer"
             );
             assert!(this.draft, "the draft is still on screen");
+        });
+    }
+
+    #[gpui::test]
+    fn test_draft_mcp_defaults_follow_the_project_and_save_the_last_click(cx: &mut TestAppContext) {
+        let backend = backend_with_mcp_servers(
+            cx,
+            "project-mcp-drafts",
+            vec![mcp_server("docs", true), mcp_server("wiki", false)],
+        );
+        let alpha = mcp_project("draft-alpha");
+        let beta = mcp_project("draft-beta");
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.project_root = Some(alpha.clone());
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "alpha's integration defaults", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            this.web_enabled = false;
+            this.selected_model = Some("chosen-model".to_string());
+            this.composer
+                .clone()
+                .unwrap()
+                .update(cx, |input, cx| input.set_text("keep this draft", cx));
+            for enabled in [false, true, false] {
+                this.toggle_session_mcp(
+                    "docs".to_string(),
+                    AgentSessionIntegrationKind::Mcp,
+                    enabled,
+                    cx,
+                );
+            }
+            assert_eq!(this.project_mcp_saves.len(), 2, "waiting clicks coalesce");
+            assert!(!this.project_mcp_saves.back().unwrap().enabled);
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(Vec::new()),
+                "pending project writes do not change the first task's selection"
+            );
+            this.toggle_session_mcp(
+                CUA_DRIVER_ID.to_string(),
+                AgentSessionIntegrationKind::Mcp,
+                true,
+                cx,
+            );
+            assert_eq!(this.project_mcp_saves.len(), 2, "CUA is task state");
+            this.land_project_selection(beta.clone(), this.selection_generation, cx);
+            assert!(this.draft_mcp_defaults.is_none());
+            assert!(
+                this.session_mcp
+                    .iter()
+                    .all(|row| !is_custom_mcp(&row.name, row.kind))
+            );
+        });
+        wait_until(&chat, cx, "beta's defaults and alpha's saves", |this| {
+            this.draft_mcp_defaults.is_some() && this.project_mcp_saves.is_empty()
+        });
+        chat.update(cx, |this, cx| {
+            assert!(
+                this.session_mcp
+                    .iter()
+                    .find(|row| row.name == "docs")
+                    .unwrap()
+                    .enabled
+            );
+            assert!(
+                !this
+                    .session_mcp
+                    .iter()
+                    .find(|row| row.name == "wiki")
+                    .unwrap()
+                    .enabled
+            );
+            assert!(
+                this.session_mcp
+                    .iter()
+                    .find(|row| row.name == CUA_DRIVER_ID)
+                    .unwrap()
+                    .enabled
+            );
+            assert_eq!(
+                this.composer.clone().unwrap().read(cx).text(),
+                "keep this draft"
+            );
+            assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
+            assert!(!this.web_enabled);
+            this.land_project_selection(alpha.clone(), this.selection_generation, cx);
+        });
+        wait_until(&chat, cx, "alpha's saved default", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            assert!(
+                !this
+                    .session_mcp
+                    .iter()
+                    .find(|row| row.name == "docs")
+                    .unwrap()
+                    .enabled
+            );
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "another draft in alpha", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, _| {
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(Vec::new())
+            );
+            assert!(this.notice.is_none(), "project saves succeeded");
+        });
+    }
+
+    #[gpui::test]
+    fn test_fresh_draft_send_waits_for_pending_project_mcp_choices(cx: &mut TestAppContext) {
+        let backend = backend_with_mcp_servers(
+            cx,
+            "pending-project-mcp-send",
+            vec![mcp_server("docs", false)],
+        );
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.project_root = Some(mcp_project("pending-send"));
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "initial draft defaults", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            for enabled in [true, false] {
+                this.toggle_session_mcp(
+                    "docs".into(),
+                    AgentSessionIntegrationKind::Mcp,
+                    enabled,
+                    cx,
+                );
+            }
+            this.new_session(cx);
+            this.send_text("hello".into(), cx);
+            assert!(this.first_send_waiting_for_mcp);
+            assert!(this.session_setup_pending);
+            assert!(this.pending_first_send.is_some());
+        });
+        // No runtime is started: the resumed create fails, returning the text.
+        wait_until(&chat, cx, "resumed first send", |this| {
+            !this.session_setup_pending && this.project_mcp_saves.is_empty()
+        });
+        chat.update(cx, |this, cx| {
+            assert!(!this.first_send_waiting_for_mcp);
+            assert!(this.draft_mcp_defaults.is_some());
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(Vec::new())
+            );
+            assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
+            assert!(
+                this.notice.is_some(),
+                "the create resumed and reported its failure"
+            );
+
+            for enabled in [true, false] {
+                this.toggle_session_mcp(
+                    "docs".into(),
+                    AgentSessionIntegrationKind::Mcp,
+                    enabled,
+                    cx,
+                );
+            }
+            this.new_session(cx);
+            this.send_text("another message".into(), cx);
+            assert!(this.first_send_waiting_for_mcp);
+            this.select_session("another-task", cx);
+            assert!(!this.first_send_waiting_for_mcp);
+            assert!(
+                !this.session_setup_pending,
+                "navigation releases the catalog wait"
+            );
+            assert!(this.pending_first_send.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn reconnect_cancels_a_draft_catalog_wait_and_reloads_project_defaults(
+        cx: &mut TestAppContext,
+    ) {
+        let backend =
+            backend_with_mcp_servers(cx, "project-mcp-reconnect", vec![mcp_server("docs", true)]);
+        let root = mcp_project("project-mcp-reconnect");
+        let (chat, cx) = chat_window_in(cx, backend.clone(), |this, cx| {
+            this.project_root = Some(root.clone());
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "initial project defaults", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            // A first send is waiting for its draft's catalog, before any task
+            // or prompt has reached the host.
+            this.draft_mcp_defaults = None;
+            this.session_setup_pending = true;
+            this.first_send_waiting_for_mcp = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "keep this unsent message".into(),
+                steer: false,
+            });
+            this.fill_empty_composer("keep this unsent message", cx);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(
+                !this.session_setup_pending,
+                "a disconnected catalog wait must end"
+            );
+            assert!(!this.first_send_waiting_for_mcp);
+            assert!(
+                this.pending_first_send.is_none(),
+                "recovery must not send later"
+            );
+        });
+
+        // Another client changes the host-owned default while desktop is away.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let target = root.clone();
+        backend.clone().spawn(async move {
+            let _ = sender.send(
+                backend
+                    .set_project_mcp_server_enabled("user", &target, "docs", false)
+                    .await,
+            );
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        chat.update(cx, |this, cx| {
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: Some(root.clone()),
+                        recent_roots: Vec::new(),
+                        latest: None,
+                        sessions: Vec::new(),
+                        questions: Vec::new(),
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: true,
+                        project_root: Some(root),
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+        });
+        wait_until(&chat, cx, "project defaults after reconnect", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            assert_eq!(this.draft_mcp_names(), Some(Vec::new()));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("keep this unsent message")
+            );
+            assert!(this.selected_session.is_none());
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn test_removing_project_cancels_catalog_wait_and_opens_empty_fallback(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = backend_with_mcp_servers(cx, "remove-waiting-project", Vec::new());
+        let alpha = mcp_project("remove-waiting-alpha");
+        let beta = mcp_project("remove-waiting-beta");
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.selected_session = None;
+            this.project_root = Some(alpha.clone());
+            this.recent_roots = vec![alpha.clone(), beta.clone()];
+            this.draft = true;
+            this.session_setup_pending = true;
+            this.first_send_waiting_for_mcp = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "keep the unsent prompt".into(),
+                steer: false,
+            });
+            this.composer.clone().unwrap().update(cx, |input, cx| {
+                input.set_text("keep the unsent prompt", cx);
+            });
+            this.archive_root(&alpha, cx);
+        });
+        wait_until(&chat, cx, "empty fallback after project removal", |this| {
+            this.project_root.as_deref() == Some(beta.as_str())
+                && this.draft
+                && this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, _| {
+            assert!(!this.first_send_waiting_for_mcp);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.selected_session, None);
+            assert!(
+                this.sessions.is_empty(),
+                "no task was created for the withdrawn send"
+            );
+            assert!(
+                this.prompt_history
+                    .iter()
+                    .any(|text| text == "keep the unsent prompt")
+            );
         });
     }
 
