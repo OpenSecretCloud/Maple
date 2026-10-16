@@ -31,7 +31,6 @@ use crate::provider_routing::{
 use crate::proxy_config::{ProxyConfig, ProxyRouter};
 use crate::sqs::UsageEvent;
 use crate::tokens::count_tokens;
-use crate::web::audio_utils::{merge_transcriptions, AudioSplitter, TINFOIL_MAX_SIZE};
 use crate::web::encryption_middleware::{
     decrypt_request, encrypt_response, Decrypted, TransportSession,
 };
@@ -42,6 +41,7 @@ use crate::web::model_request_policy::{
 use crate::web::openai_auth::AuthMethod;
 use crate::web::responses::context_builder::tool_call_ids_are_kimi_compatible;
 use crate::web::responses::{ResponseExecution, ResponseExecutionTaskGuard};
+use crate::web::transcription::{self, TranscriptionError, TranscriptionRequest};
 use crate::{ApiError, AppState};
 use axum::http::{header, HeaderMap, HeaderName, StatusCode};
 use axum::{
@@ -61,15 +61,12 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::{sleep, timeout};
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
-// Maximum audio file size (100MB) - sanity check, CF already limits to 50MB
-const MAX_AUDIO_SIZE: usize = 100 * 1024 * 1024;
 
 // Timeout constants for provider requests
 const REQUEST_TIMEOUT_SECS: u64 = 120; // Request timeout (generous for large non-streaming responses)
@@ -482,17 +479,6 @@ fn image_part_url(part: &Value) -> Option<&str> {
         .or_else(|| part.get("image").and_then(Value::as_str))
 }
 
-/// Parameters for transcription requests
-struct TranscriptionParams<'a> {
-    audio_data: &'a [u8],
-    filename: &'a str,
-    content_type: &'a str,
-    language: Option<&'a str>,
-    prompt: Option<&'a str>,
-    response_format: &'a str,
-    temperature: Option<f64>,
-}
-
 /// Request structure for TTS (Text-to-Speech) endpoints
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(transparent)]
@@ -583,39 +569,6 @@ fn build_tts_response_payload(body_bytes: &[u8], content_type: &str) -> (Value, 
         }),
         is_json_response,
     )
-}
-
-/// Request structure for transcription endpoints
-#[derive(Debug, Clone, serde::Deserialize)]
-struct TranscriptionRequest {
-    file: String, // Base64 encoded audio file
-    #[serde(default = "default_transcription_filename")]
-    filename: String,
-    #[serde(default = "default_transcription_content_type")]
-    content_type: String,
-    #[serde(default = "default_transcription_model")]
-    model: String,
-    language: Option<String>,
-    prompt: Option<String>,
-    #[serde(default = "default_transcription_response_format")]
-    response_format: String,
-    temperature: Option<f64>,
-}
-
-fn default_transcription_filename() -> String {
-    "audio.mp3".to_string()
-}
-
-fn default_transcription_content_type() -> String {
-    "audio/mpeg".to_string()
-}
-
-fn default_transcription_model() -> String {
-    "whisper-large-v3".to_string()
-}
-
-fn default_transcription_response_format() -> String {
-    "json".to_string()
 }
 
 /// Request structure for embeddings endpoints
@@ -3658,102 +3611,161 @@ async fn proxy_model_catalog(
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 
-fn transcription_model_for_provider(model_name: &str, provider_name: &str) -> String {
-    match (model_name, provider_name) {
-        ("whisper-large-v3", "tinfoil") => "whisper-large-v3-turbo".to_string(),
-        ("whisper-large-v3-turbo", provider) if provider != "tinfoil" => {
-            "whisper-large-v3".to_string()
+const TRANSCRIPTION_BILLING_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 4;
+
+/// Admission is held for the whole provider send and response read. At most four
+/// account IDs are retained, and cancellation releases both account and capacity.
+struct TranscriptionAdmission {
+    accounts: Mutex<HashSet<Uuid>>,
+    permits: Arc<Semaphore>,
+}
+
+impl TranscriptionAdmission {
+    fn new() -> Self {
+        Self {
+            accounts: Mutex::new(HashSet::new()),
+            permits: Arc::new(Semaphore::new(MAX_CONCURRENT_TRANSCRIPTIONS)),
         }
-        _ => model_name.to_string(),
+    }
+
+    fn try_acquire(&self, account: Uuid) -> Result<TranscriptionPermit<'_>, ApiError> {
+        let mut accounts = self
+            .accounts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if accounts.contains(&account) {
+            return Err(ApiError::TooManyRequests);
+        }
+        let permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ApiError::ServiceUnavailable)?;
+        accounts.insert(account);
+        Ok(TranscriptionPermit {
+            admission: self,
+            account,
+            _permit: permit,
+        })
     }
 }
 
-/// Helper function to send transcription request with retries to primary and fallback providers
-async fn send_transcription_with_retries(
-    client: &ProviderClient,
-    primary_provider: &ProxyConfig,
-    fallback_provider: Option<&ProxyConfig>,
-    model_name: &str,
-    params: &TranscriptionParams<'_>,
-) -> Result<Value, ApiError> {
-    let max_cycles = 3;
-    let mut last_error = None;
+struct TranscriptionPermit<'a> {
+    admission: &'a TranscriptionAdmission,
+    account: Uuid,
+    _permit: OwnedSemaphorePermit,
+}
 
-    for cycle in 0..max_cycles {
-        if cycle > 0 {
-            let delay = cycle as u64;
-            debug!("Starting cycle {} after {}s delay", cycle + 1, delay);
-            sleep(Duration::from_secs(delay)).await;
-        }
+impl Drop for TranscriptionPermit<'_> {
+    fn drop(&mut self) {
+        self.admission
+            .accounts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.account);
+    }
+}
 
-        debug!(
-            "Cycle {}: Trying primary provider {} for transcription",
-            cycle + 1,
-            primary_provider.provider_name
-        );
+async fn transcription_access(
+    auth_method: AuthMethod,
+    paid_lookup: impl std::future::Future<Output = Result<bool, ()>>,
+    deadline: Duration,
+) -> Result<(), ApiError> {
+    if auth_method != AuthMethod::Jwt {
+        return Err(ApiError::Transcription(TranscriptionError::AppOnly));
+    }
+    match timeout(deadline, paid_lookup).await {
+        Ok(Ok(true)) => Ok(()),
+        Ok(Ok(false)) => Err(ApiError::Transcription(TranscriptionError::PaidRequired)),
+        Ok(Err(())) | Err(_) => Err(ApiError::ServiceUnavailable),
+    }
+}
 
-        let primary_model =
-            transcription_model_for_provider(model_name, &primary_provider.provider_name);
+#[cfg(test)]
+mod transcription_access_tests {
+    use super::*;
 
-        match send_transcription_request(client, primary_provider, &primary_model, params).await {
-            Ok(response) => {
-                debug!(
-                    "Successfully got transcription from primary provider {} on cycle {}",
-                    primary_provider.provider_name,
-                    cycle + 1
-                );
-                return Ok(response);
-            }
-            Err(err) => {
-                error!(
-                    "Cycle {}: Primary provider {} failed: {}",
-                    cycle + 1,
-                    primary_provider.provider_name,
-                    err
-                );
-                last_error = Some(err);
-            }
-        }
-
-        if let Some(fallback_provider) = fallback_provider {
-            debug!(
-                "Cycle {}: Trying fallback provider {} for transcription",
-                cycle + 1,
-                fallback_provider.provider_name
-            );
-
-            let fallback_model =
-                transcription_model_for_provider(model_name, &fallback_provider.provider_name);
-
-            match send_transcription_request(client, fallback_provider, &fallback_model, params)
-                .await
-            {
-                Ok(response) => {
-                    info!(
-                        "Successfully got transcription from fallback provider {} on cycle {}",
-                        fallback_provider.provider_name,
-                        cycle + 1
-                    );
-                    return Ok(response);
-                }
-                Err(err) => {
-                    error!(
-                        "Cycle {}: Fallback provider {} failed: {}",
-                        cycle + 1,
-                        fallback_provider.provider_name,
-                        err
-                    );
-                    last_error = Some(err);
-                }
-            }
-        }
+    #[tokio::test]
+    async fn api_key_is_denied_without_polling_billing() {
+        let lookup = async { panic!("API keys must not reach billing") };
+        assert!(matches!(
+            transcription_access(AuthMethod::ApiKey, lookup, Duration::from_secs(1)).await,
+            Err(ApiError::Transcription(TranscriptionError::AppOnly))
+        ));
     }
 
-    error!(
-        "All transcription providers failed after {} cycles. Last error: {:?}",
-        max_cycles, last_error
-    );
-    Err(last_error.unwrap_or(ApiError::InternalServerError))
+    #[tokio::test]
+    async fn plan_decision_is_required_and_billing_failure_fails_closed() {
+        assert!(
+            transcription_access(AuthMethod::Jwt, async { Ok(true) }, Duration::from_secs(1))
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            transcription_access(AuthMethod::Jwt, async { Ok(false) }, Duration::from_secs(1))
+                .await,
+            Err(ApiError::Transcription(TranscriptionError::PaidRequired))
+        ));
+        assert!(matches!(
+            transcription_access(AuthMethod::Jwt, async { Err(()) }, Duration::from_secs(1)).await,
+            Err(ApiError::ServiceUnavailable)
+        ));
+        assert!(matches!(
+            transcription_access(
+                AuthMethod::Jwt,
+                std::future::pending(),
+                Duration::from_millis(5)
+            )
+            .await,
+            Err(ApiError::ServiceUnavailable)
+        ));
+    }
+
+    #[test]
+    fn admission_bounds_accounts_and_global_work_and_releases_on_drop() {
+        let admission = TranscriptionAdmission::new();
+        let first_account = Uuid::new_v4();
+        let first = admission.try_acquire(first_account).expect("first account");
+        assert!(matches!(
+            admission.try_acquire(first_account),
+            Err(ApiError::TooManyRequests)
+        ));
+        let others = (1..MAX_CONCURRENT_TRANSCRIPTIONS)
+            .map(|_| {
+                admission
+                    .try_acquire(Uuid::new_v4())
+                    .expect("available capacity")
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            admission.try_acquire(Uuid::new_v4()),
+            Err(ApiError::ServiceUnavailable)
+        ));
+        drop(first);
+        let again = admission
+            .try_acquire(first_account)
+            .expect("released account and capacity");
+        drop((again, others));
+        assert!(admission.accounts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_work_releases_account_and_capacity() {
+        let admission = Arc::new(TranscriptionAdmission::new());
+        let account = Uuid::new_v4();
+        let owned = admission.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _permit = owned.try_acquire(account).expect("admitted");
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        ready.await.expect("work started");
+        task.abort();
+        assert!(task.await.expect_err("aborted").is_cancelled());
+        assert!(admission.try_acquire(account).is_ok());
+    }
 }
 
 async fn proxy_transcription(
@@ -3761,346 +3773,49 @@ async fn proxy_transcription(
     _headers: HeaderMap,
     axum::Extension(session_id): axum::Extension<TransportSession>,
     axum::Extension(user): axum::Extension<User>,
-    axum::Extension(_auth_method): axum::Extension<AuthMethod>,
-    Decrypted(transcription_request): Decrypted<TranscriptionRequest>,
+    axum::Extension(auth_method): axum::Extension<AuthMethod>,
+    Decrypted(request): Decrypted<TranscriptionRequest>,
 ) -> Result<Response, ApiError> {
-    // Check if guest user is allowed (paid guests are allowed, free guests are not)
-    if user.is_guest() {
-        if let Some(billing_client) = &state.billing_client {
-            match billing_client.is_user_paid(user.uuid).await {
-                Ok(true) => {
-                    debug!("Paid guest user allowed for transcription: {}", user.uuid);
-                }
-                Ok(false) => {
-                    error!(
-                        "Free guest user attempted to use transcription feature: {}",
-                        user.uuid
-                    );
-                    return Err(ApiError::Unauthorized);
-                }
-                Err(e) => {
-                    error!("Billing check failed for guest user {}: {}", user.uuid, e);
-                    return Err(ApiError::Unauthorized);
-                }
-            }
-        } else {
-            error!(
-                "Guest user attempted to use transcription without billing client: {}",
-                user.uuid
-            );
-            return Err(ApiError::Unauthorized);
-        }
-    }
+    // Included paid-plan feature: plan identity is independent of remaining
+    // chat/API credits, for guests and registered users alike.
+    transcription_access(
+        auth_method,
+        async {
+            let billing = state.billing_client.as_ref().ok_or(())?;
+            billing.is_user_paid(user.uuid).await.map_err(|_| ())
+        },
+        TRANSCRIPTION_BILLING_TIMEOUT,
+    )
+    .await?;
 
-    // Decode base64 audio file
-    let file_bytes = general_purpose::STANDARD
-        .decode(&transcription_request.file)
-        .map_err(|e| {
-            error!("Failed to decode base64 audio file: {:?}", e);
-            ApiError::BadRequest
-        })?;
-
-    // Validate file size (100MB limit as sanity check, CF already limits to 50MB)
-    let file_size = file_bytes.len();
-    if file_size == 0 {
-        error!("Audio file is empty");
-        return Err(ApiError::BadRequest);
-    }
-    if file_size > MAX_AUDIO_SIZE {
-        error!(
-            "Audio file size {} bytes exceeds maximum allowed size of {} bytes",
-            file_size, MAX_AUDIO_SIZE
-        );
-        return Err(ApiError::BadRequest);
-    }
-
-    // Check if we need to split the audio
-    let splitter = AudioSplitter::new();
-
-    let default_proxy = state.proxy_router.get_default_proxy();
-    let tinfoil_proxy = state.proxy_router.get_tinfoil_proxy();
-
-    let client = state.provider_client.clone();
-
-    // Always split the audio (returns single chunk if no splitting needed)
-    let chunks = splitter
-        .split_audio(&file_bytes, &transcription_request.content_type)
-        .map_err(|e| {
-            error!("Failed to split audio: {}", e);
-            ApiError::InternalServerError
-        })?;
-
-    info!(
-        "Transcribing audio file of {} bytes in {} chunk(s)",
-        file_size,
-        chunks.len()
-    );
-
-    // Process chunks in parallel (even if it's just one)
-    let mut futures = Vec::new();
-
-    for chunk in chunks {
-        let client = client.clone();
-        let model_name = transcription_request.model.clone();
-        let filename = transcription_request.filename.clone();
-        let content_type = transcription_request.content_type.clone();
-        let language = transcription_request.language.clone();
-        let prompt = transcription_request.prompt.clone();
-        let response_format = transcription_request.response_format.clone();
-        let temperature = transcription_request.temperature;
-        let default_proxy = default_proxy.clone();
-        let tinfoil_proxy = tinfoil_proxy.clone();
-
-        let future = async move {
-            let chunk_size = chunk.data.len();
-            debug!(
-                "Processing chunk {} (size: {} bytes)",
-                chunk.index, chunk_size
-            );
-
-            let mut primary_provider = tinfoil_proxy.clone();
-            let mut fallback_provider = Some(default_proxy.clone());
-
-            if chunk_size > TINFOIL_MAX_SIZE && primary_provider.provider_name == "tinfoil" {
-                info!(
-                    "Chunk {} size {} bytes exceeds Tinfoil's 0.5MB limit, using fallback only",
-                    chunk.index, chunk_size
-                );
-
-                if let Some(fallback) = fallback_provider.take() {
-                    primary_provider = fallback;
-                } else {
-                    error!(
-                        "Chunk {} size {} bytes exceeds Tinfoil's limit and no fallback is available",
-                        chunk.index, chunk_size
-                    );
-                    return Err(ApiError::InternalServerError);
-                }
-            }
-
-            let params = TranscriptionParams {
-                audio_data: &chunk.data,
-                filename: &filename,
-                content_type: &content_type,
-                language: language.as_deref(),
-                prompt: prompt.as_deref(),
-                response_format: &response_format,
-                temperature,
-            };
-
-            match send_transcription_with_retries(
-                &client,
-                &primary_provider,
-                fallback_provider.as_ref(),
-                &model_name,
-                &params,
-            )
-            .await
-            {
-                Ok(response) => {
-                    debug!("Chunk {} transcribed successfully", chunk.index);
-                    Ok((chunk.index, response))
-                }
-                Err(err) => {
-                    error!("Chunk {} failed: {}", chunk.index, err);
-                    Err(err)
-                }
-            }
-        };
-
-        futures.push(future);
-    }
-
-    // Execute all futures in parallel
-    let results: Vec<Result<(usize, Value), ApiError>> = futures::future::join_all(futures).await;
-
-    // Check if all chunks succeeded
-    let mut successful_results = Vec::new();
-    for result in results {
-        match result {
-            Ok(r) => successful_results.push(r),
-            Err(e) => {
-                error!("Chunk processing failed: {}", e);
-                return Err(e);
-            }
-        }
-    }
-
-    // Get the response (merge if multiple chunks, return as-is if single)
-    let response = if successful_results.is_empty() {
-        error!("No successful transcription results");
-        return Err(ApiError::InternalServerError);
-    } else if successful_results.len() == 1 {
-        // Single chunk - return the response directly
-        successful_results
-            .into_iter()
-            .next()
-            .map(|(_, r)| r)
-            .ok_or_else(|| {
-                error!("Failed to get single result");
-                ApiError::InternalServerError
-            })?
-    } else {
-        // Multiple chunks - merge the results
-        let merged = merge_transcriptions(successful_results).map_err(|e| {
-            error!("Failed to merge transcriptions: {}", e);
-            ApiError::InternalServerError
-        })?;
-
-        // Convert merged result to standard response format
-        let mut response = json!({
-            "text": merged.text,
-        });
-
-        if let Some(lang) = merged.language {
-            response["language"] = json!(lang);
-        }
-
-        if let Some(segments) = merged.segments {
-            response["segments"] = json!(segments);
-        }
-
-        response
-    };
-
-    // TODO: Add SQS-based billing events for transcription usage
-    // Should track: audio duration/size, model used, user ID, timestamp, provider
-
-    // Encrypt and return the response
-    encrypt_response(&state, &session_id, &response).await
-}
-
-/// Sanitize form field values to prevent HTTP header injection attacks
-/// Removes or replaces any CRLF sequences that could be used to inject headers
-fn sanitize_form_field(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| !matches!(c, '\r' | '\n'))
-        .collect()
-}
-
-async fn send_transcription_request(
-    client: &ProviderClient,
-    provider: &ProxyConfig,
-    model: &str,
-    params: &TranscriptionParams<'_>,
-) -> Result<Value, ApiError> {
-    // Build multipart form data
-    let boundary = format!("----FormBoundary{}", Uuid::new_v4().simple());
-    let mut form_data = Vec::new();
-
-    // Add model field (sanitized to prevent header injection)
-    let safe_model = sanitize_form_field(model);
-    form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-    form_data.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
-    form_data.extend_from_slice(safe_model.as_bytes());
-    form_data.extend_from_slice(b"\r\n");
-
-    // Add file field with sanitized filename to prevent header injection
-    let safe_filename: String = params
-        .filename
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-    form_data.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\n",
-            safe_filename
-        )
-        .as_bytes(),
-    );
-    let safe_content_type = sanitize_form_field(params.content_type);
-    form_data.extend_from_slice(format!("Content-Type: {}\r\n\r\n", safe_content_type).as_bytes());
-    form_data.extend_from_slice(params.audio_data);
-    form_data.extend_from_slice(b"\r\n");
-
-    // Add optional fields (sanitized to prevent header injection)
-    if let Some(lang) = params.language {
-        let safe_lang = sanitize_form_field(lang);
-        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-        form_data.extend_from_slice(b"Content-Disposition: form-data; name=\"language\"\r\n\r\n");
-        form_data.extend_from_slice(safe_lang.as_bytes());
-        form_data.extend_from_slice(b"\r\n");
-    }
-    if let Some(p) = params.prompt {
-        let safe_prompt = sanitize_form_field(p);
-        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-        form_data.extend_from_slice(b"Content-Disposition: form-data; name=\"prompt\"\r\n\r\n");
-        form_data.extend_from_slice(safe_prompt.as_bytes());
-        form_data.extend_from_slice(b"\r\n");
-    }
-    let safe_response_format = sanitize_form_field(params.response_format);
-    form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-    form_data
-        .extend_from_slice(b"Content-Disposition: form-data; name=\"response_format\"\r\n\r\n");
-    form_data.extend_from_slice(safe_response_format.as_bytes());
-    form_data.extend_from_slice(b"\r\n");
-    if let Some(temp) = params.temperature {
-        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-        form_data
-            .extend_from_slice(b"Content-Disposition: form-data; name=\"temperature\"\r\n\r\n");
-        form_data.extend_from_slice(temp.to_string().as_bytes());
-        form_data.extend_from_slice(b"\r\n");
-    }
-
-    // End boundary
-    form_data.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
-
-    let content_type = format!("multipart/form-data; boundary={boundary}");
-    match client
-        .send(
-            provider,
-            ProviderRequest::new(
-                Method::POST,
-                "/v1/audio/transcriptions",
-                Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            )
-            .content_type(&content_type)
-            .body(form_data),
-        )
+    static ADMISSION: OnceLock<TranscriptionAdmission> = OnceLock::new();
+    let _permit = ADMISSION
+        .get_or_init(TranscriptionAdmission::new)
+        .try_acquire(user.uuid)?;
+    let prepared = transcription::prepare(request).map_err(ApiError::Transcription)?;
+    let file_bytes = prepared.file_size();
+    let audio_seconds = prepared.audio_seconds();
+    let provider = state
+        .proxy_router
+        .continuum_proxy()
+        .ok_or(ApiError::ServiceUnavailable)?;
+    let started = std::time::Instant::now();
+    let response = transcription::execute(&state.provider_client, &provider, prepared)
         .await
-    {
-        Ok(res) => {
-            if res.is_success() {
-                let body_bytes = res.bytes().await.map_err(|e| {
-                    error!("Failed to read transcription response body: {:?}", e);
-                    ApiError::InternalServerError
-                })?;
+        .map_err(ApiError::Transcription)?;
+    info!(
+        user_uuid = %user.uuid,
+        provider = "continuum",
+        model = transcription::MODEL,
+        file_bytes,
+        audio_seconds,
+        billed_seconds = response["usage"]["seconds"].as_f64(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "Included transcription completed"
+    );
 
-                let response_json: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
-                    error!(
-                        "Failed to parse transcription response: {}",
-                        crate::log_redaction::JsonErrorSummary(&e)
-                    );
-                    ApiError::InternalServerError
-                })?;
-
-                Ok(response_json)
-            } else {
-                let status = res.status_code();
-                error!(
-                    "Provider {} returned non-success status for transcription: {}",
-                    provider.provider_name, status
-                );
-                Err(ApiError::InternalServerError)
-            }
-        }
-        Err(e) => {
-            error!(
-                "Failed to send transcription request to {}: {:?}",
-                provider.provider_name, e
-            );
-            Err(ApiError::from(e))
-        }
-    }
+    // No token-usage publication: this app feature does not debit either pool.
+    encrypt_response(&state, &session_id, &response).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5703,7 +5418,7 @@ mod tests {
                     biased;
                     _ = known_rx => {},
                     _ = &mut future => panic!("diagnostic read should still be pending"),
-                    _ = sleep(Duration::from_secs(1)) => panic!("mock headers did not arrive"),
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => panic!("mock headers did not arrive"),
                 }
                 let logged = capture_info_logs(|| drop(future));
                 server.abort();

@@ -1,5 +1,4 @@
 pub mod attestation_routes;
-pub mod audio_utils;
 pub mod encryption_middleware;
 mod health_routes;
 pub mod login_routes;
@@ -13,6 +12,7 @@ pub mod protected_routes;
 pub mod provider_error;
 pub mod responses;
 pub(crate) mod system_one;
+pub(crate) mod transcription;
 pub mod web_routes;
 pub(crate) mod web_safety;
 
