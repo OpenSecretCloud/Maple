@@ -9,13 +9,27 @@ use tokio::sync::{Mutex, oneshot};
 
 use crate::agent::{AgentEventDispatcher, AgentServiceEvent, emit_agent_event};
 
-type PendingQuestions = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
+struct PendingQuestion {
+    sender: oneshot::Sender<String>,
+    event: AgentServiceEvent,
+}
+type PendingQuestions = Arc<Mutex<HashMap<String, PendingQuestion>>>;
+
+/// Keeps question handling available while a capable interface is attached.
+pub struct QuestionResponder(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for QuestionResponder {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct QuestionBroker {
     pending: PendingQuestions,
     dispatcher: AgentEventDispatcher,
     next_id: Arc<std::sync::atomic::AtomicU64>,
+    responders: Arc<std::sync::atomic::AtomicUsize>,
+    managed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Process-wide broker: each service initializes it; tool clients fetch it
@@ -47,6 +61,7 @@ struct PendingGuard {
     pending: PendingQuestions,
     request_id: String,
     armed: bool,
+    dispatcher: AgentEventDispatcher,
 }
 
 impl Drop for PendingGuard {
@@ -54,6 +69,12 @@ impl Drop for PendingGuard {
         if !self.armed {
             return;
         }
+        emit_agent_event(
+            &self.dispatcher,
+            AgentServiceEvent::QuestionResolved {
+                request_id: self.request_id.clone(),
+            },
+        );
         if let Ok(mut pending) = self.pending.try_lock() {
             pending.remove(&self.request_id);
             return;
@@ -74,7 +95,30 @@ impl QuestionBroker {
             pending: Arc::new(Mutex::new(HashMap::new())),
             dispatcher,
             next_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            responders: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            managed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) fn manage_availability(&self) {
+        self.managed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn responder(&self) -> QuestionResponder {
+        self.responders
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        QuestionResponder(self.responders.clone())
+    }
+
+    pub(crate) async fn snapshot(&self) -> Vec<AgentServiceEvent> {
+        self.pending
+            .lock()
+            .await
+            .values()
+            .filter(|question| !question.sender.is_closed())
+            .map(|question| question.event.clone())
+            .collect()
     }
 
     /// Ask the user one or more related questions and wait for the
@@ -85,6 +129,11 @@ impl QuestionBroker {
         session_id: &str,
         questions: Vec<crate::agent::AgentQuestion>,
     ) -> String {
+        if self.managed.load(std::sync::atomic::Ordering::SeqCst)
+            && self.responders.load(std::sync::atomic::Ordering::SeqCst) == 0
+        {
+            return "No connected interface can show questions. Ask in plain text, or have the user open Maple desktop or an ACP client with form elicitation.".into();
+        }
         let request_id = format!(
             "question_{}_{}",
             std::time::SystemTime::now()
@@ -95,20 +144,25 @@ impl QuestionBroker {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(request_id.clone(), tx);
+        let event = AgentServiceEvent::Question {
+            session_id: session_id.into(),
+            request_id: request_id.clone(),
+            questions,
+        };
+        self.pending.lock().await.insert(
+            request_id.clone(),
+            PendingQuestion {
+                sender: tx,
+                event: event.clone(),
+            },
+        );
         let mut guard = PendingGuard {
             pending: Arc::clone(&self.pending),
             request_id: request_id.clone(),
             armed: true,
+            dispatcher: self.dispatcher.clone(),
         };
-        emit_agent_event(
-            &self.dispatcher,
-            AgentServiceEvent::Question {
-                session_id: session_id.to_string(),
-                request_id: request_id.clone(),
-                questions,
-            },
-        );
+        emit_agent_event(&self.dispatcher, event);
         let answer = rx.await.unwrap_or_default();
         self.pending.lock().await.remove(&request_id);
         guard.armed = false;
@@ -132,11 +186,20 @@ impl QuestionBroker {
     /// Entries whose asker has gone away are dropped on the way.
     pub(crate) async fn answer(&self, request_id: &str, answer: String) -> bool {
         let mut pending = self.pending.lock().await;
-        pending.retain(|_, tx| !tx.is_closed());
+        pending.retain(|_, question| !question.sender.is_closed());
         let sender = pending.remove(request_id);
         drop(pending);
         match sender {
-            Some(tx) => tx.send(answer).is_ok(),
+            Some(tx) => {
+                let answered = tx.sender.send(answer).is_ok();
+                emit_agent_event(
+                    &self.dispatcher,
+                    AgentServiceEvent::QuestionResolved {
+                        request_id: request_id.into(),
+                    },
+                );
+                answered
+            }
             None => false,
         }
     }
@@ -177,7 +240,15 @@ mod tests {
         let broker = broker();
         let (tx, rx) = oneshot::channel();
         drop(rx);
-        broker.pending.lock().await.insert("stale".to_string(), tx);
+        broker.pending.lock().await.insert(
+            "stale".to_string(),
+            PendingQuestion {
+                sender: tx,
+                event: AgentServiceEvent::QuestionResolved {
+                    request_id: "stale".into(),
+                },
+            },
+        );
         assert!(!broker.answer("missing", String::new()).await);
         assert_eq!(broker.pending_count().await, 0);
     }

@@ -2,7 +2,10 @@
 //! and its conversions and checks one by one.
 
 use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config};
-use super::convert::{acp_tool_update, client_supports_form_elicitation, timeline_tool_text};
+use super::convert::{
+    acp_session_config_options, acp_tool_update, client_supports_form_elicitation,
+    timeline_tool_text,
+};
 use super::session::completed_runtime_start;
 use super::transport::is_session_update_line;
 use super::*;
@@ -682,14 +685,6 @@ async fn session_operation_cancellation_keeps_close_behind_the_active_fence() {
     drop(closing);
 }
 
-#[test]
-fn timed_out_close_keeps_its_resurrection_fence() {
-    assert!(close_registration_may_be_released(true, true, true));
-    assert!(!close_registration_may_be_released(false, true, true));
-    assert!(!close_registration_may_be_released(true, false, true));
-    assert!(!close_registration_may_be_released(true, true, false));
-}
-
 fn row(
     id: &str,
     item_type: &str,
@@ -698,6 +693,7 @@ fn row(
     merge: &str,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id: id.to_string(),
         item_type: item_type.to_string(),
         role: role.map(str::to_string),
@@ -714,6 +710,7 @@ fn row(
 #[test]
 fn completed_replayed_tool_prefers_result_over_request_summary() {
     let item = AgentTimelineItem {
+        revision: 0,
         id: "tool-1".to_string(),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
@@ -769,6 +766,7 @@ fn available_commands_lead_with_the_built_ins_plus_skills() {
 fn failed_replayed_tool_preserves_result_and_failure_badge_message() {
     let mut projection = AcpProjection::default();
     let pending = AgentTimelineItem {
+        revision: 0,
         id: "tool-1".to_string(),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
@@ -1219,4 +1217,345 @@ fn retained_terminal_results_preserve_all_stop_states() {
         serde_json::to_value(failed).unwrap()["stopReason"],
         "end_turn"
     );
+}
+
+#[tokio::test]
+async fn eof_detaches_from_an_active_shared_run_and_another_client_can_cancel_it() {
+    let harness = Harness::new().await;
+    harness.faux.push_hang();
+    let (mut first, first_serving) = connect(&harness.handle, no_answers());
+    let initialize = first.initialize(json!({})).await;
+    assert!(initialize["agentCapabilities"]["sessionCapabilities"]["close"].is_null());
+    let task = first.new_session(harness.project.path()).await;
+    first
+        .request(
+            "session/prompt",
+            json!({"sessionId": task, "prompt": [{"type": "text", "text": "Wait"}]}),
+        )
+        .await;
+    crate::agent::tests::eventually(|| !harness.faux.requests().is_empty()).await;
+    drop(first);
+    finish(first_serving).await;
+    assert!(
+        harness
+            .handle
+            .status()
+            .await
+            .unwrap()
+            .active_runs
+            .contains_key(&task)
+    );
+
+    let (mut second, second_serving) = connect(&harness.handle, no_answers());
+    second.initialize(json!({})).await;
+    second
+        .call(
+            "session/load",
+            json!({"sessionId": task, "cwd": harness.project.path(), "mcpServers": []}),
+        )
+        .await;
+    second
+        .send_line(
+            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": task}}),
+        )
+        .await;
+    // A subsequent request is ordered after the cancellation notification.
+    second.call("session/list", json!({})).await;
+    assert!(
+        !harness
+            .handle
+            .status()
+            .await
+            .unwrap()
+            .active_runs
+            .contains_key(&task)
+    );
+    drop(second);
+    finish(second_serving).await;
+}
+
+#[tokio::test]
+async fn steering_uses_the_shared_adapter_extension_and_preserves_idle_fallback() {
+    let harness = Harness::new().await;
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    let initialize = client.initialize(json!({})).await;
+    assert_eq!(initialize["_meta"]["steering"]["supported"], true);
+    let task = client.new_session(harness.project.path()).await;
+    let idle = client.call("_session/steering", json!({"sessionId": task, "prompt": [{"type":"text", "text":"not consumed"}], "_meta":{"steering":{"idleBehavior":"promptRequired"}}})).await;
+    assert_eq!(idle["outcome"], "promptRequired");
+    assert!(harness.faux.requests().is_empty());
+
+    // Hold the turn at a question until steering is acknowledged. A shell sleep
+    // can finish before a busy runner sends the request (or be unavailable).
+    let _responder = harness.handle.question_responder();
+    let mut events = harness.handle.subscribe();
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question": "Continue?", "options": [{"label": "Yes"}]}),
+    )]);
+    harness
+        .faux
+        .push_text("I followed the updated instruction.");
+    let prompt_id = client
+        .request(
+            "session/prompt",
+            json!({"sessionId": task, "prompt": [{"type": "text", "text": "Start"}]}),
+        )
+        .await;
+    let question_id = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let crate::agent::AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                ..
+            } = events.recv().await.unwrap()
+                && session_id == task
+            {
+                break request_id;
+            }
+        }
+    })
+    .await
+    .expect("the turn waits for an answer before steering");
+    let steered = client.call("_session/steering", json!({"sessionId": task, "prompt": [{"type": "text", "text": "Now use the updated instruction"}]})).await;
+    assert_eq!(steered["outcome"], "injected");
+    assert!(
+        harness
+            .handle
+            .answer_question_via_handle(&question_id, "Yes".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        client.response(prompt_id).await["result"]["stopReason"],
+        "end_turn"
+    );
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        crate::agent::tests::last_user_text(&requests[1]),
+        "Now use the updated instruction"
+    );
+    let detail = harness.handle.load_session(task).await.unwrap();
+    assert!(detail.timeline.iter().any(|item| {
+        item.role.as_deref() == Some("user")
+            && item
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("updated instruction"))
+    }));
+    drop(client);
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn joining_a_stream_replays_partial_once_then_follows_live_text() {
+    let harness = Harness::with_faux(
+        pi_ai::faux::FauxProvider::new().with_chunk_delay(Duration::from_millis(25)),
+    )
+    .await;
+    let reply = "A running desktop task can be joined from an editor while its response is streaming, without losing the prefix or duplicating any later chunks.";
+    harness.faux.push_text(reply);
+    let task = harness.create_task().await;
+    let _run = harness.send(&task, "Explain shared tasks").await;
+    let snapshot = loop {
+        let detail = harness.handle.load_session(task.clone()).await.unwrap();
+        if detail.timeline.iter().any(|row| {
+            row.role.as_deref() == Some("assistant")
+                && row.text.as_ref().is_some_and(|text| !text.is_empty())
+        }) {
+            break detail;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let partial = snapshot
+        .timeline
+        .iter()
+        .find(|row| row.role.as_deref() == Some("assistant"))
+        .unwrap();
+    assert!(partial.revision > 0 && snapshot.timeline_revision >= partial.revision);
+    assert!(reply.starts_with(partial.text.as_deref().unwrap()));
+    assert!(partial.text.as_ref().unwrap().len() < reply.len());
+
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    client
+        .call(
+            "session/load",
+            json!({"sessionId": task, "cwd": harness.project.path(), "mcpServers": []}),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            client.call("session/list", json!({})).await;
+            if !harness
+                .handle
+                .status()
+                .await
+                .unwrap()
+                .active_runs
+                .contains_key(&task)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Flush observer notifications issued before the final request.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.call("session/list", json!({})).await;
+    let texts = client.texts("agent_message_chunk");
+    assert_eq!(
+        texts
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<String>(),
+        reply
+    );
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
+    let harness = Harness::with_faux(
+        pi_ai::faux::FauxProvider::new().with_chunk_delay(Duration::from_millis(2)),
+    )
+    .await;
+    // More chunks than the runtime's broadcast capacity, while the client
+    // keeps reading. A metadata update must not stall the observer behind
+    // the originating prompt's whole-turn history gate.
+    let reply = "word".repeat(400);
+    std::fs::write(harness.project.path().join("notes.txt"), "notes").unwrap();
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("read", json!({"path": "notes.txt"}))]);
+    harness.faux.push_text(&reply);
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let task = client.new_session(harness.project.path()).await;
+    let first = client
+        .request(
+            "session/prompt",
+            json!({"sessionId": task, "prompt": [{"type": "text", "text": "First turn"}]}),
+        )
+        .await;
+    let call_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            client.call("session/list", json!({})).await;
+            if let Some(update) = client
+                .updates
+                .iter()
+                .find(|update| update["update"]["sessionUpdate"] == "tool_call")
+            {
+                break update["update"]["toolCallId"].as_str().unwrap().to_string();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // External-agent activity is published outside the originating run's
+    // stream. It must reach this client without waiting for its prompt to end.
+    let activity: AgentTimelineItem = serde_json::from_value(json!({
+        "id": call_id, "itemType": "tool", "role": "assistant",
+        "status": "running", "output": {"text": "External agent is working"},
+        "createdMs": 0, "merge": "replace"
+    }))
+    .unwrap();
+    harness.emit_timeline_item(&task, activity);
+    let title = "A title arriving while the reply streams";
+    // Repeating an unchanged title must also leave the observer draining.
+    for _ in 0..2 {
+        harness
+            .handle
+            .rename_session(
+                crate::maple_api::test_maple_api_session("slice@example.com"),
+                crate::agent::AgentRenameSessionRequest {
+                    session_id: task.clone(),
+                    title: title.into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        client.response(first).await["result"]["stopReason"],
+        "end_turn"
+    );
+    let title_position = client
+        .updates
+        .iter()
+        .position(|update| update["update"]["title"] == title)
+        .expect("the new title is delivered during the reply");
+    let last_text = client
+        .updates
+        .iter()
+        .rposition(|update| update["update"]["sessionUpdate"] == "agent_message_chunk")
+        .unwrap();
+    assert!(title_position < last_text);
+    let activity_position = client
+        .updates
+        .iter()
+        .position(|update| {
+            update["update"]["toolCallId"] == call_id
+                && update["update"]["content"][0]["content"]["text"] == "External agent is working"
+        })
+        .expect("external-agent activity reaches the originating ACP client");
+    assert!(activity_position < last_text);
+    assert_eq!(
+        client
+            .updates
+            .iter()
+            .filter(|update| update["update"]["toolCallId"] == call_id
+                && update["update"]["sessionUpdate"] == "tool_call")
+            .count(),
+        1,
+        "run and external-agent updates share one tool announcement"
+    );
+    assert_eq!(client.texts("agent_message_chunk")[0].1, reply);
+
+    // Continue through the desktop's runtime handle, then return to the
+    // original ACP connection. Both the external exchange and next prompt
+    // must be delivered without reopening or replaying the session.
+    harness.faux.push_text("Desktop reply");
+    let mut desktop = harness.send(&task, "Desktop message").await;
+    crate::agent::tests::finished(&mut desktop).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            client.call("session/list", json!({})).await;
+            let received: String = client
+                .updates
+                .iter()
+                .filter(|update| update["update"]["sessionUpdate"] == "agent_message_chunk")
+                .filter_map(|update| update["update"]["content"]["text"].as_str())
+                .collect();
+            if received == "Desktop reply" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the desktop reply reaches the idle ACP client");
+    assert!(
+        client
+            .texts("user_message_chunk")
+            .iter()
+            .any(|(_, text)| text == "Desktop message")
+    );
+    harness.faux.push_text("ACP follow-up reply");
+    assert_eq!(
+        client.prompt(&task, "ACP follow-up").await["stopReason"],
+        "end_turn"
+    );
+    assert!(
+        client
+            .texts("agent_message_chunk")
+            .iter()
+            .any(|(_, text)| text == "ACP follow-up reply")
+    );
+    client.shutdown().await;
+    finish(serving).await;
 }

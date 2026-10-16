@@ -46,6 +46,7 @@ mod state_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            revision: 0,
             id: id.to_string(),
             item_type: item_type.to_string(),
             role: None,
@@ -75,7 +76,7 @@ mod state_tests {
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         // This gpui's test scheduler flags activity on other threads unless
@@ -105,8 +106,11 @@ mod state_tests {
         let backend = {
             let _guard = SETTINGS_LOCK.lock();
             std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             )
         };
         chat_window_in(cx, backend, setup)
@@ -436,7 +440,7 @@ mod state_tests {
         let screen = cx.new(|cx| {
             ChatScreen::new_inner(
                 std::sync::Arc::new(
-                    crate::backend::AgentBackend::new(
+                    crate::backend::AgentBackend::for_test(
                         "http://127.0.0.1:9".to_string(),
                         String::new(),
                     )
@@ -578,6 +582,135 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn recovery_snapshot_replaces_old_host_revisions_and_reconciles_live_events(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut old = item("reply", "message", Some("old partial"));
+            old.revision = 900;
+            this.replace_timeline(vec![old]);
+            this.snapshot_revision = 900;
+            this.active_runs.insert("s1".into(), "old-run".into());
+            this.handle_service_event(one_question("old", "old question"), cx);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(this.host_recovery.unavailable);
+            // Model a subscribed replacement host and updates arriving while
+            // its snapshot is in flight. The new host starts revisions at 1.
+            this.host_recovery.events = Some(Vec::new());
+            let mut latest = item("reply", "message", Some("new complete reply"));
+            latest.revision = 3;
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: None,
+                    item: latest.clone(),
+                },
+                cx,
+            );
+            this.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "req-current".into(),
+                },
+                cx,
+            );
+            let events = this.host_recovery.events.take().unwrap();
+            let mut snapshot_row = latest.clone();
+            snapshot_row.revision = 2;
+            snapshot_row.text = Some("new partial".into());
+            let selected = summary("s1", "Recovered title");
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: None,
+                        recent_roots: Vec::new(),
+                        latest: None,
+                        sessions: vec![selected.clone()],
+                        questions: vec![one_question("current", "new question")],
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: true,
+                        project_root: None,
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: Some(maple_agent::agent::AgentSessionDetail {
+                        timeline_revision: 2,
+                        session: selected,
+                        timeline: vec![snapshot_row],
+                        mcp_errors: Vec::new(),
+                        queue: maple_agent::agent::AgentDesktopQueueSnapshot {
+                            revision: 1,
+                            items: vec![maple_agent::agent::AgentQueuedMessage {
+                                queue_id: "queued".into(),
+                                message_id: "queued-message".into(),
+                                session_id: "s1".into(),
+                                text: "pending message".into(),
+                                attachments: Vec::new(),
+                                created_ms: 0,
+                            }],
+                        },
+                    }),
+                },
+                this.selection_generation,
+                cx,
+            );
+            this.handle_service_events(events, cx);
+            assert_eq!(this.timeline.len(), 1);
+            assert_eq!(this.timeline[0].text.as_deref(), Some("new complete reply"));
+            assert_eq!(this.timeline[0].revision, 3);
+            assert!(this.active_runs.is_empty());
+            assert!(
+                this.pending_questions.is_empty(),
+                "resolved questions must not reappear"
+            );
+            assert_eq!(this.queue[0].text, "pending message");
+            assert_eq!(this.sessions[0].title, "Recovered title");
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: None,
+                    item: latest,
+                },
+                cx,
+            );
+            assert_eq!(
+                this.timeline.len(),
+                1,
+                "snapshot/event overlap must not duplicate rows"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn reconnecting_keeps_composer_text_and_bounds_snapshot_event_buffer(cx: &mut TestAppContext) {
+        let (screen, cx) = chat_window(cx, |this, _| {
+            this.booting = false;
+        });
+        screen.update(cx, |this, cx| {
+            this.fill_empty_composer("do not automatically send this", cx);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            this.send_inner(cx);
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("do not automatically send this")
+            );
+            assert!(!this.session_setup_pending);
+            this.host_recovery.events = Some(Vec::new());
+            for _ in 0..300 {
+                this.handle_service_event(
+                    AgentServiceEvent::QuestionResolved {
+                        request_id: "fixture".into(),
+                    },
+                    cx,
+                );
+            }
+            assert_eq!(this.host_recovery.events.as_ref().unwrap().len(), 256);
+            assert!(this.host_recovery.overflow);
+        });
+    }
+
+    #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -714,7 +847,7 @@ mod state_tests {
                     cx,
                 );
                 let backend = Arc::new(
-                    AgentBackend::new("http://127.0.0.1:9".into(), String::new()).unwrap(),
+                    AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
                 );
                 cx.open_window(
                     gpui::WindowOptions {
@@ -1068,8 +1201,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -1297,11 +1433,15 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
             // Running tools are not summarized.
-            let index = this.apply_timeline_item("s1", long_tool("tool-1", "running"));
+            let index = this
+                .apply_timeline_item("s1", long_tool("tool-1", "running"))
+                .unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.is_empty());
             // Completed tools with long output are queued once.
-            let index = this.apply_timeline_item("s1", long_tool("tool-1", "completed"));
+            let index = this
+                .apply_timeline_item("s1", long_tool("tool-1", "completed"))
+                .unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-1"));
             assert_eq!(this.pending_summaries, 1);
@@ -1312,14 +1452,14 @@ mod state_tests {
             short.status = Some("completed".to_string());
             short.input = Some(serde_json::json!({"q": 1}));
             short.output = Some(serde_json::json!({"stdout": "ok"}));
-            let index = this.apply_timeline_item("s1", short);
+            let index = this.apply_timeline_item("s1", short).unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-2"));
             let mut empty = item("tool-3", "tool", None);
             empty.status = Some("completed".to_string());
             empty.input = Some(serde_json::json!({"q": 1}));
             empty.output = Some(serde_json::json!({"stdout": "  "}));
-            let index = this.apply_timeline_item("s1", empty);
+            let index = this.apply_timeline_item("s1", empty).unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(!this.summary_requests.contains("tool-3"));
         });
@@ -1334,8 +1474,9 @@ mod state_tests {
             this.active_runs
                 .insert("s1".to_string(), "run-1".to_string());
             let long_thought = "x".repeat(600);
-            let index =
-                this.apply_timeline_item("s1", item("th-1", "thinking", Some(&long_thought)));
+            let index = this
+                .apply_timeline_item("s1", item("th-1", "thinking", Some(&long_thought)))
+                .unwrap();
             // The newest item of an active run is still streaming.
             this.maybe_summarize_thinking(index, cx);
             assert!(this.summary_requests.is_empty());
@@ -1356,8 +1497,9 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
             for n in 0..5 {
-                let index =
-                    this.apply_timeline_item("s1", long_tool(&format!("t{n}"), "completed"));
+                let index = this
+                    .apply_timeline_item("s1", long_tool(&format!("t{n}"), "completed"))
+                    .unwrap();
                 this.maybe_summarize_tool(index, cx);
             }
             // Three ride at once; the rest wait instead of being dropped.
@@ -2442,8 +2584,10 @@ mod state_tests {
                 std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
                 std::env::set_var("XDG_DATA_HOME", dir.join("data"));
             }
-            let backend =
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new());
+            let backend = crate::backend::AgentBackend::for_test(
+                "http://127.0.0.1:9".to_string(),
+                String::new(),
+            );
             unsafe {
                 match previous_config {
                     Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
@@ -2815,10 +2959,12 @@ mod state_tests {
 
             this.apply_bootstrap(
                 crate::backend::LocalBootstrap {
+                    questions: Vec::new(),
                     project_root: Some("/work/alpha".to_string()),
                     sessions: vec![old.clone()],
                     recent_roots: Vec::new(),
                     latest: Some(maple_agent::agent::AgentSessionDetail {
+                        timeline_revision: 0,
                         session: old.clone(),
                         timeline: vec![user_item("u1", "earlier")],
                         mcp_errors: Vec::new(),
@@ -3076,15 +3222,15 @@ mod state_tests {
         screen.update(cx, |this, _cx| {
             assert_eq!(
                 this.apply_timeline_item("s1", item("a", "message", Some("1"))),
-                0
+                Some(0)
             );
             assert_eq!(
                 this.apply_timeline_item("s1", item("b", "message", Some("2"))),
-                1
+                Some(1)
             );
             assert_eq!(
                 this.apply_timeline_item("s1", item("a", "message", Some("3"))),
-                0
+                Some(0)
             );
             assert_eq!(this.timeline_index.get("a"), Some(&(0, 1)));
             assert_eq!(this.timeline_index.get("b"), Some(&(1, 0)));
@@ -4833,8 +4979,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
@@ -4942,8 +5091,11 @@ mod state_tests {
         let chat = cx.new(move |cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
@@ -5087,8 +5239,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             ChatScreen::new(backend, "user".to_string(), cx)
         });
@@ -5176,8 +5331,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_inner(backend, "user".to_string(), cx);
@@ -5277,8 +5435,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5370,8 +5531,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5563,8 +5727,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5656,8 +5823,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
@@ -5721,8 +5891,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);

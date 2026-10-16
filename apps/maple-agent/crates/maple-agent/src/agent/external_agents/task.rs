@@ -1,11 +1,13 @@
 //! Which external agents a task may use: those switched on in Settings that
-//! the user also switched on for the task, in a desktop task. Each task
+//! the user also switched on for the task. Each task
 //! starts with none; a choice applies from the task's next run.
 
 use serde_json::Value;
 
 use super::PROVIDERS;
-use crate::agent::store::{TaskKind, TaskRow};
+#[cfg(test)]
+use crate::agent::store::TaskKind;
+use crate::agent::store::TaskRow;
 use crate::agent::{
     AgentIntegration, AgentIntegrationAvailability, AgentRuntimeHandle,
     AgentSessionIntegrationKind, AgentSessionMcpServer,
@@ -35,11 +37,8 @@ pub(super) fn set_chosen_providers(row: &mut TaskRow, providers: Vec<String>) {
 }
 
 /// The providers a task's tools may use: switched on in Settings and for
-/// the task, in a desktop task.
+/// the task.
 pub(in crate::agent) fn task_providers(settings_on: &[String], row: &TaskRow) -> Vec<String> {
-    if row.kind != TaskKind::Desktop {
-        return Vec::new();
-    }
     let chosen = chosen_providers(row);
     PROVIDERS
         .iter()
@@ -52,14 +51,11 @@ pub(in crate::agent) fn task_providers(settings_on: &[String], row: &TaskRow) ->
 }
 
 /// A task's rows in the MCP menu for the external agents switched on in
-/// Settings, given their cards; none outside a desktop task.
+/// Settings, given their cards.
 pub(in crate::agent) fn session_rows(
     cards: &[AgentIntegration],
     row: &TaskRow,
 ) -> Vec<AgentSessionMcpServer> {
-    if row.kind != TaskKind::Desktop {
-        return Vec::new();
-    }
     let chosen = chosen_providers(row);
     cards
         .iter()
@@ -94,12 +90,9 @@ impl AgentRuntimeHandle {
             return Err("Unknown external agent integration".to_string());
         }
         let store = self.store()?;
-        let row = store
+        store
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
-        if row.kind != TaskKind::Desktop {
-            return Err("External agents are available only in desktop tasks".to_string());
-        }
         let cards = self.external_agent_cards().await?;
         if enabled {
             let card = cards
@@ -167,7 +160,10 @@ mod tests {
             task_providers(&on, &row(TaskKind::Desktop, &["claude", "codex", "other"])),
             ["codex", "claude"]
         );
-        assert!(task_providers(&on, &row(TaskKind::Acp, &["codex"])).is_empty());
+        assert_eq!(
+            task_providers(&on, &row(TaskKind::Acp, &["codex"])),
+            ["codex"]
+        );
         assert!(task_providers(&on, &row(TaskKind::Desktop, &[])).is_empty());
     }
 
@@ -198,7 +194,10 @@ mod tests {
         assert!(rows[1].enabled && rows[1].available);
         assert_eq!(rows[1].kind, AgentSessionIntegrationKind::ExternalAgent);
         assert_eq!(rows[1].transport, "external_agent");
-        assert!(session_rows(&cards, &row(TaskKind::Acp, &["claude"])).is_empty());
+        assert_eq!(
+            session_rows(&cards, &row(TaskKind::Acp, &["claude"])).len(),
+            2
+        );
         let off = vec![card(
             "codex",
             false,

@@ -17,7 +17,9 @@ pub const PRICING_URL: &str = crate::profile::PRICING_URL;
 
 /// Plan tier derived from the product name, the way the web app gates
 /// features (`hasProAccess`, `hasApiAccess`, tier ordering).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum PlanTier {
     Free,
     Starter,
@@ -142,7 +144,7 @@ pub fn configured_billing_api_url() -> String {
 
 /// Plan quota shown in the sidebar footer: plan name, percent of the
 /// quota used in the current period, and the date the period resets.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlanUsage {
     pub plan_label: String,
     pub percent_used: u8,

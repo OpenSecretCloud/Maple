@@ -200,7 +200,8 @@ mod tests {
 
     fn screen(cx: &mut TestAppContext) -> gpui::Entity<ChatScreen> {
         let backend = Arc::new(
-            AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).expect("backend"),
+            AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
         );
         cx.new(|cx| ChatScreen::new_inner(backend, "user".to_string(), cx))
     }

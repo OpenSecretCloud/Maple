@@ -35,13 +35,12 @@ scripts/              One maintainer helper: screenshot.py takes a desktop
 
 ### Backend / frontend boundary
 
-`app/src/backend.rs` owns the runtime: it is the only file that drives
-`maple_agent`'s services, holding a private Tokio runtime and exposing an
-async facade (`AgentBackend`) plus one event stream. UI modules import data
-types from `maple_agent` (timeline items, session summaries) but talk to the
-running agent through that facade only. This mirrors Maple's own edge-adapter
-pattern, so a future process split replaces the facade without touching UI
-code.
+`app/src/backend.rs` is the asynchronous client facade. `app/src/host.rs`
+starts or joins one OS-local host; `backend/local.rs` owns account credentials,
+local persistence, and the Maple runtime inside that host. GPUI owns presentation
+and native permission prompts. The ACP adapter forwards stdio to the same host,
+which projects shared task events onto ACP. Pi remains the agent loop; it has no
+knowledge of frontends or IPC. See [local host](docs/local-host.md).
 
 The runtime began as a copy of Research’s Tauri agent (now
 `apps/maple-research/frontend/src-tauri/src`) with Tauri removed, and now runs
@@ -397,6 +396,7 @@ maple-agent                 Open the desktop app.
 maple-agent acp             Serve the Agent Client Protocol on stdio.
 maple-agent proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
 maple-agent login           Sign in with email and password from a terminal.
+maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
 ```
 
@@ -410,26 +410,33 @@ desktop-only for now.
 
 ### `maple-agent acp`
 
-Runs a standalone ACP agent over stdio for editors and ACP clients. It
-reuses the sign-in saved by the desktop app and hosts its own runtime, so
-the desktop app does not need to run. Logs go to the log file only; stdout
-is the ACP channel. If no sign-in is saved, it exits with a message that
-tells the user to sign in from the desktop app first.
+Connects editors and ACP clients to the shared local host over stdio. It
+can start the host without opening a window; desktop later joins that host.
+Both interfaces use the same sign-in, tasks, tools, history, and one active run
+per task. Logs go to the profile log; stdout contains only ACP frames.
+Sign in through desktop or `maple-agent login` first.
 
-Each ACP session is a Maple task. `session/new` creates one in the client's
-working directory; session lists show it from its first prompt, and one
-closed before that is removed. `session/load` opens any task of that
-directory and replays its history. While a session is open its task runs
-for that client only: its commands keep the PATH the client started Maple
-with, the client's HTTP MCP servers run beside the account's, and the
-desktop's own tools (the plan, questions, external agents and computer use)
-are left out. Tasks created over ACP stay out of the desktop task list.
-Maple has no session modes: every tool call runs without asking, and a
-project with skills or instructions of its own asks the client's user once
-whether to trust it. Use a task in one place at a time: the desktop app and
-`maple-agent acp` are separate processes, and running one task from both at
-once can split its history. Both parts stay in the task's file, but only
-one shows.
+`session/new` creates a draft in the client's working directory. Its first
+accepted prompt makes it visible in desktop and ACP lists. `session/load`
+replays a task's history, including the partial answer of a running task.
+Closing the ACP pipe detaches the client. Explicit `session/cancel` stops shared
+work; the optional `session/close` capability is not advertised because it means
+cancel in ACP. Some clients send cancel themselves when closing a turn.
+
+Model and supported thinking levels use standard configuration options. Maple
+also supports the `_session/steering` extension used by the Codex and Claude ACP
+adapters: it injects into an active run at Pi's next steering opportunity.
+Ordinary overlapping `session/prompt` calls retain ACP's busy response; clients
+should use the advertised steering extension. Questions use negotiated form
+elicitation or a connected desktop; with neither, the tool asks the agent to use
+plain text. Project trust remains an explicit choice; tools do not ask for
+individual approval and there are no session modes.
+
+Client-supplied HTTP MCP bindings are temporary and become unavailable on
+disconnect. Conflicting server names are refused. Transient stdio MCP injection
+remains disabled; configure local stdio servers in Maple. Tools execute on the
+host's filesystem with its normal login-shell PATH. See [lifecycle and client
+compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
 
@@ -503,6 +510,7 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
 | `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md` | The account's own instructions, skills and prompt templates, as Pi's agent folder holds them, and a `SYSTEM.md` that replaces Pi's default prompt ahead of Maple's opening instructions. |
+| `<local data>/send-receipts.db` | Private send admission/results for reconnect reconciliation; no prompt contents. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
 | `<local data>/agent/accounts/<scope>/sessions/` | One session file (JSONL) per task, and `tasks.db`, the task index (SQLite, WAL). |

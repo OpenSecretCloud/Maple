@@ -15,7 +15,7 @@ use std::path::Path;
 ///
 /// A no-op off unix, where the containing profile already carries the
 /// access control.
-pub(crate) fn set_owner_only_file(path: &Path) -> io::Result<()> {
+pub fn set_owner_only_file(path: &Path) -> io::Result<()> {
     set_owner_only_mode(path, 0o600)
 }
 

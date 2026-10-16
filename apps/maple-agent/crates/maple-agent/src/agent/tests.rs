@@ -107,6 +107,17 @@ fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
 }
 
 impl Harness {
+    pub(crate) fn emit_timeline_item(&self, session_id: &str, item: AgentTimelineItem) {
+        emit_agent_event(
+            &self.service.host.events,
+            AgentServiceEvent::TimelineItem {
+                session_id: session_id.into(),
+                run_id: None,
+                item,
+            },
+        );
+    }
+
     pub(crate) async fn new() -> Self {
         Self::with_faux(FauxProvider::new()).await
     }
@@ -186,7 +197,7 @@ impl Harness {
         }
     }
 
-    pub(super) async fn send(&self, session_id: &str, text: &str) -> AgentRunHandle {
+    pub(crate) async fn send(&self, session_id: &str, text: &str) -> AgentRunHandle {
         self.handle
             .send_message(self.request(session_id, text))
             .await

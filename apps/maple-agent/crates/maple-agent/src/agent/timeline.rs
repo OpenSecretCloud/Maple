@@ -219,6 +219,7 @@ pub(crate) fn merge_into(items: &mut Vec<AgentTimelineItem>, incoming: AgentTime
         previous.output = incoming.output;
     }
     previous.created_ms = incoming.created_ms;
+    previous.revision = incoming.revision;
     previous.merge = incoming.merge;
 }
 
@@ -243,6 +244,7 @@ fn user_item(timestamp: Timestamp, content: &[Content], merge: &str) -> AgentTim
         None => (text, None),
     };
     AgentTimelineItem {
+        revision: 0,
         id: user_row_id(timestamp),
         item_type: "message".to_string(),
         role: Some("user".to_string()),
@@ -297,6 +299,7 @@ fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
 
 fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id: reply_row_id(timestamp, "thinking"),
         item_type: "thinking".to_string(),
         role: Some("thought".to_string()),
@@ -312,6 +315,7 @@ fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimeli
 
 fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id: reply_row_id(timestamp, "text"),
         item_type: "message".to_string(),
         role: Some("assistant".to_string()),
@@ -327,6 +331,7 @@ fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineIt
 
 fn tool_call_item(reply_timestamp: Timestamp, call: &ToolCall, status: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id: tool_row_id(reply_timestamp, &call.id),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
@@ -351,6 +356,7 @@ fn tool_result_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id,
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
@@ -375,6 +381,7 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         .clone()
         .unwrap_or_else(|| "The model's reply failed".to_string());
     AgentTimelineItem {
+        revision: 0,
         id: reply_row_id(reply.timestamp, "error"),
         item_type: "error".to_string(),
         role: Some("system".to_string()),
@@ -411,6 +418,7 @@ pub(crate) fn notice_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        revision: 0,
         id,
         item_type: "system".to_string(),
         role: Some("system".to_string()),
@@ -428,6 +436,7 @@ pub(crate) fn notice_item(
 pub(crate) fn error_item(message: String) -> AgentTimelineItem {
     let now = pi_ai::now_ms();
     AgentTimelineItem {
+        revision: 0,
         id: format!("error-{now}"),
         item_type: "error".to_string(),
         role: Some("system".to_string()),
@@ -524,6 +533,7 @@ impl LiveTimeline {
                 };
                 let arguments = args.as_object().cloned().unwrap_or_default();
                 vec![AgentTimelineItem {
+                    revision: 0,
                     id: id.clone(),
                     item_type: "tool".to_string(),
                     role: Some("assistant".to_string()),
@@ -591,6 +601,7 @@ impl LiveTimeline {
                 let row = tool_row_id(reply.timestamp, id);
                 self.tool_rows.insert(id.clone(), row.clone());
                 vec![AgentTimelineItem {
+                    revision: 0,
                     id: row,
                     item_type: "tool".to_string(),
                     role: Some("assistant".to_string()),

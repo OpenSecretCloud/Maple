@@ -176,7 +176,7 @@ impl ApiKeySource for NoKeys {
 }
 
 /// What the catalog says about one model, after resolving an alias.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CatalogEntry {
     /// The context window in tokens; `None` when the catalog does not say.
     pub context_window: Option<u64>,

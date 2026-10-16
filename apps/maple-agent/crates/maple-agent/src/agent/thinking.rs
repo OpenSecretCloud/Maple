@@ -93,6 +93,15 @@ impl AgentRuntimeHandle {
         config.default_thinking_level = Some(state.current);
         save_agent_config_inner(self.paths(), &self.user_id, &config)
             .map_err(|error| error.to_string())?;
+        if let Some(session_id) = session_id {
+            super::emit_agent_event(
+                &self.service.host.events,
+                super::AgentServiceEvent::ThinkingChanged {
+                    session_id: session_id.into(),
+                    state: state.clone(),
+                },
+            );
+        }
         Ok(state)
     }
 }

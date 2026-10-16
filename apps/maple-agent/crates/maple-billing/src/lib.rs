@@ -11,7 +11,7 @@ pub const DEFAULT_BILLING_API_URL: &str = "https://billing.opensecret.cloud";
 
 /// `GET /v1/maple/subscription/status`. Every field is optional on the
 /// wire except the booleans, which default to false when absent.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct BillingStatus {
     #[serde(default)]
     pub is_subscribed: bool,
@@ -45,7 +45,7 @@ pub struct BillingStatus {
 }
 
 /// One purchasable plan from `GET /v1/maple/products` (public).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Product {
     pub id: String,
     pub name: String,
@@ -60,7 +60,7 @@ pub struct Product {
     pub is_available: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Price {
     pub id: String,
     pub currency: String,
@@ -70,7 +70,7 @@ pub struct Price {
     pub recurring: Option<Recurring>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Recurring {
     pub interval: String,
     #[serde(default)]

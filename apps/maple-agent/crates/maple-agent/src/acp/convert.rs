@@ -26,6 +26,8 @@ pub(super) const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
 #[derive(Default)]
 pub(super) struct AcpProjection {
     tools: HashSet<String>,
+    revisions: HashMap<String, u64>,
+    pub(super) snapshot_revision: u64,
     streamed: HashMap<String, String>,
 }
 
@@ -56,6 +58,28 @@ pub(super) fn acp_session_config_options(
         let locked_models = [model.to_string()];
         acp_config_options(model, &locked_models)
     }
+}
+
+pub(super) fn add_thinking_option(
+    options: &mut Vec<SessionConfigOption>,
+    state: &crate::agent::AgentThinkingState,
+) {
+    if state.levels.len() < 2 {
+        return;
+    }
+    options.push(
+        SessionConfigOption::select(
+            "thought_level",
+            "Thinking",
+            state.current.as_str(),
+            state
+                .levels
+                .iter()
+                .map(|level| SessionConfigSelectOption::new(level.as_str(), level.as_str()))
+                .collect::<Vec<_>>(),
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel),
+    );
 }
 
 /// Parse a whole message shaped like a slash command. Mirrors the desktop
@@ -262,13 +286,20 @@ pub(super) fn timeline_update(
     projection: &mut AcpProjection,
     replay: bool,
 ) -> Option<SessionUpdate> {
+    if item.revision > 0 {
+        let previous = projection.revisions.entry(item.id.clone()).or_default();
+        if item.revision <= *previous {
+            return None;
+        }
+        *previous = item.revision;
+    }
     match item.item_type.as_str() {
         "message" if item.role.as_deref() == Some("user") => {
             let text = item.text.as_ref().filter(|_| replay)?;
-            Some(SessionUpdate::UserMessageChunk(text_chunk(
-                text.clone(),
-                &item.id,
-            )))
+            let _ = text;
+            projection
+                .unsent_text(item)
+                .map(|text| SessionUpdate::UserMessageChunk(text_chunk(text, &item.id)))
         }
         "message" if item.role.as_deref() == Some("assistant") => projection
             .unsent_text(item)
@@ -304,10 +335,15 @@ impl AcpProjection {
         // The settled text: what streamed is its start, and the rest goes
         // now. A caller cannot take back text, so a message that settled
         // differently from its stream is left as it streamed.
-        let streamed = self.streamed.remove(&item.id).unwrap_or_default();
-        text.strip_prefix(streamed.as_str())
+        let streamed = self.streamed.entry(item.id.clone()).or_default();
+        let suffix = text
+            .strip_prefix(streamed.as_str())
             .filter(|rest| !rest.is_empty())
-            .map(str::to_string)
+            .map(str::to_string);
+        if suffix.is_some() {
+            *streamed = text.to_string();
+        }
+        suffix
     }
 }
 

@@ -55,6 +55,30 @@ impl MapleApp {
         events: Vec<maple_agent::agent::AgentServiceEvent>,
         cx: &mut Context<Self>,
     ) {
+        let mut batch = Vec::new();
+        for event in events {
+            if let maple_agent::agent::AgentServiceEvent::AccountChanged(user_id) = &event {
+                // Deliver the old account's queued frames only to its screen.
+                // A reconnect may discover a sign-out/account change while away.
+                self.forward_service_events(std::mem::take(&mut batch), cx);
+                if &self.user_id != user_id {
+                    match user_id {
+                        Some(user_id) => self.open_chat(user_id.clone(), cx),
+                        None => self.show_login(cx),
+                    }
+                }
+            } else {
+                batch.push(event);
+            }
+        }
+        self.forward_service_events(batch, cx);
+    }
+
+    fn forward_service_events(
+        &mut self,
+        events: Vec<maple_agent::agent::AgentServiceEvent>,
+        cx: &mut Context<Self>,
+    ) {
         let chat = match &self.screen {
             Screen::Chat(chat) => Some(chat.clone()),
             _ => self.parked_chat.clone(),
@@ -385,6 +409,67 @@ fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
     }
 }
 
+struct StartupError(String);
+
+impl Render for StartupError {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_6()
+            .bg(gpui::rgb(ui::theme::bg_app()))
+            .text_color(gpui::rgb(ui::theme::text_primary()))
+            .child(div().text_lg().child("Maple could not start"))
+            .child(self.0.clone())
+            .child(
+                div()
+                    .id("close-startup-error")
+                    .cursor_pointer()
+                    .px_4()
+                    .py_2()
+                    .rounded_md()
+                    .bg(gpui::rgb(ui::theme::bg_elevated()))
+                    .child("Close")
+                    .on_click(|_, _, cx| cx.quit()),
+            )
+    }
+}
+
+fn show_startup_error(error: String) {
+    gpui_platform::application().run(move |cx| {
+        cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
+        cx.on_action(|_: &QuitApp, cx| cx.quit());
+        ui::menus::install(cx);
+        let bounds = Bounds::centered(None, size(px(560.), px(260.)), cx);
+        let result = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                app_id: Some(crate::profile::BUNDLE_ID.into()),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some(crate::profile::DISPLAY_NAME.into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            move |window, cx| {
+                window.on_window_should_close(cx, |_, cx| {
+                    cx.quit();
+                    true
+                });
+                cx.new(|_| StartupError(error))
+            },
+        );
+        if let Err(error) = result {
+            log::error!("Could not show the startup error: {error}");
+            cx.quit();
+        } else {
+            cx.activate(true);
+        }
+    });
+}
+
 pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
     log::debug!("startup: logging ready at {} ms", crate::startup_elapsed());
@@ -402,13 +487,17 @@ pub fn run() {
             .display(),
         crate::startup_elapsed()
     );
-    let backend = Arc::new(
-        AgentBackend::new(
-            crate::configured_api_url(),
-            startup_settings.effective_harness_instructions(),
-        )
-        .expect("failed to initialize agent backend"),
-    );
+    let backend = match AgentBackend::new(
+        crate::configured_api_url(),
+        startup_settings.effective_harness_instructions(),
+    ) {
+        Ok(backend) => Arc::new(backend),
+        Err(error) => {
+            log::error!("Could not start Maple: {error}");
+            show_startup_error(error);
+            return;
+        }
+    };
     log::debug!("startup: backend ready at {} ms", crate::startup_elapsed());
 
     gpui_platform::application()
@@ -474,8 +563,13 @@ pub fn run() {
             } else {
                 WindowBounds::Windowed(bounds)
             };
-            cx.on_app_quit(|_cx| async {
-                persist_window_state();
+            let quit_backend = backend.clone();
+            cx.on_app_quit(move |_cx| {
+                let backend = quit_backend.clone();
+                async move {
+                    persist_window_state();
+                    let _ = backend.detach().await;
+                }
             })
             .detach();
             let root_backend = backend.clone();

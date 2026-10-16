@@ -659,7 +659,7 @@ mod tests {
     fn integration_targets_follow_the_visible_control_order(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         let settings = cx.new(|cx| {
@@ -743,7 +743,7 @@ mod tests {
     fn application_vim_off_keeps_settings_projection_empty(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         let settings = cx.new(|cx| {
@@ -817,7 +817,7 @@ mod tests {
         }
 
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         let settings = cx.new(|cx| {
@@ -888,7 +888,7 @@ mod tests {
         }
 
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         let settings = cx.new(|cx| {
@@ -970,7 +970,7 @@ mod tests {
     fn dropdown_screen(cx: &mut TestAppContext, application_vim: bool) -> Entity<SettingsScreen> {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
         cx.new(|cx| {

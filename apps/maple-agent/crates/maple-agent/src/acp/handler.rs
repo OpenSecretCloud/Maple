@@ -10,9 +10,8 @@ use agent_client_protocol::schema::v1::{
     InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
     LoadSessionResponse, McpCapabilities, NewSessionRequest, NewSessionResponse,
     PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities,
-    SessionCloseCapabilities, SessionDeleteCapabilities, SessionListCapabilities,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
-    SetSessionModeResponse,
+    SessionDeleteCapabilities, SessionListCapabilities, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
@@ -68,11 +67,13 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
             MatchDispatchFrom::new(message, &cx)
                 .if_request({
                     let context = Arc::clone(&context);
+                    let observer_connection = cx.clone();
                     move |request: InitializeRequest, responder: Responder<InitializeResponse>| async move {
                         context.client_supports_form_elicitation.store(
                             client_supports_form_elicitation(&request),
                             Ordering::SeqCst,
                         );
+                        context.start_observing(observer_connection).await;
                         let capabilities = AgentCapabilities::new()
                             .load_session(true)
                             .prompt_capabilities(
@@ -85,11 +86,11 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                             .session_capabilities(
                                 SessionCapabilities::new()
                                     .list(SessionListCapabilities::new())
-                                    .close(SessionCloseCapabilities::new())
                                     .delete(SessionDeleteCapabilities::new()),
                             );
                         responder.respond(
                             InitializeResponse::new(ProtocolVersion::LATEST)
+                                .meta(serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(serde_json::json!({"steering": {"supported": true}})).expect("literal metadata"))
                                 .agent_info(Implementation::new(
                                     "maple",
                                     env!("CARGO_PKG_VERSION"),
@@ -135,7 +136,8 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     |request: CloseSessionRequest, responder: Responder<CloseSessionResponse>| async move {
                         let task_context = Arc::clone(&context);
                         respond_in_background(&context, responder, async move {
-                            task_context.close_session(request).await
+                            let _ = (task_context, request);
+                            Err(agent_client_protocol::Error::method_not_found())
                         })
                         .await
                     }
@@ -217,8 +219,15 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                 .await
                 .otherwise({
                     let cx = cx.clone();
+                    let context = Arc::clone(&context);
                     |message: Dispatch| async move {
                         match message {
+                            Dispatch::Request(request, responder) if request.method == "_session/steering" => {
+                                let task_context = Arc::clone(&context);
+                                respond_in_background(&context, responder, async move {
+                                    task_context.steer(&cx, request.params).await
+                                }).await?;
+                            }
                             Dispatch::Request(_, responder) => {
                                 responder.respond_with_error(
                                     agent_client_protocol::Error::method_not_found(),
@@ -229,7 +238,6 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                             }
                             Dispatch::Notification(_) => {}
                         }
-                        let _ = cx;
                         Ok(())
                     }
                 })

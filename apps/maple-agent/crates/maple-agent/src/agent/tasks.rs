@@ -116,6 +116,7 @@ impl AgentRuntimeHandle {
             AgentServiceEvent::SessionCreated(summary.clone()),
         );
         Ok(AgentSessionDetail {
+            timeline_revision: 0,
             session: summary,
             timeline: Vec::new(),
             mcp_errors: Vec::new(),
@@ -164,14 +165,12 @@ impl AgentRuntimeHandle {
             pi_ai::now_ms(),
         );
         set_chosen_servers(&mut row, mcp_servers);
-        // Built-in CUA set up on this device is on for a desktop task when
+        // Built-in CUA set up on this device is on for any new task when
         // the composer asks for it, or by the default for new tasks.
-        if kind == TaskKind::Desktop
-            && let Some(cua_on) = super::cua::choice_for_new_task(
-                super::integrations::cua_default(self.paths(), &self.user_id),
-                request.mcp_server_names.as_deref(),
-            )
-        {
+        if let Some(cua_on) = super::cua::choice_for_new_task(
+            super::integrations::cua_default(self.paths(), &self.user_id),
+            request.mcp_server_names.as_deref(),
+        ) {
             super::cua::set_task_choice(&mut row, cua_on);
         }
         Ok(row)
@@ -198,24 +197,71 @@ impl AgentRuntimeHandle {
     }
 
     /// A task's summary, transcript and queue.
+    /// Change a draft task's model at the same boundary that admits its first run.
+    pub async fn set_task_model(
+        &self,
+        session_id: &str,
+        model: &str,
+    ) -> Result<AgentSessionSummary, String> {
+        self.verify_generation().await?;
+        let runtime = self.runtime().await?;
+        let summary = runtime.runs.while_idle(session_id, || {
+            let row = runtime.store.get(session_id)?.ok_or("Task was not found")?;
+            if row.message_count > 0 && row.model.as_deref() != Some(model) {
+                return Err("Maple tasks are model-locked after their first message".into());
+            }
+            runtime
+                .store
+                .update(session_id, |row| row.model = Some(model.into()))?
+                .map(|row| row.summary())
+                .ok_or_else(|| "Task was not found".into())
+        })?;
+        emit_agent_event(
+            &runtime.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id: session_id.into(),
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
+    }
+
     pub async fn load_session(&self, session_id: String) -> Result<AgentSessionDetail, String> {
         let runtime = self.current_runtime().await?;
         let store = self.store()?;
         let row = store
             .get(&session_id)?
             .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
-        let loaded = match &runtime {
-            Some(runtime) => runtime.loaded_session(&session_id).await,
-            None => None,
-        };
-        let mut timeline = match loaded {
-            Some(session) => session.with_session(session_timeline),
-            None => {
-                let path = store.session_path(&session_id);
-                tokio::task::spawn_blocking(move || stored_timeline(&path))
-                    .await
-                    .map_err(|error| format!("Failed to load Agent task: {error}"))??
+        let (mut timeline, timeline_revision) = loop {
+            let before = runtime
+                .as_ref()
+                .and_then(|runtime| runtime.runs.snapshot_marker(&session_id));
+            let loaded = match &runtime {
+                Some(runtime) => runtime.loaded_session(&session_id).await,
+                None => None,
+            };
+            let mut timeline = match loaded {
+                Some(session) => session.with_session(session_timeline),
+                None => {
+                    let path = store.session_path(&session_id);
+                    tokio::task::spawn_blocking(move || stored_timeline(&path))
+                        .await
+                        .map_err(|error| format!("Failed to load Agent task: {error}"))??
+                }
+            };
+
+            let (after, revision, live) = runtime
+                .as_ref()
+                .map(|runtime| runtime.runs.live_snapshot(&session_id))
+                .unwrap_or_default();
+            if before != after {
+                continue;
             }
+            for item in live {
+                merge_into(&mut timeline, item);
+            }
+            break (timeline, revision);
         };
         let queue = match &runtime {
             Some(runtime) => {
@@ -235,6 +281,7 @@ impl AgentRuntimeHandle {
             },
         };
         Ok(AgentSessionDetail {
+            timeline_revision,
             session: row.summary(),
             timeline,
             mcp_errors: Vec::new(),
