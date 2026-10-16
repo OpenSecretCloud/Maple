@@ -17,7 +17,7 @@ pub struct Hello {
     pub mode: ConnectionMode,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMode {
     Client,
     Acp,

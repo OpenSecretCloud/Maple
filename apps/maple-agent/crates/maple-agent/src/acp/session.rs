@@ -109,6 +109,8 @@ impl Drop for UnpublishedAcpSession {
 
 pub(super) struct AcpSessionOperation {
     pub(super) gate: Arc<Mutex<()>>,
+    /// Live observers wait for initial history replay, never for a whole turn.
+    pub(super) replay_gate: Mutex<()>,
     pub(super) cancellation: CancellationToken,
 }
 
@@ -116,6 +118,7 @@ impl AcpSessionOperation {
     pub(super) fn new(connection_lifetime: &CancellationToken) -> Arc<Self> {
         Arc::new(Self {
             gate: Arc::new(Mutex::new(())),
+            replay_gate: Mutex::new(()),
             cancellation: connection_lifetime.child_token(),
         })
     }

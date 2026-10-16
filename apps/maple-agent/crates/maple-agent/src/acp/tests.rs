@@ -1419,7 +1419,7 @@ async fn joining_a_stream_replays_partial_once_then_follows_live_text() {
 }
 
 #[tokio::test]
-async fn title_updates_during_long_prompts_preserve_shared_session_delivery() {
+async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
     let harness = Harness::with_faux(
         pi_ai::faux::FauxProvider::new().with_chunk_delay(Duration::from_millis(2)),
     )
@@ -1428,6 +1428,10 @@ async fn title_updates_during_long_prompts_preserve_shared_session_delivery() {
     // keeps reading. A metadata update must not stall the observer behind
     // the originating prompt's whole-turn history gate.
     let reply = "word".repeat(400);
+    std::fs::write(harness.project.path().join("notes.txt"), "notes").unwrap();
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("read", json!({"path": "notes.txt"}))]);
     harness.faux.push_text(&reply);
     let (mut client, serving) = connect(&harness.handle, no_answers());
     client.initialize(json!({})).await;
@@ -1438,7 +1442,29 @@ async fn title_updates_during_long_prompts_preserve_shared_session_delivery() {
             json!({"sessionId": task, "prompt": [{"type": "text", "text": "First turn"}]}),
         )
         .await;
-    eventually(|| !harness.faux.requests().is_empty()).await;
+    let call_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            client.call("session/list", json!({})).await;
+            if let Some(update) = client
+                .updates
+                .iter()
+                .find(|update| update["update"]["sessionUpdate"] == "tool_call")
+            {
+                break update["update"]["toolCallId"].as_str().unwrap().to_string();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // External-agent activity is published outside the originating run's
+    // stream. It must reach this client without waiting for its prompt to end.
+    let activity: AgentTimelineItem = serde_json::from_value(json!({
+        "id": call_id, "itemType": "tool", "role": "assistant",
+        "status": "running", "output": {"text": "External agent is working"},
+        "createdMs": 0, "merge": "replace"
+    }))
+    .unwrap();
+    harness.emit_timeline_item(&task, activity);
     let title = "A title arriving while the reply streams";
     // Repeating an unchanged title must also leave the observer draining.
     for _ in 0..2 {
@@ -1469,6 +1495,25 @@ async fn title_updates_during_long_prompts_preserve_shared_session_delivery() {
         .rposition(|update| update["update"]["sessionUpdate"] == "agent_message_chunk")
         .unwrap();
     assert!(title_position < last_text);
+    let activity_position = client
+        .updates
+        .iter()
+        .position(|update| {
+            update["update"]["toolCallId"] == call_id
+                && update["update"]["content"][0]["content"]["text"] == "External agent is working"
+        })
+        .expect("external-agent activity reaches the originating ACP client");
+    assert!(activity_position < last_text);
+    assert_eq!(
+        client
+            .updates
+            .iter()
+            .filter(|update| update["update"]["toolCallId"] == call_id
+                && update["update"]["sessionUpdate"] == "tool_call")
+            .count(),
+        1,
+        "run and external-agent updates share one tool announcement"
+    );
     assert_eq!(client.texts("agent_message_chunk")[0].1, reply);
 
     // Continue through the desktop's runtime handle, then return to the

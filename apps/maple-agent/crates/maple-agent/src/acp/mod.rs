@@ -432,6 +432,7 @@ impl AcpConnectionContext {
         let operation = AcpSessionOperation::new(&self.lifetime);
         // Held until the history is replayed, so a prompt's updates follow it.
         let operation_guard = Arc::clone(&operation.gate).lock_owned().await;
+        let replay_guard = operation.replay_gate.lock().await;
         {
             // Register the operation before the task is held. Close can now
             // mark it closing and wait, while disconnect linearizes through
@@ -540,6 +541,7 @@ impl AcpConnectionContext {
         if let Some(session) = self.sessions.lock().await.get_mut(&session_id) {
             session.projection = projection;
         }
+        drop(replay_guard);
         drop(operation_guard);
         for question in self.agent.pending_questions().await {
             self.observe(cx, question).await.map_err(outbound_error)?;
@@ -1368,7 +1370,13 @@ impl AcpConnectionContext {
                 Err(AcpOutboundSendError::Transport(error)) => return Err(error),
             }
         }
-        let mut projection = AcpProjection::default();
+        let operation = self
+            .session_operations
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(agent_client_protocol::Error::invalid_request)?;
         // A failure is told once the run ends failed: Pi may still retry it.
         let mut failure: Option<AgentTimelineItem> = None;
         let stop = loop {
@@ -1382,14 +1390,25 @@ impl AcpConnectionContext {
             if overflowed.load(Ordering::Acquire) {
                 break StreamStop::Overflowed;
             }
+            // A tool row may be updated both by this run and by its external
+            // agent. Share projection state and serialize each outgoing update
+            // with the observer, without holding the gate while waiting for
+            // the next model event.
+            let _projection = tokio::select! {
+                _ = self.lifetime.cancelled() => return Ok((PromptResponse::new(StopReason::Cancelled), true)),
+                guard = operation.replay_gate.lock() => guard,
+            };
             let update = match event {
                 Some(AgentRunEvent::TimelineItem(item)) if item.item_type == "error" => {
                     failure = Some(item);
                     None
                 }
-                Some(AgentRunEvent::TimelineItem(item)) => {
-                    timeline_update(&item, &mut projection, false)
-                }
+                Some(AgentRunEvent::TimelineItem(item)) => self
+                    .sessions
+                    .lock()
+                    .await
+                    .get_mut(&session_id)
+                    .and_then(|session| timeline_update(&item, &mut session.projection, false)),
                 Some(AgentRunEvent::Error(item)) => {
                     failure = Some(item);
                     None

@@ -268,7 +268,7 @@ impl AcpConnectionContext {
         };
         let _gate = tokio::select! {
             _ = self.lifetime.cancelled() => return Ok(()),
-            gate = operation.gate.lock() => gate,
+            gate = operation.replay_gate.lock() => gate,
         };
         let update = {
             let mut sessions = self.sessions.lock().await;

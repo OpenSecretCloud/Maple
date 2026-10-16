@@ -204,14 +204,14 @@ impl RemoteClient {
 
 async fn handshake(
     mut stream: ipc::Connection,
-    endpoint: &ipc::Endpoint,
+    profile: &str,
     mode: ConnectionMode,
 ) -> Result<(ipc::Connection, Welcome), String> {
     protocol::write(
         &mut stream,
         &Hello {
             version: protocol::VERSION,
-            profile: endpoint.profile.clone(),
+            profile: profile.into(),
             build: protocol::BUILD.into(),
             mode,
         },
@@ -219,7 +219,9 @@ async fn handshake(
     .await?;
     let welcome: Result<Welcome, String> = protocol::read(&mut stream).await?;
     let welcome = welcome?;
-    if welcome.version != protocol::VERSION || welcome.build != protocol::BUILD {
+    if mode != ConnectionMode::Stop
+        && (welcome.version != protocol::VERSION || welcome.build != protocol::BUILD)
+    {
         return Err(
             "A different Maple host version is running. Quit that host before opening this build."
                 .into(),
@@ -234,7 +236,7 @@ async fn connect(
     start: bool,
 ) -> Result<(ipc::Connection, Welcome), String> {
     if let Ok(stream) = endpoint.connect().await {
-        return tokio::time::timeout(START_TIMEOUT, handshake(stream, endpoint, mode))
+        return tokio::time::timeout(START_TIMEOUT, handshake(stream, &endpoint.profile, mode))
             .await
             .map_err(|_| "Maple host did not answer".to_string())?;
     }
@@ -253,7 +255,7 @@ async fn connect(
         }
     }
     if let Ok(stream) = endpoint.connect().await {
-        return tokio::time::timeout_at(deadline, handshake(stream, endpoint, mode))
+        return tokio::time::timeout_at(deadline, handshake(stream, &endpoint.profile, mode))
             .await
             .map_err(|_| "Maple host did not answer".to_string())?;
     }
@@ -261,9 +263,10 @@ async fn connect(
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
         if let Ok(stream) = endpoint.connect().await {
-            let result = tokio::time::timeout_at(deadline, handshake(stream, endpoint, mode))
-                .await
-                .map_err(|_| "Maple host did not answer".to_string())?;
+            let result =
+                tokio::time::timeout_at(deadline, handshake(stream, &endpoint.profile, mode))
+                    .await
+                    .map_err(|_| "Maple host did not answer".to_string())?;
             drop(startup);
             return result;
         }
@@ -319,17 +322,34 @@ fn spawn_host() -> Result<(), String> {
 pub fn run(api_url: String) -> Result<(), String> {
     let endpoint = ipc::Endpoint::new(&api_url)?;
     let ownership = endpoint.lock("host.lock")?;
-    ownership
-        .try_lock()
-        .map_err(|_| "A Maple host already owns this profile".to_string())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     runtime.block_on(async {
+        // The previous owner removes its listener before draining runs and
+        // children. A replacement waits for that drain instead of exiting on
+        // the first locked attempt. Never open shared state before ownership.
+        wait_for_ownership(&ownership, START_TIMEOUT).await?;
         let backend = Arc::new(LocalBackend::new(
             api_url,
             crate::settings::load_settings().effective_harness_instructions(),
         )?);
         serve(endpoint, backend).await
     })
+}
+
+async fn wait_for_ownership(file: &std::fs::File, timeout: Duration) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("The previous Maple host is still running or shutting down. Try again after it exits.".into());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(format!("Cannot acquire Maple host ownership: {error}")),
+        }
+    }
 }
 
 async fn serve(endpoint: ipc::Endpoint, backend: Arc<LocalBackend>) -> Result<(), String> {
@@ -392,34 +412,10 @@ async fn serve_client(
     stop: mpsc::Sender<()>,
     receipts: Arc<receipts::Receipts>,
 ) -> Result<(), String> {
-    let hello = tokio::time::timeout(START_TIMEOUT, protocol::read::<Hello>(&mut connection))
-        .await
-        .map_err(|_| "Host handshake timed out".to_string())??;
     let mut subscription = events.subscribe();
-    if hello.version != protocol::VERSION
-        || hello.profile != endpoint.profile
-        || hello.build != protocol::BUILD
-    {
-        protocol::write(
-            &mut connection,
-            &Err::<Welcome, _>(
-                "Incompatible Maple host or profile; explicitly quit the existing host first",
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-    protocol::write(
-        &mut connection,
-        &Ok::<_, String>(Welcome {
-            version: protocol::VERSION,
-            pid: std::process::id(),
-            build: protocol::BUILD.into(),
-            user_id: backend.saved_user_id(),
-        }),
-    )
-    .await?;
-    match hello.mode {
+    let mode =
+        accept_handshake(&mut connection, &endpoint.profile, backend.saved_user_id()).await?;
+    match mode {
         ConnectionMode::Stop => {
             let _ = stop.send(()).await;
             return std::future::pending().await;
@@ -482,6 +478,49 @@ async fn serve_client(
     drop(response_rx);
     while calls.join_next().await.is_some() {}
     result
+}
+
+async fn accept_handshake(
+    connection: &mut ipc::Connection,
+    profile: &str,
+    user_id: Option<String>,
+) -> Result<ConnectionMode, String> {
+    let hello = tokio::time::timeout(START_TIMEOUT, protocol::read::<Hello>(connection))
+        .await
+        .map_err(|_| "Host handshake timed out".to_string())??;
+    // Stop is an explicit, minimal control operation on the OS-private storage
+    // endpoint. It must remain usable when the new build cannot join the old
+    // runtime. It grants no access to account data or ordinary host commands.
+    let error = if hello.mode != ConnectionMode::Stop
+        && (hello.version != protocol::VERSION
+            || hello.profile != profile
+            || hello.build != protocol::BUILD)
+    {
+        Some(
+            "Incompatible Maple host or profile. Close the existing host or run `maple-agent host stop` for this profile, then reopen Maple.",
+        )
+    } else if hello.mode == ConnectionMode::Acp && user_id.is_none() {
+        Some(
+            "Maple ACP requires sign-in. Sign in through Maple Desktop or `maple-agent login` first.",
+        )
+    } else {
+        None
+    };
+    if let Some(error) = error {
+        protocol::write(connection, &Err::<Welcome, _>(error)).await?;
+        return Err(error.into());
+    }
+    protocol::write(
+        connection,
+        &Ok::<_, String>(Welcome {
+            version: protocol::VERSION,
+            pid: std::process::id(),
+            build: protocol::BUILD.into(),
+            user_id,
+        }),
+    )
+    .await?;
+    Ok(hello.mode)
 }
 
 pub fn stop(api_url: &str) -> Result<(), String> {
@@ -638,5 +677,131 @@ async fn recover_send(endpoint: &ipc::Endpoint, id: &str) -> Result<serde_json::
         _ => Err(format!(
             "Send outcome unknown ({id}). Reload this task before sending again; it may already be running."
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn incompatible_clients_cannot_join_but_can_explicitly_stop() {
+        for mode in [
+            ConnectionMode::Client,
+            ConnectionMode::Acp,
+            ConnectionMode::Stop,
+        ] {
+            for mismatch in ["profile", "build", "version"] {
+                let (mut client, server) = tokio::io::duplex(4096);
+                let mut server: ipc::Connection = Box::new(server);
+                let mut hello = Hello {
+                    version: protocol::VERSION,
+                    profile: "same-storage-profile".into(),
+                    build: protocol::BUILD.into(),
+                    mode,
+                };
+                match mismatch {
+                    "profile" => hello.profile = "different-backend".into(),
+                    "build" => hello.build = "old-build".into(),
+                    _ => hello.version += 1,
+                }
+                let (reply, accepted) = tokio::join!(
+                    async {
+                        protocol::write(&mut client, &hello).await.unwrap();
+                        protocol::read::<Result<Welcome, String>>(&mut client)
+                            .await
+                            .unwrap()
+                    },
+                    accept_handshake(
+                        &mut server,
+                        "same-storage-profile",
+                        Some("test-user".into())
+                    )
+                );
+                assert_eq!(reply.is_ok(), mode == ConnectionMode::Stop, "{mismatch}");
+                assert_eq!(
+                    accepted.ok(),
+                    (mode == ConnectionMode::Stop).then_some(mode)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_client_accepts_an_older_hosts_welcome() {
+        for mode in [ConnectionMode::Client, ConnectionMode::Stop] {
+            let (client, mut server) = tokio::io::duplex(4096);
+            let (result, ()) = tokio::join!(handshake(Box::new(client), "profile", mode), async {
+                let _: Hello = protocol::read(&mut server).await.unwrap();
+                protocol::write(
+                    &mut server,
+                    &Ok::<_, String>(Welcome {
+                        version: protocol::VERSION + 1,
+                        pid: 1,
+                        build: "old-build".into(),
+                        user_id: None,
+                    }),
+                )
+                .await
+                .unwrap();
+            });
+            assert_eq!(result.is_ok(), mode == ConnectionMode::Stop);
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_out_acp_gets_an_error_while_desktop_can_open_login() {
+        for mode in [ConnectionMode::Acp, ConnectionMode::Client] {
+            let (client, server) = tokio::io::duplex(4096);
+            let mut server: ipc::Connection = Box::new(server);
+            let (result, _) = tokio::join!(
+                handshake(Box::new(client), "profile", mode),
+                accept_handshake(&mut server, "profile", None)
+            );
+            match (mode, result) {
+                (ConnectionMode::Acp, Err(error)) => assert!(error.contains("requires sign-in")),
+                (ConnectionMode::Client, Ok((_, welcome))) => assert!(welcome.user_id.is_none()),
+                _ => panic!("unexpected signed-out handshake result"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_waits_for_shutdown_to_release_ownership() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("host.lock");
+        let old = std::fs::File::create(&path).unwrap();
+        old.lock().unwrap();
+        let replacement = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let waiting = wait_for_ownership(&replacement, Duration::from_secs(5));
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut waiting)
+                .await
+                .is_err()
+        );
+        drop(old);
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(matches!(
+            contender.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        assert!(
+            wait_for_ownership(&contender, Duration::from_millis(50))
+                .await
+                .is_err()
+        );
     }
 }

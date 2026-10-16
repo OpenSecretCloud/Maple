@@ -19,8 +19,14 @@ One OS user, build channel and canonical config/data roots identify the storage
 owner. Startup and lifetime file locks prevent two owners. Backend URL, billing
 URL, client identity, attestation environment, executable source version and
 compiled features must match before a client joins. A mismatched client reports
-an error; it does not terminate or replace the owner. Quit the old build before
-switching versions. Rebuilds of uncommitted source share a source version, so stop
+an error; it does not terminate or replace the owner. Desktop shows a startup
+error window instead of panicking. Explicit `maple-agent host stop` can stop the
+owner of the same storage namespace even when its build or backend settings
+differ; this exception does not allow other commands. Hosts predating that stop
+exception must be stopped using their matching build/configuration. Quit the old
+build before switching versions. A replacement waits for a shutting-down host to
+release its ownership lock before opening shared state. Rebuilds of uncommitted
+source share a source version, so stop
 the development host before rebuilding.
 
 Unix uses an owner-only socket inside a private directory and checks peer UID.
@@ -53,6 +59,9 @@ images. They are not a token event log. IPC frames are bounded at 160 MiB to fit
 the existing attachment allowance; oversized requests fail explicitly.
 
 ## ACP compatibility
+
+ACP requires an existing sign-in. With no saved account, the command prints a
+sign-in instruction to stderr and exits unsuccessfully; stdout remains protocol-only.
 
 The adapter uses stable ACP protocol version 1. It supports initialization,
 new/load/list/delete, prompts, cancellation, model and `thought_level` config
