@@ -1285,9 +1285,13 @@ async fn steering_uses_the_shared_adapter_extension_and_preserves_idle_fallback(
     assert_eq!(idle["outcome"], "promptRequired");
     assert!(harness.faux.requests().is_empty());
 
+    // Hold the turn at a question until steering is acknowledged. A shell sleep
+    // can finish before a busy runner sends the request (or be unavailable).
+    let _responder = harness.handle.question_responder();
+    let mut events = harness.handle.subscribe();
     harness.faux.push_message(vec![faux_tool_call(
-        "bash",
-        json!({"command": "sleep 0.5"}),
+        "request_user_input",
+        json!({"question": "Continue?", "options": [{"label": "Yes"}]}),
     )]);
     harness
         .faux
@@ -1298,12 +1302,39 @@ async fn steering_uses_the_shared_adapter_extension_and_preserves_idle_fallback(
             json!({"sessionId": task, "prompt": [{"type": "text", "text": "Start"}]}),
         )
         .await;
-    crate::agent::tests::eventually(|| !harness.faux.requests().is_empty()).await;
+    let question_id = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let crate::agent::AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                ..
+            } = events.recv().await.unwrap()
+                && session_id == task
+            {
+                break request_id;
+            }
+        }
+    })
+    .await
+    .expect("the turn waits for an answer before steering");
     let steered = client.call("_session/steering", json!({"sessionId": task, "prompt": [{"type": "text", "text": "Now use the updated instruction"}]})).await;
     assert_eq!(steered["outcome"], "injected");
+    assert!(
+        harness
+            .handle
+            .answer_question_via_handle(&question_id, "Yes".into())
+            .await
+            .unwrap()
+    );
     assert_eq!(
         client.response(prompt_id).await["result"]["stopReason"],
         "end_turn"
+    );
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        crate::agent::tests::last_user_text(&requests[1]),
+        "Now use the updated instruction"
     );
     let detail = harness.handle.load_session(task).await.unwrap();
     assert!(detail.timeline.iter().any(|item| {
