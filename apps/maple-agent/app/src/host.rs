@@ -4,6 +4,8 @@
 mod ipc;
 pub mod protocol;
 pub(crate) mod receipts;
+#[cfg(test)]
+mod recovery_tests;
 
 use crate::backend::{self, LocalBackend};
 use maple_agent::agent::AgentServiceEvent;
@@ -21,6 +23,8 @@ use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const IDLE_GRACE: Duration = Duration::from_secs(2);
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 const MAX_CLIENTS: usize = 32;
 const MAX_CALLS: usize = 16;
 type Pending = HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>;
@@ -28,18 +32,16 @@ type Pending = HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>;
 struct ClientState {
     pending: Mutex<Option<Pending>>,
     user_id: RwLock<Option<String>>,
+    generation: AtomicU64,
 }
 
 impl ClientState {
     fn disconnect(&self) {
-        if let Some(pending) = self.pending.lock().unwrap().take() {
-            for (_, sender) in pending {
-                let _ = sender.send(Err(
-                    "The Maple host disconnected. Reload the task before retrying a message."
-                        .into(),
-                ));
-            }
-        }
+        // Closing these senders distinguishes transport loss from a host's
+        // application error, even if reconnection wins the response race.
+        let mut pending = self.pending.lock().unwrap();
+        pending.take();
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -69,76 +71,38 @@ impl RemoteClient {
     pub async fn connect(api_url: &str) -> Result<Self, String> {
         let endpoint = ipc::Endpoint::new(api_url)?;
         let (connection, welcome) = connect(&endpoint, ConnectionMode::Client, true).await?;
+        Ok(Self::attach(endpoint, connection, welcome))
+    }
+
+    fn attach(endpoint: ipc::Endpoint, connection: ipc::Connection, welcome: Welcome) -> Self {
         let state = Arc::new(ClientState {
             pending: Mutex::new(Some(HashMap::new())),
             user_id: RwLock::new(welcome.user_id),
+            generation: AtomicU64::new(0),
         });
-        let (requests, mut request_rx) = mpsc::channel::<Request>(MAX_CALLS);
+        let (requests, request_rx) = mpsc::channel::<Request>(MAX_CALLS);
         let (event_tx, event_rx) = mpsc::channel(256);
-        let closed = tokio_util::sync::CancellationToken::new();
-        let reader_closed = closed.clone();
-        let (mut read, mut write) = tokio::io::split(connection);
-        let reader_state = state.clone();
-        tokio::spawn(async move {
-            loop {
-                let message = tokio::select! {
-                    _ = reader_closed.cancelled() => break,
-                    message = protocol::read::<Message>(&mut read) => match message { Ok(message) => message, Err(_) => break },
-                };
-                match message {
-                    Message::Response { id, result } => {
-                        if let Some(sender) = reader_state
-                            .pending
-                            .lock()
-                            .unwrap()
-                            .as_mut()
-                            .and_then(|pending| pending.remove(&id))
-                        {
-                            let _ = sender.send(result);
-                        }
-                    }
-                    Message::Event(event) => {
-                        if let AgentServiceEvent::AccountChanged(user_id) = &*event {
-                            *reader_state.user_id.write().unwrap() = user_id.clone();
-                        }
-                        if event_tx.try_send(*event).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            reader_closed.cancel();
-            reader_state.disconnect();
-            // Delivery waits only after closing the socket; a stalled UI never
-            // backpressures the host. Reconnect requires a fresh snapshot.
-            let _ = event_tx.send(AgentServiceEvent::HostDisconnected).await;
-        });
-        let writer_state = state.clone();
-        tokio::spawn(async move {
-            loop {
-                let request = tokio::select! {
-                    _ = closed.cancelled() => break,
-                    request = request_rx.recv() => match request { Some(request) => request, None => break },
-                };
-                let result = tokio::select! {
-                    _ = closed.cancelled() => break,
-                    result = protocol::write(&mut write, &request) => result,
-                };
-                if result.is_err() {
-                    break;
-                }
-            }
-            closed.cancel();
-            writer_state.disconnect();
-        });
-        Ok(Self {
+        tokio::spawn(maintain_connection(
+            endpoint.clone(),
+            connection,
+            state.clone(),
+            request_rx,
+            event_tx,
+        ));
+        Self {
             endpoint,
             requests,
             state,
             next_id: AtomicU64::new(1),
             events: tokio::sync::Mutex::new(Some(event_rx)),
             permits: Semaphore::new(MAX_CALLS),
-        })
+        }
+    }
+
+    pub async fn detach(&self) {
+        // Normal desktop Quit is explicit, unlike a socket failure. Bounded
+        // so an unresponsive host cannot prevent the window from closing.
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.call::<()>("detach", ())).await;
     }
 
     pub fn user_id(&self) -> Option<String> {
@@ -157,6 +121,7 @@ impl RemoteClient {
     ) -> Result<R, String> {
         let params = serde_json::to_value(params)
             .map_err(|_| "Could not encode host request".to_string())?;
+        let generation = self.state.generation.load(Ordering::Relaxed);
         let _permit = self
             .permits
             .acquire()
@@ -164,13 +129,16 @@ impl RemoteClient {
             .map_err(|_| "Host disconnected".to_string())?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, reply) = oneshot::channel();
-        self.state
-            .pending
-            .lock()
-            .unwrap()
-            .as_mut()
-            .ok_or("The Maple host disconnected")?
-            .insert(id, sender);
+        {
+            let mut pending = self.state.pending.lock().unwrap();
+            if generation != self.state.generation.load(Ordering::Relaxed) {
+                return Err("The Maple host disconnected before this operation was sent.".into());
+            }
+            pending
+                .as_mut()
+                .ok_or("The Maple host disconnected")?
+                .insert(id, sender);
+        }
         let _pending = PendingCall {
             state: &self.state,
             id,
@@ -185,20 +153,142 @@ impl RemoteClient {
                 send_id: send_id.clone(),
             })
             .await;
-        let result = if sent.is_ok() {
-            reply
-                .await
-                .unwrap_or_else(|_| Err("The Maple host disconnected".into()))
-        } else {
-            Err("The Maple host connection closed".into())
-        };
-        let disconnected = self.state.pending.lock().unwrap().is_none();
-        let result = match (result, send_id) {
-            (Err(_), Some(id)) if disconnected => recover_send(&self.endpoint, &id).await?,
-            (result, _) => result?,
+        if sent.is_err() {
+            self.state.disconnect();
+        }
+        let result = match (sent, reply.await) {
+            (Ok(()), Ok(result)) => result?,
+            (_, _) => match send_id {
+                Some(id) => recover_send(&self.endpoint, &id).await?,
+                None => {
+                    return Err("The Maple host disconnected. Reconnect before retrying.".into());
+                }
+            },
         };
         serde_json::from_value(result)
             .map_err(|_| "Incompatible Maple host response; restart Maple".into())
+    }
+}
+
+/// Own the socket independently of the UI. Reconnection never starts a host or
+/// replays a request: pending callers fail (sends query their admission receipt).
+async fn maintain_connection(
+    endpoint: ipc::Endpoint,
+    mut connection: ipc::Connection,
+    state: Arc<ClientState>,
+    mut requests: mpsc::Receiver<Request>,
+    events: mpsc::Sender<AgentServiceEvent>,
+) {
+    loop {
+        let graceful = client_connection(connection, &state, &mut requests, &events).await;
+        state.disconnect();
+        if graceful || requests.is_closed() || events.is_closed() {
+            return;
+        }
+        let recovery = async {
+            events
+                .send(AgentServiceEvent::HostReconnecting)
+                .await
+                .map_err(|_| ())?;
+            loop {
+                // No startup arbitration or spawn here: explicit host stop and
+                // crashes must never be undone by a frontend reconnect loop.
+                if let Ok((next, welcome)) = connect(&endpoint, ConnectionMode::Client, false).await
+                {
+                    *state.user_id.write().unwrap() = welcome.user_id.clone();
+                    events
+                        .send(AgentServiceEvent::AccountChanged(welcome.user_id))
+                        .await
+                        .map_err(|_| ())?;
+                    // Publish readiness before the marker can trigger snapshot
+                    // calls. The socket already subscribes to host events.
+                    *state.pending.lock().unwrap() = Some(HashMap::new());
+                    events
+                        .send(AgentServiceEvent::HostReconnected)
+                        .await
+                        .map_err(|_| ())?;
+                    return Ok::<_, ()>(next);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        };
+        match tokio::time::timeout(RECONNECT_TIMEOUT, recovery).await {
+            Ok(Ok(next)) => connection = next,
+            _ => {
+                state.disconnect();
+                let _ = events.send(AgentServiceEvent::HostDisconnected).await;
+                return;
+            }
+        }
+    }
+}
+
+/// Reads are never cancelled midway through a frame. All queues are bounded;
+/// an overflow drops the socket, then the supervisor requests a fresh snapshot.
+async fn client_connection(
+    connection: ipc::Connection,
+    state: &ClientState,
+    requests: &mut mpsc::Receiver<Request>,
+    events: &mpsc::Sender<AgentServiceEvent>,
+) -> bool {
+    let (mut read, mut write) = tokio::io::split(connection);
+    let (messages, mut incoming) = mpsc::channel(256);
+    let reader = tokio::spawn(async move {
+        while let Ok(message) = protocol::read::<Message>(&mut read).await {
+            if messages.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
+    let _reader = AbortOnDrop(reader.abort_handle());
+    loop {
+        tokio::select! {
+            request = requests.recv() => {
+                let Some(request) = request else {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), protocol::write(&mut write, &Request {
+                        id: 0, send_id: None, method: "detach".into(), params: serde_json::Value::Null,
+                    })).await;
+                    return true;
+                };
+                // A request queued before a disconnect lost its caller. It
+                // must not become a mutation on the replacement connection.
+                if !state.pending.lock().unwrap().as_ref().is_some_and(|pending| pending.contains_key(&request.id)) {
+                    continue;
+                }
+                if !matches!(tokio::time::timeout(START_TIMEOUT, protocol::write(&mut write, &request)).await, Ok(Ok(()))) {
+                    return false;
+                }
+                if request.method == "detach" {
+                    // No reconnection after an intentional detach, even if
+                    // the acknowledgement is lost or the host is unresponsive.
+                    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                    while let Some(message) = incoming.recv().await {
+                        if let Message::Response { id, result } = message {
+                            if let Some(sender) = state.pending.lock().unwrap().as_mut().and_then(|pending| pending.remove(&id)) {
+                                let _ = sender.send(result);
+                            }
+                            if id == request.id { break; }
+                        }
+                    }
+                    }).await;
+                    return true;
+                }
+            }
+            message = incoming.recv() => match message {
+                Some(Message::Response { id, result }) => {
+                    if let Some(sender) = state.pending.lock().unwrap().as_mut().and_then(|pending| pending.remove(&id)) {
+                        let _ = sender.send(result);
+                    }
+                }
+                Some(Message::Event(event)) => {
+                    if let AgentServiceEvent::AccountChanged(user_id) = &*event {
+                        *state.user_id.write().unwrap() = user_id.clone();
+                    }
+                    if events.try_send(*event).is_err() { return false; }
+                }
+                None => return false,
+            },
+        }
     }
 }
 
@@ -353,10 +443,18 @@ async fn wait_for_ownership(file: &std::fs::File, timeout: Duration) -> Result<(
 }
 
 async fn serve(endpoint: ipc::Endpoint, backend: Arc<LocalBackend>) -> Result<(), String> {
-    let mut listener = endpoint.bind()?;
     let receipts = Arc::new(receipts::Receipts::open(
         &backend::local::host_data_root().join("send-receipts.db"),
     )?);
+    serve_with_receipts(endpoint, backend, receipts).await
+}
+
+async fn serve_with_receipts(
+    endpoint: ipc::Endpoint,
+    backend: Arc<LocalBackend>,
+    receipts: Arc<receipts::Receipts>,
+) -> Result<(), String> {
+    let mut listener = endpoint.bind()?;
     let (events, _) = broadcast::channel::<Arc<AgentServiceEvent>>(256);
     let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
     let mut source = backend
@@ -371,6 +469,7 @@ async fn serve(endpoint: ipc::Endpoint, backend: Arc<LocalBackend>) -> Result<()
     });
     let mut clients = tokio::task::JoinSet::new();
     let mut idle = tokio::time::Instant::now() + START_TIMEOUT;
+    let mut recovery_until = tokio::time::Instant::now();
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
     loop {
@@ -379,17 +478,19 @@ async fn serve(endpoint: ipc::Endpoint, backend: Arc<LocalBackend>) -> Result<()
             _ = &mut shutdown => break,
             _ = tokio::time::sleep_until(idle), if clients.is_empty() => break,
             result = clients.join_next(), if !clients.is_empty() => {
-                if let Some(Err(error)) = result { log::warn!("Host client ended unexpectedly: {error}"); }
-                if clients.is_empty() { idle = tokio::time::Instant::now() + IDLE_GRACE; }
+                if matches!(result, Some(Ok(Ok(false))) | Some(Err(_))) {
+                    recovery_until = tokio::time::Instant::now() + DISCONNECT_GRACE;
+                }
+                if clients.is_empty() {
+                    idle = (tokio::time::Instant::now() + IDLE_GRACE).max(recovery_until);
+                }
             }
             incoming = listener.accept() => {
                 let connection = match incoming { Ok(connection) => connection, Err(error) => { log::warn!("Host rejected a connection: {error}"); continue; } };
                 if clients.len() >= MAX_CLIENTS { drop(connection); continue; }
                 let backend = backend.clone(); let endpoint = endpoint.clone(); let events = events.clone(); let stop = stop_tx.clone(); let receipts = receipts.clone();
                 clients.spawn(async move {
-                    if let Err(error) = serve_client(connection, endpoint, backend, events, stop, receipts).await {
-                        log::debug!("Host connection ended: {error}");
-                    }
+                    serve_client(connection, endpoint, backend, events, stop, receipts).await
                 });
             }
         }
@@ -411,7 +512,7 @@ async fn serve_client(
     events: broadcast::Sender<Arc<AgentServiceEvent>>,
     stop: mpsc::Sender<()>,
     receipts: Arc<receipts::Receipts>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut subscription = events.subscribe();
     let mode =
         accept_handshake(&mut connection, &endpoint.profile, backend.saved_user_id()).await?;
@@ -424,7 +525,7 @@ async fn serve_client(
             #[cfg(feature = "acp")]
             {
                 let (read, write) = tokio::io::split(connection);
-                return backend.serve_acp(read, write).await;
+                return backend.serve_acp(read, write).await.map(|_| true);
             }
             #[cfg(not(feature = "acp"))]
             return Err("This host was built without ACP".into());
@@ -445,11 +546,15 @@ async fn serve_client(
     let _reader = AbortOnDrop(reader.abort_handle());
     let (responses, mut response_rx) = mpsc::channel(MAX_CALLS);
     let mut calls = tokio::task::JoinSet::new();
-    let result = async {
+    let result: Result<bool, String> = async {
     loop {
         tokio::select! {
             request = request_rx.recv(), if calls.len() < MAX_CALLS => {
-                let Some(request) = request else { break; };
+                let Some(request) = request else { return Ok(false); };
+                if request.method == "detach" {
+                    write_message(&mut output, &Message::Response { id: request.id, result: Ok(serde_json::Value::Null) }).await?;
+                    return Ok(true);
+                }
                 let backend = backend.clone(); let responses = responses.clone(); let events = events.clone(); let receipts = receipts.clone();
                 calls.spawn(async move {
                     let id = request.id;
@@ -472,12 +577,14 @@ async fn serve_client(
             }
         }
     }
-    Ok::<(), String>(())
     }.await;
     // Accepted mutations finish even if their response cannot be delivered.
     drop(response_rx);
     while calls.join_next().await.is_some() {}
-    result
+    if let Err(error) = &result {
+        log::debug!("Host connection ended: {error}");
+    }
+    Ok(result.unwrap_or(false))
 }
 
 async fn accept_handshake(

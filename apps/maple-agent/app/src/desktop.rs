@@ -55,16 +55,30 @@ impl MapleApp {
         events: Vec<maple_agent::agent::AgentServiceEvent>,
         cx: &mut Context<Self>,
     ) {
-        for event in &events {
-            if let maple_agent::agent::AgentServiceEvent::AccountChanged(user_id) = event
-                && &self.user_id != user_id
-            {
-                match user_id {
-                    Some(user_id) => self.open_chat(user_id.clone(), cx),
-                    None => self.show_login(cx),
+        let mut batch = Vec::new();
+        for event in events {
+            if let maple_agent::agent::AgentServiceEvent::AccountChanged(user_id) = &event {
+                // Deliver the old account's queued frames only to its screen.
+                // A reconnect may discover a sign-out/account change while away.
+                self.forward_service_events(std::mem::take(&mut batch), cx);
+                if &self.user_id != user_id {
+                    match user_id {
+                        Some(user_id) => self.open_chat(user_id.clone(), cx),
+                        None => self.show_login(cx),
+                    }
                 }
+            } else {
+                batch.push(event);
             }
         }
+        self.forward_service_events(batch, cx);
+    }
+
+    fn forward_service_events(
+        &mut self,
+        events: Vec<maple_agent::agent::AgentServiceEvent>,
+        cx: &mut Context<Self>,
+    ) {
         let chat = match &self.screen {
             Screen::Chat(chat) => Some(chat.clone()),
             _ => self.parked_chat.clone(),
@@ -549,8 +563,13 @@ pub fn run() {
             } else {
                 WindowBounds::Windowed(bounds)
             };
-            cx.on_app_quit(|_cx| async {
-                persist_window_state();
+            let quit_backend = backend.clone();
+            cx.on_app_quit(move |_cx| {
+                let backend = quit_backend.clone();
+                async move {
+                    persist_window_state();
+                    let _ = backend.detach().await;
+                }
             })
             .detach();
             let root_backend = backend.clone();

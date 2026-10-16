@@ -77,6 +77,13 @@ pub struct LocalBootstrap {
     pub questions: Vec<AgentServiceEvent>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct RecoverySnapshot {
+    pub bootstrap: LocalBootstrap,
+    pub status: AgentRuntimeStatus,
+    pub selected: Option<AgentSessionDetail>,
+}
+
 pub struct LocalBackend {
     #[cfg(test)]
     pub(super) ui_fixture: bool,
@@ -383,6 +390,25 @@ impl Drop for OAuthAttemptGuard<'_> {
 }
 
 impl LocalBackend {
+    #[cfg(test)]
+    pub(crate) fn isolated_for_test(root: &std::path::Path) -> Self {
+        let api_url = "http://127.0.0.1:1".to_string();
+        let mut backend = Self::new(api_url.clone(), String::new()).unwrap();
+        let (events, receiver) = mpsc::unbounded_channel();
+        backend.service = MapleAgentService::new(MapleAgentHostResources::new(
+            maple_agent::agent::AgentPathLayout::from_app_roots(
+                root.join("config"),
+                root.join("data"),
+            ),
+            Arc::new(ChannelEventSink(events)),
+            String::new(),
+        ));
+        backend.service.manage_question_availability();
+        backend.event_rx = tokio::sync::Mutex::new(Some(receiver));
+        backend.persisted_auth = Arc::new(PersistedAuthStore::new(root.join("auth.json"), api_url));
+        backend
+    }
+
     /// The account scope (sha of the user id) used for on-disk layout.
     pub fn account_scope(&self, user_id: &str) -> Option<String> {
         maple_agent::maple_api::account_scope(user_id).ok()
@@ -1644,6 +1670,27 @@ impl LocalBackend {
         })
     }
 
+    /// Recover presentation without starting the runtime or resubmitting work.
+    pub async fn recovery_snapshot(
+        &self,
+        user_id: &str,
+        session_id: Option<String>,
+    ) -> Result<RecoverySnapshot, String> {
+        let mut bootstrap = self.local_bootstrap(user_id).await?;
+        bootstrap.latest = None;
+        let handle = self.service.handle_for_user(user_id).await?;
+        let selected = match session_id.filter(|id| bootstrap.sessions.iter().any(|s| &s.id == id))
+        {
+            Some(id) => Some(handle.load_session(id).await?),
+            None => None,
+        };
+        Ok(RecoverySnapshot {
+            bootstrap,
+            status: handle.status().await?,
+            selected,
+        })
+    }
+
     pub async fn create_session(
         &self,
         user_id: &str,
@@ -2447,21 +2494,7 @@ mod tests {
         use std::{future::Future, task::Poll};
 
         let root = tempfile::tempdir().unwrap();
-        let api_url = "http://127.0.0.1:1".to_string();
-        let mut backend = LocalBackend::new(api_url.clone(), String::new()).unwrap();
-        let (events, _) = mpsc::unbounded_channel();
-        backend.service = MapleAgentService::new(MapleAgentHostResources::new(
-            maple_agent::agent::AgentPathLayout::from_app_roots(
-                root.path().join("config"),
-                root.path().join("data"),
-            ),
-            Arc::new(ChannelEventSink(events)),
-            String::new(),
-        ));
-        backend.persisted_auth = Arc::new(PersistedAuthStore::new(
-            root.path().join("auth.json"),
-            api_url,
-        ));
+        let backend = LocalBackend::isolated_for_test(root.path());
         backend.persisted_auth.claim_and_persist(&auth_snapshot(
             "fixture-user",
             "fixture-session",

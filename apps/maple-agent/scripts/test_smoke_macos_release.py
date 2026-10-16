@@ -82,6 +82,24 @@ time.sleep(30)
         self.assert_cleaned()
         self.assertIsNone(unrelated.poll())
 
+    def test_cleanup_stops_only_the_probe_profile_before_removing_its_state(self):
+        command = self.fixture('''
+print("startup: window open at 20 ms", file=sys.stderr, flush=True)
+print("startup: first render at 30 ms", file=sys.stderr, flush=True)
+time.sleep(30)
+''')
+        with mock.patch.object(smoke.subprocess, "run") as run:
+            def stop(args, **options):
+                state = json.loads(self.record.read_text())
+                self.assertEqual(args, ["/fixture/maple-agent", "host", "stop"])
+                self.assertEqual(options["env"], state["environment"])
+                self.assertTrue(Path(options["cwd"]).exists())
+                return subprocess.CompletedProcess(args, 0, stderr=b"")
+            run.side_effect = stop
+            smoke.observe_gui(command, timeout=2, settle=0.1, host_command=["/fixture/maple-agent"])
+            run.assert_called_once()
+        self.assert_cleaned()
+
     def test_child_exit_after_markers_fails_instead_of_claiming_live_gui(self):
         command = self.fixture('''
 print("startup: window open at 20 ms", file=sys.stderr, flush=True)

@@ -82,7 +82,7 @@ def stop_process(process):
         process.wait(timeout=5)
 
 
-def observe_gui(command, *, timeout=30.0, settle=1.0, parent_environment=None):
+def observe_gui(command, *, timeout=30.0, settle=1.0, parent_environment=None, host_command=None):
     """Observe a bounded real process; fixtures use this independently of macOS."""
     parent = os.environ if parent_environment is None else parent_environment
     with tempfile.TemporaryDirectory(prefix="maple-agent-gui-smoke-") as temporary:
@@ -131,6 +131,20 @@ def observe_gui(command, *, timeout=30.0, settle=1.0, parent_environment=None):
                 stop_process(process)
             finally:
                 process.stderr.close()
+                if host_command is not None:
+                    # SIGTERM simulates an unexpected client loss, for which
+                    # the host now reserves a longer recovery window. Stop only
+                    # this probe's isolated profile before unmounting its DMG.
+                    try:
+                        stopped = subprocess.run(
+                            [*host_command, "host", "stop"], cwd=scratch, env=environment,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, timeout=45, check=False,
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        raise SmokeError("The probe's isolated host did not stop") from error
+                    if stopped.returncode and b"No Maple host is running for this profile" not in stopped.stderr:
+                        raise SmokeError("Could not stop the probe's isolated host")
 
 
 def main(argv=None):
@@ -141,7 +155,7 @@ def main(argv=None):
         if platform.system() != "Darwin":
             raise SmokeError("Agent macOS GUI verification requires a native macOS GUI session")
         executable = bundle_executable(arguments.bundle)
-        observe_gui([str(executable)])
+        observe_gui([str(executable)], host_command=[str(executable)])
     except (SmokeError, OSError) as error:
         # Application stderr may contain sensitive data. Report only our
         # bounded diagnostics, never the subprocess output or its environment.

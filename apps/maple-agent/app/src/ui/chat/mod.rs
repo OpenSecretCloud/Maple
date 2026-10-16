@@ -406,6 +406,7 @@ pub struct ChatScreen {
     window_active: bool,
     sidebar_plan: Option<crate::billing::PlanUsage>,
     runtime_error: Option<SharedString>,
+    host_recovery: HostRecovery,
     notice: Option<SharedString>,
     booting: bool,
     /// Task being opened whose snapshot has not landed yet, so the pane
@@ -620,6 +621,14 @@ enum LoadMode {
     Select,
     /// Swap the timeline only (mid-run history compaction).
     Reload,
+}
+
+#[derive(Default)]
+struct HostRecovery {
+    epoch: u64,
+    unavailable: bool,
+    events: Option<Vec<AgentServiceEvent>>,
+    overflow: bool,
 }
 
 /// How often a stale snapshot is fetched again before it is applied.
@@ -1040,6 +1049,7 @@ impl ChatScreen {
             window_active: true,
             sidebar_plan: None,
             runtime_error: None,
+            host_recovery: HostRecovery::default(),
             notice: None,
             booting: true,
             loading_session: None,
@@ -2171,6 +2181,12 @@ impl ChatScreen {
     /// Load a task and make it current when its snapshot lands; its
     /// persisted root then becomes the visible project context.
     pub(crate) fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if self.host_recovery.unavailable {
+            self.notice =
+                Some("Task history is reconnecting. Try again when it has recovered.".into());
+            cx.notify();
+            return;
+        }
         // The side thread belongs to the task it forked.
         if self.btw.is_some() && self.selected_session.as_deref() != Some(session_id) {
             self.close_side_thread(cx);
@@ -3656,6 +3672,13 @@ impl ChatScreen {
     }
 
     fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+        if self.host_recovery.unavailable {
+            self.notice = Some(
+                "Wait for the host connection and task history to recover before sending.".into(),
+            );
+            cx.notify();
+            return;
+        }
         if self.thinking_saving {
             self.notice = Some("The thinking level is still being saved".into());
             cx.notify();
@@ -4666,8 +4689,139 @@ impl ChatScreen {
         }
     }
 
+    /// Rebuild presentation from the owner, preserving the composer and
+    /// selection. Buffer a bounded stream while loading, then apply it after
+    /// the snapshot. Overflow asks for another snapshot, never a bigger queue.
+    fn recover_host(&mut self, cx: &mut Context<Self>) {
+        self.host_recovery.epoch += 1;
+        let epoch = self.host_recovery.epoch;
+        self.host_recovery.unavailable = true;
+        self.host_recovery.events = Some(Vec::new());
+        self.host_recovery.overflow = false;
+        self.begin_navigation();
+        let selection = self.selection_generation;
+        let backend = self.backend.clone();
+        let user = self.user_id.clone();
+        let selected = self.selected_session.clone();
+        self.runtime_error = Some("Connected. Refreshing task history…".into());
+        self.call(
+            async move { backend.recovery_snapshot(&user, selected).await },
+            cx,
+            move |this, result, cx| {
+                if this.host_recovery.epoch != epoch {
+                    return;
+                }
+                if this.host_recovery.overflow {
+                    this.recover_host(cx);
+                    return;
+                }
+                match result {
+                    Ok(snapshot) => {
+                        let events = this.host_recovery.events.take().unwrap_or_default();
+                        let running = events
+                            .iter()
+                            .rev()
+                            .find_map(|event| match event {
+                                AgentServiceEvent::RuntimeStatus(status) => Some(status.running),
+                                _ => None,
+                            })
+                            .unwrap_or(snapshot.status.running);
+                        this.apply_recovery_snapshot(snapshot, selection, cx);
+                        this.handle_service_events(events, cx);
+                        this.host_recovery.unavailable = false;
+                        this.runtime_error = None;
+                        this.refresh_models(cx);
+                        this.refresh_roots(cx);
+                        this.refresh_slash_commands(cx);
+                        if !running {
+                            // A host another client restarted may not have a
+                            // runtime yet. Restore catalog/tool availability;
+                            // this does not resume or submit any prompt.
+                            this.booting = true;
+                            this.start_runtime(cx);
+                        }
+                    }
+                    Err(error) => {
+                        this.host_recovery.events = None;
+                        this.runtime_error = Some(
+                            format!(
+                                "Could not reload host state: {error}. Reopen Maple before sending."
+                            )
+                            .into(),
+                        );
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn apply_recovery_snapshot(
+        &mut self,
+        snapshot: crate::backend::RecoverySnapshot,
+        selection: u64,
+        cx: &mut Context<Self>,
+    ) {
+        // Revisions are scoped to a host incarnation. Even a restarted host
+        // with lower revision numbers must supersede the old partial rows.
+        self.snapshot_revision = 0;
+        for item in &mut self.timeline {
+            item.revision = 0;
+        }
+        self.loading_timeline.clear();
+        self.finished_runs.clear();
+        self.active_runs = snapshot.status.active_runs;
+        self.pending_questions.clear();
+        self.question_selected.clear();
+        self.sessions = snapshot.bootstrap.sessions;
+        self.recent_roots = snapshot.bootstrap.recent_roots;
+        self.handle_service_events(snapshot.bootstrap.questions, cx);
+        if self.selection_generation == selection {
+            if let Some(detail) = snapshot.selected {
+                self.snapshot_revision = detail.timeline_revision;
+                self.set_active_session(detail.session, detail.timeline, HashMap::new(), cx);
+                self.set_queue(detail.queue.items);
+            } else if self.selected_session.is_some() {
+                // The selected task was deleted while this client was away.
+                self.new_session(cx);
+            }
+        }
+        self.sync_sidebar(cx);
+    }
+
     /// Apply one event; returns false when nothing visible changed.
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
+        match event {
+            AgentServiceEvent::HostReconnecting => {
+                self.host_recovery.epoch += 1;
+                self.host_recovery.unavailable = true;
+                self.host_recovery.events = None;
+                self.begin_navigation();
+                self.runtime_error =
+                    Some("Connection lost. Reconnecting to the Maple host…".into());
+                return true;
+            }
+            AgentServiceEvent::HostReconnected => {
+                self.recover_host(cx);
+                return true;
+            }
+            AgentServiceEvent::HostDisconnected => {
+                self.host_recovery.epoch += 1;
+                self.host_recovery.unavailable = true;
+                self.host_recovery.events = None;
+                self.runtime_error = Some("The Maple host is unavailable. Reopen Maple to reload your tasks. No message was resent.".into());
+                return true;
+            }
+            _ => {}
+        }
+        if let Some(events) = &mut self.host_recovery.events {
+            if events.len() < 256 {
+                events.push(event);
+            } else {
+                self.host_recovery.overflow = true;
+            }
+            return false;
+        }
         let row = match &event {
             AgentServiceEvent::TimelineItem {
                 session_id, item, ..
@@ -4705,9 +4859,9 @@ impl ChatScreen {
                     self.thinking = Some(state);
                 }
             }
-            AgentServiceEvent::HostDisconnected => {
-                self.runtime_error = Some("The Maple host disconnected. Reopen Maple to reload your tasks before sending again.".into());
-            }
+            AgentServiceEvent::HostDisconnected
+            | AgentServiceEvent::HostReconnecting
+            | AgentServiceEvent::HostReconnected => return false,
             AgentServiceEvent::RuntimeStatus(mut status) => {
                 // A runtime that just started points Goose at the account's
                 // skills, which the first scan ran before; ask again.

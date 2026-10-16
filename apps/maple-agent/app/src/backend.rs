@@ -15,9 +15,21 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 use tokio::{runtime::Runtime, sync::mpsc};
 
 pub struct AgentBackend {
-    runtime: Runtime,
+    runtime: tokio::runtime::Handle,
+    owned_runtime: Option<Runtime>,
     client: BackendClient,
     api_url: String,
+}
+
+impl Drop for AgentBackend {
+    fn drop(&mut self) {
+        // A completing UI/IPC future may release the last Arc on a Tokio
+        // worker. Runtime::drop would panic there by trying to block. The
+        // frontend owns no agent runs; host shutdown remains explicit.
+        if let Some(runtime) = self.owned_runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 enum BackendClient {
@@ -101,6 +113,7 @@ operations! {
     select_project_root(user_id: (&str), path: (String)) -> AgentProjectRootRegistration;
     list_sessions(user_id: (&str), project_root: (Option<String>)) -> Vec<AgentSessionSummary>;
     local_bootstrap(user_id: (&str)) -> LocalBootstrap;
+    recovery_snapshot(user_id: (&str), session_id: (Option<String>)) -> RecoverySnapshot;
     create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
     load_session(user_id: (&str), session_id: (&str)) -> AgentSessionDetail;
     set_session_state(user_id: (&str), session_id: (&str), state: (AgentTaskState)) -> AgentSessionSummary;
@@ -154,7 +167,8 @@ impl AgentBackend {
         backend.ui_fixture = true;
         drop(guard);
         Ok(Self {
-            runtime,
+            runtime: runtime.handle().clone(),
+            owned_runtime: Some(runtime),
             client: BackendClient::InProcess(Box::new(backend)),
             api_url,
         })
@@ -165,7 +179,8 @@ impl AgentBackend {
         let runtime = Runtime::new().map_err(|e| format!("Could not start host client: {e}"))?;
         let client = runtime.block_on(RemoteClient::connect(&api_url))?;
         Ok(Self {
-            runtime,
+            runtime: runtime.handle().clone(),
+            owned_runtime: Some(runtime),
             client: BackendClient::Host(client),
             api_url,
         })
@@ -195,7 +210,7 @@ impl AgentBackend {
         }
     }
     pub fn runtime_handle(&self) -> tokio::runtime::Handle {
-        self.runtime.handle().clone()
+        self.runtime.clone()
     }
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
@@ -232,6 +247,16 @@ impl AgentBackend {
             #[cfg(test)]
             BackendClient::InProcess(_) => None,
         }
+    }
+    pub fn detach(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let backend = self.clone();
+        self.spawn(async move {
+            match &backend.client {
+                BackendClient::Host(client) => client.detach().await,
+                #[cfg(test)]
+                BackendClient::InProcess(_) => {}
+            }
+        })
     }
     pub fn uses_hosted_oauth(&self) -> bool {
         crate::profile::AUTH_ORIGIN.is_some()
@@ -370,5 +395,24 @@ pub(crate) async fn dispatch(
     } else {
         let _account = backend.account_gate.read().await;
         dispatch_inner(backend, request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn final_frontend_reference_can_be_dropped_by_an_async_callback() {
+        let backend = tokio::task::spawn_blocking(|| {
+            AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap()
+        })
+        .await
+        .unwrap();
+        tokio::spawn(async move {
+            drop(backend);
+        })
+        .await
+        .expect("frontend shutdown must not panic on a runtime worker");
     }
 }

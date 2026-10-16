@@ -19,6 +19,18 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    #[cfg(test)]
+    pub(super) fn for_test(directory: PathBuf) -> Self {
+        #[cfg(unix)]
+        let address = directory.join("ipc.sock");
+        #[cfg(windows)]
+        let address = PathBuf::from(format!(r"\\.\pipe\maple-test-{}", uuid::Uuid::new_v4()));
+        Self {
+            profile: "test-profile".into(),
+            directory,
+            address,
+        }
+    }
     pub fn new(api_url: &str) -> Result<Self, String> {
         let config = crate::backend::app_config_root();
         let data = crate::backend::local::host_data_root();

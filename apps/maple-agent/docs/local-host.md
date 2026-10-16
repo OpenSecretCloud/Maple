@@ -10,8 +10,11 @@ host operations and events onto the client protocol. Pi itself is unchanged.
 
 Opening an ACP editor can start the host without opening a window. Desktop joins
 it later. Closing a client detaches; a run continues while another client remains.
-After the last client leaves, a two-second grace period allows a replacement to
-attach, then the host cancels and drains its work and exits. `maple-agent host stop`
+After the last intentional desktop Quit or ACP detach, a two-second grace period
+allows a replacement to attach, then the host cancels and drains its work and exits.
+An unexpected desktop connection loss instead reserves thirty seconds for recovery,
+including when another client briefly connects and leaves during that interval.
+Attached clients keep the host alive. `maple-agent host stop`
 explicitly stops this profile and all its tasks, even with clients attached.
 There is no login item, permanent service, remote listener or remote keepalive.
 
@@ -35,6 +38,9 @@ the pipe owner. This is an OS-user trust boundary, not a sandbox against other
 programs running as that user. No API token is placed in endpoint names or logs.
 Signing out revokes existing runtime handles and ACP connections before another
 account can sign in. Task commands validate their account at the host boundary.
+Checking saved credentials and attaching ACP share a read lock with local operations;
+slow credential validation does not block history, settings, or Stop. Actual account
+switches remain exclusive so a request cannot cross accounts while it is admitted.
 
 ## Shared tasks and recovery
 
@@ -46,10 +52,19 @@ Filesystem paths and tools always refer to the host machine.
 
 Snapshots include live partial rows with an event cutoff. Clients discard older
 updates and keep later ones, rather than appending the same partial text twice.
-The event stream is bounded. A client that falls behind disconnects and must
-reopen/reload; this version does not automatically reconnect the desktop. A host
-crash does not restart inference. Stored history survives; active tools are not
-promised to survive a host crash.
+The event stream is bounded. A desktop that falls behind or loses its socket
+reconnects for up to fifteen seconds, without starting a replacement host. It shows
+the connection state and blocks new sends until task history, active runs, questions,
+and queues have been refreshed. Unsent composer text stays in place. A snapshot
+also resets host-local revisions, so a restarted host cannot leave old partials
+on screen. An account change discovered during recovery switches the screen before
+new events are shown. Failed recovery asks the user to reopen Maple.
+
+Commands are never replayed on reconnection. A host crash does not restart inference.
+Stored history survives; active tools are not promised to survive a host crash.
+An unrecovered last-client disconnect eventually drains work after the recovery
+grace. This bounded local policy is not remote-mode keepalive; a future enabled
+remote host must have a lifetime independent of its currently attached clients.
 
 Desktop sends carry unique IDs. A small private `send-receipts.db` records admission
 and its result, so a lost reply can be queried without resending the prompt. A

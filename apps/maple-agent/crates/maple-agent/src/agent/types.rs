@@ -660,7 +660,11 @@ pub enum AgentRunEvent {
 pub enum AgentServiceEvent {
     /// Profile sign-in changed in the authoritative host.
     AccountChanged(Option<String>),
-    /// The local frontend must reconnect and reload before sending again.
+    /// Temporary loss of the frontend connection; the host may still be running.
+    HostReconnecting,
+    /// A new connection is subscribed. Reload authoritative snapshots before sending.
+    HostReconnected,
+    /// Automatic recovery ended; reopening is required. No commands were replayed.
     HostDisconnected,
     RuntimeStatus(AgentRuntimeStatus),
     /// The agent asked the user one or more related questions (ask_user

@@ -582,6 +582,135 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn recovery_snapshot_replaces_old_host_revisions_and_reconciles_live_events(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut old = item("reply", "message", Some("old partial"));
+            old.revision = 900;
+            this.replace_timeline(vec![old]);
+            this.snapshot_revision = 900;
+            this.active_runs.insert("s1".into(), "old-run".into());
+            this.handle_service_event(one_question("old", "old question"), cx);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(this.host_recovery.unavailable);
+            // Model a subscribed replacement host and updates arriving while
+            // its snapshot is in flight. The new host starts revisions at 1.
+            this.host_recovery.events = Some(Vec::new());
+            let mut latest = item("reply", "message", Some("new complete reply"));
+            latest.revision = 3;
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: None,
+                    item: latest.clone(),
+                },
+                cx,
+            );
+            this.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "req-current".into(),
+                },
+                cx,
+            );
+            let events = this.host_recovery.events.take().unwrap();
+            let mut snapshot_row = latest.clone();
+            snapshot_row.revision = 2;
+            snapshot_row.text = Some("new partial".into());
+            let selected = summary("s1", "Recovered title");
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: None,
+                        recent_roots: Vec::new(),
+                        latest: None,
+                        sessions: vec![selected.clone()],
+                        questions: vec![one_question("current", "new question")],
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: true,
+                        project_root: None,
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: Some(maple_agent::agent::AgentSessionDetail {
+                        timeline_revision: 2,
+                        session: selected,
+                        timeline: vec![snapshot_row],
+                        mcp_errors: Vec::new(),
+                        queue: maple_agent::agent::AgentDesktopQueueSnapshot {
+                            revision: 1,
+                            items: vec![maple_agent::agent::AgentQueuedMessage {
+                                queue_id: "queued".into(),
+                                message_id: "queued-message".into(),
+                                session_id: "s1".into(),
+                                text: "pending message".into(),
+                                attachments: Vec::new(),
+                                created_ms: 0,
+                            }],
+                        },
+                    }),
+                },
+                this.selection_generation,
+                cx,
+            );
+            this.handle_service_events(events, cx);
+            assert_eq!(this.timeline.len(), 1);
+            assert_eq!(this.timeline[0].text.as_deref(), Some("new complete reply"));
+            assert_eq!(this.timeline[0].revision, 3);
+            assert!(this.active_runs.is_empty());
+            assert!(
+                this.pending_questions.is_empty(),
+                "resolved questions must not reappear"
+            );
+            assert_eq!(this.queue[0].text, "pending message");
+            assert_eq!(this.sessions[0].title, "Recovered title");
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: None,
+                    item: latest,
+                },
+                cx,
+            );
+            assert_eq!(
+                this.timeline.len(),
+                1,
+                "snapshot/event overlap must not duplicate rows"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn reconnecting_keeps_composer_text_and_bounds_snapshot_event_buffer(cx: &mut TestAppContext) {
+        let (screen, cx) = chat_window(cx, |this, _| {
+            this.booting = false;
+        });
+        screen.update(cx, |this, cx| {
+            this.fill_empty_composer("do not automatically send this", cx);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            this.send_inner(cx);
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("do not automatically send this")
+            );
+            assert!(!this.session_setup_pending);
+            this.host_recovery.events = Some(Vec::new());
+            for _ in 0..300 {
+                this.handle_service_event(
+                    AgentServiceEvent::QuestionResolved {
+                        request_id: "fixture".into(),
+                    },
+                    cx,
+                );
+            }
+            assert_eq!(this.host_recovery.events.as_ref().unwrap().len(), 256);
+            assert!(this.host_recovery.overflow);
+        });
+    }
+
+    #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
