@@ -69,8 +69,11 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 // Timeout constants for provider requests
-const REQUEST_TIMEOUT_SECS: u64 = 120; // Request timeout (generous for large non-streaming responses)
-const STREAM_CHUNK_TIMEOUT_SECS: u64 = 120; // Per-chunk timeout for streaming reads
+// Request timeout (generous for large non-streaming responses).
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+// Providers may buffer a complete tool call before emitting its arguments.
+// This is an idle read limit for every provider/model, not a total generation deadline.
+const STREAM_CHUNK_TIMEOUT_SECS: u64 = 300;
 const TTS_BILLING_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const TTS_PROVIDER_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TTS_INPUT_CHARS: usize = 100_000;
@@ -5973,6 +5976,79 @@ mod tests {
             .decrypt(ciphertext, &nonce)
             .expect("Maple SDK AEAD contract");
         assert_eq!(decrypted, plaintext.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn mock_provider_buffered_tool_calls_reset_stream_idle_timeout() {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let body = async_stream::stream! {
+                    yield Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                        b"data: {\"choices\":[{\"delta\":{\"reasoning\":\"planning\"}}]}\n\n",
+                    ));
+                    for index in 0..2 {
+                        // Scale one production second to one millisecond: each buffered
+                        // call exceeds the old 120s limit, but fits the new 300s limit.
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        let frame = json!({"choices": [{"delta": {"tool_calls": [{
+                            "index": index, "type": "function",
+                            "function": {"name": "write_file", "arguments": "{\"content\":\"complete\"}"}
+                        }]}}]});
+                        yield Ok(bytes::Bytes::from(format!("data: {frame}\n\n")));
+                    }
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
+                };
+                axum::http::Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(axum::body::Body::from_stream(body))
+                    .expect("mock buffered tool stream")
+            }),
+        );
+        let (trace, server) = call_mock_provider(app).await;
+        let response = trace.result.expect("provider response start");
+        let pinned = pinned_test_completion();
+        let attempt = pinned
+            .begin_execution()
+            .begin_attempt(pinned.route.identity());
+        let (tx, mut rx) = mpsc::channel(8);
+        let started = tokio::time::Instant::now();
+        let result = process_completion_stream(
+            response,
+            "fixture-model",
+            attempt,
+            &tx,
+            Duration::from_millis(STREAM_CHUNK_TIMEOUT_SECS),
+            None,
+            false,
+        )
+        .await;
+        drop(tx);
+        server.abort();
+
+        assert!(matches!(
+            result.terminal,
+            AttemptTerminal::Completed {
+                evidence: CompletionEvidence::ProviderDone,
+                ..
+            }
+        ));
+        // Timely chunks renew the idle budget even after total runtime exceeds it.
+        assert!(started.elapsed() > Duration::from_millis(STREAM_CHUNK_TIMEOUT_SECS));
+        let mut chunks = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            if let CompletionChunk::StreamChunk(json) = chunk {
+                chunks.push(json);
+            }
+        }
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0]["choices"][0]["delta"]["reasoning"], "planning");
+        for (index, chunk) in chunks[1..].iter().enumerate() {
+            let call = &chunk["choices"][0]["delta"]["tool_calls"][0];
+            assert_eq!(call["index"], index);
+            assert_eq!(call["function"]["arguments"], "{\"content\":\"complete\"}");
+        }
     }
 
     #[tokio::test]
