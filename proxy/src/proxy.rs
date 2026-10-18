@@ -854,7 +854,7 @@ mod tests {
         let mut transport = MockTransport::new(vec![Ok(upstream)]);
         transport.start_delay = Duration::from_millis(600);
         let transport = Arc::new(transport);
-        // Short test-only durations on a paused clock; production defaults stay 300s.
+        // Short test-only durations on a paused clock; production defaults are unchanged.
         let config = test_config()
             .with_api_key("fixture-key".into())
             .with_request_timeout_secs(1)
@@ -950,6 +950,59 @@ mod tests {
         assert_eq!(stream.next().await.unwrap().unwrap(), "data: second\n\n");
         assert_eq!(stream.next().await.unwrap().unwrap(), "data: [DONE]\n\n");
         assert!(started.elapsed() > Duration::from_secs(1));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn default_stream_idle_budget_preserves_backend_timeout_error() {
+        let config = Config::new("127.0.0.1".into(), 8080, "http://localhost:3000".into());
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            yield Ok(Bytes::from_static(b"data: {\"choices\":[]}\n\n"));
+            // Backend provider reads may now wait five minutes before reporting failure.
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            yield Ok(Bytes::from_static(b"data: {\"error\":{\"code\":\"upstream_timeout\"}}\n\n"));
+        });
+        let mut upstream = http::Response::new(body);
+        upstream
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "text/event-stream".parse().unwrap());
+        let started = Instant::now();
+        let response = build_downstream_response(
+            upstream,
+            config.stream_idle_timeout(),
+            started + config.request_timeout(),
+        );
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            "data: {\"choices\":[]}\n\n"
+        );
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            "data: {\"error\":{\"code\":\"upstream_timeout\"}}\n\n"
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(300));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn default_stream_idle_budget_still_drops_silent_upstream() {
+        let config = Config::new("127.0.0.1".into(), 8080, "http://localhost:3000".into());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+            yield Ok(Bytes::new());
+        });
+        let started = Instant::now();
+        let mut stream = stream_with_timeouts(body, config.stream_idle_timeout(), None);
+        assert_eq!(
+            stream.next().await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(360));
+        assert!(dropped.load(Ordering::SeqCst));
         assert!(stream.next().await.is_none());
     }
 

@@ -54,7 +54,7 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
-This checkout prepares proxy `0.4.3`, including `POST /v1/systemone` introduced
+This checkout prepares proxy `0.4.4`, including `POST /v1/systemone` introduced
 in `0.4.2`, with a compatible registry requirement for `maple-sdk`
 starting at `4.0.1`. The published proxy crate in the example above
 predates this Transport V2 update. The standalone binary's lockfile selects its
@@ -79,10 +79,18 @@ export MAPLE_CACHE_NAMESPACE_ROOT="$(openssl rand -base64 32)" # Generate once; 
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
 export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
-export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between chunks
+export MAPLE_STREAM_IDLE_TIMEOUT_SECS=360      # Streaming idle timeout between chunks
 ```
 
-Both timeout defaults are five minutes. `MAPLE_REQUEST_TIMEOUT_SECS` covers
+The request timeout defaults to five minutes; the streaming idle timeout defaults
+to six minutes. OpenSecret allows five minutes between provider chunks for all
+chat models, including pauses while a provider buffers tool arguments. The extra
+minute lets the backend return its structured timeout error before the proxy
+closes the stream. Existing installations must upgrade the proxy or increase
+`MAPLE_STREAM_IDLE_TIMEOUT_SECS` to adopt this margin. Explicit overrides remain
+supported; choose a proxy idle timeout longer than the backend provider idle limit.
+
+`MAPLE_REQUEST_TIMEOUT_SECS` covers
 sending a request through completion of a non-streaming response body. For SSE,
 it covers response setup; once the stream starts, `MAPLE_STREAM_IDLE_TIMEOUT_SECS`
 limits the wait for each next chunk without imposing a total stream duration.
@@ -467,7 +475,7 @@ docker pull ghcr.io/mapleprivacylabs/maple-proxy:latest
 docker run -p 8080:8080 \
   -e MAPLE_BACKEND_URL=https://enclave.trymaple.ai \
   -e MAPLE_REQUEST_TIMEOUT_SECS=300 \
-  -e MAPLE_STREAM_IDLE_TIMEOUT_SECS=300 \
+  -e MAPLE_STREAM_IDLE_TIMEOUT_SECS=360 \
   ghcr.io/mapleprivacylabs/maple-proxy:latest
 ```
 
@@ -565,7 +573,7 @@ environment:
   - MAPLE_BACKEND_URL=https://enclave.trymaple.ai  # Production backend
   - MAPLE_ENABLE_CORS=true                         # Enable for web apps
   - MAPLE_REQUEST_TIMEOUT_SECS=300                 # Backend request timeout
-  - MAPLE_STREAM_IDLE_TIMEOUT_SECS=300             # Streaming idle timeout
+  - MAPLE_STREAM_IDLE_TIMEOUT_SECS=360             # Streaming idle timeout
   - RUST_LOG=info                                  # Logging level
   # - MAPLE_API_KEY=xxx                            # Only for private deployments!
   # - MAPLE_CACHE_NAMESPACE_ROOT=xxx               # Stable secret for cache continuity

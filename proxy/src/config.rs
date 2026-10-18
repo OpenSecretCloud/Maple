@@ -4,7 +4,8 @@ use serde::Serialize;
 use std::{net::SocketAddr, time::Duration};
 
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
-pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
+// Leave room for the backend's 300s provider-idle error to reach the client.
+pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 360;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "maple-proxy")]
