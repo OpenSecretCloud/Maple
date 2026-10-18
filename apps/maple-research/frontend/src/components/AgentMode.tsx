@@ -199,6 +199,11 @@ import {
 } from "@/utils/utils";
 import { isLinux, isTauri, isTauriDesktop } from "@/utils/platform";
 import { useLazyRef } from "@/utils/useLazyRef";
+import {
+  ChatScrollFollow,
+  listenForChatScrollIntent,
+  readChatScrollMetrics
+} from "@/components/chatScrollFollow";
 import { fileToDataURL } from "@/utils/file";
 import {
   getImageFilesFromClipboardItems,
@@ -250,7 +255,6 @@ interface AgentDraftImage {
 const NEW_PROJECT_OPTION_VALUE = "__maple-agent-new-project__";
 const MAX_STABLE_SESSION_LOAD_ATTEMPTS = 3;
 const THOUGHT_PHASE_SEED_RETRY_MS = 250;
-const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
 const SIDEBAR_ICON_STROKE = 2;
 const AGENT_SESSION_DELETED_EVENT = "maple:agent-session-deleted";
@@ -520,7 +524,7 @@ export function AgentMode({ userId }: { userId: string }) {
     sessionSummaryRevisionRef.current += 1;
     sessionSummaryRevisionsRef.current.set(sessionId, sessionSummaryRevisionRef.current);
   }, []);
-  const shouldAutoScrollRef = useRef(true);
+  const scrollFollowRef = useLazyRef(() => new ChatScrollFollow());
   const permissionModeUpdateRef = useLazyRef<Promise<void>>(() => Promise.resolve());
   const permissionModeUpdateGenerationRef = useRef(0);
   const selectedModeRef = useRef<AgentPermissionMode>(mode);
@@ -900,10 +904,8 @@ export function AgentMode({ userId }: { userId: string }) {
     const container = chatContainerRef.current;
     if (!container) return;
 
-    const distanceFromBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    shouldAutoScrollRef.current = distanceFromBottom < AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
-  }, []);
+    scrollFollowRef.current.handleScroll(readChatScrollMetrics(container));
+  }, [scrollFollowRef]);
 
   const scrollTimelineToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = chatContainerRef.current;
@@ -916,16 +918,25 @@ export function AgentMode({ userId }: { userId: string }) {
   }, []);
 
   useEffect(() => {
-    if (!shouldAutoScrollRef.current) return;
+    const container = chatContainerRef.current;
+    if (!container) return;
+    return listenForChatScrollIntent(container, scrollFollowRef.current);
+  }, [scrollFollowRef]);
+
+  useEffect(() => {
+    if (!scrollFollowRef.current.isFollowing) return;
 
     const frame = requestAnimationFrame(() => {
-      if (shouldAutoScrollRef.current) {
+      const container = chatContainerRef.current;
+      if (container && scrollFollowRef.current.isFollowing) {
         scrollTimelineToBottom("auto");
+        // Keep the baseline current so the next upward scroll is measured from here.
+        scrollFollowRef.current.attach(readChatScrollMetrics(container));
       }
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [scrollTimelineToBottom, timelineItems]);
+  }, [scrollFollowRef, scrollTimelineToBottom, timelineItems]);
 
   const visibleProjectRoots = useMemo(
     () => mergeAgentProjectRoots(recentRoots, projectRoot, sessions, removedProjectRoots),
@@ -1855,7 +1866,7 @@ export function AgentMode({ userId }: { userId: string }) {
             );
             invalidateSessionSelection();
             agentSessionSelection.forget(userId);
-            shouldAutoScrollRef.current = true;
+            scrollFollowRef.current.attach();
             setProjectRoot(registration.projectRoot);
             activeSessionIdRef.current = null;
             setActiveSessionId(null);
@@ -1872,6 +1883,7 @@ export function AgentMode({ userId }: { userId: string }) {
       setError(errorMessage(chooseError));
     }
   }, [
+    scrollFollowRef,
     agentSessionSelection,
     invalidateSessionSelection,
     registerProjectRoot,
@@ -1890,7 +1902,7 @@ export function AgentMode({ userId }: { userId: string }) {
       activeSessionIdRef.current = null;
       setTimelineItems([]);
       restoreNewTaskModel();
-      shouldAutoScrollRef.current = true;
+      scrollFollowRef.current.attach();
       void (async () => {
         try {
           await persistSelectedProjectRoot(value);
@@ -1905,6 +1917,7 @@ export function AgentMode({ userId }: { userId: string }) {
       })();
     },
     [
+      scrollFollowRef,
       agentSessionSelection,
       invalidateSessionSelection,
       persistSelectedProjectRoot,
@@ -2179,7 +2192,7 @@ export function AgentMode({ userId }: { userId: string }) {
           interactionGenerationRef.current === expectedInteractionGeneration &&
           activeSessionIdRef.current === null
         ) {
-          shouldAutoScrollRef.current = true;
+          scrollFollowRef.current.attach();
           activeSessionIdRef.current = sessionId;
           setActiveSessionId(sessionId);
           agentSessionSelection.remember(userId, sessionId);
@@ -2197,6 +2210,7 @@ export function AgentMode({ userId }: { userId: string }) {
       return { sessionId, requestModel };
     },
     [
+      scrollFollowRef,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyQueueSnapshot,
@@ -2253,7 +2267,7 @@ export function AgentMode({ userId }: { userId: string }) {
           sessionSelectionGenerationRef.current === selectionGeneration &&
           interactionGenerationRef.current === interactionGeneration
         ) {
-          shouldAutoScrollRef.current = true;
+          scrollFollowRef.current.attach();
           activeSessionIdRef.current = detail.session.id;
           setActiveSessionId(detail.session.id);
           agentSessionSelection.remember(userId, detail.session.id);
@@ -2282,6 +2296,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      scrollFollowRef,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyQueueSnapshot,
@@ -2339,7 +2354,7 @@ export function AgentMode({ userId }: { userId: string }) {
 
         // Commit the selected session and all of its settings together. Until
         // this point the previous chat remains active and its composer is gated.
-        shouldAutoScrollRef.current = true;
+        scrollFollowRef.current.attach();
         promptHistoryReplacementTrackerRef.current.abandonInactive(detail.session.id);
         promptHistoryEntriesRef.current = agentPromptHistory(detail.timeline);
         activeSessionIdRef.current = detail.session.id;
@@ -2398,6 +2413,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      scrollFollowRef,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyQueueSnapshot,
@@ -2536,7 +2552,7 @@ export function AgentMode({ userId }: { userId: string }) {
       if (!keepComposerDraft) {
         setInput(editingSteeredChip ? stashedDraft : "");
       }
-      shouldAutoScrollRef.current = true;
+      scrollFollowRef.current.attach();
       requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
       try {
         await trackAgentWorkflow(async () => {
@@ -2634,6 +2650,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      scrollFollowRef,
       activeRunId,
       applyQueueSnapshot,
       availableModels,
@@ -2919,7 +2936,7 @@ export function AgentMode({ userId }: { userId: string }) {
 
       if (activeSessionIdRef.current === sessionId) {
         activeSessionIdRef.current = null;
-        shouldAutoScrollRef.current = true;
+        scrollFollowRef.current.attach();
         setActiveSessionId(null);
         setTimelineItems([]);
         setInput("");
@@ -2928,6 +2945,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      scrollFollowRef,
       agentSessionSelection,
       cancelThoughtLabelDisplays,
       clearDraftImages,
@@ -2985,7 +3003,7 @@ export function AgentMode({ userId }: { userId: string }) {
           setSessionMcpServersSessionId(null);
           setProjectRoot(fallback || "");
           restoreNewTaskModel();
-          shouldAutoScrollRef.current = true;
+          scrollFollowRef.current.attach();
         }
         await refreshSessions().catch((refreshError) => {
           setError(errorMessage(refreshError));
@@ -2997,6 +3015,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      scrollFollowRef,
       agentSessionSelection,
       enqueueProjectRootMutation,
       invalidateSessionSelection,
