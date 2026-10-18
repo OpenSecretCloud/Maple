@@ -122,6 +122,13 @@ import {
   projectedUserTurnScrollTop,
   type ChatProjectionScrollLease
 } from "@/components/chatProjectionScroll";
+import {
+  CHAT_BOTTOM_ATTACH_THRESHOLD_PX,
+  ChatScrollFollow,
+  chatDistanceFromBottom,
+  listenForChatScrollIntent,
+  readChatScrollMetrics
+} from "@/components/chatScrollFollow";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -1886,8 +1893,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, []);
 
   // Scroll state
-  const [isUserScrolling, setIsUserScrolling] = useState(false);
-  const isUserScrollingRef = useRef(false);
+  const scrollFollowRef = useLazyRef(() => new ChatScrollFollow());
   const prevStreamingRef = useRef(false);
   const projectionScrollCoordinatorRef = useLazyRef(
     () => new ChatProjectionScrollCoordinator<ChatRuntimeKey>()
@@ -2116,14 +2122,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       clearHistoryBottomCompensation();
     }
 
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-    setIsUserScrolling(!isNearBottom);
-  }, [clearHistoryBottomCompensation]);
-
-  useEffect(() => {
-    isUserScrollingRef.current = isUserScrolling;
-  }, [isUserScrolling]);
+    scrollFollowRef.current.handleScroll(readChatScrollMetrics(container));
+  }, [clearHistoryBottomCompensation, scrollFollowRef]);
 
   // Scroll to bottom helper
   const scrollToBottom = useCallback(
@@ -2241,13 +2241,19 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         ...summarizeStreamEventForLog(eventType, event),
         ...(includeScrollSnapshot && isRuntimeSelected(runtimeKey)
           ? {
-              isUserScrolling: isUserScrollingRef.current,
+              isUserScrolling: !scrollFollowRef.current.isFollowing,
               scroll: getScrollDebugSnapshot()
             }
           : {})
       });
     },
-    [getScrollDebugSnapshot, isRuntimeSelected, runtimeStore, streamEventDebugLoggingEnabled]
+    [
+      getScrollDebugSnapshot,
+      isRuntimeSelected,
+      runtimeStore,
+      scrollFollowRef,
+      streamEventDebugLoggingEnabled
+    ]
   );
 
   // Attach scroll listener
@@ -2256,11 +2262,15 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     if (!container) return;
 
     container.addEventListener("scroll", handleScroll);
+    const stopListeningForIntent = listenForChatScrollIntent(container, scrollFollowRef.current);
     // Initial check
     handleScroll();
 
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, [handleScroll]);
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      stopListeningForIntent();
+    };
+  }, [handleScroll, scrollFollowRef]);
 
   useLayoutEffect(() => {
     if (isLoadingOlderMessages || !pendingHistoryScrollRestoreRef.current) return;
@@ -2342,8 +2352,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       historyPaginationGate.resetIntent();
       pendingHistoryScrollRestoreRef.current = null;
       pendingHistoryScrollRestoreKeyRef.current = null;
-      isUserScrollingRef.current = false;
-      setIsUserScrolling(false);
+      const projectedContainer = chatContainerRef.current;
+      scrollFollowRef.current.attach(
+        projectedContainer ? readChatScrollMetrics(projectedContainer) : undefined
+      );
       prevLastMessageId.current = lastMessageId;
       prevStreamingRef.current = hasStreamingMessage;
     }
@@ -2383,11 +2395,17 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           containerTop: container.getBoundingClientRect().top,
           userTurnTop: userTurn.getBoundingClientRect().top
         });
+        // Keep the newest user turn in view; following resumes at the bottom.
+        const metrics = readChatScrollMetrics(container);
+        if (chatDistanceFromBottom(metrics) > CHAT_BOTTOM_ATTACH_THRESHOLD_PX) {
+          scrollFollowRef.current.detach(metrics);
+        }
         return;
       }
     }
 
     container.scrollTop = container.scrollHeight;
+    scrollFollowRef.current.attach(readChatScrollMetrics(container));
   }, [
     activeRuntime.historyLoaded,
     clearHistoryBottomCompensation,
@@ -2401,7 +2419,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     renderedRuntimeKey,
     resolveScrollProjectionKey,
     runtimeStore,
-    historyPaginationGate
+    historyPaginationGate,
+    scrollFollowRef
   ]);
 
   // Auto-scroll when user sends a message
@@ -2413,17 +2432,19 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       const lastItem = messages[messages.length - 1];
       const isUserMessage =
         lastItem.type === "message" && (lastItem as ExtendedMessage).role === "user";
-      const shouldAutoScrollAssistantItem =
-        isAssistantConversationItem(lastItem) && !isUserScrolling;
+      // Sending a message always re-attaches and shows the new turn.
+      if (isUserMessage) scrollFollowRef.current.attach();
 
-      if (isUserMessage || shouldAutoScrollAssistantItem) {
+      if (isUserMessage || isAssistantConversationItem(lastItem)) {
         const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
           renderedRuntimeKey,
           resolveScrollProjectionKey
         );
         setTimeout(
           () => {
-            runForProjectedRuntime(projectionLease, () => scrollToBottom("smooth"));
+            runForProjectedRuntime(projectionLease, () => {
+              if (scrollFollowRef.current.isFollowing) scrollToBottom("smooth");
+            });
           },
           isUserMessage ? 50 : 0
         );
@@ -2431,13 +2452,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
     prevLastMessageId.current = lastMessageId;
   }, [
-    isUserScrolling,
     lastMessageId,
     messages,
     projectionScrollCoordinatorRef,
     renderedRuntimeKey,
     resolveScrollProjectionKey,
     runForProjectedRuntime,
+    scrollFollowRef,
     scrollToBottom
   ]);
 
@@ -2445,7 +2466,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-    if (hasStreamingMessage && !prevStreamingRef.current && !isUserScrolling) {
+    if (hasStreamingMessage && !prevStreamingRef.current && scrollFollowRef.current.isFollowing) {
       // Just started streaming - scroll slightly to show the loading indicator
       const projectionLease = projectionScrollCoordinatorRef.current.captureLease(
         renderedRuntimeKey,
@@ -2454,7 +2475,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       timeoutId = setTimeout(() => {
         runForProjectedRuntime(projectionLease, () => {
           const container = chatContainerRef.current;
-          if (!container) return;
+          if (!container || !scrollFollowRef.current.isFollowing) return;
 
           // Scroll just enough to show the streaming message started
           const currentScroll = container.scrollTop;
@@ -2476,11 +2497,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     };
   }, [
     hasStreamingMessage,
-    isUserScrolling,
     projectionScrollCoordinatorRef,
     renderedRuntimeKey,
     resolveScrollProjectionKey,
-    runForProjectedRuntime
+    runForProjectedRuntime,
+    scrollFollowRef
   ]);
 
   // Auto-scroll when new messages arrive from polling
@@ -2492,7 +2513,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         resolveScrollProjectionKey
       );
       setTimeout(() => {
-        runForProjectedRuntime(projectionLease, () => scrollToBottom("smooth"));
+        runForProjectedRuntime(projectionLease, () => {
+          if (scrollFollowRef.current.isFollowing) scrollToBottom("smooth");
+        });
       }, 100);
 
       // Reset the flag
@@ -2503,6 +2526,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     projectionScrollCoordinatorRef,
     resolveScrollProjectionKey,
     runForProjectedRuntime,
+    scrollFollowRef,
     scrollToBottom
   ]);
 
