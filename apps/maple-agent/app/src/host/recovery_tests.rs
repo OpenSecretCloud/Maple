@@ -382,3 +382,35 @@ async fn graceful_detach_keeps_other_clients_running_and_last_quit_shuts_down() 
         .unwrap();
     assert!(endpoint.connect().await.is_err());
 }
+
+#[tokio::test]
+async fn remote_protocol_refusal_ends_recovery_without_replaying_or_reconnecting() {
+    let (_root, endpoint) = endpoint();
+    let mut listener = endpoint.bind().unwrap();
+    let (client, mut server) = client(&endpoint, &mut listener).await;
+    let mut events = client.take_events().await.unwrap();
+    protocol::write(
+        &mut server,
+        &Message::Closed {
+            reason: "Update both computers".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap(),
+        Some(AgentServiceEvent::RemoteAccessEnded(reason)) if reason == "Update both computers")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(client.call::<()>("send_message", ()).await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+}

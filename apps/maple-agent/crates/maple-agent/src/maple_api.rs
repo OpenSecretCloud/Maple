@@ -405,6 +405,48 @@ impl MapleApiSession {
         Ok(response.map_err(map_sdk_error)?.token)
     }
 
+    /// Whether this exact signed-in session has not been invalidated locally.
+    pub async fn remote_session_active(&self) -> bool {
+        self.inner.read().await.active
+    }
+
+    pub async fn register_remote_device(
+        &self,
+        request: maple_sdk::remote::RegisterRemoteDevice,
+    ) -> Result<maple_sdk::remote::RemoteDevice, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.register_remote_device(request).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_sdk_error)
+    }
+
+    pub async fn list_remote_devices(&self) -> Result<maple_sdk::remote::RemoteDeviceList, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.list_remote_devices().await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_sdk_error)
+    }
+
+    pub async fn request_remote_admission(
+        &self,
+        request: maple_sdk::remote::RemoteAdmissionRequest,
+    ) -> Result<maple_sdk::remote::RemoteAdmission, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.request_remote_admission(request).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_sdk_error)
+    }
+
+    pub async fn check_remote_admission(
+        &self,
+        request: maple_sdk::remote::CheckRemoteAdmission,
+    ) -> Result<maple_sdk::remote::RemoteAdmissionCheck, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.check_remote_admission(request).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_sdk_error)
+    }
+
     /// The account profile behind this session.
     pub async fn account(&self) -> Result<MapleAccount, MapleAccountError> {
         let snapshot = self.client_snapshot().await?;

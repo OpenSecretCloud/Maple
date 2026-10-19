@@ -5,6 +5,7 @@ pub mod crypto;
 pub mod error;
 pub mod pcr;
 pub mod push;
+pub mod remote;
 pub mod session;
 pub mod system_one;
 pub mod types;

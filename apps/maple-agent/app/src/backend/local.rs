@@ -87,7 +87,7 @@ pub struct RecoverySnapshot {
 pub struct LocalBackend {
     #[cfg(test)]
     pub(super) ui_fixture: bool,
-    pub(super) account_gate: tokio::sync::RwLock<()>,
+    pub(crate) account_gate: tokio::sync::RwLock<()>,
     restore_lock: tokio::sync::Mutex<()>,
     service: MapleAgentService,
     auth: MapleApiAuthState,
@@ -976,6 +976,26 @@ impl LocalBackend {
             let _ = self.validate_persisted_auth().await;
         }
         self.auth.session_for(user_id).await
+    }
+
+    /// Snapshot the locally selected account for remote enrollment.
+    pub(crate) fn remote_storage_root(&self) -> PathBuf {
+        self.persisted_auth
+            .path
+            .parent()
+            .expect("auth store has a parent")
+            .to_path_buf()
+    }
+    pub(crate) fn remote_api_url(&self) -> &str {
+        &self.api_url
+    }
+
+    pub(crate) async fn remote_session(
+        &self,
+        user_id: &str,
+    ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
+        self.authorize_account(user_id)?;
+        self.session_for(user_id).await
     }
 
     /// Sign out completely: invalidate the live session first, then remove
@@ -2627,6 +2647,37 @@ mod tests {
                 .unwrap(),
             rows
         );
+    }
+
+    #[tokio::test]
+    async fn checking_remote_status_does_not_create_identity_or_require_network() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
+        backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token",
+        ));
+        let (events, _) = tokio::sync::broadcast::channel(8);
+        let receipts = Arc::new(
+            crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
+        );
+        let remote = crate::remote::manager::Manager::new(backend, events, receipts);
+        remote.restore().await;
+        let status = remote
+            .dispatch(crate::host::protocol::Request {
+                id: 1,
+                method: "remote_status".into(),
+                params: serde_json::json!([]),
+                send_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(status["enabled"], false);
+        assert!(status["endpoint"].is_null());
+        assert!(!root.path().join("remote").exists());
+        assert!(!remote.stays_running());
     }
 
     #[tokio::test]

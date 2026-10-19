@@ -658,6 +658,7 @@ enum LoadMode {
 struct HostRecovery {
     epoch: u64,
     unavailable: bool,
+    ended: bool,
     events: Option<Vec<AgentServiceEvent>>,
     overflow: bool,
 }
@@ -669,6 +670,14 @@ const LOAD_RETRIES: u8 = 2;
 const FINISHED_RUNS_KEPT: usize = 64;
 
 impl ChatScreen {
+    pub fn connection_ended(&self) -> bool {
+        self.host_recovery.ended
+    }
+
+    pub(crate) fn execution_backend(&self) -> Arc<AgentBackend> {
+        self.backend.clone()
+    }
+
     pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let this = Self::new_mounted(backend, user_id, cx);
         this.start(cx);
@@ -1390,7 +1399,9 @@ impl ChatScreen {
             return;
         }
         let path = path.trim().to_string();
-        if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
+        if path.is_empty()
+            || (self.backend.remote_host().is_none() && !std::path::Path::new(&path).is_absolute())
+        {
             self.notice = Some("Enter an absolute directory path".into());
             cx.notify();
             return;
@@ -1511,6 +1522,10 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.backend.remote_host().is_some() {
+            self.show_root_input(cx);
+            return;
+        }
         // The platform folder picker through gpui: NSOpenPanel on macOS,
         // the common file dialog on Windows, the XDG portal on Linux.
         // The panel closes with the app, so quit is never blocked on it.
@@ -1624,6 +1639,11 @@ impl ChatScreen {
     /// dir comes back with it so the watcher follows a root change without
     /// a file stat on the UI thread.
     fn read_branch(&mut self, cx: &mut Context<Self>) {
+        if self.backend.remote_host().is_some() {
+            self.branch_watcher = None;
+            self.set_branch(None, cx);
+            return;
+        }
         let Some(root) = self.project_root.clone() else {
             return;
         };
@@ -5010,7 +5030,19 @@ impl ChatScreen {
                 self.recover_host(cx);
                 return true;
             }
+            AgentServiceEvent::RemoteAccessEnded(reason) => {
+                self.host_recovery.epoch += 1;
+                self.host_recovery.unavailable = true;
+                self.host_recovery.ended = true;
+                self.host_recovery.events = None;
+                self.runtime_error = Some(reason.into());
+                return true;
+            }
             AgentServiceEvent::HostDisconnected => {
+                if self.host_recovery.ended {
+                    return true;
+                }
+                self.host_recovery.ended = true;
                 self.host_recovery.epoch += 1;
                 self.host_recovery.unavailable = true;
                 self.host_recovery.events = None;
@@ -5064,7 +5096,8 @@ impl ChatScreen {
                     self.thinking = Some(state);
                 }
             }
-            AgentServiceEvent::HostDisconnected
+            AgentServiceEvent::RemoteAccessEnded(_)
+            | AgentServiceEvent::HostDisconnected
             | AgentServiceEvent::HostReconnecting
             | AgentServiceEvent::HostReconnected => return false,
             AgentServiceEvent::RuntimeStatus(mut status) => {
@@ -5809,7 +5842,11 @@ impl ChatScreen {
             return;
         }
         log::info!("desktop notification sent: {title}");
-        crate::notify::notify(cx, format!("task:{tag}"), title, body, &[]);
+        let tag = match self.backend.remote_host() {
+            Some(host) => format!("remote-task:{host}:{tag}"),
+            None => format!("task:{tag}"),
+        };
+        crate::notify::notify(cx, tag, title, body, &[]);
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the

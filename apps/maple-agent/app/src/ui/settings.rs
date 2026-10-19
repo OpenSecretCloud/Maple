@@ -122,6 +122,7 @@ pub struct SettingsScreen {
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     backend: Arc<AgentBackend>,
+    integrations_backend: Arc<AgentBackend>,
     user_id: String,
     settings: AppSettings,
     /// `settings.theme` parsed once; render only reads the label.
@@ -235,6 +236,7 @@ impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 impl SettingsScreen {
     pub fn new(
         backend: Arc<AgentBackend>,
+        integrations_backend: Arc<AgentBackend>,
         user_id: String,
         settings: AppSettings,
         shortcut_snapshot: ShortcutSnapshot,
@@ -283,6 +285,7 @@ impl SettingsScreen {
         let this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
+            integrations_backend,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
             settings,
@@ -354,7 +357,7 @@ impl SettingsScreen {
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
+        let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.list_mcp_servers(&user_id).await },
@@ -373,7 +376,7 @@ impl SettingsScreen {
     }
 
     fn load_integrations(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
+        let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.list_integrations(&user_id).await },
@@ -429,7 +432,7 @@ impl SettingsScreen {
         self.integration_notice = None;
         cx.notify();
 
-        let backend = self.backend.clone();
+        let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         let request_id = id.clone();
         self.call(
@@ -472,7 +475,7 @@ impl SettingsScreen {
         }
 
         let id = id.to_string();
-        let permissions = match self.backend.begin_integration_setup(&id) {
+        let permissions = match self.integrations_backend.begin_integration_setup(&id) {
             Ok(permissions) => permissions,
             Err(message) => {
                 self.integration_notice = Some(message);
@@ -484,7 +487,7 @@ impl SettingsScreen {
         self.integration_saving.insert(id.clone());
         cx.notify();
 
-        let backend = self.backend.clone();
+        let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         let request_id = id.clone();
         self.call(
@@ -527,7 +530,7 @@ impl SettingsScreen {
         self.mcp_saving = true;
         self.mcp_notice = None;
         cx.notify();
-        let backend = self.backend.clone();
+        let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.save_mcp_servers(&user_id, servers).await },
@@ -2136,6 +2139,10 @@ impl SettingsScreen {
             .flex_col()
             .gap_4()
             .child(section_title("Integrations"))
+            .child(div().text_sm().child(match self.integrations_backend.remote_host() {
+                Some(host) => format!("Execution computer: {}. Native setup and permissions must be completed there.", &host[..host.len().min(10)]),
+                None => "Execution computer: This computer".to_string(),
+            }))
             .child(
                 div()
                     .text_sm()

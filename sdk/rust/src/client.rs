@@ -1941,6 +1941,35 @@ impl OpenSecretClient {
             .await
     }
 
+    pub async fn register_remote_device(
+        &self,
+        request: crate::remote::RegisterRemoteDevice,
+    ) -> Result<crate::remote::RemoteDevice> {
+        self.authenticated_api_call("/v1/remote/devices", "POST", Some(request))
+            .await
+    }
+
+    pub async fn list_remote_devices(&self) -> Result<crate::remote::RemoteDeviceList> {
+        self.authenticated_api_call("/v1/remote/devices", "GET", None::<()>)
+            .await
+    }
+
+    pub async fn request_remote_admission(
+        &self,
+        request: crate::remote::RemoteAdmissionRequest,
+    ) -> Result<crate::remote::RemoteAdmission> {
+        self.authenticated_api_call("/v1/remote/admissions", "POST", Some(request))
+            .await
+    }
+
+    pub async fn check_remote_admission(
+        &self,
+        request: crate::remote::CheckRemoteAdmission,
+    ) -> Result<crate::remote::RemoteAdmissionCheck> {
+        self.authenticated_api_call("/v1/remote/admissions/check", "POST", Some(request))
+            .await
+    }
+
     pub async fn register_push_device(
         &self,
         request: RegisterPushDeviceRequest,

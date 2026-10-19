@@ -19,6 +19,8 @@ pub struct AgentBackend {
     owned_runtime: Option<Runtime>,
     client: BackendClient,
     api_url: String,
+    controller: Option<Arc<AgentBackend>>,
+    remote_host: Option<String>,
 }
 
 impl Drop for AgentBackend {
@@ -68,7 +70,7 @@ macro_rules! operations {
                 self.call(stringify!($name), ($($arg,)* )).await
             })*
         }
-        async fn dispatch_inner(backend: &LocalBackend, request: Request) -> Result<serde_json::Value, String> {
+        pub(crate) async fn dispatch_inner(backend: &LocalBackend, request: Request) -> Result<serde_json::Value, String> {
             match request.method.as_str() {
                 $(stringify!($name) => {
                     let ($($arg,)*): ($(wire_type!($ty),)*) = serde_json::from_value(request.params)
@@ -173,6 +175,8 @@ impl AgentBackend {
             owned_runtime: Some(runtime),
             client: BackendClient::InProcess(Box::new(backend)),
             api_url,
+            controller: None,
+            remote_host: None,
         })
     }
 
@@ -185,7 +189,34 @@ impl AgentBackend {
             owned_runtime: Some(runtime),
             client: BackendClient::Host(client),
             api_url,
+            controller: None,
+            remote_host: None,
         })
+    }
+
+    pub async fn remote(self: &Arc<Self>, peer: String) -> Result<Arc<Self>, String> {
+        let client = RemoteClient::connect_remote(&self.api_url, peer.clone()).await?;
+        Ok(Arc::new(Self {
+            runtime: self.runtime.clone(),
+            owned_runtime: None,
+            client: BackendClient::Host(client),
+            api_url: self.api_url.clone(),
+            controller: Some(self.clone()),
+            remote_host: Some(peer),
+        }))
+    }
+    pub fn remote_host(&self) -> Option<&str> {
+        self.remote_host.as_deref()
+    }
+    pub async fn remote_setting<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<R, String> {
+        if !method.starts_with("remote_") || self.remote_host.is_some() {
+            return Err("Remote settings require the local desktop".into());
+        }
+        self.call(method, params).await
     }
 
     async fn call<R: DeserializeOwned>(
@@ -193,6 +224,24 @@ impl AgentBackend {
         method: &str,
         params: impl Serialize,
     ) -> Result<R, String> {
+        // Speech capture/playback and account UI belong to the controller.
+        // All task operations use the selected host's separate connection.
+        if let Some(controller) = &self.controller
+            && matches!(
+                method,
+                "audio_capabilities"
+                    | "synthesize_speech"
+                    | "transcribe_audio"
+                    | "plan_usage"
+                    | "account"
+            )
+        {
+            match &controller.client {
+                BackendClient::Host(client) => return client.call(method, params).await,
+                #[cfg(test)]
+                BackendClient::InProcess(_) => {}
+            }
+        }
         match &self.client {
             BackendClient::Host(client) => client.call(method, params).await,
             #[cfg(test)]
@@ -300,6 +349,9 @@ impl AgentBackend {
         });
     }
     pub fn begin_integration_setup(&self, id: &str) -> Result<AgentIntegrationPermissions, String> {
+        if self.remote_host.is_some() {
+            return Err("Open Maple on the execution computer to grant native permissions.".into());
+        }
         // Native permission prompts remain on the signed app's UI thread.
         maple_agent::agent::begin_integration_setup(&AgentSetupIntegrationRequest { id: id.into() })
     }

@@ -26,10 +26,24 @@ impl Receipts {
                 "PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS sends (
                 id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
-                task TEXT NOT NULL, result TEXT
+                task TEXT NOT NULL, result TEXT, account TEXT
             );",
             )
             .map_err(|e| e.to_string())?;
+        let has_account = connection
+            .prepare("PRAGMA table_info(sends)")
+            .map_err(|e| e.to_string())?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|name| name == "account");
+        if !has_account {
+            connection
+                .execute_batch("ALTER TABLE sends ADD COLUMN account TEXT")
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Self(Mutex::new(connection)))
     }
 
@@ -67,8 +81,13 @@ impl Receipts {
         }
         connection
             .execute(
-                "INSERT INTO sends(id,fingerprint,task) VALUES (?1,?2,?3)",
-                params![id, fingerprint, task],
+                "INSERT INTO sends(id,fingerprint,task,account) VALUES (?1,?2,?3,?4)",
+                params![
+                    id,
+                    fingerprint,
+                    task,
+                    params.pointer("/0").and_then(serde_json::Value::as_str)
+                ],
             )
             .map_err(|e| e.to_string())?;
         Ok(None)
@@ -88,6 +107,22 @@ impl Receipts {
                 params![id, result],
             )
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn authorize(&self, id: &str, account: &str) -> Result<(), String> {
+        let owner: Option<Option<String>> = self
+            .0
+            .lock()
+            .unwrap()
+            .query_row("SELECT account FROM sends WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if owner.is_some_and(|owner| owner.as_deref() != Some(account)) {
+            return Err("Send receipt is unavailable for this account".into());
+        }
         Ok(())
     }
 
@@ -114,6 +149,25 @@ impl Receipts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_receipts_are_account_bound_and_legacy_rows_stay_local() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("receipts.db");
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch("CREATE TABLE sends(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, task TEXT NOT NULL, result TEXT); INSERT INTO sends VALUES ('legacy', 'f', 'task', NULL);").unwrap();
+        drop(old);
+        let receipts = Receipts::open(&path).unwrap();
+        assert!(receipts.authorize("legacy", "alice").is_err());
+        assert_eq!(receipts.outcome("legacy").unwrap(), Outcome::Pending);
+        let id = uuid::Uuid::new_v4().to_string();
+        receipts
+            .reserve(&id, &serde_json::json!(["alice", {"sessionId":"task"}]))
+            .unwrap();
+        assert!(receipts.authorize(&id, "alice").is_ok());
+        assert!(receipts.authorize(&id, "bob").is_err());
+        assert!(receipts.authorize("missing", "bob").is_ok());
+    }
 
     #[test]
     fn lost_reply_and_incomplete_admission_survive_reopening_without_resending() {

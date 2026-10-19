@@ -14,6 +14,7 @@ pub type Connection = Box<dyn Stream>;
 #[derive(Clone)]
 pub struct Endpoint {
     pub profile: String,
+    pub remote_host: Option<String>,
     directory: PathBuf,
     address: PathBuf,
 }
@@ -27,6 +28,7 @@ impl Endpoint {
         let address = PathBuf::from(format!(r"\\.\pipe\maple-test-{}", uuid::Uuid::new_v4()));
         Self {
             profile: "test-profile".into(),
+            remote_host: None,
             directory,
             address,
         }
@@ -81,6 +83,7 @@ impl Endpoint {
         let address = PathBuf::from(format!(r"\\.\pipe\maple-agent-{namespace}"));
         Ok(Self {
             profile,
+            remote_host: None,
             directory,
             address,
         })

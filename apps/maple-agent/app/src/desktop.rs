@@ -28,6 +28,7 @@ enum Screen {
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
     Settings(Entity<SettingsScreen>),
+    Devices(Entity<ui::remote::RemoteScreen>),
 }
 
 struct MapleApp {
@@ -37,6 +38,14 @@ struct MapleApp {
     /// The chat screen is parked while settings is open so Back returns to
     /// it with its state intact.
     parked_chat: Option<Entity<ChatScreen>>,
+    local_chat: Option<Entity<ChatScreen>>,
+    remote_chats: std::collections::HashMap<String, Entity<ChatScreen>>,
+    selected_host: Option<String>,
+    remote_error: Option<String>,
+    remote_enabled: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    tray: Option<crate::tray::StatusIcon>,
+    remote_bridges: std::cell::RefCell<Vec<gpui::Task<()>>>,
     settings: crate::settings::AppSettings,
     /// The complete live shortcut map. Settings mutations prepare a full
     /// replacement before this runtime clears GPUI's process-wide bindings.
@@ -79,11 +88,7 @@ impl MapleApp {
         events: Vec<maple_agent::agent::AgentServiceEvent>,
         cx: &mut Context<Self>,
     ) {
-        let chat = match &self.screen {
-            Screen::Chat(chat) => Some(chat.clone()),
-            _ => self.parked_chat.clone(),
-        };
-        if let Some(chat) = chat {
+        if let Some(chat) = &self.local_chat {
             chat.update(cx, |chat, cx| chat.handle_service_events(events, cx));
         }
     }
@@ -116,7 +121,11 @@ impl MapleApp {
     /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
         self.user_id = None;
+        self.set_remote_enabled(false, cx);
         self.parked_chat = None;
+        self.local_chat = None;
+        self.remote_chats.clear();
+        self.selected_host = None;
         if matches!(self.screen, Screen::Login(_)) {
             return;
         }
@@ -154,8 +163,115 @@ impl MapleApp {
         self.user_id = Some(user_id);
         self.parked_chat = None;
         self.screen = Screen::Chat(chat.clone());
+        self.local_chat = Some(chat.clone());
+        self.remote_chats.clear();
+        self.selected_host = None;
         self.subscribe_chat(&chat, cx);
         cx.notify();
+    }
+
+    fn show_devices(&mut self, cx: &mut Context<Self>) {
+        if let Screen::Chat(chat) = &self.screen {
+            self.parked_chat = Some(chat.clone());
+        }
+        let backend = self.backend.clone();
+        let screen = cx.new(|cx| ui::remote::RemoteScreen::new(backend, cx));
+        cx.subscribe(&screen, |app, _, _: &ui::remote::CloseDevices, cx| {
+            if let Some(chat) = app.parked_chat.take().or_else(|| app.local_chat.clone()) {
+                app.screen = Screen::Chat(chat);
+            }
+            cx.notify();
+        })
+        .detach();
+        cx.subscribe(&screen, |app, _, event: &ui::remote::RemoteEnabled, cx| {
+            app.set_remote_enabled(event.0, cx)
+        })
+        .detach();
+        cx.subscribe(
+            &screen,
+            |app, _, event: &ui::remote::ConnectComputer, cx| {
+                app.connect_computer(event.0.clone(), cx)
+            },
+        )
+        .detach();
+        self.screen = Screen::Devices(screen);
+        cx.notify();
+    }
+
+    fn set_remote_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.remote_enabled
+            .store(enabled, std::sync::atomic::Ordering::Release);
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let Some(tray) = &self.tray {
+            tray.set_enabled(enabled);
+        }
+        cx.notify();
+    }
+
+    fn connect_computer(&mut self, peer: String, cx: &mut Context<Self>) {
+        if let Some(chat) = self.remote_chats.get(&peer)
+            && !chat.read(cx).connection_ended()
+        {
+            self.screen = Screen::Chat(chat.clone());
+            self.selected_host = Some(peer);
+            self.parked_chat = None;
+            cx.notify();
+            return;
+        }
+        let Some(user_id) = self.user_id.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let target = peer.clone();
+        self.remote_error = None;
+        let bridge = ui::task::call(
+            &self.backend,
+            async move { backend.remote(target).await },
+            cx,
+            move |app, result, cx| {
+                if app.user_id.as_deref() != Some(&user_id) {
+                    return;
+                }
+                match result {
+                    Ok(backend) => {
+                        let source = backend.clone();
+                        let rx = backend.spawn(async move { source.take_events().await });
+                        let chat = cx.new(|cx| ChatScreen::new(backend, user_id, cx));
+                        app.subscribe_chat(&chat, cx);
+                        let weak = chat.downgrade();
+                        cx.spawn(async move |_, cx| {
+                            let Some(mut rx) = rx.await.ok().flatten() else {
+                                return;
+                            };
+                            while let Some(event) = rx.recv().await {
+                                let mut batch = vec![event];
+                                while batch.len() < 256 {
+                                    if let Ok(event) = rx.try_recv() {
+                                        batch.push(event);
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                if weak
+                                    .update(cx, |chat, cx| chat.handle_service_events(batch, cx))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        })
+                        .detach();
+                        app.remote_chats.insert(peer.clone(), chat.clone());
+                        app.selected_host = Some(peer);
+                        app.screen = Screen::Chat(chat);
+                        app.parked_chat = None;
+                    }
+                    Err(error) => app.remote_error = Some(error),
+                }
+                cx.notify();
+            },
+        );
+        ui::task::retain(&self.remote_bridges, bridge);
     }
 
     /// Park the chat screen and show settings.
@@ -167,8 +283,17 @@ impl MapleApp {
         let user_id = self.user_id.clone().unwrap_or_default();
         let settings = self.settings.clone();
         let shortcut_snapshot = self.shortcuts.snapshot();
+        let integrations_backend = chat.read(cx).execution_backend();
         let screen = cx.new(|cx| {
-            SettingsScreen::new(backend, user_id, settings, shortcut_snapshot, section, cx)
+            SettingsScreen::new(
+                backend,
+                integrations_backend,
+                user_id,
+                settings,
+                shortcut_snapshot,
+                section,
+                cx,
+            )
         });
         cx.subscribe(
             &screen,
@@ -192,7 +317,7 @@ impl MapleApp {
         cx.subscribe(
             &screen,
             |app: &mut MapleApp, _emitter, _event: &SignOutRequested, cx| {
-                if let Some(chat) = app.parked_chat.take() {
+                if let Some(chat) = app.local_chat.take() {
                     chat.update(cx, |chat, cx| chat.sign_out(cx));
                 }
                 app.show_login(cx);
@@ -318,13 +443,75 @@ impl Render for MapleApp {
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
+            .when(self.user_id.is_some(), |view| {
+                view.child(
+                    div()
+                        .bg(gpui::rgb(ui::theme::bg_sidebar()))
+                        .flex()
+                        .gap_3()
+                        .items_center()
+                        .pl(ui::titlebar::top_row_inset(gpui::px(12.)))
+                        .pr_3()
+                        .py_2()
+                        .child(
+                            ui::widgets::secondary_button("local-computer")
+                                .child("This computer")
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    if let Some(chat) = &app.local_chat {
+                                        app.screen = Screen::Chat(chat.clone());
+                                        app.selected_host = None;
+                                        app.parked_chat = None;
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            ui::widgets::secondary_button("remote-computers")
+                                .child("Computers…")
+                                .on_click(cx.listener(|app, _, _, cx| app.show_devices(cx))),
+                        )
+                        .when_some(self.selected_host.as_ref(), |row, host| {
+                            row.child(format!("Remote · {}", &host[..host.len().min(10)]))
+                        })
+                        .when_some(self.remote_error.as_ref(), |row, error| {
+                            row.child(error.clone())
+                        }),
+                )
+            })
             .child(match &self.screen {
                 Screen::Restoring => restoring_view().into_any_element(),
                 Screen::Login(login) => login.clone().into_any_element(),
                 Screen::Chat(chat) => chat.clone().into_any_element(),
                 Screen::Settings(screen) => screen.clone().into_any_element(),
+                Screen::Devices(screen) => screen.clone().into_any_element(),
             })
     }
+}
+
+fn install_close_behavior(
+    window: &mut Window,
+    cx: &mut App,
+    remote_enabled: Arc<std::sync::atomic::AtomicBool>,
+    can_background: bool,
+) {
+    window.on_window_should_close(cx, move |_, cx| {
+        persist_window_state();
+        if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = can_background;
+                cx.hide();
+                false
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                can_background
+            }
+        } else {
+            cx.quit();
+            true
+        }
+    });
 }
 
 /// Shown only if a paint happens before `run` picks the first screen,
@@ -504,6 +691,7 @@ pub fn run() {
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
             cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
             if let Err(error) = cx.text_system().add_fonts(
                 crate::assets::FONTS
@@ -537,14 +725,34 @@ pub fn run() {
             cx.on_system_notification_response(|response, cx| {
                 cx.activate(true);
                 let session_id = response.tag.strip_prefix("task:").map(str::to_owned);
+                let remote_task = response
+                    .tag
+                    .strip_prefix("remote-task:")
+                    .and_then(|tag| tag.split_once(':'))
+                    .map(|(host, task)| (host.to_owned(), task.to_owned()));
                 for window in cx.windows() {
                     window
                         .update(cx, |root, window, cx| {
                             window.activate_window();
-                            if let (Some(session_id), Ok(app)) =
-                                (session_id.as_deref(), root.downcast::<MapleApp>())
-                            {
-                                app.update(cx, |app, cx| app.open_task(session_id, cx));
+                            if let Ok(app) = root.downcast::<MapleApp>() {
+                                app.update(cx, |app, cx| {
+                                    if let Some((host, task)) = &remote_task {
+                                        if let Some(chat) = app.remote_chats.get(host).cloned() {
+                                            app.selected_host = Some(host.clone());
+                                            app.screen = Screen::Chat(chat.clone());
+                                            chat.update(cx, |chat, cx| {
+                                                chat.select_session(task, cx)
+                                            });
+                                        }
+                                    } else if let Some(task) = session_id.as_deref() {
+                                        if let Some(chat) = app.local_chat.clone() {
+                                            app.screen = Screen::Chat(chat);
+                                            app.selected_host = None;
+                                        }
+                                        app.open_task(task, cx);
+                                    }
+                                    cx.notify();
+                                });
                             }
                         })
                         .ok();
@@ -563,15 +771,36 @@ pub fn run() {
             } else {
                 WindowBounds::Windowed(bounds)
             };
+            let remote_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let quit_remote_enabled = remote_enabled.clone();
             let quit_backend = backend.clone();
             cx.on_app_quit(move |_cx| {
                 let backend = quit_backend.clone();
+                let remote_enabled = quit_remote_enabled.clone();
                 async move {
                     persist_window_state();
-                    let _ = backend.detach().await;
+                    if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
+                        let api = backend.api_url().to_owned();
+                        let _ = backend
+                            .spawn(async move {
+                                tokio::task::spawn_blocking(move || crate::host::stop(&api)).await
+                            })
+                            .await;
+                    } else {
+                        let _ = backend.detach().await;
+                    }
                 }
             })
             .detach();
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            let (tray, tray_events) = match crate::tray::StatusIcon::new() {
+                Ok((tray, events)) => (Some(tray), Some(events)),
+                Err(error) => {
+                    log::warn!("{error}");
+                    (None, None)
+                }
+            };
+            let root_enabled = remote_enabled.clone();
             let root_backend = backend.clone();
             let root_settings = startup_settings.clone();
             let window = cx
@@ -581,6 +810,14 @@ pub fn run() {
                         screen: Screen::Restoring,
                         user_id: None,
                         parked_chat: None,
+                        local_chat: None,
+                        remote_chats: std::collections::HashMap::new(),
+                        selected_host: None,
+                        remote_error: None,
+                        remote_enabled: root_enabled,
+                        #[cfg(any(target_os = "linux", target_os = "windows"))]
+                        tray,
+                        remote_bridges: std::cell::RefCell::new(Vec::new()),
                         settings: root_settings,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
@@ -643,14 +880,17 @@ pub fn run() {
                 .detach();
             }
             let root = window
-                .update(cx, |_, window, cx| {
+                .update(cx, |app, window, cx| {
                     // The only window: closing it from the window manager
                     // ends the app the same way the title bar button does.
-                    window.on_window_should_close(cx, |_window, cx| {
-                        persist_window_state();
-                        cx.quit();
+                    #[cfg(target_os = "macos")]
+                    let can_background = {
+                        let _ = app;
                         true
-                    });
+                    };
+                    #[cfg(any(target_os = "linux", target_os = "windows"))]
+                    let can_background = app.tray.is_some();
+                    install_close_behavior(window, cx, remote_enabled.clone(), can_background);
                     // A system theme change must reach every view.
                     window
                         .observe_window_appearance(|_window, cx| cx.refresh_windows())
@@ -658,6 +898,68 @@ pub fn run() {
                     cx.entity()
                 })
                 .expect("root entity");
+
+            // Local status is cheap and does not contact the enrollment
+            // service. This also notices changes made through the CLI.
+            let status_backend = backend.clone();
+            let status_root = root.clone();
+            cx.spawn(async move |cx| {
+                loop {
+                    let backend = status_backend.clone();
+                    let task = status_backend.spawn(async move {
+                        backend
+                            .remote_setting::<crate::remote::manager::Status>("remote_status", ())
+                            .await
+                    });
+                    if let Ok(Ok(status)) = task.await {
+                        status_root
+                            .update(cx, |app, cx| app.set_remote_enabled(status.enabled, cx));
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(5))
+                        .await;
+                }
+            })
+            .detach();
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            if let Some(mut events) = tray_events {
+                let tray_root = root.clone();
+                let enabled = remote_enabled.clone();
+                cx.spawn(async move |cx| {
+                    while let Some(action) = events.recv().await {
+                        match action {
+                            crate::tray::Action::Quit => {
+                                cx.update(|cx| cx.quit());
+                                break;
+                            }
+                            crate::tray::Action::Open => {
+                                cx.update(|cx| {
+                                    if cx.windows().is_empty() {
+                                        let root = tray_root.clone();
+                                        let enabled = enabled.clone();
+                                        let bounds =
+                                            Bounds::centered(None, size(px(1280.), px(860.)), cx);
+                                        let _ = cx.open_window(
+                                            main_window_options(WindowBounds::Windowed(bounds)),
+                                            move |window, cx| {
+                                                install_close_behavior(window, cx, enabled, true);
+                                                root
+                                            },
+                                        );
+                                    } else {
+                                        for window in cx.windows() {
+                                            let _ = window.update(cx, |_, window, _| {
+                                                window.activate_window()
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                })
+                .detach();
+            }
 
             // The event pump runs once for the whole process and routes events to
             // whichever screen is active. It exits when the root entity is gone.

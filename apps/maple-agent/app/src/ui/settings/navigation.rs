@@ -664,6 +664,7 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
+                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings::default(),
@@ -748,6 +749,7 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
+                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {
@@ -822,6 +824,7 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
+                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {
@@ -893,6 +896,7 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
+                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {
@@ -975,6 +979,7 @@ mod tests {
         );
         cx.new(|cx| {
             SettingsScreen::new(
+                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {

@@ -114,6 +114,7 @@ const DESTRUCTIVE_RESET_CASCADE_ENCRYPTED_TABLES: &[(&str, &str)] = &[
 const DESTRUCTIVE_RESET_UPDATED_ENCRYPTED_TABLES: &[&str] = &["users"];
 
 const ENCRYPTED_TABLES_NOT_USER_PRIVATE_STORAGE: &[&str] = &[
+    "remote_enrollment_records",
     "account_deletion_requests",
     "org_project_secrets",
     "password_reset_requests",
