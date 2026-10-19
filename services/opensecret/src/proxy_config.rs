@@ -102,6 +102,7 @@ impl ProxyRouter {
             .then(|| proxy.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn maple_is_available(&self) -> bool {
         self.maple_is_configured()
             && self

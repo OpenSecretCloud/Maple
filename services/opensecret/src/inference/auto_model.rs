@@ -442,7 +442,7 @@ mod tests {
                 assert_eq!(unique.len(), candidates.len(), "duplicate candidate");
                 for candidate in &candidates {
                     assert!(
-                        enabled_api_completion_model_ids(false).any(|id| id == *candidate),
+                        enabled_api_completion_model_ids().any(|id| id == *candidate),
                         "{candidate} is not an enabled API completion model"
                     );
                     assert!(

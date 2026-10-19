@@ -33,7 +33,7 @@ async fn flags_server(app: Router) -> LoopbackFlags {
 }
 
 #[tokio::test]
-async fn unrelated_completion_models_do_not_call_flags_but_catalog_and_maple_share_cache() {
+async fn only_deepseek_and_eligible_auto_candidates_consult_the_cached_provider_flag() {
     let user = Uuid::from_u128(1);
     let calls = Arc::new(AtomicUsize::new(0));
     let request_calls = calls.clone();
@@ -50,38 +50,51 @@ async fn unrelated_completion_models_do_not_call_flags_but_catalog_and_maple_sha
     ))
     .await;
     let client = OsFlagsClient::new(server.base_url.clone(), None).unwrap();
-
     for model in [
-        "deepseek-v4-1-flash",
         "glm-5-3",
+        "glm-5-3-flash",
         "llama3-3-70b",
         "unknown-model",
+        "deepseek-v4-1-flash-1017",
         "deepseek-v4-1-flash-1017-extra",
     ] {
-        assert!(!maple_inference_eligibility_for_model(Some(&client), user, model).await);
-    }
-    for plan in [ModelPlan::Free, ModelPlan::Paid] {
-        for alias in ["auto:quick", "auto:powerful"] {
-            let targets = ModelAliasTargets::for_plan(plan);
-            assert!(
-                !maple_inference_eligibility_for_model(Some(&client), user, targets.resolve(alias))
-                    .await
-            );
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            assert!(!maple_inference_eligibility_for_model(Some(&client), user, model, plan).await);
         }
     }
+    for alias in ["auto:quick", "auto:powerful"] {
+        assert!(
+            !maple_inference_eligibility_for_model(Some(&client), user, alias, ModelPlan::Free)
+                .await
+        );
+    }
+    assert!(
+        !maple_inference_eligibility_for_model(
+            Some(&client),
+            user,
+            "auto:powerful",
+            ModelPlan::Paid
+        )
+        .await
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    // Catalog visibility still checks the user's flag. A following gated
-    // completion reuses the same existing account/key-scoped flags cache.
-    assert!(maple_inference_eligibility(Some(&client), user).await);
+    // The generic model and Auto Quick's existing DeepSeek alternate capture
+    // the same account-owned provider decision, without changing Auto defaults.
     assert!(
         maple_inference_eligibility_for_model(
             Some(&client),
             user,
-            crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+            "deepseek-v4-1-flash",
+            ModelPlan::Paid
         )
         .await
     );
+    assert!(
+        maple_inference_eligibility_for_model(Some(&client), user, "auto:quick", ModelPlan::Paid)
+            .await
+    );
+    assert!(maple_inference_eligibility(Some(&client), user).await);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -269,11 +282,11 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
         for (provider, public_model) in [
             (
                 ProviderId::Maple(MapleInstanceId::I01),
-                "deepseek-v4-1-flash-1017",
+                "deepseek-v4-1-flash",
             ),
             (
                 ProviderId::Maple(MapleInstanceId::I02),
-                "deepseek-v4-1-flash-1017",
+                "deepseek-v4-1-flash",
             ),
             (ProviderId::Tinfoil, "deepseek-v4-1-flash"),
         ] {
@@ -315,7 +328,7 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
 #[test]
 fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
     let user = Uuid::from_u128(17);
-    let model = crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
+    let model = crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID;
     let cache = CompletionCachePolicy::BoundV2(derive_provider_cache_namespaces(
         &CacheNamespaceRoot::from_bytes([0x42; 32]),
         user,
@@ -478,18 +491,5 @@ fn direct_maple_cache_salt_is_private_and_provider_fields_are_rebuilt() {
             assert_eq!(body.get("cache_salt"), Some(&json!(continuum_expected)));
             assert_ne!(body.get("cache_salt"), Some(&json!(expected)));
         }
-    }
-}
-
-#[test]
-fn dedicated_checkpoint_access_requires_rollout_without_relabeling_old_model() {
-    let new_model = crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
-    assert!(matches!(
-        ensure_maple_model_access(new_model, false),
-        Err(ApiError::ModelNotAvailable)
-    ));
-    assert!(ensure_maple_model_access(new_model, true).is_ok());
-    for enabled in [false, true] {
-        assert!(ensure_maple_model_access("deepseek-v4-1-flash", enabled).is_ok());
     }
 }

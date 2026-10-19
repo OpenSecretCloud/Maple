@@ -15,8 +15,8 @@ use crate::{
     jwt::AuthContext,
     model_config::{
         model_config, model_reasoning_history_strategy, model_reasoning_replay,
-        resolve_public_model_id, resolve_public_model_id_with_maple, ModelAliasTargets, ModelPlan,
-        ReasoningEffort, ResponsesModelConfig, SamplingConfig,
+        resolve_public_model_id, ModelAliasTargets, ModelPlan, ReasoningEffort,
+        ResponsesModelConfig, SamplingConfig,
     },
     models::responses::{
         NewToolCall, NewToolOutput, NewUserMessage, ResponseStatus, ResponsesError,
@@ -31,7 +31,7 @@ use crate::{
             EffectiveReasoningEffort, ModelSelection, RESPONSES_REASONING_EFFORT_PARAM,
         },
         openai::{
-            ensure_completion_model_access, ensure_maple_model_access, finish_started_completion,
+            ensure_completion_model_access, finish_started_completion,
             get_bounded_chat_completion_response, get_chat_completion_response,
             prepare_completion_request, resolve_inference_model,
             start_chat_completion_response_for_execution, BillingContext, CompletionCachePolicy,
@@ -226,12 +226,10 @@ fn resolve_responses_model(
     requested_model: &str,
     completion_provider_name: &str,
     model_plan: ModelPlan,
-    maple_inference_enabled: bool,
 ) -> Result<String, ApiError> {
-    ensure_maple_model_access(requested_model, maple_inference_enabled)?;
     ensure_completion_model_access(requested_model, model_plan)?;
 
-    match resolve_public_model_id_with_maple(requested_model, maple_inference_enabled) {
+    match resolve_public_model_id(requested_model) {
         Some(model) => Ok(model.to_string()),
         None if completion_provider_name != "tinfoil" => Ok(requested_model.to_string()),
         None => {
@@ -2389,79 +2387,68 @@ mod tests {
     #[test]
     fn test_resolve_responses_models_enforces_plan_gates() {
         assert_eq!(
-            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Paid, false).unwrap(),
+            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Paid).unwrap(),
             "kimi-k3"
         );
         assert!(matches!(
-            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Free, false),
+            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(matches!(
-            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Free, false),
+            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Paid, false).unwrap(),
+            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Paid).unwrap(),
             "glm-5-3"
         );
         assert!(matches!(
-            resolve_responses_model("glm-5-3", "continuum", ModelPlan::Free, false),
+            resolve_responses_model("glm-5-3", "continuum", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-3", "continuum", ModelPlan::Paid, false).unwrap(),
+            resolve_responses_model("glm-5-3", "continuum", ModelPlan::Paid).unwrap(),
             "glm-5-3"
         );
         assert!(matches!(
-            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Free, false),
+            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Paid, false).unwrap(),
+            resolve_responses_model("glm-5-3-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "glm-5-3-flash"
         );
         assert!(matches!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free, false),
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid, false)
-                .unwrap(),
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "deepseek-v4-1-flash"
         );
     }
 
     #[test]
-    fn dedicated_1017_responses_resolution_requires_trusted_rollout_access() {
-        let model = crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
+    fn canonical_deepseek_responses_resolution_has_no_versioned_alias() {
+        let model = crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID;
         assert_eq!(
-            resolve_responses_model(model, "tinfoil", ModelPlan::Paid, true).unwrap(),
-            model,
+            resolve_responses_model(model, "tinfoil", ModelPlan::Paid).unwrap(),
+            model
         );
-        // The rollout check also runs before the custom-provider passthrough:
-        // switching provider names must not bypass per-account model access.
-        for provider in ["tinfoil", "continuum", "maple"] {
-            assert!(matches!(
-                resolve_responses_model(model, provider, ModelPlan::Paid, false),
-                Err(ApiError::ModelNotAvailable),
-            ));
-        }
         assert!(matches!(
-            resolve_responses_model(model, "tinfoil", ModelPlan::Free, true),
-            Err(ApiError::ModelNotAvailableOnPlan),
+            resolve_responses_model(model, "tinfoil", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
         ));
-        assert_eq!(
-            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid, true)
-                .unwrap(),
-            "deepseek-v4-1-flash",
-            "enabling the dedicated checkpoint must preserve the older public identity",
-        );
+        assert!(matches!(
+            resolve_responses_model("deepseek-v4-1-flash-1017", "tinfoil", ModelPlan::Paid),
+            Err(ApiError::BadRequest)
+        ));
     }
 
     #[test]
     fn test_resolve_responses_model_allows_free_model() {
         assert_eq!(
-            resolve_responses_model("llama3-3-70b", "tinfoil", ModelPlan::Free, false).unwrap(),
+            resolve_responses_model("llama3-3-70b", "tinfoil", ModelPlan::Free).unwrap(),
             "llama3-3-70b"
         );
     }
@@ -2537,7 +2524,7 @@ mod tests {
             let selected_model = targets.resolve(case.selector);
 
             assert_eq!(selected_model, case.expected_model, "{}", case.name);
-            let result = resolve_responses_model(selected_model, "tinfoil", case.plan, false);
+            let result = resolve_responses_model(selected_model, "tinfoil", case.plan);
             assert_eq!(result.is_ok(), case.expected_access, "{}", case.name);
             if case.expected_access {
                 assert_eq!(result.unwrap(), case.expected_model, "{}", case.name);
@@ -5910,13 +5897,12 @@ async fn create_response_stream(
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let selected_model = alias_targets.resolve(&requested_model).to_string();
     let routing =
-        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &selected_model).await;
+        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &requested_model).await;
     let completion_provider = state.proxy_router.get_completion_proxy();
     let resolved_model = resolve_responses_model(
         &selected_model,
         &completion_provider.provider_name,
         model_plan,
-        routing.maple_inference_enabled(),
     )?;
     if requested_model != resolved_model {
         debug!(

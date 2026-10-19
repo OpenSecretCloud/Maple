@@ -410,14 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_rollout_permission_never_rewrites_deepseek_version() {
-        use crate::model_config::{
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        };
-        for model in [
-            DEEPSEEK_V4_1_FLASH_MODEL_ID,
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-        ] {
+    fn provider_rollout_permission_preserves_public_model_identity() {
+        use crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID;
+        for model in [DEEPSEEK_V4_1_FLASH_MODEL_ID, "glm-5-3"] {
             let intent = InferenceIntent::new(
                 Uuid::nil(),
                 model,

@@ -438,7 +438,6 @@ pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
-pub const DEEPSEEK_V4_1_FLASH_1017_MODEL_ID: &str = "deepseek-v4-1-flash-1017";
 
 const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
     quick: QUICK_MODEL_ID,
@@ -954,7 +953,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Fast multimodal reasoning and tool-use model.",
         ModelAccessTier::Pro,
         ModelCapabilities::chat(true, true),
-        &["New"],
+        &[],
         true,
         true,
         false,
@@ -1001,7 +1000,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Flagship reasoning model for complex engineering and long-horizon agent work.",
         ModelAccessTier::Pro,
         ModelCapabilities::chat(true, false),
-        &["New"],
+        &[],
         true,
         true,
         false,
@@ -1029,29 +1028,6 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(DEEPSEEK_V4_1_FLASH_REASONING)
-    .with_catalog_metadata(ModelCatalogMetadata::new(
-        &["text", "image"],
-        &["text"],
-        Some("552B"),
-        Some("16B"),
-    )),
-    ModelConfigEntry::new(
-        DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-        "DeepSeek V4.1 Flash 1017",
-        "DeepSeek Flash 1017",
-        "1017 checkpoint of the long-context multimodal reasoning and tool-use model.",
-        ModelAccessTier::Pro,
-        ModelCapabilities::chat(true, true),
-        &["New"],
-        true,
-        true,
-        false,
-        66,
-        1_048_576,
-        DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
-    )
-    .with_reasoning(DEEPSEEK_V4_1_FLASH_REASONING)
-    .with_catalog_provider("maple", DEEPSEEK_V4_1_FLASH_1017_MODEL_ID)
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
         &["text"],
@@ -1121,48 +1097,21 @@ pub(crate) fn model_capabilities(model: &str) -> Option<ModelCapabilities> {
     model_entry(alias_target(model).unwrap_or(model)).map(|entry| entry.capabilities)
 }
 
-/// Models served only by Maple's independently attested dedicated inference.
-/// Recognition is not authorization; entrypoints must use the authenticated
-/// account's feature decision and preserve model-specific route admission.
-pub(crate) fn is_maple_model(model: &str) -> bool {
-    model == DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
-}
-
-fn model_visible_to_account(model: &str, maple_inference_enabled: bool) -> bool {
-    !is_maple_model(model) || maple_inference_enabled
-}
-
 #[cfg(test)]
-pub(crate) fn enabled_api_completion_model_ids(
-    maple_enabled: bool,
-) -> impl Iterator<Item = &'static str> {
+pub(crate) fn enabled_api_completion_model_ids() -> impl Iterator<Item = &'static str> {
     MODEL_CONFIGS
         .iter()
         .filter(|entry| entry.api_listed && entry.enabled && entry.capabilities.chat)
-        .filter(move |entry| model_visible_to_account(entry.id, maple_enabled))
         .map(|entry| entry.id)
 }
 
+/// Public model identity is independent of provider rollout. Maple eligibility
+/// is checked by routing, alongside the other routes for the same public model.
 pub fn resolve_public_model_id(model: &str) -> Option<&'static str> {
-    resolve_public_model_id_with_maple(model, false)
-}
-
-/// Resolve the explicit dedicated checkpoint only for an authorized account.
-/// Readiness is checked by routing, so an authorized but unavailable checkpoint
-/// remains a known model and fails locally instead of changing public model.
-pub(crate) fn resolve_public_model_id_with_maple(
-    model: &str,
-    maple_inference_enabled: bool,
-) -> Option<&'static str> {
     let canonical = alias_target(model).unwrap_or(model);
     MODEL_CONFIGS
         .iter()
-        .find(|entry| {
-            entry.id == canonical
-                && entry.api_listed
-                && entry.enabled
-                && model_visible_to_account(entry.id, maple_inference_enabled)
-        })
+        .find(|entry| entry.id == canonical && entry.api_listed && entry.enabled)
         .map(|entry| entry.id)
 }
 
@@ -1212,27 +1161,12 @@ pub(crate) fn alias_reasoning(alias: &str, plan: ModelPlan) -> Option<ModelReaso
     Some(reasoning)
 }
 
-#[cfg(test)]
+/// Provider rollout and readiness affect route eligibility, not the public
+/// catalog: shared Tinfoil serves the same DeepSeek model when Maple is disabled.
 pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
-    model_catalog_response_with_maple(plan, false, false)
-}
-
-/// The trusted account gate and dedicated provider readiness are separate:
-/// neither alone may advertise the dedicated checkpoint in Research.
-pub(crate) fn model_catalog_response_with_maple(
-    plan: ModelPlan,
-    maple_inference_enabled: bool,
-    maple_inference_available: bool,
-) -> Value {
     let data = MODEL_CONFIGS
         .iter()
         .filter(|entry| entry.listed)
-        .filter(|entry| {
-            model_visible_to_account(
-                entry.id,
-                maple_inference_enabled && maple_inference_available,
-            )
-        })
         .map(|entry| entry.catalog_json())
         .collect::<Vec<_>>();
     let aliases = MODEL_ALIAS_ENTRIES
@@ -1263,26 +1197,12 @@ pub(crate) fn model_catalog_response_with_maple(
     })
 }
 
-#[cfg(test)]
+/// The OpenAI-compatible catalog has the same provider-independent model
+/// identity and listing behavior as Research.
 pub fn openai_models_response() -> Value {
-    openai_models_response_with_maple(false, false)
-}
-
-/// The OpenAI-compatible catalog uses the same authenticated rollout and
-/// readiness boundary as Research, without changing existing model listings.
-pub(crate) fn openai_models_response_with_maple(
-    maple_inference_enabled: bool,
-    maple_inference_available: bool,
-) -> Value {
     let mut data = MODEL_CONFIGS
         .iter()
         .filter(|entry| entry.api_listed && entry.enabled)
-        .filter(|entry| {
-            model_visible_to_account(
-                entry.id,
-                maple_inference_enabled && maple_inference_available,
-            )
-        })
         .map(|entry| entry.openai_model_json())
         .collect::<Vec<_>>();
 
@@ -1392,7 +1312,6 @@ mod tests {
             ("glm-5-3-flash", 1.0, 0.95, None, None),
             ("kimi-k3", 1.0, 0.95, Some(1.0), None),
             ("deepseek-v4-1-flash", 1.0, 1.0, None, None),
-            ("deepseek-v4-1-flash-1017", 1.0, 1.0, None, None),
             ("llama3-3-70b", 0.6, 0.9, None, None),
         ];
         assert_eq!(expected.len(), MODEL_CONFIGS.len());
@@ -1606,7 +1525,7 @@ mod tests {
     fn test_alias_policy_preserves_explicit_model_identities() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
             let targets = ModelAliasTargets::for_plan(plan);
-            for model in enabled_api_completion_model_ids(false) {
+            for model in enabled_api_completion_model_ids() {
                 assert_eq!(targets.resolve(model), model, "plan={plan:?}");
                 assert_eq!(resolve_public_model_id(targets.resolve(model)), Some(model));
             }
@@ -1890,11 +1809,7 @@ mod tests {
 
     #[test]
     fn test_new_badges_match_the_currently_launched_models() {
-        let expected = vec![
-            DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
-            GLM_5_3_MODEL_ID.to_string(),
-            GLM_5_3_FLASH_MODEL_ID.to_string(),
-        ];
+        let expected = vec![DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string()];
 
         assert_eq!(
             model_ids_with_badge(&model_catalog_response(ModelPlan::Free), "New"),
@@ -1958,7 +1873,7 @@ mod tests {
             Option<&'static [&'static str]>,
             Option<&'static str>,
         );
-        let expected: [Expected; 9] = [
+        let expected: [Expected; 8] = [
             (
                 "gpt-oss-120b",
                 true,
@@ -2002,17 +1917,10 @@ mod tests {
                 Some(&["max", "xhigh", "high", "low"]),
                 Some("high"),
             ),
-            (
-                "deepseek-v4-1-flash-1017",
-                false,
-                true,
-                Some(&["max", "xhigh", "high", "low"]),
-                Some("high"),
-            ),
             ("llama3-3-70b", false, false, None, None),
         ];
         assert_eq!(expected.len(), MODEL_CONFIGS.len());
-        let models = openai_models_response_with_maple(true, true);
+        let models = openai_models_response();
 
         for (model, mandatory, default_enabled, supported, default_effort) in expected {
             let entry = model_entry(model).expect("catalog model");
@@ -2183,119 +2091,80 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_checkpoint_catalog_requires_account_gate_and_readiness() {
-        let checkpoint = DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
-        for enabled in [false, true] {
-            for available in [false, true] {
-                for plan in [ModelPlan::Free, ModelPlan::Paid] {
-                    let baseline = model_catalog_response(plan);
-                    let mut visible = model_catalog_response_with_maple(plan, enabled, available);
-                    assert_eq!(has_model(&visible, checkpoint), enabled && available);
-                    assert!(has_model(&visible, DEEPSEEK_V4_1_FLASH_MODEL_ID));
-                    visible["data"]
-                        .as_array_mut()
-                        .unwrap()
-                        .retain(|entry| entry["id"] != checkpoint);
-                    assert_eq!(
-                        visible, baseline,
-                        "other Research entries and aliases must stay unchanged"
-                    );
-                }
-                let baseline = openai_models_response();
-                let mut visible = openai_models_response_with_maple(enabled, available);
-                assert_eq!(has_model(&visible, checkpoint), enabled && available);
-                assert!(has_model(&visible, DEEPSEEK_V4_1_FLASH_MODEL_ID));
-                visible["data"]
-                    .as_array_mut()
-                    .unwrap()
-                    .retain(|entry| entry["id"] != checkpoint);
-                assert_eq!(
-                    visible, baseline,
-                    "other OpenAI model entries must stay unchanged"
-                );
-            }
-        }
-        assert!(!has_model(
-            &model_catalog_response(ModelPlan::Paid),
-            checkpoint
-        ));
-        assert!(!has_model(&openai_models_response(), checkpoint));
-    }
-
-    #[test]
-    fn dedicated_checkpoint_has_distinct_identity_with_explicit_resolution() {
-        let checkpoint = DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
-        assert_eq!(resolve_public_model_id(checkpoint), None);
-        assert_eq!(resolve_public_model_id_with_maple(checkpoint, false), None);
-        assert_eq!(
-            resolve_public_model_id_with_maple(checkpoint, true),
-            Some(checkpoint)
-        );
-        assert_eq!(
-            resolve_public_model_id_with_maple("deepseek-v4-1-flash-1017-extra", true),
-            None
-        );
-        for enabled in [false, true] {
-            assert_eq!(
-                resolve_public_model_id_with_maple(DEEPSEEK_V4_1_FLASH_MODEL_ID, enabled),
-                Some(DEEPSEEK_V4_1_FLASH_MODEL_ID)
-            );
-        }
-        assert!(is_maple_model(checkpoint));
-        assert!(!is_maple_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
-        assert!(!ModelPlan::Free.allows_model(checkpoint));
-        assert!(ModelPlan::Paid.allows_model(checkpoint));
-        assert!(!enabled_api_completion_model_ids(false).any(|model| model == checkpoint));
-
-        let catalog = model_catalog_response_with_maple(ModelPlan::Paid, true, true);
-        let versioned = catalog_model(&catalog, checkpoint);
-        let existing = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        assert_eq!(versioned["provider"], "maple");
-        assert_eq!(versioned["provider_id"], checkpoint);
-        assert_eq!(versioned["display_name"], "DeepSeek V4.1 Flash 1017");
-        assert_eq!(existing["provider"], "tinfoil");
-        assert_eq!(existing["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        assert_eq!(existing["display_name"], "DeepSeek V4.1 Flash");
-        for field in [
-            "access",
-            "capabilities",
-            "context_window",
-            "input_modalities",
-            "output_modalities",
-            "parameter_size",
-            "active_parameter_size",
-            "reasoning",
-            "max_completion_tokens",
+    fn deepseek_catalog_lists_only_the_canonical_public_model() {
+        for catalog in [
+            model_catalog_response(ModelPlan::Free),
+            model_catalog_response(ModelPlan::Paid),
+            openai_models_response(),
         ] {
+            assert!(has_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID));
+            assert!(!has_model(&catalog, "deepseek-v4-1-flash-1017"));
             assert_eq!(
-                versioned[field], existing[field],
-                "initial {field} metadata"
+                catalog["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry["id"] == DEEPSEEK_V4_1_FLASH_MODEL_ID)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                model_ids_with_badge(&catalog, "New"),
+                vec![DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string()]
             );
         }
-        assert_eq!(
-            model_config(checkpoint),
-            model_config(DEEPSEEK_V4_1_FLASH_MODEL_ID)
-        );
-        assert_eq!(
-            model_capabilities(checkpoint),
-            model_capabilities(DEEPSEEK_V4_1_FLASH_MODEL_ID)
-        );
     }
 
     #[test]
-    fn dedicated_checkpoint_does_not_enter_auto_defaults_or_alternates() {
-        let checkpoint = DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
-        for plan in [ModelPlan::Free, ModelPlan::Paid] {
-            for selector in [AUTO_QUICK_MODEL_ID, AUTO_POWERFUL_MODEL_ID] {
-                assert_ne!(
-                    ModelAliasTargets::for_plan(plan).resolve(selector),
-                    checkpoint
-                );
-                let candidates =
-                    auto_model_candidates(ModelSelectionMode::from_requested_model(selector), plan)
-                        .expect("known Auto selector");
-                assert!(!candidates.contains(&checkpoint), "{selector} {plan:?}");
-            }
+    fn deepseek_has_one_public_identity_without_a_checkpoint_alias() {
+        assert_eq!(
+            resolve_public_model_id(DEEPSEEK_V4_1_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID)
+        );
+        for retired in ["deepseek-v4-1-flash-1017", "deepseek-v4-1-flash-1017-extra"] {
+            assert_eq!(resolve_public_model_id(retired), None);
+            assert!(!enabled_api_completion_model_ids().any(|model| model == retired));
+        }
+        assert!(
+            enabled_api_completion_model_ids().any(|model| model == DEEPSEEK_V4_1_FLASH_MODEL_ID)
+        );
+        assert!(!ModelPlan::Free.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
+        assert!(ModelPlan::Paid.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
+        let catalog = model_catalog_response(ModelPlan::Paid);
+        let deepseek = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(deepseek["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(deepseek["display_name"], "DeepSeek V4.1 Flash");
+    }
+
+    #[test]
+    fn deepseek_provider_rollout_preserves_auto_defaults_and_candidates() {
+        let expected = [
+            (ModelPlan::Free, AUTO_QUICK_MODEL_ID, vec![QUICK_MODEL_ID]),
+            (
+                ModelPlan::Free,
+                AUTO_POWERFUL_MODEL_ID,
+                vec![GLM_5_3_MODEL_ID],
+            ),
+            (
+                ModelPlan::Paid,
+                AUTO_QUICK_MODEL_ID,
+                vec![GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ),
+            (
+                ModelPlan::Paid,
+                AUTO_POWERFUL_MODEL_ID,
+                vec![GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID],
+            ),
+        ];
+        for (plan, selector, candidates) in expected {
+            assert_eq!(
+                ModelAliasTargets::for_plan(plan).resolve(selector),
+                candidates[0]
+            );
+            assert_eq!(
+                auto_model_candidates(ModelSelectionMode::from_requested_model(selector), plan),
+                Some(candidates)
+            );
         }
     }
 }

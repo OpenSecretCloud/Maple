@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn completion_policy_strips_priority_without_changing_sampling_or_tool_data() {
         let mut body = json!({
-            "model": "deepseek-v4-1-flash-1017",
+            "model": "deepseek-v4-1-flash",
             "priority": -1000,
             "temperature": 0.7,
             "top_p": 0.9,
