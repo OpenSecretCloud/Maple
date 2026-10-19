@@ -7,6 +7,16 @@
 
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RemoteSidebarSettings {
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub pinned_tasks: Vec<String>,
+    #[serde(default)]
+    pub project_names: std::collections::HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
     /// Whether tool cards show input/output payloads by default.
@@ -37,6 +47,10 @@ pub struct AppSettings {
     /// Display names for project roots, keyed by absolute path.
     #[serde(default)]
     pub project_names: std::collections::HashMap<String, String>,
+    /// Local presentation preferences for each paired endpoint. A remote
+    /// `/work/project` is not the same project as that path on this computer.
+    #[serde(default)]
+    pub remote_sidebars: std::collections::HashMap<String, RemoteSidebarSettings>,
     /// Whether run completion and questions raise desktop notifications
     /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
@@ -199,6 +213,7 @@ impl Default for AppSettings {
             pinned_roots: Vec::new(),
             pinned_tasks: Vec::new(),
             project_names: std::collections::HashMap::new(),
+            remote_sidebars: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
             reduce_motion: false,
             harness_instructions: String::new(),

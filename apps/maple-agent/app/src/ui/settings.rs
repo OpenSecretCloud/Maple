@@ -56,6 +56,7 @@ pub enum Section {
     Shortcuts,
     Prompt,
     Integrations,
+    Remote,
     Usage,
     About,
 }
@@ -70,12 +71,13 @@ impl Section {
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
+            Self::Remote => "Remote computers",
             Self::Usage => "Usage",
             Self::About => "About",
         }
     }
 
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::General,
         Self::Account,
         Self::Billing,
@@ -83,6 +85,7 @@ impl Section {
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
+        Self::Remote,
         Self::Usage,
         Self::About,
     ];
@@ -123,6 +126,7 @@ pub struct SettingsScreen {
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     backend: Arc<AgentBackend>,
     integrations_backend: Arc<AgentBackend>,
+    remote_screen: Entity<super::remote::RemoteScreen>,
     user_id: String,
     settings: AppSettings,
     /// `settings.theme` parsed once; render only reads the label.
@@ -228,6 +232,9 @@ struct McpEditor {
 /// Emitted with the section to open (composer "Manage integrations" link).
 pub struct OpenSettingsSection(pub Section);
 
+impl EventEmitter<super::remote::ComputersChanged> for SettingsScreen {}
+impl EventEmitter<super::remote::ConnectComputer> for SettingsScreen {}
+impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
 impl EventEmitter<AccountDeleted> for SettingsScreen {}
@@ -243,6 +250,43 @@ impl SettingsScreen {
         section: Section,
         cx: &mut Context<Self>,
     ) -> Self {
+        let names = settings
+            .remote_sidebars
+            .iter()
+            .map(|(key, value)| (key.clone(), value.display_name.clone()))
+            .collect();
+        let remote_screen =
+            cx.new(|cx| super::remote::RemoteScreen::new(backend.clone(), names, cx));
+        cx.subscribe(
+            &remote_screen,
+            |this, _, event: &super::remote::ComputerNamed, cx| {
+                this.settings
+                    .remote_sidebars
+                    .entry(event.key.clone())
+                    .or_default()
+                    .display_name = event.name.clone();
+                cx.emit(super::remote::ComputerNamed {
+                    key: event.key.clone(),
+                    name: event.name.clone(),
+                });
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &remote_screen,
+            |_, _, event: &super::remote::ComputersChanged, cx| {
+                cx.emit(super::remote::ComputersChanged(event.0.clone()));
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &remote_screen,
+            |this, _, event: &super::remote::ConnectComputer, cx| {
+                cx.emit(SettingsClosed(this.settings.clone()));
+                cx.emit(super::remote::ConnectComputer(event.0.clone()));
+            },
+        )
+        .detach();
         let prompt_text = settings.effective_harness_instructions();
         let application_vim_enabled = settings.application_vim_enabled;
         let application_focus = cx.focus_handle();
@@ -286,6 +330,7 @@ impl SettingsScreen {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             integrations_backend,
+            remote_screen,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
             settings,
@@ -1656,6 +1701,9 @@ impl SettingsScreen {
             }
             Section::Integrations => {
                 pane = pane.child(self.render_integrations_pane(cx));
+            }
+            Section::Remote => {
+                pane = pane.child(self.remote_screen.clone());
             }
             Section::Usage => {
                 pane = pane.child(

@@ -9,16 +9,31 @@ continue to share those tasks. ACP is not exposed over Iroh.
 
 ## Using it
 
-Open **Computers**, enable remote access on the computer that will run tasks,
+Open **Settings → Remote computers**, enable remote access on the computer that will run tasks,
 and choose **Pair another computer**. On the controller, refresh devices and
 enter the eight-character code displayed on the execution computer. Both must
 be signed into the same Maple account and deployment/channel. Account login
 alone does not grant access. The code expires in five minutes and permits one
 attempt. A failed attempt requires a new, locally opened window.
 
-Choose **Open tasks** on a paired computer. The toolbar identifies the selected
-host; **This computer** returns to local tasks. Choose an existing remote project
-or enter its absolute path; there is no remote filesystem browser. Images picked
+Paired computers appear alongside local projects in the sidebar and project
+menus. Each group is **computer · folder**, with its tasks beneath it; a globe
+marks remote folders. Selecting a task or project also selects its execution
+computer. Select a **This computer** project to return to local work. Local-only
+installations retain the existing sidebar layout. In Remote computers settings,
+**Rename** changes the computer's label on this desktop; it does not change its
+identity or pairing grant.
+
+Each computer loads independently. The desktop first reads project/task
+summaries and opens a transcript only when that computer is used. Cached groups
+stay visible during a disconnect, alongside the connection status. Runs and task
+updates arrive through the existing event stream; a small folder-list refresh
+every thirty seconds also discovers empty projects selected by another desktop.
+This is an in-memory navigation cache, not offline transcript replication. Search,
+sidebar position and each computer's composer remain intact when switching.
+
+Choose an existing remote project or enter its absolute path; there is no remote
+filesystem browser. Images picked
 on the controller are explicit uploads. Remote frames are limited to 16 MiB,
 including JSON/base64 overhead; reduce attachments if a send exceeds that bound.
 Microphone, playback, billing and account operations stay on the controller.

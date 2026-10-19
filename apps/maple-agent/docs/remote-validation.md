@@ -36,7 +36,7 @@ the Local backend's configured provider.
   settings for a Dock/application relaunch.
 
 Native testing found and corrected a desktop-startup request burst hitting the
-initial remote capacity limit, missing host-selector theme/traffic-light spacing,
+initial remote capacity limit, initial host-selector theme/traffic-light spacing,
 discovery publishing an empty address before the relay became ready, and the
 Integrations settings pane retaining the controller backend after selecting a
 remote task. Account/preferences remain local while Integrations uses the
@@ -45,10 +45,28 @@ in both the remote task menu and Integrations pane; the controller configuration
 remained empty. Remote capacity remains bounded and separate from local controls, with reserved slots
 for cancellation and question answers.
 
+## Computer and project navigation follow-up
+
+The top-level computer toolbar has been replaced by computer/folder groups in the
+normal sidebar and project menus. Remote setup lives in Settings. Three isolated
+stores on this Mac (local plus two remote execution computers) used the same
+folder paths and completed separate GLM Flash tasks through public Iroh relays.
+The native desktop showed their independent titles and groups; switching between
+computers preserved an unsent composer. Renaming a computer updated its local
+label. Taking the third execution daemon offline retained its cached task and
+folder rows; restoring the endpoint recovered its conversation without resending
+the prompt. This is still same-machine development evidence.
+
+Navigation regressions cover identical task IDs and folder paths on different
+computers, keyboard destinations, search across computer/project names, summary
+updates without transcript loading, a thousand streamed chunks during catalog
+recovery, background unread state and superseded navigation during startup.
+The full component checks below were rerun after this navigation change.
+
 ## Automated checks
 
 - Full Agent `just ci`: all four Clippy configurations, workspace build/tests and
-  headless tests. Runtime: 271 passed / 2 ignored; desktop app: 478 passed /
+  headless tests. Runtime: 271 passed / 2 ignored; desktop app: 486 passed /
   1 ignored; headless app: 82 passed / 1 ignored. The ignored app test contacts
   public relays and is run explicitly for this validation, not silently counted
   as ordinary offline CI coverage. Existing Pi/runtime workspace suites pass too.

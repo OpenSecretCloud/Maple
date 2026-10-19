@@ -13,6 +13,7 @@ actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
 
 use crate::backend::AgentBackend;
 use crate::ui;
+use crate::ui::chat::computers::{Computer, Destination, Navigate, NavigationChanged};
 use crate::ui::chat::{ChatScreen, LoggedOut};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
@@ -28,7 +29,46 @@ enum Screen {
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
     Settings(Entity<SettingsScreen>),
-    Devices(Entity<ui::remote::RemoteScreen>),
+}
+
+/// One cache and one initial connection attempt per paired endpoint. Once
+/// attached, the existing IPC/Iroh supervisor owns reconnects and snapshots.
+struct RemoteComputer {
+    name: String,
+    grant: [u8; 16],
+    chat: Option<Entity<ChatScreen>>,
+    attempt: ConnectionAttempt,
+}
+
+#[derive(Clone)]
+struct PendingNavigation {
+    request: Navigate,
+    source: Option<(gpui::EntityId, u64)>,
+}
+
+enum ConnectionAttempt {
+    Idle,
+    Connecting(u64),
+    Failed {
+        message: String,
+        retry_at: std::time::Instant,
+    },
+}
+impl RemoteComputer {
+    fn should_connect(&self, now: std::time::Instant) -> bool {
+        self.chat.is_none()
+            && match &self.attempt {
+                ConnectionAttempt::Idle => true,
+                ConnectionAttempt::Connecting(_) => false,
+                ConnectionAttempt::Failed { retry_at, .. } => now >= *retry_at,
+            }
+    }
+    fn error(&self) -> Option<String> {
+        match &self.attempt {
+            ConnectionAttempt::Failed { message, .. } => Some(message.clone()),
+            _ => None,
+        }
+    }
 }
 
 struct MapleApp {
@@ -39,9 +79,11 @@ struct MapleApp {
     /// it with its state intact.
     parked_chat: Option<Entity<ChatScreen>>,
     local_chat: Option<Entity<ChatScreen>>,
-    remote_chats: std::collections::HashMap<String, Entity<ChatScreen>>,
     selected_host: Option<String>,
-    remote_error: Option<String>,
+    remote_computers: std::collections::BTreeMap<String, RemoteComputer>,
+    next_connection_attempt: u64,
+    requested_navigation: Option<PendingNavigation>,
+    computers_sync_pending: bool,
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     tray: Option<crate::tray::StatusIcon>,
@@ -93,14 +135,6 @@ impl MapleApp {
         }
     }
 
-    /// Show a task, for a click on its notification. Only the chat screen
-    /// can: login has no tasks, and settings keeps its parked chat as is.
-    fn open_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        if let Screen::Chat(chat) = &self.screen {
-            chat.update(cx, |chat, cx| chat.select_session(session_id, cx));
-        }
-    }
-
     /// A newer release exists: tell the chat screen so it shows the banner.
     /// Without a chat screen (login in progress) nothing is done here; the
     /// result stays in `update::available()` and seeds the next chat.
@@ -124,7 +158,8 @@ impl MapleApp {
         self.set_remote_enabled(false, cx);
         self.parked_chat = None;
         self.local_chat = None;
-        self.remote_chats.clear();
+        self.remote_computers.clear();
+        self.requested_navigation = None;
         self.selected_host = None;
         if matches!(self.screen, Screen::Login(_)) {
             return;
@@ -164,43 +199,194 @@ impl MapleApp {
         self.parked_chat = None;
         self.screen = Screen::Chat(chat.clone());
         self.local_chat = Some(chat.clone());
-        self.remote_chats.clear();
+        self.remote_computers.clear();
+        self.requested_navigation = None;
         self.selected_host = None;
         self.subscribe_chat(&chat, cx);
         cx.notify();
     }
 
-    fn show_devices(&mut self, cx: &mut Context<Self>) {
-        if let Screen::Chat(chat) = &self.screen {
-            self.parked_chat = Some(chat.clone());
-        }
-        let backend = self.backend.clone();
-        let screen = cx.new(|cx| ui::remote::RemoteScreen::new(backend, cx));
-        cx.subscribe(&screen, |app, _, _: &ui::remote::CloseDevices, cx| {
-            if let Some(chat) = app.parked_chat.take().or_else(|| app.local_chat.clone()) {
-                app.screen = Screen::Chat(chat);
+    fn update_computers(&mut self, status: crate::remote::manager::Status, cx: &mut Context<Self>) {
+        self.set_remote_enabled(status.enabled, cx);
+        let computers = status
+            .peers
+            .into_iter()
+            .filter(|(_, peer)| peer.can_connect)
+            .map(|(key, peer)| {
+                let alias = self
+                    .settings
+                    .remote_sidebars
+                    .get(&key)
+                    .map_or("", |s| s.display_name.as_str());
+                let label = ui::remote::computer_name(&key, &peer.name, alias);
+                (key, (label, peer.grant))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut changed = self.remote_computers.len() != computers.len();
+        let mut selected_grant_changed = false;
+        self.remote_computers
+            .retain(|key, _| computers.contains_key(key));
+        for (key, (name, grant)) in computers {
+            match self.remote_computers.entry(key) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    changed = true;
+                    entry.insert(RemoteComputer {
+                        name,
+                        grant,
+                        chat: None,
+                        attempt: ConnectionAttempt::Idle,
+                    });
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().grant != grant {
+                        changed = true;
+                        selected_grant_changed |= self.selected_host.as_ref() == Some(entry.key());
+                        let computer = entry.get_mut();
+                        computer.grant = grant;
+                        computer.chat = None;
+                        computer.attempt = ConnectionAttempt::Idle;
+                    }
+                    if entry.get().name != name {
+                        changed = true;
+                        entry.get_mut().name = name;
+                    }
+                }
             }
+        }
+        if selected_grant_changed
+            || self
+                .selected_host
+                .as_ref()
+                .is_some_and(|key| !self.remote_computers.contains_key(key))
+        {
+            self.navigate(
+                Navigate {
+                    computer: None,
+                    destination: Destination::Overview,
+                },
+                cx,
+            );
+        }
+        if changed {
+            self.sync_computers(cx);
+        }
+        let now = std::time::Instant::now();
+        let ready = self
+            .remote_computers
+            .iter()
+            .filter(|(_, computer)| computer.should_connect(now))
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for peer in ready {
+            self.connect_computer(peer, cx);
+        }
+        for chat in self.local_chat.iter().chain(
+            self.remote_computers
+                .values()
+                .filter_map(|c| c.chat.as_ref()),
+        ) {
+            chat.update(cx, |chat, cx| chat.refresh_navigation_if_due(cx));
+        }
+    }
+
+    fn sync_computers(&mut self, cx: &mut Context<Self>) {
+        let Some(local) = &self.local_chat else {
+            return;
+        };
+        let mut computers = vec![local.read(cx).computer_snapshot("This computer".into(), cx)];
+        for (key, computer) in &self.remote_computers {
+            computers.push(match &computer.chat {
+                Some(chat) => chat
+                    .read(cx)
+                    .computer_snapshot(computer.name.clone().into(), cx),
+                None => Computer::pending(key.clone(), computer.name.clone(), computer.error()),
+            });
+        }
+        let computers = Arc::new(computers);
+        for chat in std::iter::once(local).chain(
+            self.remote_computers
+                .values()
+                .filter_map(|c| c.chat.as_ref()),
+        ) {
+            chat.update(cx, |chat, cx| chat.set_computers(computers.clone(), cx));
+        }
+    }
+
+    fn schedule_computers_sync(&mut self, cx: &mut Context<Self>) {
+        if self.computers_sync_pending {
+            return;
+        }
+        self.computers_sync_pending = true;
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            weak.update(cx, |app, cx| {
+                app.computers_sync_pending = false;
+                app.sync_computers(cx);
+            })
+            .ok();
+        });
+    }
+
+    fn navigate(&mut self, request: Navigate, cx: &mut Context<Self>) {
+        self.requested_navigation = Some(PendingNavigation {
+            request: request.clone(),
+            source: self.navigation_source(cx),
+        });
+        let chat = match &request.computer {
+            None => self.local_chat.clone(),
+            Some(peer) => self
+                .remote_computers
+                .get(peer)
+                .and_then(|computer| computer.chat.as_ref())
+                .filter(|chat| !chat.read(cx).connection_ended())
+                .cloned(),
+        };
+        if let Some(chat) = chat {
+            let browse = match &self.screen {
+                Screen::Chat(previous) if previous.entity_id() != chat.entity_id() => {
+                    Some(previous.read(cx).sidebar_browse_state(cx))
+                }
+                _ => None,
+            };
+            for other in self.local_chat.iter().chain(
+                self.remote_computers
+                    .values()
+                    .filter_map(|c| c.chat.as_ref()),
+            ) {
+                other.update(cx, |other, cx| other.set_visible(false, cx));
+            }
+            self.selected_host = request.computer;
+            self.screen = Screen::Chat(chat.clone());
+            self.parked_chat = None;
+            chat.update(cx, |chat, cx| {
+                chat.set_visible(true, cx);
+                if let Some(browse) = browse {
+                    chat.restore_sidebar_browse_state(browse, cx);
+                }
+                chat.navigate(request.destination, cx);
+            });
+            self.requested_navigation = None;
             cx.notify();
-        })
-        .detach();
-        cx.subscribe(&screen, |app, _, event: &ui::remote::RemoteEnabled, cx| {
-            app.set_remote_enabled(event.0, cx)
-        })
-        .detach();
-        cx.subscribe(
-            &screen,
-            |app, _, event: &ui::remote::ConnectComputer, cx| {
-                app.connect_computer(event.0.clone(), cx)
-            },
-        )
-        .detach();
-        self.screen = Screen::Devices(screen);
-        cx.notify();
+        } else if let Some(peer) = request.computer {
+            self.connect_computer(peer, cx);
+        }
+    }
+
+    fn navigation_source(&self, cx: &gpui::App) -> Option<(gpui::EntityId, u64)> {
+        match &self.screen {
+            Screen::Chat(chat) => Some((chat.entity_id(), chat.read(cx).navigation_generation())),
+            _ => None,
+        }
     }
 
     fn set_remote_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.remote_enabled
-            .store(enabled, std::sync::atomic::Ordering::Release);
+        if self
+            .remote_enabled
+            .swap(enabled, std::sync::atomic::Ordering::AcqRel)
+            == enabled
+        {
+            return;
+        }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(tray) = &self.tray {
             tray.set_enabled(enabled);
@@ -209,21 +395,21 @@ impl MapleApp {
     }
 
     fn connect_computer(&mut self, peer: String, cx: &mut Context<Self>) {
-        if let Some(chat) = self.remote_chats.get(&peer)
-            && !chat.read(cx).connection_ended()
-        {
-            self.screen = Screen::Chat(chat.clone());
-            self.selected_host = Some(peer);
-            self.parked_chat = None;
-            cx.notify();
-            return;
-        }
         let Some(user_id) = self.user_id.clone() else {
             return;
         };
+        let Some(computer) = self.remote_computers.get_mut(&peer) else {
+            return;
+        };
+        if matches!(computer.attempt, ConnectionAttempt::Connecting(_)) {
+            return;
+        }
+        self.next_connection_attempt += 1;
+        let attempt = self.next_connection_attempt;
+        computer.attempt = ConnectionAttempt::Connecting(attempt);
         let backend = self.backend.clone();
         let target = peer.clone();
-        self.remote_error = None;
+        self.sync_computers(cx);
         let bridge = ui::task::call(
             &self.backend,
             async move { backend.remote(target).await },
@@ -232,11 +418,16 @@ impl MapleApp {
                 if app.user_id.as_deref() != Some(&user_id) {
                     return;
                 }
+                // Unpairing/re-pairing or signing out discards an old attempt.
+                // A late completion never resurrects that computer or its view.
+                if !app.remote_computers.get(&peer).is_some_and(|computer| matches!(computer.attempt, ConnectionAttempt::Connecting(id) if id == attempt)) {
+                    return;
+                }
                 match result {
                     Ok(backend) => {
                         let source = backend.clone();
                         let rx = backend.spawn(async move { source.take_events().await });
-                        let chat = cx.new(|cx| ChatScreen::new(backend, user_id, cx));
+                        let chat = cx.new(|cx| ChatScreen::new_catalog(backend, user_id, cx));
                         app.subscribe_chat(&chat, cx);
                         let weak = chat.downgrade();
                         cx.spawn(async move |_, cx| {
@@ -261,13 +452,38 @@ impl MapleApp {
                             }
                         })
                         .detach();
-                        app.remote_chats.insert(peer.clone(), chat.clone());
-                        app.selected_host = Some(peer);
-                        app.screen = Screen::Chat(chat);
-                        app.parked_chat = None;
+                        if let Some(computer) = app.remote_computers.get_mut(&peer) {
+                            computer.chat = Some(chat.clone());
+                            computer.attempt = ConnectionAttempt::Idle;
+                        }
+                        if let Some(pending) = app.requested_navigation.clone()
+                            && pending.request.computer.as_deref() == Some(&peer)
+                        {
+                            if pending.source == app.navigation_source(cx) {
+                                app.navigate(pending.request, cx);
+                            } else {
+                                app.requested_navigation = None;
+                            }
+                        }
                     }
-                    Err(error) => app.remote_error = Some(error),
+                    Err(error) => {
+                        if let Some(computer) = app.remote_computers.get_mut(&peer) {
+                            computer.attempt = ConnectionAttempt::Failed {
+                                message: error.clone(),
+                                retry_at: std::time::Instant::now()
+                                    + std::time::Duration::from_secs(30),
+                            };
+                        }
+                        if app.requested_navigation.as_ref().is_some_and(|pending| {
+                            pending.request.computer.as_deref() == Some(&peer)
+                        }) && let Screen::Chat(chat) = &app.screen
+                        {
+                            chat.update(cx, |chat, cx| chat.navigation_notice(error, cx));
+                            app.requested_navigation = None;
+                        }
+                    }
                 }
+                app.sync_computers(cx);
                 cx.notify();
             },
         );
@@ -284,6 +500,7 @@ impl MapleApp {
         let settings = self.settings.clone();
         let shortcut_snapshot = self.shortcuts.snapshot();
         let integrations_backend = chat.read(cx).execution_backend();
+        chat.update(cx, |chat, cx| chat.set_visible(false, cx));
         let screen = cx.new(|cx| {
             SettingsScreen::new(
                 backend,
@@ -295,6 +512,38 @@ impl MapleApp {
                 cx,
             )
         });
+        cx.subscribe(
+            &screen,
+            |app, _, event: &ui::remote::ComputersChanged, cx| {
+                app.update_computers(event.0.clone(), cx);
+            },
+        )
+        .detach();
+        cx.subscribe(&screen, |app, _, event: &ui::remote::ComputerNamed, cx| {
+            app.settings
+                .remote_sidebars
+                .entry(event.key.clone())
+                .or_default()
+                .display_name = event.name.clone();
+            if let Some(computer) = app.remote_computers.get_mut(&event.key) {
+                computer.name = event.name.clone();
+                app.sync_computers(cx);
+            }
+        })
+        .detach();
+        cx.subscribe(
+            &screen,
+            |app, _, event: &ui::remote::ConnectComputer, cx| {
+                app.navigate(
+                    Navigate {
+                        computer: Some(event.0.clone()),
+                        destination: Destination::Overview,
+                    },
+                    cx,
+                );
+            },
+        )
+        .detach();
         cx.subscribe(
             &screen,
             |app: &mut MapleApp, _emitter, event: &SettingsClosed, cx| {
@@ -341,6 +590,14 @@ impl MapleApp {
 
     /// Wire per-chat events: sign-out and the settings gear.
     fn subscribe_chat(&mut self, chat: &Entity<ChatScreen>, cx: &mut Context<Self>) {
+        cx.subscribe(chat, |app, _, _: &NavigationChanged, cx| {
+            app.schedule_computers_sync(cx)
+        })
+        .detach();
+        cx.subscribe(chat, |app, _, request: &Navigate, cx| {
+            app.navigate(request.clone(), cx)
+        })
+        .detach();
         cx.subscribe(
             chat,
             |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
@@ -372,9 +629,15 @@ impl MapleApp {
             ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family),
             self.settings.chat_font_size,
         );
+        for chat in self.local_chat.iter().chain(
+            self.remote_computers
+                .values()
+                .filter_map(|c| c.chat.as_ref()),
+        ) {
+            chat.update(cx, |chat, cx| chat.apply_defaults(&self.settings, cx));
+        }
         if let Some(chat) = self.parked_chat.take() {
-            let settings = self.settings.clone();
-            chat.update(cx, |chat, cx| chat.apply_defaults(&settings, cx));
+            chat.update(cx, |chat, cx| chat.set_visible(true, cx));
             self.screen = Screen::Chat(chat);
         }
         cx.notify();
@@ -443,47 +706,11 @@ impl Render for MapleApp {
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
-            .when(self.user_id.is_some(), |view| {
-                view.child(
-                    div()
-                        .bg(gpui::rgb(ui::theme::bg_sidebar()))
-                        .flex()
-                        .gap_3()
-                        .items_center()
-                        .pl(ui::titlebar::top_row_inset(gpui::px(12.)))
-                        .pr_3()
-                        .py_2()
-                        .child(
-                            ui::widgets::secondary_button("local-computer")
-                                .child("This computer")
-                                .on_click(cx.listener(|app, _, _, cx| {
-                                    if let Some(chat) = &app.local_chat {
-                                        app.screen = Screen::Chat(chat.clone());
-                                        app.selected_host = None;
-                                        app.parked_chat = None;
-                                        cx.notify();
-                                    }
-                                })),
-                        )
-                        .child(
-                            ui::widgets::secondary_button("remote-computers")
-                                .child("Computers…")
-                                .on_click(cx.listener(|app, _, _, cx| app.show_devices(cx))),
-                        )
-                        .when_some(self.selected_host.as_ref(), |row, host| {
-                            row.child(format!("Remote · {}", &host[..host.len().min(10)]))
-                        })
-                        .when_some(self.remote_error.as_ref(), |row, error| {
-                            row.child(error.clone())
-                        }),
-                )
-            })
             .child(match &self.screen {
                 Screen::Restoring => restoring_view().into_any_element(),
                 Screen::Login(login) => login.clone().into_any_element(),
                 Screen::Chat(chat) => chat.clone().into_any_element(),
                 Screen::Settings(screen) => screen.clone().into_any_element(),
-                Screen::Devices(screen) => screen.clone().into_any_element(),
             })
     }
 }
@@ -737,19 +964,21 @@ pub fn run() {
                             if let Ok(app) = root.downcast::<MapleApp>() {
                                 app.update(cx, |app, cx| {
                                     if let Some((host, task)) = &remote_task {
-                                        if let Some(chat) = app.remote_chats.get(host).cloned() {
-                                            app.selected_host = Some(host.clone());
-                                            app.screen = Screen::Chat(chat.clone());
-                                            chat.update(cx, |chat, cx| {
-                                                chat.select_session(task, cx)
-                                            });
-                                        }
-                                    } else if let Some(task) = session_id.as_deref() {
-                                        if let Some(chat) = app.local_chat.clone() {
-                                            app.screen = Screen::Chat(chat);
-                                            app.selected_host = None;
-                                        }
-                                        app.open_task(task, cx);
+                                        app.navigate(
+                                            Navigate {
+                                                computer: Some(host.clone()),
+                                                destination: Destination::Task(task.clone()),
+                                            },
+                                            cx,
+                                        );
+                                    } else if let Some(task) = &session_id {
+                                        app.navigate(
+                                            Navigate {
+                                                computer: None,
+                                                destination: Destination::Task(task.clone()),
+                                            },
+                                            cx,
+                                        );
                                     }
                                     cx.notify();
                                 });
@@ -811,9 +1040,11 @@ pub fn run() {
                         user_id: None,
                         parked_chat: None,
                         local_chat: None,
-                        remote_chats: std::collections::HashMap::new(),
                         selected_host: None,
-                        remote_error: None,
+                        remote_computers: Default::default(),
+                        next_connection_attempt: 0,
+                        requested_navigation: None,
+                        computers_sync_pending: false,
                         remote_enabled: root_enabled,
                         #[cfg(any(target_os = "linux", target_os = "windows"))]
                         tray,
@@ -905,6 +1136,7 @@ pub fn run() {
             let status_root = root.clone();
             cx.spawn(async move |cx| {
                 loop {
+                    let account = status_root.update(cx, |app, _| app.user_id.clone());
                     let backend = status_backend.clone();
                     let task = status_backend.spawn(async move {
                         backend
@@ -912,8 +1144,11 @@ pub fn run() {
                             .await
                     });
                     if let Ok(Ok(status)) = task.await {
-                        status_root
-                            .update(cx, |app, cx| app.set_remote_enabled(status.enabled, cx));
+                        status_root.update(cx, |app, cx| {
+                            if app.user_id == account && account.is_some() {
+                                app.update_computers(status, cx);
+                            }
+                        });
                     }
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(5))
@@ -992,6 +1227,33 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn computer_connection_retries_are_independent_and_not_started_twice() {
+        let now = std::time::Instant::now();
+        let mut computer = super::RemoteComputer {
+            name: "Office".into(),
+            grant: [0; 16],
+            chat: None,
+            attempt: super::ConnectionAttempt::Idle,
+        };
+        assert!(computer.should_connect(now));
+        computer.attempt = super::ConnectionAttempt::Connecting(1);
+        assert!(!computer.should_connect(now));
+        computer.attempt = super::ConnectionAttempt::Failed {
+            message: "Offline".into(),
+            retry_at: now + std::time::Duration::from_secs(30),
+        };
+        assert!(!computer.should_connect(now));
+        assert!(computer.should_connect(now + std::time::Duration::from_secs(30)));
+        let other = super::RemoteComputer {
+            name: "Laptop".into(),
+            grant: [1; 16],
+            chat: None,
+            attempt: super::ConnectionAttempt::Idle,
+        };
+        assert!(other.should_connect(now));
+    }
+
     use super::*;
 
     fn bounds(width: f32, height: f32) -> Bounds<Pixels> {

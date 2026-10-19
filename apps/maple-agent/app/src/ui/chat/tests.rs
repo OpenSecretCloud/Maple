@@ -44,6 +44,270 @@ mod state_tests {
         }
     }
 
+    #[gpui::test]
+    fn computer_catalog_buffers_summary_changes_without_loading_transcripts(
+        cx: &mut TestAppContext,
+    ) {
+        use maple_agent::agent::{AgentRunEvent, AgentRuntimeStatus};
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.navigation_only = true;
+            this.visible = false;
+            this.selected_session = None;
+            this.host_recovery.events = Some(Vec::new());
+            for _ in 0..1000 {
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "remote-task".into(),
+                        run_id: Some("run".into()),
+                        item: item("reply", "message", Some("streaming text")),
+                    },
+                    cx,
+                );
+            }
+            this.handle_service_event(
+                AgentServiceEvent::SessionCreated(summary("remote-task", "New remote title")),
+                cx,
+            );
+            this.handle_service_event(
+                AgentServiceEvent::Run {
+                    session_id: "remote-task".into(),
+                    run_id: "run".into(),
+                    event: AgentRunEvent::Started,
+                },
+                cx,
+            );
+            assert!(!this.host_recovery.overflow);
+            assert_eq!(this.host_recovery.events.as_ref().unwrap().len(), 2);
+            let events = this.host_recovery.events.take().unwrap();
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: Some("/other/machine".into()),
+                        recent_roots: vec!["/other/machine".into()],
+                        latest: None,
+                        sessions: Vec::new(),
+                        questions: Vec::new(),
+                    },
+                    status: AgentRuntimeStatus {
+                        running: true,
+                        project_root: None,
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+            this.handle_service_events(events, cx);
+            this.finish_navigation_bootstrap(cx);
+            assert!(this.navigation_only);
+            assert!(this.navigation_ready);
+            assert!(this.selected_session.is_none());
+            assert!(this.timeline.is_empty());
+            assert_eq!(this.sessions[0].title, "New remote title");
+            assert_eq!(
+                this.active_runs.get("remote-task").map(String::as_str),
+                Some("run")
+            );
+            assert_eq!(this.project_root.as_deref(), Some("/other/machine"));
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            let cached = this.computer_snapshot("Office".into(), cx);
+            assert_eq!(cached.sessions.len(), 1);
+            assert!(cached.error.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn completion_in_a_background_computer_stays_unread_until_opened(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "Remote work")];
+            this.selected_session = Some("s1".into());
+            this.set_visible(false, cx);
+            this.handle_run_event(
+                "s1",
+                "run",
+                AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                cx,
+            );
+            assert!(this.completed_unread_sessions.contains("s1"));
+            // Merely receiving another summary or snapshot does not read it.
+            this.sync_sidebar(cx);
+            assert!(
+                this.computer_snapshot("Office".into(), cx)
+                    .unread
+                    .contains("s1")
+            );
+            this.set_visible(true, cx);
+            assert!(!this.completed_unread_sessions.contains("s1"));
+        });
+    }
+
+    #[gpui::test]
+    fn computer_projects_keep_identical_paths_and_task_ids_separate(cx: &mut TestAppContext) {
+        use super::super::computers::{Computer, Destination, Navigate, Project};
+        use super::super::sidebar::SidebarEntry;
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.sessions = vec![summary("same-id", "Local task")];
+            this.recent_roots = vec!["/tmp/proj".into()];
+            this.sync_sidebar(cx);
+            let local = this.computer_snapshot("This computer".into(), cx);
+            let remote = Computer {
+                key: Some("paired-device".into()),
+                label: "Office Mac".into(),
+                projects: vec![Project {
+                    path: "/tmp/proj".into(),
+                    label: "proj".into(),
+                }],
+                sessions: vec![summary("same-id", "Remote task")],
+                running: HashSet::from(["same-id".into()]),
+                unread: HashSet::new(),
+                pinned: Vec::new(),
+                loading: false,
+                error: None,
+            };
+            this.set_computers(Arc::new(vec![local, remote]), cx);
+            this.sidebar.update(cx, |sidebar, _| {
+                assert_eq!(
+                    sidebar
+                        .entries()
+                        .iter()
+                        .filter(|e| matches!(e, SidebarEntry::ComputerProject(_)))
+                        .count(),
+                    2
+                );
+                assert_eq!(
+                    sidebar
+                        .entries()
+                        .iter()
+                        .filter(|e| matches!(e, SidebarEntry::Task(_)))
+                        .count(),
+                    1
+                );
+                let entry = *sidebar
+                    .entries()
+                    .iter()
+                    .find(|e| matches!(e, SidebarEntry::OtherTask(_)))
+                    .unwrap();
+                assert_eq!(
+                    sidebar.computer_target(entry),
+                    Some(navigation::SidebarTarget::Computer(Navigate {
+                        computer: Some("paired-device".into()),
+                        destination: Destination::Task("same-id".into()),
+                    }))
+                );
+            });
+            this.selected_session = Some("same-id".into());
+            this.sync_sidebar_selection(cx);
+            assert_eq!(
+                this.task_step_target(1, cx).map(|(_, request)| request),
+                Some(Navigate {
+                    computer: Some("paired-device".into()),
+                    destination: Destination::Task("same-id".into()),
+                })
+            );
+            // The projection never merges foreign records into the local runtime list.
+            assert_eq!(this.sessions.len(), 1);
+            assert_eq!(this.sessions[0].title, "Local task");
+            let local = this.computer_snapshot("This computer".into(), cx);
+            this.set_computers(Arc::new(vec![local]), cx);
+            assert!(!this.sidebar.read(cx).entries().iter().any(|e| matches!(
+                e,
+                SidebarEntry::OtherTask(_) | SidebarEntry::ComputerProject(_)
+            )));
+        });
+    }
+
+    #[gpui::test]
+    fn computer_project_search_and_live_summary_refresh(cx: &mut TestAppContext) {
+        use super::super::computers::{Computer, Project};
+        use super::super::sidebar::SidebarEntry;
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.sessions = vec![summary("local", "Local title")];
+            this.sync_sidebar(cx);
+            let local = this.computer_snapshot("This computer".into(), cx);
+            let mut remote = Computer::pending("peer".into(), "Office Mac".into(), None);
+            remote.projects = vec![Project {
+                path: "/remote".into(),
+                label: "Remote folder".into(),
+            }];
+            remote.sessions = vec![summary_at("remote", "Before title", "/remote")];
+            this.set_computers(Arc::new(vec![local.clone(), remote.clone()]), cx);
+            this.set_sidebar_filter("after title", cx);
+            assert!(
+                !this
+                    .sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|e| matches!(e, SidebarEntry::OtherTask(_)))
+            );
+            remote.sessions[0].title = "After title".into();
+            this.set_computers(Arc::new(vec![local, remote]), cx);
+            assert!(
+                this.sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|e| matches!(e, SidebarEntry::OtherTask(_)))
+            );
+            this.set_sidebar_filter("office mac", cx);
+            assert!(
+                this.sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|e| matches!(e, SidebarEntry::OtherTask(_)))
+            );
+            assert!(
+                !this
+                    .sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|e| matches!(e, SidebarEntry::Task(_)))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn navigation_before_bootstrap_keeps_only_the_latest_request(cx: &mut TestAppContext) {
+        use super::super::computers::Destination;
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.navigate(Destination::Project("/obsolete".into()), cx);
+            this.navigate(Destination::Overview, cx);
+            assert_eq!(
+                this.pending_navigation,
+                Some((this.selection_generation, Destination::Overview))
+            );
+            this.finish_navigation_bootstrap(cx);
+            assert!(this.pending_navigation.is_none());
+            assert!(!this.root_selecting);
+            assert_eq!(this.sidebar.read(cx).project_filter(), None);
+        });
+    }
+
+    #[gpui::test]
+    fn new_draft_supersedes_a_navigation_waiting_for_the_catalog(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.navigate(Destination::Task("earlier-click".into()), cx);
+            this.new_session(cx);
+            this.finish_navigation_bootstrap(cx);
+            assert!(this.pending_navigation.is_none());
+            assert!(this.selected_session.is_none());
+            assert!(this.loading_session.is_none());
+            assert!(this.draft);
+        });
+    }
+
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
             revision: 0,
@@ -4036,7 +4300,9 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             let sink = events.clone();
             cx.subscribe(&this.sidebar, move |_, _, event: &SidebarEvent, _| {
-                sink.borrow_mut().push(event.clone());
+                if !matches!(event, SidebarEvent::PreferencesChanged) {
+                    sink.borrow_mut().push(event.clone());
+                }
             })
             .detach();
             this.sessions = vec![
@@ -5007,6 +5273,10 @@ mod state_tests {
     /// Task stepping walks the sidebar rows across projects and stops at both ends.
     #[gpui::test]
     fn test_task_stepping_walks_the_whole_list(cx: &mut TestAppContext) {
+        let local = |id: &str| Navigate {
+            computer: None,
+            destination: Destination::Task(id.into()),
+        };
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -5017,7 +5287,7 @@ mod state_tests {
             this.sync_sidebar(cx);
             // The screen fixture selects s1: one step moves to s2, and
             // back stops at the top.
-            assert_eq!(this.task_step_target(1, cx), Some((4, "s2".to_string())));
+            assert_eq!(this.task_step_target(1, cx), Some((4, local("s2"))));
             assert_eq!(
                 this.task_step_target(-1, cx),
                 None,
@@ -5025,13 +5295,13 @@ mod state_tests {
             );
             this.selected_session = Some("s2".to_string());
             this.sync_sidebar_selection(cx);
-            assert_eq!(this.task_step_target(1, cx), Some((5, "s3".to_string())));
-            assert_eq!(this.task_step_target(-1, cx), Some((3, "s1".to_string())));
+            assert_eq!(this.task_step_target(1, cx), Some((5, local("s3"))));
+            assert_eq!(this.task_step_target(-1, cx), Some((3, local("s1"))));
             // With nothing selected, each direction enters from its end.
             this.selected_session = None;
             this.sync_sidebar_selection(cx);
-            assert_eq!(this.task_step_target(1, cx), Some((3, "s1".to_string())));
-            assert_eq!(this.task_step_target(-1, cx), Some((5, "s3".to_string())));
+            assert_eq!(this.task_step_target(1, cx), Some((3, local("s1"))));
+            assert_eq!(this.task_step_target(-1, cx), Some((5, local("s3"))));
         });
     }
 

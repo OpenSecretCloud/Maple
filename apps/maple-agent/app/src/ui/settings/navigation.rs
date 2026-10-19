@@ -180,7 +180,7 @@ impl SettingsScreen {
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
                 )
                 .collect(),
-            Section::Usage | Section::About => Vec::new(),
+            Section::Remote | Section::Usage | Section::About => Vec::new(),
         }
     }
 

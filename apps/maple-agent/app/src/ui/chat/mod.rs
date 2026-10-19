@@ -31,6 +31,8 @@ use crate::ui::widgets;
 mod cache;
 mod commands;
 mod composer;
+pub(crate) mod computers;
+use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod dialogs;
 mod images;
 mod navigation;
@@ -345,6 +347,14 @@ pub struct ChatScreen {
     user_id: String,
     /// The task list; its own entity so it renders only when it changes.
     sidebar: Entity<Sidebar>,
+    computers: Arc<Vec<Computer>>,
+    navigation_ready: bool,
+    /// Paired computers initially observe only navigation summaries. Catalogs,
+    /// tools and a conversation are loaded when that computer is first opened.
+    navigation_only: bool,
+    visible: bool,
+    next_navigation_refresh: std::time::Instant,
+    pending_navigation: Option<(u64, Destination)>,
     sessions: Vec<AgentSessionSummary>,
     selected_session: Option<String>,
     timeline: Vec<AgentTimelineItem>,
@@ -718,6 +728,12 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         match event.clone() {
+            SidebarEvent::Navigate(request) => cx.emit(request),
+            SidebarEvent::PreferencesChanged => {
+                self.refresh_project_caption();
+                cx.emit(NavigationChanged);
+                cx.notify();
+            }
             SidebarEvent::Select(id) => self.select_session(&id, cx),
             SidebarEvent::SessionChanged(session) => {
                 self.upsert_session(session, cx);
@@ -753,6 +769,7 @@ impl ChatScreen {
             sidebar.set_recent_roots(roots, cx);
         });
         self.refresh_selected_title();
+        cx.emit(NavigationChanged);
     }
 
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
@@ -1052,6 +1069,12 @@ impl ChatScreen {
             backend,
             user_id,
             sidebar,
+            computers: Arc::new(Vec::new()),
+            navigation_ready: false,
+            navigation_only: false,
+            visible: true,
+            next_navigation_refresh: std::time::Instant::now() + std::time::Duration::from_secs(30),
+            pending_navigation: None,
             sessions: Vec::new(),
             selected_session: None,
             timeline: Vec::new(),
@@ -1255,6 +1278,7 @@ impl ChatScreen {
                     // Not fatal: the runtime start below retreads all of it.
                     Err(message) => log::debug!("local bootstrap unavailable: {message}"),
                 }
+                this.finish_navigation_bootstrap(cx);
                 this.refresh_slash_commands(cx);
                 this.start_runtime(cx);
             },
@@ -1380,8 +1404,11 @@ impl ChatScreen {
         roots: Vec<maple_agent::agent::RecentProjectRoot>,
         cx: &mut Context<Self>,
     ) {
-        self.recent_roots = roots.into_iter().map(|root| root.path).collect();
-        self.sync_sidebar(cx);
+        let roots = roots.into_iter().map(|root| root.path).collect::<Vec<_>>();
+        if self.recent_roots != roots {
+            self.recent_roots = roots;
+            self.sync_sidebar(cx);
+        }
     }
 
     /// Select the project context for new tasks without disturbing work that
@@ -1566,7 +1593,7 @@ impl ChatScreen {
     /// The root changed: update the header label, then read its branch
     /// and watch its git dir.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
-        self.project_label = SharedString::from(self.project_label());
+        self.refresh_project_caption();
         self.refresh_branch(cx);
     }
 
@@ -2819,7 +2846,9 @@ impl ChatScreen {
         // Opening the task is what reads its completion, so the unread
         // marker goes. Only an explicit settle ever moves a task out of
         // the active inbox.
-        self.completed_unread_sessions.remove(&session.id);
+        if self.visible {
+            self.completed_unread_sessions.remove(&session.id);
+        }
         self.selected_session = Some(session.id.clone());
         self.draft = false;
         self.sync_sidebar(cx);
@@ -3589,16 +3618,22 @@ impl ChatScreen {
     /// Open the task before or after the selected one, in sidebar order.
     /// Defaults are Command-Option-Up/Down on macOS and Alt-Up/Down elsewhere.
     fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some((row, id)) = self.task_step_target(delta, cx) else {
+        let Some((row, request)) = self.task_step_target(delta, cx) else {
             return;
         };
         self.sidebar.read(cx).reveal_row(row);
-        self.select_session(&id, cx);
+        if request.computer.as_deref() == self.backend.remote_host() {
+            if let Destination::Task(id) = request.destination {
+                self.select_session(&id, cx);
+            }
+        } else {
+            cx.emit(request);
+        }
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
-    /// row it sits on and its id.
-    fn task_step_target(&self, delta: isize, cx: &gpui::App) -> Option<(usize, String)> {
+    /// row it sits on and its computer-scoped destination.
+    fn task_step_target(&self, delta: isize, cx: &gpui::App) -> Option<(usize, Navigate)> {
         self.sidebar.read(cx).step_target(delta)
     }
 
@@ -4941,16 +4976,20 @@ impl ChatScreen {
                         this.handle_service_events(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error = None;
-                        this.refresh_models(cx);
-                        this.refresh_roots(cx);
-                        this.refresh_slash_commands(cx);
-                        if !running {
+                        cx.emit(NavigationChanged);
+                        if !this.navigation_only {
+                            this.refresh_models(cx);
+                            this.refresh_roots(cx);
+                            this.refresh_slash_commands(cx);
+                        }
+                        if !running && !this.navigation_only {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
                             // this does not resume or submit any prompt.
                             this.booting = true;
                             this.start_runtime(cx);
                         }
+                        this.finish_navigation_bootstrap(cx);
                     }
                     Err(error) => {
                         this.host_recovery.events = None;
@@ -4986,6 +5025,10 @@ impl ChatScreen {
         self.question_selected.clear();
         self.sessions = snapshot.bootstrap.sessions;
         self.recent_roots = snapshot.bootstrap.recent_roots;
+        if self.navigation_only {
+            self.project_root = snapshot.bootstrap.project_root;
+            self.refresh_project_caption();
+        }
         self.handle_service_events(snapshot.bootstrap.questions, cx);
         if self.selection_generation == selection {
             if let Some(detail) = snapshot.selected {
@@ -5005,6 +5048,26 @@ impl ChatScreen {
 
     /// Apply one event; returns false when nothing visible changed.
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
+        use maple_agent::agent::AgentRunEvent;
+        // A computer that has not been opened needs navigation state only.
+        // Do this before the recovery buffer: a busy transcript must not make
+        // the summary snapshot overflow and reload forever.
+        if self.navigation_only
+            && match &event {
+                AgentServiceEvent::TimelineItem { .. }
+                | AgentServiceEvent::ThinkingChanged { .. }
+                | AgentServiceEvent::SideQuestion { .. } => true,
+                AgentServiceEvent::Run { event, .. } => !matches!(
+                    event,
+                    AgentRunEvent::Started
+                        | AgentRunEvent::Finished(_)
+                        | AgentRunEvent::SessionUpdated(_)
+                ),
+                _ => false,
+            }
+        {
+            return false;
+        }
         match event {
             AgentServiceEvent::HostReconnecting => {
                 self.host_recovery.epoch += 1;
@@ -5024,6 +5087,7 @@ impl ChatScreen {
                 self.begin_navigation();
                 self.runtime_error =
                     Some("Connection lost. Reconnecting to the Maple host…".into());
+                cx.emit(NavigationChanged);
                 return true;
             }
             AgentServiceEvent::HostReconnected => {
@@ -5036,6 +5100,7 @@ impl ChatScreen {
                 self.host_recovery.ended = true;
                 self.host_recovery.events = None;
                 self.runtime_error = Some(reason.into());
+                cx.emit(NavigationChanged);
                 return true;
             }
             AgentServiceEvent::HostDisconnected => {
@@ -5047,6 +5112,7 @@ impl ChatScreen {
                 self.host_recovery.unavailable = true;
                 self.host_recovery.events = None;
                 self.runtime_error = Some("The Maple host is unavailable. Reopen Maple to reload your tasks. No message was resent.".into());
+                cx.emit(NavigationChanged);
                 return true;
             }
             _ => {}
@@ -5103,7 +5169,7 @@ impl ChatScreen {
             AgentServiceEvent::RuntimeStatus(mut status) => {
                 // A runtime that just started points Goose at the account's
                 // skills, which the first scan ran before; ask again.
-                if status.running && !self.runtime_running_seen {
+                if status.running && !self.runtime_running_seen && !self.navigation_only {
                     self.runtime_running_seen = true;
                     self.refresh_slash_commands(cx);
                 }
@@ -5333,7 +5399,7 @@ impl ChatScreen {
                     // task (`set_active_session`) is the only other writer.
                     self.completed_unread_sessions.remove(session_id);
                     if matches!(terminal, maple_agent::agent::AgentRunTerminal::Completed)
-                        && !self.is_selected(session_id)
+                        && !(self.visible && self.is_selected(session_id))
                     {
                         self.completed_unread_sessions
                             .insert(session_id.to_string());

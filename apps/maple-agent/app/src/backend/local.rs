@@ -1656,6 +1656,16 @@ impl LocalBackend {
     /// holds the lifecycle lock across its network round trips, and these
     /// reads would queue behind it.
     pub async fn local_bootstrap(&self, user_id: &str) -> Result<LocalBootstrap, String> {
+        self.read_bootstrap(user_id, true).await
+    }
+
+    /// Navigation and reconnect snapshots need summaries, not an unrelated
+    /// latest transcript. A controller can observe several computers at once.
+    async fn read_bootstrap(
+        &self,
+        user_id: &str,
+        load_latest: bool,
+    ) -> Result<LocalBootstrap, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         let config = handle.load_config().await?;
         let project_root = gui_project_root(&config);
@@ -1677,7 +1687,7 @@ impl LocalBackend {
                     && Some(&session.project_root) == project_root.as_ref()
             })
             .map(|session| session.id.clone());
-        let latest = match latest_id {
+        let latest = match latest_id.filter(|_| load_latest) {
             Some(id) => handle.load_session(id).await.ok(),
             None => None,
         };
@@ -1696,8 +1706,7 @@ impl LocalBackend {
         user_id: &str,
         session_id: Option<String>,
     ) -> Result<RecoverySnapshot, String> {
-        let mut bootstrap = self.local_bootstrap(user_id).await?;
-        bootstrap.latest = None;
+        let bootstrap = self.read_bootstrap(user_id, false).await?;
         let handle = self.service.handle_for_user(user_id).await?;
         let selected = match session_id.filter(|id| bootstrap.sessions.iter().any(|s| &s.id == id))
         {
