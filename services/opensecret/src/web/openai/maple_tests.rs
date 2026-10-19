@@ -32,6 +32,59 @@ async fn flags_server(app: Router) -> LoopbackFlags {
 }
 
 #[tokio::test]
+async fn unrelated_completion_models_do_not_call_flags_but_catalog_and_maple_share_cache() {
+    let user = Uuid::from_u128(1);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let request_calls = calls.clone();
+    let server = flags_server(Router::new().route(
+        "/v1/users/:user_uuid/flags",
+        get(move |OriginalUri(uri): OriginalUri| {
+            let calls = request_calls.clone();
+            async move {
+                assert_eq!(uri.query(), Some("keys=maple_inference"));
+                calls.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"user_uuid": user, "flags": {"maple_inference": true}}))
+            }
+        }),
+    ))
+    .await;
+    let client = OsFlagsClient::new(server.base_url.clone(), None).unwrap();
+
+    for model in [
+        "deepseek-v4-1-flash",
+        "glm-5-3",
+        "llama3-3-70b",
+        "unknown-model",
+        "deepseek-v4-1-flash-1017-extra",
+    ] {
+        assert!(!maple_inference_eligibility_for_model(Some(&client), user, model).await);
+    }
+    for plan in [ModelPlan::Free, ModelPlan::Paid] {
+        for alias in ["auto:quick", "auto:powerful"] {
+            let targets = ModelAliasTargets::for_plan(plan);
+            assert!(
+                !maple_inference_eligibility_for_model(Some(&client), user, targets.resolve(alias))
+                    .await
+            );
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    // Catalog visibility still checks the user's flag. A following gated
+    // completion reuses the same existing account/key-scoped flags cache.
+    assert!(maple_inference_eligibility(Some(&client), user).await);
+    assert!(
+        maple_inference_eligibility_for_model(
+            Some(&client),
+            user,
+            crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+        )
+        .await
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn maple_rollout_requires_matching_account_and_explicit_true_flag() {
     let authenticated_user = Uuid::from_u128(1);
     assert!(!maple_inference_eligibility(None, authenticated_user).await);

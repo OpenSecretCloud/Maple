@@ -10,6 +10,69 @@ use tinfoil::{ApprovedRelease, DirectPolicy, Measurement, PinnedRelease, Predica
 pub(crate) const HOST: &str = "i01.tfinf.maple.ai";
 pub(crate) const BASE_URL: &str = "https://i01.tfinf.maple.ai";
 
+/// Remove caller-controlled engine policy from Maple's direct vLLM requests.
+///
+/// vLLM reads media cache identifiers from the content part's own `uuid`,
+/// independently of the backend-owned KV cache salt. Do not recursively remove
+/// UUIDs: tool arguments, schemas, text, and nested application data belong to
+/// the caller. This follows the media parser in vLLM db9527a4, including its
+/// shorthand media fields without `type` and media fields paired with a UUID
+/// under another type.
+pub(crate) fn sanitize_completion_request(body: &mut serde_json::Value) {
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    body.remove("priority");
+
+    let Some(messages) = body
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for message in messages {
+        let Some(parts) = message
+            .get_mut("content")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        for part in parts {
+            let Some(part) = part.as_object_mut() else {
+                continue;
+            };
+            let is_media = matches!(
+                part.get("type").and_then(serde_json::Value::as_str),
+                Some(
+                    "image_url"
+                        | "input_image"
+                        | "image_pil"
+                        | "image_embeds"
+                        | "audio_url"
+                        | "input_audio"
+                        | "audio_embeds"
+                        | "video_url"
+                        | "video_embeds"
+                )
+            ) || [
+                "image_url",
+                "image_pil",
+                "image_embeds",
+                "audio_url",
+                "input_audio",
+                "audio_embeds",
+                "video_url",
+                "video_embeds",
+            ]
+            .iter()
+            .any(|field| part.contains_key(*field));
+            if is_media {
+                part.remove("uuid");
+            }
+        }
+    }
+}
+
 struct ReleasePin {
     repo: &'static str,
     tag: &'static str,
@@ -58,6 +121,142 @@ pub(crate) fn direct_policy() -> Result<DirectPolicy, tinfoil::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn completion_policy_strips_priority_without_changing_sampling_or_tool_data() {
+        let mut body = json!({
+            "model": "deepseek-v4-1-flash-1017",
+            "priority": -1000,
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "max_tokens": 2048,
+            "stream": true,
+            "stream_options": {"include_usage": true},
+            "cache_salt": "backend-owned",
+            "reasoning_effort": "high",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "record",
+                    "schema": {"properties": {"uuid": {"type": "string"}}}
+                }
+            },
+            "tools": [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {"properties": {
+                    "priority": {"type": "number"}, "uuid": {"type": "string"}
+                }}
+            }}],
+            "messages": [
+                {"role": "user", "uuid": "message-id", "content": [
+                    {"type": "text", "text": "Use uuid and priority", "uuid": "text-metadata"}
+                ]},
+                {"role": "assistant", "tool_calls": [{"type": "function", "function": {
+                    "name": "lookup", "arguments": "{\"uuid\":\"record-id\",\"priority\":1}"
+                }}]},
+                {"role": "tool", "tool_call_id": "call-1", "content": "{\"uuid\":\"record-id\"}"}
+            ]
+        });
+        let mut expected = body.clone();
+        expected.as_object_mut().unwrap().remove("priority");
+
+        sanitize_completion_request(&mut body);
+
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn completion_policy_removes_identifiers_from_typed_media_parts() {
+        for part in [
+            json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,AA==", "detail": "auto"}}),
+            json!({"type": "input_image", "image_url": "data:image/png;base64,AA=="}),
+            json!({"type": "image_pil", "image_pil": null}),
+            json!({"type": "image_embeds", "image_embeds": "tensor"}),
+            json!({"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,AA=="}}),
+            json!({"type": "input_audio", "input_audio": {"data": "AA==", "format": "wav"}}),
+            json!({"type": "audio_embeds", "audio_embeds": "tensor"}),
+            json!({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AA=="}}),
+            json!({"type": "video_embeds", "video_embeds": "tensor"}),
+        ] {
+            let mut caller_part = part.clone();
+            caller_part["uuid"] = json!("caller-chosen-cache-entry");
+            let mut body = json!({"messages": [{"role": "user", "content": [caller_part]}]});
+
+            sanitize_completion_request(&mut body);
+
+            assert_eq!(body["messages"][0]["content"][0], part);
+        }
+    }
+
+    #[test]
+    fn completion_policy_covers_media_shorthand_and_uuid_type_override() {
+        for media_field in [
+            "image_url",
+            "image_pil",
+            "image_embeds",
+            "audio_url",
+            "input_audio",
+            "audio_embeds",
+            "video_url",
+            "video_embeds",
+        ] {
+            for part_type in [None, Some("text"), Some("unrecognized")] {
+                let mut part = json!({"uuid": "caller-cache-entry"});
+                part[media_field] = Value::Null;
+                if let Some(part_type) = part_type {
+                    part["type"] = json!(part_type);
+                }
+                let mut expected = part.clone();
+                expected.as_object_mut().unwrap().remove("uuid");
+                let mut body = json!({"messages": [{"content": [part]}]});
+
+                sanitize_completion_request(&mut body);
+
+                assert_eq!(body["messages"][0]["content"][0], expected);
+            }
+        }
+    }
+
+    #[test]
+    fn completion_policy_does_not_recursively_strip_application_uuids() {
+        let mut body = json!({
+            "uuid": "request-metadata",
+            "messages": [{"content": [
+                {"type": "image_url", "uuid": "engine-cache-entry", "image_url": {
+                    "url": "data:image/png;base64,AA==", "uuid": "nested-metadata"
+                }},
+                {"type": "tool_reference", "name": "lookup", "uuid": "tool-metadata"},
+                {"type": "application_data", "uuid": "ordinary-data", "arguments": {
+                    "image_url": "application-value", "uuid": "argument-data"
+                }}
+            ]}]
+        });
+        let mut expected = body.clone();
+        expected["messages"][0]["content"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("uuid");
+
+        sanitize_completion_request(&mut body);
+
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn completion_policy_leaves_unrelated_or_malformed_shapes_to_normal_validation() {
+        for mut body in [
+            Value::Null,
+            json!([]),
+            json!({"messages": null}),
+            json!({"messages": [null, "text", {"content": "uuid"}, {"content": [null, "text"]}]}),
+            json!({"input": [{"type": "function_call", "arguments": {"uuid": "record-id"}}]}),
+        ] {
+            let expected = body.clone();
+            sanitize_completion_request(&mut body);
+            assert_eq!(body, expected);
+        }
+    }
 
     #[test]
     fn dedicated_policy_is_complete_and_explicit() {

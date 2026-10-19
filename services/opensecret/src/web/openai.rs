@@ -690,8 +690,9 @@ impl InferenceRoutingContext {
         }
     }
 
-    /// Resolve only from the authenticated account and trusted flags service.
-    /// Missing flags/configuration, wrong-account responses and errors fail closed.
+    /// Resolve catalog visibility from the authenticated account and trusted flags
+    /// service. Completion entrypoints use `for_model` to avoid consulting flags
+    /// for models that do not need Maple eligibility.
     pub(crate) async fn for_user(state: &AppState, user_uuid: Uuid, model_plan: ModelPlan) -> Self {
         // An unconfigured dedicated provider cannot be selected. Preserve the
         // existing request path without a new flags dependency in that case.
@@ -699,6 +700,20 @@ impl InferenceRoutingContext {
             return Self::new(model_plan);
         }
         let enabled = maple_inference_eligibility(state.os_flags(), user_uuid).await;
+        Self::new(model_plan).with_maple_inference(enabled)
+    }
+
+    pub(crate) async fn for_model(
+        state: &AppState,
+        user_uuid: Uuid,
+        model_plan: ModelPlan,
+        model: &str,
+    ) -> Self {
+        if !state.proxy_router.maple_is_configured() {
+            return Self::new(model_plan);
+        }
+        let enabled =
+            maple_inference_eligibility_for_model(state.os_flags(), user_uuid, model).await;
         Self::new(model_plan).with_maple_inference(enabled)
     }
 
@@ -720,6 +735,17 @@ impl InferenceRoutingContext {
     pub(crate) const fn model_plan(self) -> ModelPlan {
         self.model_plan
     }
+}
+
+async fn maple_inference_eligibility_for_model(
+    client: Option<&crate::os_flags::OsFlagsClient>,
+    user_uuid: Uuid,
+    model: &str,
+) -> bool {
+    if !crate::model_config::is_maple_model(model) {
+        return false;
+    }
+    maple_inference_eligibility(client, user_uuid).await
 }
 
 async fn maple_inference_eligibility(
@@ -2013,9 +2039,10 @@ async fn proxy_openai(
         })?
         .to_string();
 
-    let routing = InferenceRoutingContext::for_user(&state, user.uuid, model_plan).await;
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
+    let routing =
+        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &alias_target).await;
     let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
@@ -2925,7 +2952,10 @@ async fn get_chat_completion_response_with_options(
 
         ensure_stream_usage(&mut request_body);
 
-        let request_body_value = Value::Object(request_body);
+        let mut request_body_value = Value::Object(request_body);
+        if selected_route.provider == ProviderId::Maple {
+            crate::maple_inference::sanitize_completion_request(&mut request_body_value);
+        }
         let attempt = execution.begin_attempt(route_identity.clone());
         let mut terminal_guard = AttemptObservationGuard::new_with_probe(
             attempt.clone(),

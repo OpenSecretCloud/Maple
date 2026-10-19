@@ -5907,9 +5907,10 @@ async fn create_response_stream(
         );
         return Err(ApiError::Unauthorized);
     }
-    let routing = InferenceRoutingContext::for_user(&state, user.uuid, model_plan).await;
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let selected_model = alias_targets.resolve(&requested_model).to_string();
+    let routing =
+        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &selected_model).await;
     let completion_provider = state.proxy_router.get_completion_proxy();
     let resolved_model = resolve_responses_model(
         &selected_model,

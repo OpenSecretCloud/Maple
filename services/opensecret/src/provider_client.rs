@@ -24,6 +24,52 @@ const TINFOIL_MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const TINFOIL_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const TINFOIL_UNINITIALIZED_BASE_URL: &str = "https://in-process.tinfoil.invalid";
 
+#[derive(Debug, PartialEq, Eq)]
+struct AttestationFailureDiagnostic {
+    category: &'static str,
+    reason: &'static str,
+}
+
+fn attestation_failure_diagnostic(error: &tinfoil::Error) -> AttestationFailureDiagnostic {
+    // SDK errors can contain arbitrary response text, URLs, and credentials.
+    // Log only finite labels derived from typed variants, never their payloads.
+    let category = if error.is_configuration() {
+        "configuration"
+    } else if error.is_fetch() {
+        "fetch"
+    } else if error.is_attestation() {
+        "attestation"
+    } else if error.is_api() {
+        "api"
+    } else {
+        "other"
+    };
+    let reason = match error {
+        tinfoil::Error::Configuration(_) => "configuration",
+        tinfoil::Error::Api(_) => "api",
+        tinfoil::Error::AttestationFetch(_) => "attestation_fetch",
+        tinfoil::Error::AttestationVerification(_) => "attestation_verification",
+        tinfoil::Error::CertificateMismatch => "certificate_mismatch",
+        tinfoil::Error::SigstoreVerification(_) => "sigstore_verification",
+        tinfoil::Error::GitHub(_) => "github_fetch",
+        tinfoil::Error::MeasurementMismatch { .. } => "measurement_mismatch",
+        tinfoil::Error::Tls(_) => "tls_verification",
+        tinfoil::Error::Ehbp(_) => "ehbp",
+        tinfoil::Error::EhbpKeyMismatch(_) => "ehbp_key_mismatch",
+        tinfoil::Error::Network(_) => "network",
+        tinfoil::Error::UnsupportedFormat(_) => "unsupported_format",
+        tinfoil::Error::Http(error) if error.is_timeout() => "http_timeout",
+        tinfoil::Error::Http(error) if error.is_connect() => "http_connect",
+        tinfoil::Error::Http(error) if error.is_status() => "http_status",
+        tinfoil::Error::Http(_) => "http",
+        tinfoil::Error::Json(_) => "json",
+        tinfoil::Error::Base64(_) => "base64",
+        tinfoil::Error::Io(_) => "io",
+        _ => "unknown",
+    };
+    AttestationFailureDiagnostic { category, reason }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderClientError {
     #[error("failed to build provider HTTP client: {0}")]
@@ -506,9 +552,12 @@ impl SecureTinfoilTransport {
                     return;
                 }
                 Ok(Err(error)) => {
+                    let diagnostic = attestation_failure_diagnostic(&error);
                     tracing::warn!(
                         retry_delay_seconds = retry_delay.as_secs(),
                         provider = self.target.label(),
+                        error_category = diagnostic.category,
+                        error_reason = diagnostic.reason,
                         error_is_attestation = error.is_attestation(),
                         error_is_fetch = error.is_fetch(),
                         "Provider attestation failed; retrying in background"
@@ -585,8 +634,11 @@ impl SecureTinfoilTransport {
                 })
             }
             Ok(Err(error)) => {
+                let diagnostic = attestation_failure_diagnostic(&error);
                 tracing::warn!(
                     provider = self.target.label(),
+                    error_category = diagnostic.category,
+                    error_reason = diagnostic.reason,
                     error_is_attestation = error.is_attestation(),
                     error_is_fetch = error.is_fetch(),
                     "Provider attestation refresh failed; transitioning unavailable"
@@ -1020,6 +1072,11 @@ impl ProviderClient {
         if let Some(headers) = source_headers {
             *request.headers_mut() = forwarded_headers(headers);
         }
+        if provider.provider_name == ProviderId::Maple.as_str() {
+            // vLLM accepts this header as an override of body priority. The
+            // dedicated node's scheduling policy is owned by the server.
+            request.headers_mut().remove("x-vllm-priority");
+        }
         if let Some(content_type) = content_type {
             let content_type = HeaderValue::from_str(content_type)
                 .map_err(|error| ProviderRequestError::Build(error.to_string()))?;
@@ -1201,6 +1258,115 @@ mod tests {
         AttestationTarget::MapleDirect {
             host: crate::maple_inference::HOST,
             policy: crate::maple_inference::direct_policy().unwrap(),
+        }
+    }
+
+    #[test]
+    fn attestation_failure_diagnostics_preserve_typed_causes_without_payloads() {
+        let sensitive = "Bearer diagnostic-secret https://private.invalid/?token=diagnostic-secret\nforged_log=true";
+        let cases = [
+            (
+                tinfoil::Error::Configuration(sensitive.into()),
+                "configuration",
+                "configuration",
+            ),
+            (
+                tinfoil::Error::AttestationFetch(sensitive.into()),
+                "fetch",
+                "attestation_fetch",
+            ),
+            (
+                tinfoil::Error::AttestationVerification(sensitive.into()),
+                "attestation",
+                "attestation_verification",
+            ),
+            (
+                tinfoil::Error::CertificateMismatch,
+                "attestation",
+                "certificate_mismatch",
+            ),
+            (
+                tinfoil::Error::SigstoreVerification(sensitive.into()),
+                "attestation",
+                "sigstore_verification",
+            ),
+            (
+                tinfoil::Error::GitHub(sensitive.into()),
+                "fetch",
+                "github_fetch",
+            ),
+            (
+                tinfoil::Error::MeasurementMismatch {
+                    expected: sensitive.into(),
+                    actual: sensitive.into(),
+                },
+                "attestation",
+                "measurement_mismatch",
+            ),
+            (
+                tinfoil::Error::Tls(sensitive.into()),
+                "attestation",
+                "tls_verification",
+            ),
+            (
+                tinfoil::Error::Ehbp(sensitive.into()),
+                "attestation",
+                "ehbp",
+            ),
+            (
+                tinfoil::Error::EhbpKeyMismatch(sensitive.into()),
+                "attestation",
+                "ehbp_key_mismatch",
+            ),
+            (
+                tinfoil::Error::Network(sensitive.into()),
+                "fetch",
+                "network",
+            ),
+            (
+                tinfoil::Error::UnsupportedFormat(sensitive.into()),
+                "attestation",
+                "unsupported_format",
+            ),
+            (
+                tinfoil::Error::Io(std::io::Error::other(sensitive)),
+                "fetch",
+                "io",
+            ),
+            (
+                tinfoil::Error::Json(serde_json::from_value::<bool>(json!(sensitive)).unwrap_err()),
+                "attestation",
+                "json",
+            ),
+            (
+                tinfoil::Error::Http(
+                    test_http_client()
+                        .unwrap()
+                        .get("https://private.invalid/?token=diagnostic-secret")
+                        .header("invalid\nheader", sensitive)
+                        .build()
+                        .unwrap_err(),
+                ),
+                "fetch",
+                "http",
+            ),
+        ];
+
+        for (error, category, reason) in cases {
+            let diagnostic = attestation_failure_diagnostic(&error);
+            assert_eq!(
+                diagnostic,
+                AttestationFailureDiagnostic { category, reason }
+            );
+            let rendered = format!("{diagnostic:?}");
+            for forbidden in [
+                "Bearer",
+                "diagnostic-secret",
+                "private.invalid",
+                "forged_log",
+            ] {
+                assert!(!rendered.contains(forbidden));
+            }
         }
     }
 
@@ -1610,6 +1776,50 @@ mod tests {
         assert!(!forwarded.contains_key(header::TE));
         assert!(!forwarded.contains_key(header::TRAILER));
         assert!(!forwarded.contains_key(header::UPGRADE));
+    }
+
+    #[test]
+    fn maple_strips_priority_headers_without_changing_shared_tinfoil_headers() {
+        let client = ProviderClient::for_test("https://router.example.test".to_owned()).unwrap();
+        let attempt = client.tinfoil.snapshot().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.append(
+            HeaderName::from_bytes(b"X-VlLm-PrIoRiTy").unwrap(),
+            HeaderValue::from_static("-100"),
+        );
+        headers.append("x-vllm-priority", HeaderValue::from_static("-200"));
+        headers.insert("x-request-id", HeaderValue::from_static("request-123"));
+
+        for (provider, expect_priority) in [(maple_proxy(), false), (tinfoil_proxy(), true)] {
+            let request = client
+                .build_tinfoil_request_for_attempt(
+                    &provider,
+                    ProviderRequest::new(
+                        Method::POST,
+                        "/v1/chat/completions",
+                        Duration::from_secs(5),
+                    )
+                    .source_headers(&headers),
+                    &attempt,
+                )
+                .unwrap();
+            assert_eq!(
+                request.headers().contains_key("x-vllm-priority"),
+                expect_priority
+            );
+            if expect_priority {
+                assert_eq!(
+                    request.headers().get_all("x-vllm-priority").iter().count(),
+                    2
+                );
+            }
+            assert_eq!(request.headers()["x-request-id"], "request-123");
+            assert_eq!(
+                request.headers()[header::AUTHORIZATION],
+                "Bearer test-tinfoil-key"
+            );
+        }
+        assert_eq!(headers.get_all("x-vllm-priority").iter().count(), 2);
     }
 
     #[test]
