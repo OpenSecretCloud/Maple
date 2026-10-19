@@ -2166,6 +2166,117 @@ print_canonical_dmg_app_hash() {
   printf 'sha256-macos-dmg-canonical  %s  %s::*.app\n' "${digest}" "${label}"
 }
 
+# dmgbuild writes the installer window's .DS_Store directly (no Finder or
+# AppleScript). The nix ci shell provides the pinned 1.6.7 and puts its
+# ds_store module on PYTHONPATH; older versions write the pBBk record that
+# blanks the background on macOS 26.2+.
+require_dmgbuild() {
+  if ! command -v dmgbuild >/dev/null 2>&1 \
+    || ! "$(python3_runner)" -c 'import sys, dmgbuild; sys.exit(tuple(map(int, dmgbuild.__version__.split(".")[:3])) < (1, 6, 7))' 2>/dev/null; then
+    echo "dmgbuild 1.6.7 or newer is required to build the DMG; run this script in the nix ci shell: nix develop --no-update-lock-file .#ci" >&2
+    return 1
+  fi
+}
+
+# Fail if the volume's .DS_Store is missing the window and icon view records,
+# carries pBBk (blank background on macOS 26.2+), or the volume lost its
+# custom-icon flag (dmgbuild ignores SetFile failures).
+verify_macos_dmg_layout() {
+  local dmg="$1"
+  local tmp mount status=0
+
+  tmp="$(mktemp -d)"
+  mount="${tmp}/mount"
+  mkdir -p "${mount}"
+  if ! hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "${mount}" "${dmg}" >/dev/null; then
+    rm -rf "${tmp}"
+    echo "Failed to mount DMG for layout verification: ${dmg}" >&2
+    return 1
+  fi
+
+  "$(python3_runner)" - "${mount}" <<'EOF' || status=$?
+import sys
+from ds_store import DSStore
+
+mount = sys.argv[1]
+# Scan the raw bytes so a malformed pBBk value cannot hide behind a parse error.
+with open(f"{mount}/.DS_Store", "rb") as raw:
+    if b"pBBk" in raw.read():
+        sys.exit(".DS_Store contains a pBBk record; Finder on macOS 26.2+ shows a blank background.")
+with DSStore.open(f"{mount}/.DS_Store", "r") as store:
+    codes = {(entry.filename, entry.code.decode("latin_1")) for entry in store}
+missing = [code for code in ("bwsp", "icvp") if (".", code) not in codes]
+if missing:
+    sys.exit(f".DS_Store is missing {', '.join(missing)} for the volume window.")
+print(f"verified-macos-dmg-layout  {' '.join(sorted(code for name, code in codes if name == '.'))}")
+EOF
+
+  if [ "${status}" -eq 0 ]; then
+    # GetFileInfo prints the attribute letters; uppercase C means custom icon.
+    if [ ! -f "${mount}/.VolumeIcon.icns" ] || ! /usr/bin/GetFileInfo -a "${mount}" | grep -q 'C'; then
+      echo "DMG volume has no custom icon (.VolumeIcon.icns or the custom-icon flag is missing): ${dmg}" >&2
+      status=1
+    else
+      echo "verified-macos-dmg-volume-icon"
+    fi
+  fi
+
+  hdiutil detach "${mount}" -quiet || hdiutil detach "${mount}" -force -quiet || true
+  rm -rf "${tmp}"
+  return "${status}"
+}
+
+# Build the installer DMG for a finished Maple.app with dmgbuild, then sign it
+# the same way Tauri's DMG bundler did: codesign --force -s <identity>
+# [--keychain <keychain>] --entitlements Entitlements.plist, only when a
+# signing identity is set. Tauri does not notarize or staple the DMG itself;
+# the .app inside it is already notarized and stapled.
+build_macos_dmg() {
+  local app="$1"
+  local dmg="$2"
+  local volume_name="${3:-Maple}"
+  local identity="${APPLE_SIGNING_IDENTITY:-}"
+  local tool sign_args
+
+  # dmgbuild calls these for the volume icon and hidden extension, and
+  # ignores their exit status.
+  for tool in /usr/bin/SetFile /usr/bin/GetFileInfo; do
+    if [ ! -x "${tool}" ]; then
+      echo "${tool} is required to build the DMG (install Xcode or the Command Line Tools)." >&2
+      return 1
+    fi
+  done
+
+  require_dmgbuild
+  mkdir -p "$(dirname "${dmg}")"
+  rm -f "${dmg}"
+  dmgbuild \
+    -s "${SCRIPT_DIR}/dmg-settings.py" \
+    -D app="${app}" \
+    -D background="${TAURI_DIR}/dmg/background.tiff" \
+    -D volume_icon="${TAURI_DIR}/dmg/VolumeIcon.icns" \
+    "${volume_name}" "${dmg}"
+  verify_macos_dmg_layout "${dmg}"
+
+  if [ -z "${identity}" ] || [ "${identity}" = "-" ]; then
+    echo "No Apple signing identity; leaving $(repo_relative_path "${dmg}") unsigned."
+    return 0
+  fi
+
+  sign_args=(--force -s "${identity}")
+  if [ -n "${MAPLE_APPLE_SIGNING_KEYCHAIN:-}" ]; then
+    # The keychain was imported before both app builds and auto-locks after
+    # an hour; unlock it again so noninteractive codesign does not fail.
+    if [ -n "${maple_apple_signing_keychain_password:-}" ]; then
+      security unlock-keychain -p "${maple_apple_signing_keychain_password}" "${MAPLE_APPLE_SIGNING_KEYCHAIN}"
+    fi
+    sign_args+=(--keychain "${MAPLE_APPLE_SIGNING_KEYCHAIN}")
+  fi
+  sign_args+=(--entitlements "${TAURI_DIR}/Entitlements.plist")
+  codesign "${sign_args[@]}" "${dmg}"
+  codesign --verify --verbose=2 "${dmg}"
+}
+
 print_canonical_ipa_payload_hash() {
   local ipa="$1"
   local label="${2:-$(repo_relative_path "${ipa}")}"
@@ -4163,11 +4274,13 @@ import_apple_developer_certificate() {
     return 1
   fi
 
-  local temp_dir cert_file keychain keychain_password cert_info cert_id
+  local temp_dir cert_file keychain cert_info cert_id
   temp_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   cert_file="${temp_dir%/}/maple-apple-certificate.p12"
   keychain="${temp_dir%/}/maple-build.keychain-db"
-  keychain_password="${KEYCHAIN_PASSWORD:-$(openssl rand -hex 24)}"
+  # Not exported and never printed; build_macos_dmg re-unlocks with it.
+  maple_apple_signing_keychain_password="${KEYCHAIN_PASSWORD:-$(openssl rand -hex 24)}"
+  local keychain_password="${maple_apple_signing_keychain_password}"
 
   decode_base64_string_to_file "${APPLE_CERTIFICATE}" "${cert_file}"
 
@@ -4187,5 +4300,6 @@ import_apple_developer_certificate() {
 
   cert_id="$(printf '%s\n' "${cert_info}" | awk -F'"' '{ print $2 }')"
   export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-${cert_id}}"
+  export MAPLE_APPLE_SIGNING_KEYCHAIN="${keychain}"
   echo "Imported Apple Developer ID certificate."
 }
