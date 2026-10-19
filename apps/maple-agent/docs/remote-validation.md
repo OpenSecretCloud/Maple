@@ -40,8 +40,9 @@ initial remote capacity limit, missing host-selector theme/traffic-light spacing
 discovery publishing an empty address before the relay became ready, and the
 Integrations settings pane retaining the controller backend after selecting a
 remote task. Account/preferences remain local while Integrations uses the
-selected execution backend. Remote
-capacity remains bounded and separate from local controls, with reserved slots
+selected execution backend. A disabled execution-only MCP fixture was visible
+in both the remote task menu and Integrations pane; the controller configuration
+remained empty. Remote capacity remains bounded and separate from local controls, with reserved slots
 for cancellation and question answers.
 
 ## Automated checks

@@ -110,8 +110,8 @@ mod tests {
     use super::*;
     #[test]
     fn proof_schema_matches_shared_version_one_fixture() {
-        let fixture =
-            include_str!("../../../../../sdk/rust/src/remote_registration_v1.json").trim_end();
+        // Keep this golden vector inside the standalone service package too.
+        let fixture = include_str!("registration_v1.json").trim_end();
         let registration: RemoteRegistration = serde_json::from_str(fixture).unwrap();
         let mut expected = b"maple.remote.registration.v1\0".to_vec();
         expected.extend_from_slice(fixture.as_bytes());
