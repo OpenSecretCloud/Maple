@@ -109,7 +109,8 @@ case "$(host_os)" in
       }
     }')"
 
-    bun tauri build --target universal-apple-darwin --no-sign --config "${unsigned_config}"
+    # Tauri builds only the .app on macOS; build_macos_dmg packages the DMG below.
+    bun tauri build --target universal-apple-darwin --bundles app --no-sign --config "${unsigned_config}"
     unsigned_app="${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos/Maple.app"
     unsigned_hash="$(print_canonical_apple_bundle_hash "${unsigned_app}" "apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-unsigned.sha256" | awk '{ print $2 }')"
     cat "${repro_dir}/desktop-release-macos-unsigned.sha256"
@@ -117,7 +118,7 @@ case "$(host_os)" in
     remove_build_tree "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/dmg"
     remove_build_tree "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos"
 
-    bun tauri build --target universal-apple-darwin --config "${signed_config}"
+    bun tauri build --target universal-apple-darwin --bundles app --config "${signed_config}"
 
     signed_app="${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos/Maple.app"
     signed_canonical_hash="$(print_canonical_apple_bundle_hash "${signed_app}" "apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-signed-canonical.sha256" | awk '{ print $2 }')"
@@ -130,6 +131,10 @@ case "$(host_os)" in
       exit 1
     fi
     printf 'verified-macos-signed-app  %s  %s\n' "${signed_canonical_hash}" "$(repo_relative_path "${signed_app}")"
+
+    product_name="$(jq -er '.productName' "${TAURI_DIR}/tauri.conf.json")"
+    app_version="$(jq -er '.version' "${TAURI_DIR}/tauri.conf.json")"
+    build_macos_dmg "${signed_app}" "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/dmg/${product_name}_${app_version}_universal.dmg" "${product_name}"
 
     desktop_artifacts=()
     while IFS= read -r -d '' file; do

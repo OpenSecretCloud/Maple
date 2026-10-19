@@ -499,12 +499,25 @@
             ];
           };
 
+        # nixpkgs has dmgbuild 1.6.2, which writes the pBBk record that blanks
+        # the DMG background on macOS 26.2+; 1.6.7 no longer writes it.
+        pinnedDmgbuild = pkgs.python3Packages.dmgbuild.overridePythonAttrs (old: rec {
+          version = "1.6.7";
+          src = pkgs.fetchFromGitHub {
+            owner = "dmgbuild";
+            repo = "dmgbuild";
+            rev = "refs/tags/v${version}";
+            hash = "sha256-dJHUpMPsYTgJdR3FoIzrH6C/VLWXlktW3o8VXeHxey8=";
+          };
+        });
+
         darwinPackages =
           with pkgs;
           lib.optionals stdenv.isDarwin [
             cmake
             libiconv
             python3
+            pinnedDmgbuild
           ];
 
         androidComposition =

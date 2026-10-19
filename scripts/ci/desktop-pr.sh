@@ -79,7 +79,11 @@ case "$(host_os)" in
     export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
     export LIBRARY_PATH="${SDKROOT}/usr/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
     export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-Clink-arg=-isysroot -Clink-arg=${SDKROOT}"
-    bun tauri build --target universal-apple-darwin --no-sign --config '{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.4"}}}'
+    # Same DMG step as the release build (scripts/ci/desktop-release.sh), unsigned.
+    bun tauri build --target universal-apple-darwin --bundles app --no-sign --config '{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.4"}}}'
+    product_name="$(jq -er '.productName' "${TAURI_DIR}/tauri.conf.json")"
+    app_version="$(jq -er '.version' "${TAURI_DIR}/tauri.conf.json")"
+    APPLE_SIGNING_IDENTITY="" build_macos_dmg "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos/${product_name}.app" "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/dmg/${product_name}_${app_version}_universal.dmg" "${product_name}"
 
     desktop_artifacts=()
     while IFS= read -r -d '' file; do

@@ -80,6 +80,7 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/desktop-release.sh": DESKTOP_PLATFORMS,
     "scripts/ci/desktop-windows-pr.sh": frozenset({"windows"}),
     "scripts/ci/desktop-windows-release.sh": frozenset({"windows"}),
+    "scripts/ci/dmg-settings.py": frozenset({"macos"}),
     "scripts/ci/frontend.sh": frozenset({"frontend"}),
     "scripts/ci/install-windows-artifact-signing.ps1": frozenset({"windows"}),
     "scripts/ci/install-windows-minisign.ps1": frozenset({"windows"}),
