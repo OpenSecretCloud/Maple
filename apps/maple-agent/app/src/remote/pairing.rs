@@ -8,6 +8,7 @@ use zeroize::{Zeroize, Zeroizing};
 const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 pub const WINDOW_DURATION: Duration = Duration::from_secs(300);
 const FAILED: &str = "Pairing proof failed. Open a new pairing window and try again.";
+const INVALID_CODE: &str = "Enter the eight-character pairing code shown on the other computer.";
 
 /// No Debug/Serialize implementation: the code must not enter logs or storage.
 pub struct Code(Zeroizing<[u8; 8]>);
@@ -23,19 +24,25 @@ impl Code {
     }
 
     pub fn parse(text: &str) -> Result<Self, String> {
-        let mut bytes = Zeroizing::new([0; 8]);
-        if text.len() != bytes.len() || !text.bytes().all(|b| ALPHABET.contains(&b)) {
-            return Err(
-                "Enter the eight-character pairing code shown on the other computer.".into(),
-            );
+        let text = text.as_bytes();
+        let (first, last) = match text.len() {
+            8 => text.split_at(4),
+            9 if text[4] == b'-' => (&text[..4], &text[5..]),
+            _ => return Err(INVALID_CODE.into()),
+        };
+        if !first.iter().chain(last).all(|b| ALPHABET.contains(b)) {
+            return Err(INVALID_CODE.into());
         }
-        bytes.copy_from_slice(text.as_bytes());
+        let mut bytes = Zeroizing::new([0; 8]);
+        bytes[..4].copy_from_slice(first);
+        bytes[4..].copy_from_slice(last);
         Ok(Self(bytes))
     }
 
     /// Only the locally initiated pairing UI may display this value.
-    pub fn display(&self) -> &str {
-        std::str::from_utf8(self.0.as_ref()).expect("pairing code is ASCII")
+    pub fn display(&self) -> String {
+        let code = std::str::from_utf8(self.0.as_ref()).expect("pairing code is ASCII");
+        format!("{}-{}", &code[..4], &code[4..])
     }
 }
 
@@ -90,7 +97,7 @@ impl Window {
         }
     }
 
-    pub fn code(&self) -> Option<&str> {
+    pub fn code(&self) -> Option<String> {
         self.code.as_ref().map(Code::display)
     }
 
@@ -198,10 +205,26 @@ mod tests {
     #[test]
     fn correct_proofs_confirm_execution_before_controller() {
         let ctx = context();
-        let a = Controller::new(code(), &ctx).unwrap();
+        let a = Controller::new(Code::parse("ABCD-EFG2").unwrap(), &ctx).unwrap();
         let b = Execution::new(code(), &ctx, a.message().to_vec()).unwrap();
         let tag = a.confirm(b.message().to_vec(), &b.confirmation()).unwrap();
         b.verify(&tag).unwrap();
+    }
+
+    #[test]
+    fn display_groups_code_without_changing_its_value() {
+        assert_eq!(code().display(), "ABCD-EFG2");
+        assert_eq!(Code::parse(&code().display()).unwrap().0, code().0);
+        for invalid in [
+            "ABC-DEFG2",
+            "ABCD--EFG2",
+            "ABCD-EFG",
+            "ABCD-EFG22",
+            "ABCD-EFG1",
+            "ABCD–EFG2",
+        ] {
+            assert!(Code::parse(invalid).is_err());
+        }
     }
 
     #[test]
@@ -246,8 +269,8 @@ mod tests {
     #[test]
     fn window_cannot_be_reused_or_extended_by_admission() {
         let mut window = Window::new();
-        assert_eq!(window.code().unwrap().len(), 8);
-        assert!(Code::parse(window.code().unwrap()).is_ok());
+        assert_eq!(window.code().unwrap().len(), 9);
+        assert!(Code::parse(&window.code().unwrap()).is_ok());
         assert!(window.take_attempt(&[0; 16]).is_err());
         let id = window.id;
         assert!(window.take_attempt(&id).is_ok());

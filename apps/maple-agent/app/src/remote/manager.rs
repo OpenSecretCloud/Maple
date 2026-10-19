@@ -494,7 +494,7 @@ impl Node {
             return Err("Pairing registration was not acknowledged. Start a new window.".into());
         }
         let result = PairingWindow {
-            code: next.code().unwrap().into(),
+            code: next.code().unwrap(),
             window: Uuid::from_bytes(next.id),
             expires_in: next.remaining().as_secs(),
         };

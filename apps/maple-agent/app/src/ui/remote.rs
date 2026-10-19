@@ -5,7 +5,7 @@ use crate::{
     remote::manager::{PairingWindow, Status},
     ui::{task, text_input::TextInput, theme, widgets},
 };
-use gpui::{Context, Entity, EventEmitter, Render, Window, div, prelude::*};
+use gpui::{Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*, px};
 use maple_sdk::remote::RemoteDevice;
 use std::{
     cell::RefCell,
@@ -56,8 +56,7 @@ impl RemoteScreen {
             backend,
             status: None,
             devices: Vec::new(),
-            code_input: cx
-                .new(|cx| TextInput::new("Eight-character code from the other computer", cx)),
+            code_input: cx.new(|cx| TextInput::new("Pairing code (ABCD-EFGH)", cx)),
             names,
             renaming: None,
             local_code: None,
@@ -242,8 +241,9 @@ impl Render for RemoteScreen {
             .when(enabled, |view| view.child(div().child(
                 widgets::primary_button("pairing-window").aria_label("Pair another computer").child("Pair another computer")
                     .on_click(cx.listener(|screen, _, _, cx| screen.action("remote_begin_pairing", serde_json::json!([]), cx))))))
-            .when_some(self.local_code.as_ref(), |view, (code, deadline)| view.child(div().flex().flex_col().gap_2()
-                .child(div().text_xl().child(code.clone()))
+            .when_some(self.local_code.as_ref(), |view, (code, deadline)| view.child(widgets::card_row().flex().flex_col().gap_3()
+                .child(div().text_sm().child("Enter this code on the other computer"))
+                .child(pairing_code_boxes(code))
                 .child(format!("One attempt · expires in {} seconds. Enter this code only on the computer you want to pair.", deadline.saturating_duration_since(Instant::now()).as_secs()))
                 .child(widgets::secondary_button("cancel-window").aria_label("Close pairing window").child("Close pairing window")
                     .on_click(cx.listener(|screen, _, _, cx| screen.action("remote_cancel_pairing", serde_json::json!([]), cx))))))
@@ -284,7 +284,12 @@ impl Render for RemoteScreen {
                     .on_click(cx.listener(|screen, _, _, cx| screen.refresh(true, cx)))))
             .child(div().text_color(gpui::rgb(theme::text_secondary()))
                 .child("Open Remote computers in Settings on the other device and start pairing there. Then refresh and enter its code here."))
-            .child(self.code_input.clone())
+            .child(div().flex().flex_col().gap_2()
+                .child(div().text_sm().child("Pairing code"))
+                .child(widgets::input_frame().w(px(320.)).max_w_full().text_xl()
+                    .font_family(crate::assets::FONT_MONO).child(self.code_input.clone()))
+                .child(div().text_sm().text_color(gpui::rgb(theme::text_muted()))
+                    .child("Type or paste the code from the other computer. The dash is optional.")))
             .children(self.devices.iter().map(|device| {
                 let endpoint = device.endpoint.clone();
                 div().flex().gap_3().items_center().justify_between()
@@ -299,4 +304,30 @@ impl Render for RemoteScreen {
             .when(self.busy, |view| view.child("Connecting…"))
             .when_some(self.error.as_ref(), |view, error| view.child(div().child(error.clone())))
     }
+}
+
+fn pairing_code_boxes(code: &str) -> Div {
+    div()
+        .flex()
+        .gap_2()
+        .items_center()
+        .children(code.chars().map(|character| {
+            let cell = div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(px(44.))
+                .text_xl()
+                .font_family(crate::assets::FONT_MONO)
+                .child(character.to_string());
+            if character == '-' {
+                cell.w(px(12.)).text_color(gpui::rgb(theme::text_muted()))
+            } else {
+                cell.w(px(34.))
+                    .rounded(theme::RADIUS_MD)
+                    .bg(gpui::rgb(theme::bg_input()))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border()))
+            }
+        }))
 }
