@@ -293,7 +293,7 @@ export function AgentMcpServersDialog({
           onOpenChange(nextOpen);
         }}
       >
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-hidden p-0">
+        <DialogContent className="max-h-[90vh] max-w-3xl grid-cols-[minmax(0,1fr)] overflow-hidden p-0">
           {formServer ? (
             <McpServerForm
               server={formServer}
@@ -446,7 +446,7 @@ function McpServerGroup({
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{server.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">
+                  <p className="line-clamp-2 text-xs text-muted-foreground">
                     {server.description || transportLabel(server.transport.type)}
                   </p>
                 </div>
