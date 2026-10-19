@@ -18,9 +18,10 @@ attempt. A failed attempt requires a new, locally opened window.
 
 Paired computers appear alongside local projects in the sidebar and project
 menus. Each group is **computer · folder**, with its tasks beneath it; a globe
-marks remote folders. Selecting a task or project also selects its execution
-computer. Select a **This computer** project to return to local work. Local-only
-installations retain the existing sidebar layout. In Remote computers settings,
+marks remote folders. The sidebar only shows folders with visible tasks; empty
+folders remain available in the project menus. Selecting a task or project also
+selects its execution computer. Select a **This computer** project to return to
+local work. Local-only installations retain the existing sidebar layout. In Remote computers settings,
 **Rename** changes the computer's label on this desktop; it does not change its
 identity or pairing grant.
 

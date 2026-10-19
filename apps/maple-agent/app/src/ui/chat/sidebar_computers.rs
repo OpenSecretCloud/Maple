@@ -88,7 +88,7 @@ impl Sidebar {
                         std::cmp::Reverse(s.updated_ms),
                     )
                 });
-                if !matches_group && tasks.is_empty() {
+                if tasks.is_empty() {
                     continue;
                 }
                 let heading = self.computer_projects.len();
