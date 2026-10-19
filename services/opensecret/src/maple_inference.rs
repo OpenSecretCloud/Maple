@@ -5,10 +5,41 @@
 //! never authorizes a new measurement. This is ordinary attested HTTPS using
 //! Tinfoil's direct V3 path; it does not use shared-router discovery.
 
+use crate::provider_registry::MapleInstanceId;
 use tinfoil::{ApprovedRelease, DirectPolicy, Measurement, PinnedRelease, PredicateType};
 
-pub(crate) const HOST: &str = "i01.tfinf.maple.ai";
-pub(crate) const BASE_URL: &str = "https://i01.tfinf.maple.ai";
+/// Backend-owned identity, address, and approved release set for one guest.
+/// Each guest has an independent verifier/client even when its release pins are
+/// identical to a replica's. Neither DNS nor request metadata selects this set.
+pub(crate) struct MapleEndpoint {
+    pub(crate) instance: MapleInstanceId,
+    pub(crate) host: &'static str,
+    pub(crate) base_url: &'static str,
+    current_release: &'static ReleasePin,
+    staged_releases: &'static [ReleasePin],
+}
+
+const I01_ENDPOINT: MapleEndpoint = MapleEndpoint {
+    instance: MapleInstanceId::I01,
+    host: "i01.tfinf.maple.ai",
+    base_url: "https://i01.tfinf.maple.ai",
+    current_release: &CURRENT_RELEASE,
+    staged_releases: &[],
+};
+const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
+    instance: MapleInstanceId::I02,
+    host: "i02.tfinf.maple.ai",
+    base_url: "https://i02.tfinf.maple.ai",
+    current_release: &CURRENT_RELEASE,
+    staged_releases: &[],
+};
+
+pub(crate) const fn endpoint(instance: MapleInstanceId) -> &'static MapleEndpoint {
+    match instance {
+        MapleInstanceId::I01 => &I01_ENDPOINT,
+        MapleInstanceId::I02 => &I02_ENDPOINT,
+    }
+}
 
 /// Remove caller-controlled engine policy from Maple's direct vLLM requests.
 ///
@@ -94,11 +125,10 @@ const CURRENT_RELEASE: ReleasePin = ReleasePin {
         "4dac875226df9a0a2dcc8e2c535ebf4ed26398dd3581ab62eba5580a5d155a8c62b66c8f073884c6b3b9a03b34e7bf94",
     ],
 };
-const STAGED_RELEASES: &[ReleasePin] = &[];
-
-pub(crate) fn direct_policy() -> Result<DirectPolicy, tinfoil::Error> {
-    let approved = std::iter::once(&CURRENT_RELEASE)
-        .chain(STAGED_RELEASES.iter())
+pub(crate) fn direct_policy(instance: MapleInstanceId) -> Result<DirectPolicy, tinfoil::Error> {
+    let endpoint = endpoint(instance);
+    let approved = std::iter::once(endpoint.current_release)
+        .chain(endpoint.staged_releases.iter())
         .map(|pin| ApprovedRelease {
             release: PinnedRelease {
                 repo: pin.repo.to_owned(),
@@ -259,36 +289,48 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_policy_is_complete_and_explicit() {
-        let policy =
-            direct_policy().expect("compiled current/staged pins must form a valid policy");
-        let serialized = format!("{policy:?}");
-        for pin in std::iter::once(&CURRENT_RELEASE).chain(STAGED_RELEASES.iter()) {
-            assert!(serialized.contains(pin.repo));
-            assert!(serialized.contains(pin.tag));
-            assert!(serialized.contains(pin.digest));
-            for register in pin.registers {
-                assert!(serialized.contains(register));
+    fn dedicated_policies_are_complete_and_explicit_for_each_guest() {
+        let mut hosts = std::collections::HashSet::new();
+        for instance in MapleInstanceId::ALL {
+            let endpoint = endpoint(instance);
+            assert_eq!(endpoint.instance, instance);
+            assert!(hosts.insert(endpoint.host));
+            let policy = direct_policy(instance)
+                .expect("compiled current/staged pins must form a valid policy");
+            let serialized = format!("{policy:?}");
+            for pin in
+                std::iter::once(endpoint.current_release).chain(endpoint.staged_releases.iter())
+            {
+                assert!(serialized.contains(pin.repo));
+                assert!(serialized.contains(pin.tag));
+                assert!(serialized.contains(pin.digest));
+                for register in pin.registers {
+                    assert!(serialized.contains(register));
+                }
             }
+            let url = reqwest::Url::parse(endpoint.base_url).unwrap();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.host_str(), Some(endpoint.host));
+            assert!(url.port().is_none());
+            assert_eq!(url.path(), "/");
         }
-        let url = reqwest::Url::parse(BASE_URL).unwrap();
-        assert_eq!(url.scheme(), "https");
-        assert_eq!(url.host_str(), Some(HOST));
-        assert!(url.port().is_none());
-        assert_eq!(url.path(), "/");
+        assert_eq!(endpoint(MapleInstanceId::I01).host, "i01.tfinf.maple.ai");
+        assert_eq!(endpoint(MapleInstanceId::I02).host, "i02.tfinf.maple.ai");
     }
 
     #[test]
-    fn retired_release_is_not_approved() {
-        let policy = direct_policy().unwrap();
-        let serialized = format!("{policy:?}");
-        for retired_pin in [
-            "v0.1.0",
-            "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00",
-            "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
-            "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
-        ] {
-            assert!(!serialized.contains(retired_pin));
+    fn retired_release_is_not_approved_on_either_guest() {
+        for instance in MapleInstanceId::ALL {
+            let policy = direct_policy(instance).unwrap();
+            let serialized = format!("{policy:?}");
+            for retired_pin in [
+                "v0.1.0",
+                "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00",
+                "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
+                "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
+            ] {
+                assert!(!serialized.contains(retired_pin));
+            }
         }
     }
 }

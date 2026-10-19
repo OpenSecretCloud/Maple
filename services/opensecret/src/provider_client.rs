@@ -1,10 +1,10 @@
-use crate::provider_registry::ProviderId;
+use crate::provider_registry::{MapleInstanceId, ProviderId};
 use crate::proxy_config::ProxyConfig;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use reqwest::{Method, Request as ReqwestRequest};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -287,6 +287,7 @@ struct SecureClientSlot {
 enum AttestationTarget {
     SharedRouter,
     MapleDirect {
+        instance: MapleInstanceId,
         host: &'static str,
         policy: tinfoil::DirectPolicy,
     },
@@ -303,7 +304,7 @@ impl AttestationTarget {
     fn label(&self) -> &'static str {
         match self {
             Self::SharedRouter => "tinfoil",
-            Self::MapleDirect { .. } => "maple",
+            Self::MapleDirect { instance, .. } => ProviderId::Maple(*instance).as_str(),
         }
     }
 
@@ -317,7 +318,7 @@ impl AttestationTarget {
     async fn create_client(&self, api_key: String) -> Result<tinfoil::Client, tinfoil::Error> {
         match self {
             Self::SharedRouter => tinfoil::Client::new_default_with_api_key(api_key).await,
-            Self::MapleDirect { host, policy } => {
+            Self::MapleDirect { host, policy, .. } => {
                 tinfoil::Client::new_direct(*host, api_key, policy.clone()).await
             }
         }
@@ -713,26 +714,49 @@ impl TinfoilTransport {
 /// but remains ineligible until that recovery succeeds.
 #[derive(Clone)]
 pub(crate) struct MapleReadiness {
-    transport: Option<TinfoilTransport>,
+    transports: BTreeMap<MapleInstanceId, TinfoilTransport>,
 }
 
 impl MapleReadiness {
-    pub(crate) fn is_ready(&self) -> bool {
-        let Some(transport) = &self.transport else {
+    pub(crate) fn is_ready(&self, instance: MapleInstanceId) -> bool {
+        let Some(transport) = self.transports.get(&instance) else {
             return false;
         };
         transport.start_background_initialization();
         transport.snapshot().is_ok()
     }
 
+    pub(crate) fn any_ready(&self) -> bool {
+        // Check every configured guest so one ready replica does not suppress
+        // background recovery of the other.
+        let mut ready = false;
+        for instance in self.transports.keys() {
+            ready |= self.is_ready(*instance);
+        }
+        ready
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(ready: bool) -> Self {
+        Self::for_test_instances(if ready { &MapleInstanceId::ALL } else { &[] })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_instances(ready: &[MapleInstanceId]) -> Self {
         Self {
-            transport: ready.then(|| TinfoilTransport::Plain {
-                client: test_http_client().expect("test client"),
-                base_url: "http://127.0.0.1:9".to_owned(),
-                api_key: String::new(),
-            }),
+            transports: ready
+                .iter()
+                .map(|instance| {
+                    (
+                        *instance,
+                        TinfoilTransport::Plain {
+                            client: test_http_client().expect("test client"),
+                            base_url: "http://127.0.0.1:9".to_owned(),
+                            api_key: String::new(),
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -741,7 +765,10 @@ impl std::fmt::Debug for MapleReadiness {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MapleReadiness")
-            .field("configured", &self.transport.is_some())
+            .field(
+                "configured_instances",
+                &self.transports.keys().collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -756,7 +783,7 @@ impl std::fmt::Debug for MapleReadiness {
 #[derive(Clone)]
 pub struct ProviderClient {
     tinfoil: TinfoilTransport,
-    maple: Option<TinfoilTransport>,
+    maple: BTreeMap<MapleInstanceId, TinfoilTransport>,
     standard: StandardHttpClient,
 }
 
@@ -773,7 +800,7 @@ impl ProviderClient {
 
         Ok(Self {
             tinfoil: TinfoilTransport::Secure(secure_transport),
-            maple: None,
+            maple: BTreeMap::new(),
             standard: standard_http_client()?,
         })
     }
@@ -785,21 +812,25 @@ impl ProviderClient {
         mut self,
         api_key: Option<String>,
     ) -> Result<Self, ProviderClientError> {
-        self.maple = if let Some(api_key) = api_key.filter(|key| !key.trim().is_empty()) {
-            let policy = crate::maple_inference::direct_policy()
-                .map_err(|_| ProviderClientError::MaplePolicy)?;
-            let transport = Arc::new(SecureTinfoilTransport::new(
-                api_key,
-                AttestationTarget::MapleDirect {
-                    host: crate::maple_inference::HOST,
-                    policy,
-                },
-            ));
-            transport.start_background_initialization();
-            Some(TinfoilTransport::Secure(transport))
-        } else {
-            None
-        };
+        self.maple.clear();
+        if let Some(api_key) = api_key.filter(|key| !key.trim().is_empty()) {
+            for instance in MapleInstanceId::ALL {
+                let endpoint = crate::maple_inference::endpoint(instance);
+                let policy = crate::maple_inference::direct_policy(instance)
+                    .map_err(|_| ProviderClientError::MaplePolicy)?;
+                let transport = Arc::new(SecureTinfoilTransport::new(
+                    api_key.clone(),
+                    AttestationTarget::MapleDirect {
+                        instance: endpoint.instance,
+                        host: endpoint.host,
+                        policy,
+                    },
+                ));
+                transport.start_background_initialization();
+                self.maple
+                    .insert(instance, TinfoilTransport::Secure(transport));
+            }
+        }
         Ok(self)
     }
 
@@ -822,7 +853,7 @@ impl ProviderClient {
                 // without creating a real discovery request.
                 initialization_started: AtomicBool::new(true),
             })),
-            maple: None,
+            maple: BTreeMap::new(),
             standard: standard_http_client()?,
         })
     }
@@ -839,14 +870,14 @@ impl ProviderClient {
                 base_url,
                 api_key: "test-tinfoil-key".to_string(),
             },
-            maple: None,
+            maple: BTreeMap::new(),
             standard: standard_http_client()?,
         })
     }
 
     pub(crate) fn maple_readiness(&self) -> MapleReadiness {
         MapleReadiness {
-            transport: self.maple.clone(),
+            transports: self.maple.clone(),
         }
     }
 
@@ -874,15 +905,29 @@ impl ProviderClient {
         provider: &ProxyConfig,
         request: ProviderRequest<'_>,
     ) -> ProviderSendTrace {
-        let transport = if provider.provider_name == ProviderId::Tinfoil.as_str() {
-            &self.tinfoil
-        } else if provider.provider_name == ProviderId::Maple.as_str() {
-            let Some(transport) = &self.maple else {
-                return ProviderSendTrace::terminal(Err(ProviderRequestError::MapleUnavailable));
-            };
-            transport
-        } else {
-            return ProviderSendTrace::terminal(self.send_standard(provider, request).await);
+        let transport = match ProviderId::from_name(&provider.provider_name) {
+            Some(ProviderId::Tinfoil) => &self.tinfoil,
+            Some(ProviderId::Maple(instance)) => {
+                let Some(transport) = self.maple.get(&instance) else {
+                    return ProviderSendTrace::terminal(Err(
+                        ProviderRequestError::MapleUnavailable,
+                    ));
+                };
+                transport
+            }
+            Some(ProviderId::Continuum) => {
+                return ProviderSendTrace::terminal(self.send_standard(provider, request).await);
+            }
+            None if provider.provider_name == "openai" => {
+                return ProviderSendTrace::terminal(self.send_standard(provider, request).await);
+            }
+            None => {
+                // In particular, misspelled/retired Maple identities must never
+                // fall back to unverified HTTP or use the proxy's supplied key.
+                return ProviderSendTrace::terminal(Err(ProviderRequestError::Build(
+                    "unknown provider routing identity".to_owned(),
+                )));
+            }
         };
 
         let response_start_timeout = request.response_start_timeout;
@@ -1039,7 +1084,7 @@ impl ProviderClient {
     ) -> Result<ReqwestRequest, ProviderRequestError> {
         debug_assert!(
             provider.provider_name == ProviderId::Tinfoil.as_str()
-                || provider.provider_name == ProviderId::Maple.as_str()
+                || ProviderId::from_name(&provider.provider_name).is_some_and(ProviderId::is_maple)
         );
         let ProviderRequest {
             method,
@@ -1072,7 +1117,7 @@ impl ProviderClient {
         if let Some(headers) = source_headers {
             *request.headers_mut() = forwarded_headers(headers);
         }
-        if provider.provider_name == ProviderId::Maple.as_str() {
+        if ProviderId::from_name(&provider.provider_name).is_some_and(ProviderId::is_maple) {
             // vLLM accepts this header as an override of body priority. The
             // dedicated node's scheduling policy is owned by the server.
             request.headers_mut().remove("x-vllm-priority");
@@ -1245,19 +1290,28 @@ mod tests {
     }
 
     fn maple_proxy() -> ProxyConfig {
+        maple_proxy_for(MapleInstanceId::I01)
+    }
+
+    fn maple_proxy_for(instance: MapleInstanceId) -> ProxyConfig {
         ProxyConfig {
             // Deliberately misleading: attested transports must select their
             // verified endpoint and own key, never these proxy fields.
             base_url: "http://127.0.0.1:9/should-not-be-used".to_owned(),
             api_key: Some("wrong-shared-key".to_owned()),
-            provider_name: ProviderId::Maple.as_str().to_owned(),
+            provider_name: ProviderId::Maple(instance).as_str().to_owned(),
         }
     }
 
     fn direct_target() -> AttestationTarget {
+        direct_target_for(MapleInstanceId::I01)
+    }
+
+    fn direct_target_for(instance: MapleInstanceId) -> AttestationTarget {
         AttestationTarget::MapleDirect {
-            host: crate::maple_inference::HOST,
-            policy: crate::maple_inference::direct_policy().unwrap(),
+            instance,
+            host: crate::maple_inference::endpoint(instance).host,
+            policy: crate::maple_inference::direct_policy(instance).unwrap(),
         }
     }
 
@@ -1423,7 +1477,7 @@ mod tests {
             .unwrap()
             .with_maple_api_key(None)
             .unwrap();
-        assert!(!client.maple_readiness().is_ready());
+        assert!(!client.maple_readiness().any_ready());
         let result = client
             .send(
                 &maple_proxy(),
@@ -1440,37 +1494,175 @@ mod tests {
             Err(ProviderRequestError::MapleUnavailable)
         ));
         let client = client.with_maple_api_key(Some("   ".to_owned())).unwrap();
-        assert!(!client.maple_readiness().is_ready());
+        assert!(!client.maple_readiness().any_ready());
     }
 
     #[tokio::test]
-    async fn direct_target_factory_keeps_immutable_host_policy_and_separate_key() {
+    async fn direct_target_factories_keep_each_immutable_host_policy_and_shared_maple_key() {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let observed = Arc::clone(&captured);
-        let mut transport =
-            SecureTinfoilTransport::new("dedicated-test-key".to_owned(), direct_target());
-        transport.client_factory = Some(Arc::new(move |target, key| {
-            let AttestationTarget::MapleDirect { host, policy } = target else {
-                panic!("dedicated verification must never discover a shared router");
-            };
-            observed
-                .lock()
-                .unwrap()
-                .push((host, format!("{policy:?}"), key));
-            Box::pin(async {
-                Err(tinfoil::Error::Configuration(
-                    "injected verifier failure".to_owned(),
-                ))
-            })
-        }));
-        // The central factory is reused for initialization and each refresh.
-        assert!(transport.create_client().await.is_err());
-        assert!(transport.create_client().await.is_err());
+        for instance in MapleInstanceId::ALL {
+            let observed = Arc::clone(&captured);
+            let mut transport = SecureTinfoilTransport::new(
+                "dedicated-test-key".to_owned(),
+                direct_target_for(instance),
+            );
+            transport.client_factory = Some(Arc::new(move |target, key| {
+                let AttestationTarget::MapleDirect {
+                    instance,
+                    host,
+                    policy,
+                } = target
+                else {
+                    panic!("dedicated verification must never discover a shared router");
+                };
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((instance, host, format!("{policy:?}"), key));
+                Box::pin(async {
+                    Err(tinfoil::Error::Configuration(
+                        "injected verifier failure".to_owned(),
+                    ))
+                })
+            }));
+            // The same immutable target is used for initialization and refresh.
+            assert!(transport.create_client().await.is_err());
+            assert!(transport.create_client().await.is_err());
+        }
         let captured = captured.lock().unwrap();
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0], captured[1]);
-        assert_eq!(captured[0].0, crate::maple_inference::HOST);
-        assert_eq!(captured[0].2, "dedicated-test-key");
+        assert_eq!(captured.len(), 4);
+        for (index, instance) in MapleInstanceId::ALL.into_iter().enumerate() {
+            let first = &captured[index * 2];
+            assert_eq!(first, &captured[index * 2 + 1]);
+            assert_eq!(first.0, instance);
+            assert_eq!(first.1, crate::maple_inference::endpoint(instance).host);
+            assert_eq!(
+                first.2,
+                format!(
+                    "{:?}",
+                    crate::maple_inference::direct_policy(instance).unwrap()
+                )
+            );
+            assert_eq!(first.3, "dedicated-test-key");
+        }
+        assert_ne!(captured[0].1, captured[2].1);
+    }
+
+    #[tokio::test]
+    async fn maple_readiness_and_recovery_are_independent_between_guests() {
+        let pending = Arc::new(SecureTinfoilTransport {
+            api_key: "dedicated-test-key".to_owned(),
+            target: direct_target_for(MapleInstanceId::I01),
+            client_factory: None,
+            client: RwLock::new(SecureClientSlot {
+                client: None,
+                refresh_attempt: 7,
+            }),
+            refresh_gate: Mutex::new(()),
+            initialization_started: AtomicBool::new(true),
+        });
+        let ready_transport = TinfoilTransport::Plain {
+            client: test_http_client().unwrap(),
+            base_url: "http://127.0.0.1:9".to_owned(),
+            api_key: "dedicated-test-key".to_owned(),
+        };
+        let mut client = ProviderClient::for_test("http://127.0.0.1:9".to_owned()).unwrap();
+        client.maple = BTreeMap::from([
+            (
+                MapleInstanceId::I01,
+                TinfoilTransport::Secure(Arc::clone(&pending)),
+            ),
+            (MapleInstanceId::I02, ready_transport),
+        ]);
+        let readiness = client.maple_readiness();
+        assert!(!readiness.is_ready(MapleInstanceId::I01));
+        assert!(readiness.is_ready(MapleInstanceId::I02));
+        assert!(readiness.any_ready());
+        assert!(!readiness.clone().is_ready(MapleInstanceId::I01));
+        let recovery_gate = pending.refresh_gate.lock().await;
+        assert!(
+            readiness.is_ready(MapleInstanceId::I02),
+            "i01 recovery cannot lock out i02"
+        );
+        let result = client
+            .send(
+                &maple_proxy_for(MapleInstanceId::I01),
+                ProviderRequest::new(
+                    Method::POST,
+                    "/v1/chat/completions",
+                    Duration::from_millis(50),
+                ),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ProviderRequestError::MapleUnavailable)
+        ));
+        assert!(readiness.is_ready(MapleInstanceId::I02));
+        drop(recovery_gate);
+    }
+
+    #[tokio::test]
+    async fn unknown_or_unconfigured_maple_route_never_uses_other_transports() {
+        let (capture_tx, mut capture_rx) = mpsc::channel::<()>(1);
+        let app = Router::new().fallback(any(move || {
+            let capture_tx = capture_tx.clone();
+            async move {
+                capture_tx.send(()).await.unwrap();
+                StatusCode::OK
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for ready in MapleInstanceId::ALL {
+            let mut client = ProviderClient::for_test(format!("http://{address}")).unwrap();
+            client.maple.insert(
+                ready,
+                TinfoilTransport::Plain {
+                    client: test_http_client().unwrap(),
+                    base_url: format!("http://{address}"),
+                    api_key: "dedicated-test-key".to_owned(),
+                },
+            );
+            let absent = if ready == MapleInstanceId::I01 {
+                MapleInstanceId::I02
+            } else {
+                MapleInstanceId::I01
+            };
+            let mut provider = maple_proxy_for(absent);
+            provider.base_url = format!("http://{address}");
+            let request = || {
+                ProviderRequest::new(
+                    Method::POST,
+                    "/v1/chat/completions",
+                    Duration::from_millis(50),
+                )
+            };
+            assert!(matches!(
+                client.send(&provider, request()).await,
+                Err(ProviderRequestError::MapleUnavailable)
+            ));
+            for invalid in [
+                "maple",
+                "maple-i03",
+                "maple-i01.attacker",
+                "MAPLE-I01",
+                "unknown",
+            ] {
+                provider.provider_name = invalid.to_owned();
+                assert!(matches!(
+                    client.send(&provider, request()).await,
+                    Err(ProviderRequestError::Build(_))
+                ));
+            }
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), capture_rx.recv())
+                .await
+                .is_err()
+        );
+        server.abort();
     }
 
     #[tokio::test]
@@ -1486,10 +1678,13 @@ mod tests {
         }));
         let transport = Arc::new(transport);
         let readiness = MapleReadiness {
-            transport: Some(TinfoilTransport::Secure(Arc::clone(&transport))),
+            transports: BTreeMap::from([(
+                MapleInstanceId::I01,
+                TinfoilTransport::Secure(Arc::clone(&transport)),
+            )]),
         };
         for _ in 0..20 {
-            assert!(!readiness.clone().is_ready());
+            assert!(!readiness.clone().is_ready(MapleInstanceId::I01));
         }
         tokio::time::timeout(Duration::from_secs(1), async {
             while calls.load(Ordering::SeqCst) == 0 {
@@ -1500,7 +1695,7 @@ mod tests {
         .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
-            !readiness.is_ready(),
+            !readiness.is_ready(MapleInstanceId::I01),
             "pending attestation must not make a route eligible"
         );
         assert!(matches!(
@@ -1510,68 +1705,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maple_dispatch_preserves_own_key_cache_salt_body_and_stream_bytes() {
-        let (capture_tx, mut capture_rx) = mpsc::channel(1);
+    async fn maple_dispatch_keeps_guest_selection_own_key_cache_salt_body_and_stream_bytes() {
         let expected_stream = "data: {\"choices\":[]}\n\ndata: [DONE]\n\n";
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            any(move |headers: HeaderMap, body: Bytes| {
-                let capture_tx = capture_tx.clone();
-                async move {
-                    capture_tx.send((headers, body)).await.unwrap();
-                    (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "text/event-stream")],
-                        expected_stream,
-                    )
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut client = ProviderClient::for_test("http://127.0.0.1:9".to_owned()).unwrap();
-        client.maple = Some(TinfoilTransport::Plain {
-            client: test_http_client().unwrap(),
-            base_url: format!("http://{address}"),
-            api_key: "dedicated-test-key".to_owned(),
-        });
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer caller-secret"),
-        );
-        headers.insert(header::HOST, HeaderValue::from_static("wrong-host.invalid"));
-        headers.insert(
-            header::CONNECTION,
-            HeaderValue::from_static("x-private-hop"),
-        );
-        headers.insert("x-private-hop", HeaderValue::from_static("must-be-removed"));
-        let body = Bytes::from_static(br#"{"model":"deepseek-v4-1-flash","cache_salt":"backend-owned-synthetic-user","stream":true}"#);
-        let response = client
-            .send(
-                &maple_proxy(),
-                ProviderRequest::new(Method::POST, "/v1/chat/completions", Duration::from_secs(2))
+        let mut servers = Vec::new();
+        let mut captures = BTreeMap::new();
+        for instance in MapleInstanceId::ALL {
+            let (capture_tx, capture_rx) = mpsc::channel(1);
+            let app = Router::new().route(
+                "/v1/chat/completions",
+                any(move |headers: HeaderMap, body: Bytes| {
+                    let capture_tx = capture_tx.clone();
+                    async move {
+                        capture_tx.send((headers, body)).await.unwrap();
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "text/event-stream")],
+                            expected_stream,
+                        )
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            servers.push(tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap()
+            }));
+            client.maple.insert(
+                instance,
+                TinfoilTransport::Plain {
+                    client: test_http_client().unwrap(),
+                    base_url: format!("http://{address}"),
+                    api_key: "dedicated-test-key".to_owned(),
+                },
+            );
+            captures.insert(instance, (address, capture_rx));
+        }
+        for instance in [MapleInstanceId::I02, MapleInstanceId::I01] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer caller-secret"),
+            );
+            headers.insert(header::HOST, HeaderValue::from_static("wrong-host.invalid"));
+            headers.insert(
+                header::CONNECTION,
+                HeaderValue::from_static("x-private-hop"),
+            );
+            headers.insert("x-private-hop", HeaderValue::from_static("must-be-removed"));
+            headers.insert("x-vllm-priority", HeaderValue::from_static("-100"));
+            let body = Bytes::from_static(br#"{"model":"deepseek-v4-1-flash-1017","cache_salt":"backend-owned-synthetic-user","stream":true}"#);
+            let response = client
+                .send(
+                    &maple_proxy_for(instance),
+                    ProviderRequest::new(
+                        Method::POST,
+                        "/v1/chat/completions",
+                        Duration::from_secs(2),
+                    )
                     .source_headers(&headers)
                     .content_type("application/json")
                     .body(body.clone()),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(&response, ProviderResponse::Tinfoil(_)));
-        assert_eq!(response.content_type(), Some("text/event-stream"));
-        let (headers, captured_body) = capture_rx.recv().await.unwrap();
-        assert_eq!(headers[header::AUTHORIZATION], "Bearer dedicated-test-key");
-        assert_eq!(headers[header::HOST], address.to_string());
-        assert!(!headers.contains_key("x-private-hop"));
-        assert_eq!(captured_body, body);
-        let mut stream = response.bytes_stream();
-        let mut received = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            received.extend_from_slice(&chunk.unwrap());
+                )
+                .await
+                .unwrap();
+            assert!(matches!(&response, ProviderResponse::Tinfoil(_)));
+            assert_eq!(response.content_type(), Some("text/event-stream"));
+            let (address, capture_rx) = captures.get_mut(&instance).unwrap();
+            let (headers, captured_body) =
+                tokio::time::timeout(Duration::from_secs(1), capture_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(headers[header::AUTHORIZATION], "Bearer dedicated-test-key");
+            assert_eq!(headers[header::HOST], address.to_string());
+            assert!(!headers.contains_key("x-private-hop"));
+            assert!(!headers.contains_key("x-vllm-priority"));
+            assert_eq!(captured_body, body);
+            let mut stream = response.bytes_stream();
+            let mut received = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                received.extend_from_slice(&chunk.unwrap());
+            }
+            assert_eq!(received, expected_stream.as_bytes());
         }
-        assert_eq!(received, expected_stream.as_bytes());
-        server.abort();
+        for (_, capture_rx) in captures.values_mut() {
+            assert!(
+                capture_rx.try_recv().is_err(),
+                "no duplicated or cross-guest dispatch"
+            );
+        }
+        for server in servers {
+            server.abort();
+        }
     }
 
     fn uninitialized_secure_transport() -> Arc<SecureTinfoilTransport> {
@@ -1790,7 +2016,11 @@ mod tests {
         headers.append("x-vllm-priority", HeaderValue::from_static("-200"));
         headers.insert("x-request-id", HeaderValue::from_static("request-123"));
 
-        for (provider, expect_priority) in [(maple_proxy(), false), (tinfoil_proxy(), true)] {
+        for (provider, expect_priority) in [
+            (maple_proxy_for(MapleInstanceId::I01), false),
+            (maple_proxy_for(MapleInstanceId::I02), false),
+            (tinfoil_proxy(), true),
+        ] {
             let request = client
                 .build_tinfoil_request_for_attempt(
                     &provider,

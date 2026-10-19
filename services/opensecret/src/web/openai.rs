@@ -2808,9 +2808,7 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         Some(AutoModelReason::RetainedHealthyChoice | AutoModelReason::HealthFallback)
     ) && !matches!(
         attempt.route.selection_source,
-        RouteSelectionSource::Sticky
-            | RouteSelectionSource::Fallback
-            | RouteSelectionSource::Preferred
+        RouteSelectionSource::Sticky | RouteSelectionSource::Fallback
     ) {
         return;
     }
@@ -2927,7 +2925,7 @@ async fn get_chat_completion_response_with_options(
     );
     apply_provider_managed_request_fields(
         &mut modified_body,
-        &selected_route.proxy.provider_name,
+        selected_route.provider.family_name(),
         user.uuid,
         cache_policy,
     );
@@ -2953,7 +2951,7 @@ async fn get_chat_completion_response_with_options(
         ensure_stream_usage(&mut request_body);
 
         let mut request_body_value = Value::Object(request_body);
-        if selected_route.provider == ProviderId::Maple {
+        if selected_route.provider.is_maple() {
             crate::maple_inference::sanitize_completion_request(&mut request_body_value);
         }
         let attempt = execution.begin_attempt(route_identity.clone());
@@ -3035,7 +3033,7 @@ async fn get_chat_completion_response_with_options(
                 terminal_guard.set_stage(AttemptStage::ResponseBody);
                 (
                     response,
-                    selected_route.provider.as_str().to_string(),
+                    selected_route.provider.family_name().to_string(),
                     attempt,
                     terminal_guard,
                 )
@@ -3680,7 +3678,7 @@ async fn proxy_models(
     };
     let proxy_config = state.proxy_router.get_completion_proxy();
     let models_response = if proxy_config.provider_name == "tinfoil" {
-        openai_models_response_with_maple(enabled, state.proxy_router.get_maple_proxy().is_some())
+        openai_models_response_with_maple(enabled, state.proxy_router.maple_is_available())
     } else {
         fetch_provider_models(&state.provider_client, &proxy_config).await?
     };
@@ -3748,7 +3746,7 @@ async fn proxy_model_catalog(
     let catalog_response = model_catalog_response_with_maple(
         model_plan,
         routing.maple_inference_enabled(),
-        state.proxy_router.get_maple_proxy().is_some(),
+        state.proxy_router.maple_is_available(),
     );
     encrypt_response(&state, &session_id, &catalog_response).await
 }

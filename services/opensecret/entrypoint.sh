@@ -488,8 +488,12 @@ echo "127.0.0.36 router-2.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.37 router-3.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.38 router-4.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.39 router-5.tinfoil.sh" >> /etc/hosts
-# Dedicated node: the same fixed HTTPS destination serves V3 evidence and inference.
+# BEGIN MAPLE_INFERENCE_HOSTS
+# Each dedicated instance uses the same fixed HTTPS destination for V3 evidence
+# and inference. Keep these addresses paired with their own VSOCK forwarders.
 echo "127.0.0.42 i01.tfinf.maple.ai" >> /etc/hosts
+echo "127.0.0.43 i02.tfinf.maple.ai" >> /etc/hosts
+# END MAPLE_INFERENCE_HOSTS
 # Legacy Tinfoil router domains (retained for discovery and fallback)
 echo "127.0.0.26 router.inf4.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.27 router.inf5.tinfoil.sh" >> /etc/hosts
@@ -618,8 +622,13 @@ run_forever tf_tinfoil_router_4 python3 /app/traffic_forwarder.py 127.0.0.38 443
 log "Starting Tinfoil Router 5 traffic forwarder"
 run_forever tf_tinfoil_router_5 python3 /app/traffic_forwarder.py 127.0.0.39 443 3 8047 &
 
-log "Starting Maple dedicated inference traffic forwarder"
+# BEGIN MAPLE_INFERENCE_FORWARDERS
+log "Starting Maple dedicated inference i01 traffic forwarder"
 run_forever tf_maple_inference_i01 python3 /app/traffic_forwarder.py 127.0.0.42 443 3 8050 &
+
+log "Starting Maple dedicated inference i02 traffic forwarder"
+run_forever tf_maple_inference_i02 python3 /app/traffic_forwarder.py 127.0.0.43 443 3 8051 &
+# END MAPLE_INFERENCE_FORWARDERS
 
 # Legacy Tinfoil router endpoints (retained for discovery and fallback)
 log "Starting Tinfoil Router Inf4 traffic forwarder"

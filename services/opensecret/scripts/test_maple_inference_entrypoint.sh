@@ -1,13 +1,27 @@
 #!/usr/bin/env bash
-# Exercise the optional credential boundary without AWS, VSOCK or real secrets.
+# Exercise optional credentials and instance egress mappings without AWS, VSOCK
+# or real secrets. Never run the complete enclave entrypoint on the host.
 set -euo pipefail
 
 component_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 entrypoint_path="${ENTRYPOINT_UNDER_TEST:-$component_root/entrypoint.sh}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
-sed -n '/^# BEGIN OPTIONAL_MAPLE_INFERENCE_CREDENTIAL$/,/^# END OPTIONAL_MAPLE_INFERENCE_CREDENTIAL$/p' \
-    "$entrypoint_path" > "$work_dir/credential.sh"
+extract_block() {
+    local name="$1" destination="$2"
+    if [ "$(grep -Fxc "# BEGIN $name" "$entrypoint_path")" != 1 ] || \
+        [ "$(grep -Fxc "# END $name" "$entrypoint_path")" != 1 ]; then
+        echo "Maple inference block markers are missing or duplicated: $name" >&2
+        exit 1
+    fi
+    sed -n "/^# BEGIN $name$/,/^# END $name$/p" "$entrypoint_path" > "$destination"
+    if [ "$(head -n 1 "$destination")" != "# BEGIN $name" ] || \
+        [ "$(tail -n 1 "$destination")" != "# END $name" ]; then
+        echo "Maple inference block markers are out of order: $name" >&2
+        exit 1
+    fi
+}
+extract_block OPTIONAL_MAPLE_INFERENCE_CREDENTIAL "$work_dir/credential.sh"
 # shellcheck source=/dev/null
 source "$work_dir/credential.sh"
 
@@ -85,3 +99,34 @@ if grep -Eq 'synthetic-(shared|dedicated|host-inherited)-key|synthetic-ciphertex
     exit 1
 fi
 echo "optional Maple inference credential tests passed"
+
+extract_block MAPLE_INFERENCE_HOSTS "$work_dir/hosts-block.sh"
+extract_block MAPLE_INFERENCE_FORWARDERS "$work_dir/forwarders-block.sh"
+
+# Inspect host writes without executing redirections, so even a malformed
+# fixture cannot touch the system host file or another real output path.
+[ "$(sed '/^#/d; /^[[:space:]]*$/d' "$work_dir/hosts-block.sh")" = \
+    $'echo "127.0.0.42 i01.tfinf.maple.ai" >> /etc/hosts\necho "127.0.0.43 i02.tfinf.maple.ai" >> /etc/hosts' ]
+
+# Stub the supervisor, so the extracted launch block only records arguments.
+# Separate files preserve deterministic assertions even though launches use &.
+run_forever() {
+    local name="$1"
+    shift
+    case "$name" in
+        tf_maple_inference_i01|tf_maple_inference_i02) ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n' "$*" >> "$work_dir/$name"
+}
+# shellcheck source=/dev/null
+source "$work_dir/forwarders-block.sh"
+wait
+[ "$(cat "$work_dir/tf_maple_inference_i01")" = 'python3 /app/traffic_forwarder.py 127.0.0.42 443 3 8050' ]
+[ "$(cat "$work_dir/tf_maple_inference_i02")" = 'python3 /app/traffic_forwarder.py 127.0.0.43 443 3 8051' ]
+
+# The complete source must not add aliases or duplicate launch entries outside
+# the isolated blocks that would override or collide with the tested mappings.
+[ "$(grep -Ec '^[[:space:]]*echo .*i0[12]\.tfinf\.maple\.ai' "$entrypoint_path")" = 2 ]
+[ "$(grep -Ec '^[[:space:]]*run_forever tf_maple_inference_i0[12] ' "$entrypoint_path")" = 2 ]
+echo "Maple inference i01/i02 egress mapping tests passed"

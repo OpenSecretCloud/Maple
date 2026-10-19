@@ -1,6 +1,7 @@
 //! Offline tests for the authenticated Maple rollout and cache boundaries.
 use super::*;
 use crate::os_flags::{OsFlagsClient, MAPLE_INFERENCE_FEATURE_FLAG_KEY};
+use crate::provider_registry::MapleInstanceId;
 use axum::{extract::OriginalUri, Json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -266,7 +267,14 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
         assert_eq!(caller.model_plan(), ModelPlan::Paid);
 
         for (provider, public_model) in [
-            (ProviderId::Maple, "deepseek-v4-1-flash-1017"),
+            (
+                ProviderId::Maple(MapleInstanceId::I01),
+                "deepseek-v4-1-flash-1017",
+            ),
+            (
+                ProviderId::Maple(MapleInstanceId::I02),
+                "deepseek-v4-1-flash-1017",
+            ),
             (ProviderId::Tinfoil, "deepseek-v4-1-flash"),
         ] {
             let pinned = PinnedCompletionRequest::new(
@@ -290,7 +298,7 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
                     provider_model_id: "deepseek-v4-1-flash".to_string(),
                     response_model_id: public_model.to_string(),
                     bucket: None,
-                    selection_source: RouteSelectionSource::Preferred,
+                    selection_source: RouteSelectionSource::StaticSplit,
                 },
             );
             let context = CompletionExecutionContext::for_pinned(
@@ -302,6 +310,80 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
             assert_eq!(context.routing.maple_inference_enabled(), enabled);
         }
     }
+}
+
+#[test]
+fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
+    let user = Uuid::from_u128(17);
+    let model = crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
+    let cache = CompletionCachePolicy::BoundV2(derive_provider_cache_namespaces(
+        &CacheNamespaceRoot::from_bytes([0x42; 32]),
+        user,
+    ));
+    let intent = InferenceIntent::new(
+        user,
+        model,
+        model,
+        ModelPlan::Paid,
+        InferenceSurface::ChatCompletions,
+        WorkloadClass::Interactive,
+    )
+    .with_maple_inference(true);
+    let mut prior_salt = None;
+    let mut route_keys = HashSet::new();
+
+    for instance in MapleInstanceId::ALL {
+        let proxies = ProxyRouter::new(
+            "http://continuum.invalid".to_owned(),
+            None,
+            "https://tinfoil.invalid".to_owned(),
+        )
+        .with_maple_api_key(Some("synthetic-maple-key".to_owned()))
+        .with_maple_readiness(crate::provider_client::MapleReadiness::for_test_instances(
+            &[instance],
+        ));
+        let route = ProviderRouter::default()
+            .select_active_completion_route(&proxies, &intent)
+            .unwrap();
+        assert_eq!(route.provider, ProviderId::Maple(instance));
+        assert_eq!(route.proxy.provider_name, route.provider.as_str());
+        assert!(route_keys.insert(route.identity().route_key()));
+
+        let mut body = serde_json::Map::new();
+        body.insert("cache_salt".to_owned(), json!("caller-controlled"));
+        apply_provider_managed_request_fields(
+            &mut body,
+            route.provider.family_name(),
+            user,
+            &cache,
+        );
+        let salt = body.get("cache_salt").cloned().unwrap();
+        assert_ne!(salt, json!("caller-controlled"));
+        if let Some(prior) = prior_salt.replace(salt.clone()) {
+            assert_eq!(
+                salt, prior,
+                "moving replicas preserves the user's namespace"
+            );
+        }
+
+        let event = build_usage_event(
+            user,
+            CompletionUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                cached_prompt_tokens: Some(42),
+            },
+            BigDecimal::from(0),
+            true,
+            route.provider.family_name().to_owned(),
+            route.public_model_id,
+        );
+        assert_eq!(event.provider_name, "maple");
+        assert_eq!(event.model_name, model);
+        assert_eq!(event.cached_input_tokens, Some(42));
+        assert!(event.is_api_request);
+    }
+    assert_eq!(route_keys.len(), 2);
 }
 
 #[test]
@@ -339,7 +421,7 @@ fn direct_maple_cache_salt_is_private_and_provider_fields_are_rebuilt() {
             .clone();
             apply_provider_managed_request_fields(
                 &mut body,
-                ProviderId::Maple.as_str(),
+                ProviderId::Maple(MapleInstanceId::I01).family_name(),
                 user,
                 &policy,
             );
@@ -359,7 +441,7 @@ fn direct_maple_cache_salt_is_private_and_provider_fields_are_rebuilt() {
             };
             apply_provider_managed_request_fields(
                 &mut other_body,
-                ProviderId::Maple.as_str(),
+                ProviderId::Maple(MapleInstanceId::I01).family_name(),
                 other_user,
                 &other_policy,
             );

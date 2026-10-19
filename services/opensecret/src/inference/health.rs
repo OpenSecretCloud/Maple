@@ -1044,7 +1044,7 @@ mod tests {
         AttemptFailure, AttemptStage, CompletionEvidence, InferenceExecution, ReplaySafety,
         RouteIdentity,
     };
-    use crate::provider_registry::{ProviderId, RouteSelectionSource};
+    use crate::provider_registry::{MapleInstanceId, ProviderId, RouteSelectionSource};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -2448,5 +2448,80 @@ mod tests {
             }
         }
         assert_eq!(state.cardinality(), cardinality);
+    }
+
+    #[test]
+    fn maple_replica_probe_leases_and_recovery_do_not_cross_instance_boundaries() {
+        let state = ShadowHealthState::new(&PROVIDER_REGISTRY);
+        let start = Instant::now();
+        let routes = MapleInstanceId::ALL.map(|instance| {
+            route(
+                ProviderId::Maple(instance),
+                "deepseek-v4-1-flash-1017",
+                "deepseek-v4-1-flash",
+            )
+        });
+        assert_ne!(routes[0].route_key(), routes[1].route_key());
+        for route in &routes {
+            state.observe_terminal_at(
+                &failed(
+                    route.clone(),
+                    AttemptFailureKind::CapacityRejected,
+                    Some(429),
+                    Some(Duration::from_secs(30)),
+                ),
+                ShadowObservationMode::Update,
+                start,
+            );
+        }
+        let boundary = start + Duration::from_secs(30);
+        let leases = routes
+            .iter()
+            .map(
+                |route| match state.try_claim_probe_at(&route.route_key(), boundary) {
+                    ProbeClaimResult::Ready(Some(lease)) => lease,
+                    other => panic!("each instance must own its independent probe: {other:?}"),
+                },
+            )
+            .collect::<Vec<_>>();
+        for route in &routes {
+            assert!(matches!(
+                state.try_claim_probe_at(&route.route_key(), boundary),
+                ProbeClaimResult::Rejected {
+                    reason: ProbeRejectionReason::ProbeInFlight,
+                    ..
+                }
+            ));
+        }
+        let mut leases = leases.into_iter();
+        let first = leases.next().unwrap();
+        state.observe_terminal_with_probe_at(
+            &completed(routes[0].clone()),
+            ShadowObservationMode::Update,
+            Some(first),
+            boundary,
+        );
+        assert_eq!(
+            state
+                .snapshot_at(&routes[0].route_key(), boundary)
+                .unwrap()
+                .effective,
+            ShadowDisposition::Healthy
+        );
+        assert!(matches!(
+            state
+                .snapshot_at(&routes[1].route_key(), boundary)
+                .unwrap()
+                .effective,
+            ShadowDisposition::ProbeInFlight { .. }
+        ));
+        drop(leases.next().unwrap());
+        assert_eq!(
+            state
+                .snapshot_at(&routes[1].route_key(), boundary)
+                .unwrap()
+                .effective,
+            ShadowDisposition::WouldProbe
+        );
     }
 }
