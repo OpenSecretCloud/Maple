@@ -4559,8 +4559,8 @@ dependencies = [
 
 [[package]]
 name = "tinfoil"
-version = "0.2.0"
-source = "git+https://github.com/tinfoilsh/tinfoil-rs?tag=v0.2.0#91e8aef8fbc34129b68de8667ece5bd9ef7b7110"
+version = "0.2.1-maple.1"
+source = "git+https://github.com/MaplePrivacyLabs/tinfoil-rs.git?rev=f0fef79eec6a5a2c8592cf8aff4b90ab556acfbc#f0fef79eec6a5a2c8592cf8aff4b90ab556acfbc"
 dependencies = [
  "async-openai",
  "async-stream",
@@ -4576,6 +4576,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures-util",
+ "getrandom 0.3.4",
  "hex",
  "http 1.5.0",
  "libc",

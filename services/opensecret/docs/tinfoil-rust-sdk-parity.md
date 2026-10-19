@@ -4,6 +4,12 @@ OpenSecret sends Tinfoil requests through the in-process, attested `tinfoil-rs`
 client. The public OpenSecret API remains an encrypted client-to-OpenSecret
 protocol; this document defines only the provider boundary.
 
+The shared `tinfoil` provider retains its discovery/legacy path through the
+pinned SDK fork. The internal `maple` provider uses a separate explicit-host
+V3 path, credential and approved release policy; see
+[dedicated inference](dedicated-inference.md) for rollout, freshness and
+validation boundaries.
+
 ## Compatibility boundary
 
 Provider parity concerns decrypted HTTP semantics rather than randomized TLS

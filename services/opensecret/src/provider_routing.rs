@@ -8,7 +8,8 @@ use crate::inference::{
     AttemptTerminal, InferenceIntent, InferenceSurface, RouteIdentity, RouteKey,
 };
 use crate::inference_planning::{
-    plan_completion_route, ConfiguredProviders, RoutePlan, RoutePlanningError, RoutePlanningInput,
+    plan_completion_route, provider_allowed, ConfiguredProviders, RoutePlan, RoutePlanningError,
+    RoutePlanningInput,
 };
 use crate::provider_registry::{
     CompletionModelSpec, ProviderId, ProviderRegistry, RouteSelectionSource, PROVIDER_REGISTRY,
@@ -166,7 +167,9 @@ impl ProviderRouter {
         let configured_providers = self.registry.providers().iter().fold(
             ConfiguredProviders::none(),
             |configured, provider| {
-                if proxy_for_provider(proxy_router, provider.id).is_some() {
+                if provider_allowed(provider.id, intent.maple_inference_enabled)
+                    && proxy_for_provider(proxy_router, provider.id).is_some()
+                {
                     configured.with_provider(provider.id)
                 } else {
                     configured
@@ -231,10 +234,22 @@ impl ProviderRouter {
     /// Evaluates every candidate model's configured routes under one health
     /// snapshot, applying the shared route and capacity gates. This is the planning
     /// input for Auto model selection; it claims nothing and permits nothing.
+    #[cfg(test)]
     pub(crate) fn model_availability(
         &self,
         proxy_router: &ProxyRouter,
         public_model_ids: &[&str],
+    ) -> HashMap<String, ModelAvailability> {
+        self.model_availability_with_maple(proxy_router, public_model_ids, false)
+    }
+
+    /// Includes dedicated Maple capacity only for the same authenticated rollout
+    /// decision captured in the request's immutable inference intent.
+    pub(crate) fn model_availability_with_maple(
+        &self,
+        proxy_router: &ProxyRouter,
+        public_model_ids: &[&str],
+        maple_inference_enabled: bool,
     ) -> HashMap<String, ModelAvailability> {
         let no_exclusions = HashSet::new();
         let candidates = public_model_ids
@@ -243,7 +258,14 @@ impl ProviderRouter {
                 let configured = self
                     .registry
                     .completion_model(public_model_id)
-                    .map(|model| self.configured_route_keys(proxy_router, model, &no_exclusions))
+                    .map(|model| {
+                        self.configured_route_keys(
+                            proxy_router,
+                            model,
+                            &no_exclusions,
+                            maple_inference_enabled,
+                        )
+                    })
                     .filter(|routes| !routes.is_empty());
                 (public_model_id.to_string(), configured)
             })
@@ -285,6 +307,7 @@ impl ProviderRouter {
         proxy_router: &ProxyRouter,
         model: &CompletionModelSpec,
         excluded_routes: &HashSet<RouteKey>,
+        maple_inference_enabled: bool,
     ) -> Vec<(ProviderId, RouteKey)> {
         model
             .routes
@@ -295,6 +318,7 @@ impl ProviderRouter {
                     || route.weight == 0
                     || !provider.enabled
                     || provider.weight == 0
+                    || !provider_allowed(route.provider, maple_inference_enabled)
                     || proxy_for_provider(proxy_router, route.provider).is_none()
                 {
                     return None;
@@ -324,7 +348,12 @@ impl ProviderRouter {
                 ProviderRoutingError::UnsupportedModel(intent.public_model_id.clone())
             })?;
 
-        let configured_routes = self.configured_route_keys(proxy_router, model, excluded_routes);
+        let configured_routes = self.configured_route_keys(
+            proxy_router,
+            model,
+            excluded_routes,
+            intent.maple_inference_enabled,
+        );
         if configured_routes.is_empty() {
             return Err(ProviderRoutingError::NoEligibleRoute(
                 intent.public_model_id.clone(),
@@ -359,8 +388,14 @@ impl ProviderRouter {
         .map_err(provider_routing_error_from_plan)?;
 
         let selected = plan.selected;
-        let proxy = proxy_for_provider(proxy_router, selected.provider)
-            .ok_or_else(|| ProviderRoutingError::NoEligibleRoute(intent.public_model_id.clone()))?;
+        let Some(proxy) = proxy_for_provider(proxy_router, selected.provider) else {
+            // Direct attestation can expire after the coherent health snapshot.
+            // No attempt has started, so remove that resource and plan a shared
+            // fallback rather than failing a request that still has a route.
+            let mut excluded = excluded_routes.clone();
+            excluded.insert(selected.route_key());
+            return self.select_health_aware_route(proxy_router, intent, &excluded);
+        };
         Ok(SelectedProviderRoute {
             provider: selected.provider,
             proxy,
@@ -488,6 +523,7 @@ fn proxy_for_provider(proxy_router: &ProxyRouter, provider: ProviderId) -> Optio
             let proxy = proxy_router.get_default_proxy();
             (proxy.provider_name == ProviderId::Continuum.as_str()).then_some(proxy)
         }
+        ProviderId::Maple => proxy_router.get_maple_proxy(),
     }
 }
 
@@ -512,6 +548,12 @@ mod tests {
             None,
             "http://tinfoil.example.com".to_string(),
         )
+    }
+
+    fn proxy_router_with_maple() -> ProxyRouter {
+        proxy_router_with_both_providers()
+            .with_maple_api_key(Some("test-key".to_string()))
+            .with_maple_readiness(crate::provider_client::MapleReadiness::for_test(true))
     }
 
     fn uuid_for_bucket(bucket: u8) -> Uuid {
@@ -1454,6 +1496,7 @@ mod tests {
                     match selected.provider {
                         ProviderId::Continuum => continuum_count += 1,
                         ProviderId::Tinfoil => tinfoil_count += 1,
+                        ProviderId::Maple => panic!("unflagged Flash cannot use Maple"),
                     }
                     assert_eq!(
                         selected.provider,
@@ -1747,7 +1790,11 @@ mod tests {
         );
         assert_eq!(
             healthy[GLM_5_3_MODEL_ID],
-            ModelAvailability::Available(ConfiguredProviders::all())
+            ModelAvailability::Available(
+                ConfiguredProviders::none()
+                    .with_provider(ProviderId::Tinfoil)
+                    .with_provider(ProviderId::Continuum)
+            )
         );
         assert_eq!(healthy["unknown-model"], ModelAvailability::NotConfigured);
 
@@ -2155,5 +2202,206 @@ mod tests {
             .expect("sticky route");
         assert_eq!(sticky.provider, ProviderId::Tinfoil);
         assert_eq!(sticky.selection_source, RouteSelectionSource::Sticky);
+    }
+
+    #[test]
+    fn maple_prefers_own_compute_then_remembers_it_without_changing_public_identity() {
+        let router = ProviderRouter::default();
+        let proxies = proxy_router_with_maple();
+        for surface in [
+            InferenceSurface::Responses,
+            InferenceSurface::ChatCompletions,
+            InferenceSurface::Internal,
+        ] {
+            let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+                .with_maple_inference(true);
+            request.surface = surface;
+            let shared = router
+                .select_active_completion_route(
+                    &proxies,
+                    &request.clone().with_maple_inference(false),
+                )
+                .expect("shared route before rollout");
+            router.remember_route(&request, &shared);
+
+            let selected = router
+                .select_active_completion_route(&proxies, &request)
+                .expect("dedicated route");
+            assert_eq!(selected.provider, ProviderId::Maple);
+            assert_eq!(selected.proxy.provider_name, "maple");
+            assert_eq!(selected.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(selected.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(selected.response_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(selected.selection_source, RouteSelectionSource::Preferred);
+            assert_ne!(
+                selected.identity().route_key(),
+                shared.identity().route_key()
+            );
+
+            router.remember_route(&request, &selected);
+            let sticky = router
+                .select_active_completion_route(&proxies, &request)
+                .expect("sticky dedicated route");
+            assert_eq!(sticky.provider, ProviderId::Maple);
+            assert_eq!(sticky.selection_source, RouteSelectionSource::Sticky);
+
+            let disabled = request.clone().with_maple_inference(false);
+            let shared_again = router
+                .select_active_completion_route(&proxies, &disabled)
+                .expect("flag off ignores remembered Maple");
+            assert_eq!(shared_again.provider, ProviderId::Tinfoil);
+            assert_eq!(
+                shared_again.selection_source,
+                RouteSelectionSource::StaticSplit
+            );
+        }
+    }
+
+    #[test]
+    fn maple_and_shared_capacity_are_independent_and_maple_denial_survives_replanning() {
+        let router = ProviderRouter::default();
+        let proxies = proxy_router_with_maple();
+        let flagged = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+            .with_maple_inference(true);
+        let unflagged = flagged.clone().with_maple_inference(false);
+
+        open_route_with_capacity_failure(
+            &router,
+            ProviderId::Maple,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            429,
+            60,
+        );
+        let shared_fallback = router
+            .select_active_completion_route(&proxies, &flagged)
+            .expect("Maple capacity uses shared fallback");
+        assert_eq!(shared_fallback.provider, ProviderId::Tinfoil);
+        assert_eq!(
+            shared_fallback.selection_source,
+            RouteSelectionSource::Fallback
+        );
+        assert_eq!(
+            router
+                .select_active_completion_route(&proxies, &unflagged)
+                .expect("unflagged shared unchanged")
+                .selection_source,
+            RouteSelectionSource::StaticSplit
+        );
+
+        let other_router = ProviderRouter::default();
+        open_route_with_capacity_failure(
+            &other_router,
+            ProviderId::Tinfoil,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            503,
+            60,
+        );
+        let dedicated = other_router
+            .select_active_completion_route(&proxies, &flagged)
+            .expect("shared capacity does not affect Maple");
+        assert_eq!(dedicated.provider, ProviderId::Maple);
+        other_router.remember_route(&flagged, &dedicated);
+        assert!(matches!(
+            other_router.select_active_completion_route(&proxies, &unflagged),
+            Err(ProviderRoutingError::CapacityUnavailable { .. })
+        ));
+
+        let excluded = HashSet::from([RouteKey {
+            provider: ProviderId::Tinfoil,
+            provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+        }]);
+        assert_eq!(
+            other_router
+                .select_active_completion_route_excluding(&proxies, &unflagged, &excluded)
+                .unwrap_err(),
+            ProviderRoutingError::NoEligibleRoute(DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string())
+        );
+        assert_eq!(
+            other_router
+                .select_active_completion_route_excluding(&proxies, &flagged, &excluded)
+                .expect("authorized Maple replan")
+                .provider,
+            ProviderId::Maple
+        );
+    }
+
+    #[test]
+    fn auto_availability_filters_maple_before_taking_health_snapshots() {
+        let router = ProviderRouter::default();
+        let proxies = proxy_router_with_maple();
+        let models = [DEEPSEEK_V4_1_FLASH_MODEL_ID];
+        let shared_only = ConfiguredProviders::none().with_provider(ProviderId::Tinfoil);
+        assert_eq!(
+            router.model_availability(&proxies, &models)[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Available(shared_only)
+        );
+        assert_eq!(
+            router.model_availability_with_maple(&proxies, &models, true)
+                [DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Available(shared_only.with_provider(ProviderId::Maple))
+        );
+        open_route_with_capacity_failure(
+            &router,
+            ProviderId::Tinfoil,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            429,
+            60,
+        );
+        assert!(matches!(
+            router.model_availability(&proxies, &models)[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Unavailable { .. }
+        ));
+        assert_eq!(
+            router.model_availability_with_maple(&proxies, &models, true)
+                [DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Maple)
+            )
+        );
+        open_route_with_capacity_failure(
+            &router,
+            ProviderId::Maple,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            503,
+            60,
+        );
+        assert!(matches!(
+            router.model_availability_with_maple(&proxies, &models, true)
+                [DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn maple_missing_or_expired_attestation_falls_back_before_any_send() {
+        let router = ProviderRouter::default();
+        let flagged = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+            .with_maple_inference(true);
+        let key_only =
+            proxy_router_with_both_providers().with_maple_api_key(Some("test-key".to_string()));
+        let unready = key_only
+            .clone()
+            .with_maple_readiness(crate::provider_client::MapleReadiness::for_test(false));
+        for proxies in [key_only, unready] {
+            let selected = router
+                .select_active_completion_route(&proxies, &flagged)
+                .expect("attestation unavailable uses shared route");
+            assert_eq!(selected.provider, ProviderId::Tinfoil);
+            assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
+            assert_eq!(
+                router.model_availability_with_maple(
+                    &proxies,
+                    &[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+                    true
+                )[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+                ModelAvailability::Available(
+                    ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+                )
+            );
+        }
     }
 }

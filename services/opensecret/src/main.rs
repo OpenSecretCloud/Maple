@@ -106,6 +106,7 @@ mod jwt;
 mod kagi;
 mod lease_aware_cache;
 mod log_redaction;
+mod maple_inference;
 mod message_signing;
 mod migrations;
 mod model_config;
@@ -601,7 +602,9 @@ async fn add_error_contract_header(request: axum::extract::Request, next: Next) 
 impl From<ProviderRequestError> for ApiError {
     fn from(error: ProviderRequestError) -> Self {
         match error {
-            ProviderRequestError::TinfoilUnavailable => Self::ServiceUnavailable,
+            ProviderRequestError::TinfoilUnavailable | ProviderRequestError::MapleUnavailable => {
+                Self::ServiceUnavailable
+            }
             ProviderRequestError::Timeout(_)
             | ProviderRequestError::Build(_)
             | ProviderRequestError::Connect(_)
@@ -1133,6 +1136,7 @@ pub struct AppStateBuilder {
     openai_api_key: Option<String>,
     openai_api_base: Option<String>,
     tinfoil_api_key: Option<String>,
+    maple_inference_api_key: Option<String>,
     #[cfg(test)]
     tinfoil_api_base: Option<String>,
     jwt_secret: Option<Vec<u8>>,
@@ -1188,6 +1192,11 @@ impl AppStateBuilder {
 
     pub fn tinfoil_api_key(mut self, tinfoil_api_key: String) -> Self {
         self.tinfoil_api_key = Some(tinfoil_api_key);
+        self
+    }
+
+    pub fn maple_inference_api_key(mut self, api_key: Option<String>) -> Self {
+        self.maple_inference_api_key = api_key.filter(|key| !key.trim().is_empty());
         self
     }
 
@@ -1319,6 +1328,11 @@ impl AppStateBuilder {
                     Error::BuilderError(format!("Failed to initialize provider client: {error}"))
                 })?
         };
+        let provider_client = provider_client
+            .with_maple_api_key(self.maple_inference_api_key.clone())
+            .map_err(|error| {
+                Error::BuilderError(format!("Failed to initialize dedicated provider: {error}"))
+            })?;
         let provider_client = Arc::new(provider_client);
 
         let config = Config {
@@ -1403,11 +1417,15 @@ impl AppStateBuilder {
         // Tinfoil routing is identified here, but the in-process SDK resolves
         // and attests its enclave independently in the background. Its control
         // plane therefore cannot gate AppState construction or non-Tinfoil routes.
-        let proxy_router = Arc::new(ProxyRouter::new(
-            openai_api_base.clone(),
-            self.openai_api_key.clone(),
-            provider_client.tinfoil_base_url(),
-        ));
+        let proxy_router = Arc::new(
+            ProxyRouter::new(
+                openai_api_base.clone(),
+                self.openai_api_key.clone(),
+                provider_client.tinfoil_base_url(),
+            )
+            .with_maple_api_key(self.maple_inference_api_key.clone())
+            .with_maple_readiness(provider_client.maple_readiness()),
+        );
         let provider_router = Arc::new(ProviderRouter::default());
         if proxy_router.continuum_proxy().is_none() {
             tracing::warn!(
@@ -4097,6 +4115,7 @@ async fn main() -> Result<(), Error> {
         .openai_api_key(openai_api_key)
         .openai_api_base(openai_api_base)
         .tinfoil_api_key(tinfoil_api_key)
+        .maple_inference_api_key(optional_env("MAPLE_INFERENCE_API_KEY"))
         .jwt_secret(jwt_secret)
         .resend_api_key(resend_api_key)
         .github_client_secret(github_client_secret.clone())

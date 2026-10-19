@@ -31,6 +31,9 @@ pub enum ProviderClientError {
 
     #[error("failed to install the required Ring crypto provider")]
     CryptoProvider,
+
+    #[error("invalid compiled Maple inference attestation policy")]
+    MaplePolicy,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -39,6 +42,9 @@ pub enum ProviderRequestError {
         "Tinfoil is temporarily unavailable while router discovery and attestation retry in the background"
     )]
     TinfoilUnavailable,
+
+    #[error("Maple inference is temporarily unavailable while direct-node attestation retries in the background")]
+    MapleUnavailable,
 
     #[error("provider response start timed out after {0:?}")]
     Timeout(Duration),
@@ -196,6 +202,30 @@ fn map_reqwest_send_error(error: reqwest::Error) -> ProviderRequestError {
     }
 }
 
+// Current verification status controls recovery ownership, never whether an
+// already-executed request is safe to replay. An expiry concurrent with a reset
+// does not prove the upstream failed to accept the POST.
+fn classify_post_execute_failure(
+    is_connect: bool,
+    verified_state_current: bool,
+    message: String,
+) -> (ProviderRequestError, bool) {
+    let error = if is_connect {
+        ProviderRequestError::Connect(message)
+    } else {
+        ProviderRequestError::Send(message)
+    };
+    (error, !verified_state_current)
+}
+
+fn current_slot_client<T>(
+    candidate: Option<&Arc<T>>,
+    is_current: impl FnOnce(&T) -> bool,
+) -> Option<Arc<T>> {
+    let client = candidate?;
+    is_current(client).then(|| Arc::clone(client))
+}
+
 #[derive(Clone)]
 struct SecureClientSnapshot {
     client: Arc<tinfoil::Client>,
@@ -207,8 +237,62 @@ struct SecureClientSlot {
     refresh_attempt: u64,
 }
 
+#[derive(Clone)]
+enum AttestationTarget {
+    SharedRouter,
+    MapleDirect {
+        host: &'static str,
+        policy: tinfoil::DirectPolicy,
+    },
+}
+
+impl AttestationTarget {
+    fn unavailable(&self) -> ProviderRequestError {
+        match self {
+            Self::SharedRouter => ProviderRequestError::TinfoilUnavailable,
+            Self::MapleDirect { .. } => ProviderRequestError::MapleUnavailable,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::SharedRouter => "tinfoil",
+            Self::MapleDirect { .. } => "maple",
+        }
+    }
+
+    fn client_is_current(&self, client: &tinfoil::Client) -> bool {
+        match self {
+            Self::SharedRouter => true,
+            Self::MapleDirect { .. } => client.secure_client().is_verified(),
+        }
+    }
+
+    async fn create_client(&self, api_key: String) -> Result<tinfoil::Client, tinfoil::Error> {
+        match self {
+            Self::SharedRouter => tinfoil::Client::new_default_with_api_key(api_key).await,
+            Self::MapleDirect { host, policy } => {
+                tinfoil::Client::new_direct(*host, api_key, policy.clone()).await
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+type TestClientFactory = Arc<
+    dyn Fn(
+            AttestationTarget,
+            String,
+        ) -> Pin<Box<dyn Future<Output = Result<tinfoil::Client, tinfoil::Error>> + Send>>
+        + Send
+        + Sync,
+>;
+
 struct SecureTinfoilTransport {
     api_key: String,
+    target: AttestationTarget,
+    #[cfg(test)]
+    client_factory: Option<TestClientFactory>,
     client: RwLock<SecureClientSlot>,
     refresh_gate: Mutex<()>,
     initialization_started: AtomicBool,
@@ -319,6 +403,29 @@ fn spawn_tinfoil_refresh_after_connect_failure(
 }
 
 impl SecureTinfoilTransport {
+    fn new(api_key: String, target: AttestationTarget) -> Self {
+        Self {
+            api_key,
+            target,
+            client: RwLock::new(SecureClientSlot {
+                client: None,
+                refresh_attempt: 0,
+            }),
+            refresh_gate: Mutex::new(()),
+            initialization_started: AtomicBool::new(false),
+            #[cfg(test)]
+            client_factory: None,
+        }
+    }
+
+    async fn create_client(&self) -> Result<tinfoil::Client, tinfoil::Error> {
+        #[cfg(test)]
+        if let Some(factory) = &self.client_factory {
+            return factory(self.target.clone(), self.api_key.clone()).await;
+        }
+        self.target.create_client(self.api_key.clone()).await
+    }
+
     fn read_client(&self) -> RwLockReadGuard<'_, SecureClientSlot> {
         self.client
             .read()
@@ -333,8 +440,11 @@ impl SecureTinfoilTransport {
 
     fn snapshot(&self) -> Option<SecureClientSnapshot> {
         let slot = self.read_client();
-        slot.client.as_ref().map(|client| SecureClientSnapshot {
-            client: Arc::clone(client),
+        current_slot_client(slot.client.as_ref(), |client| {
+            self.target.client_is_current(client)
+        })
+        .map(|client| SecureClientSnapshot {
+            client,
             refresh_attempt: slot.refresh_attempt,
         })
     }
@@ -376,7 +486,7 @@ impl SecureTinfoilTransport {
             }
 
             let discovery = run_tinfoil_discovery_attempt_with_timeout(
-                tinfoil::Client::new_default_with_api_key(self.api_key.clone()),
+                self.create_client(),
                 TINFOIL_DISCOVERY_ATTEMPT_TIMEOUT,
             )
             .await;
@@ -389,21 +499,27 @@ impl SecureTinfoilTransport {
                     // A request can only observe the new client after another
                     // initializer is allowed to claim recovery ownership.
                     claim.release();
-                    tracing::info!("Tinfoil router discovery and attestation succeeded");
+                    tracing::info!(
+                        provider = self.target.label(),
+                        "Provider attestation succeeded"
+                    );
                     return;
                 }
                 Ok(Err(error)) => {
                     tracing::warn!(
                         retry_delay_seconds = retry_delay.as_secs(),
-                        error = %error,
-                        "Tinfoil router discovery or attestation failed; retrying in background"
+                        provider = self.target.label(),
+                        error_is_attestation = error.is_attestation(),
+                        error_is_fetch = error.is_fetch(),
+                        "Provider attestation failed; retrying in background"
                     );
                 }
                 Err(_) => {
                     tracing::warn!(
                         attempt_timeout_seconds = TINFOIL_DISCOVERY_ATTEMPT_TIMEOUT.as_secs(),
                         retry_delay_seconds = retry_delay.as_secs(),
-                        "Tinfoil router discovery or attestation timed out; retrying in background"
+                        provider = self.target.label(),
+                        "Provider attestation timed out; retrying in background"
                     );
                 }
             }
@@ -417,7 +533,7 @@ impl SecureTinfoilTransport {
     fn try_refresh_gate(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, ProviderRequestError> {
         self.refresh_gate
             .try_lock()
-            .map_err(|_| ProviderRequestError::TinfoilUnavailable)
+            .map_err(|_| self.target.unavailable())
     }
 
     async fn refresh_after_connect_failure(
@@ -442,20 +558,19 @@ impl SecureTinfoilTransport {
 
         match decision {
             RefreshDecision::UseCurrent => {
-                return self
-                    .snapshot()
-                    .ok_or(ProviderRequestError::TinfoilUnavailable);
+                return self.snapshot().ok_or_else(|| self.target.unavailable());
             }
             RefreshDecision::PreviousAttemptFailed => {
-                return Err(ProviderRequestError::TinfoilUnavailable);
+                return Err(self.target.unavailable());
             }
             RefreshDecision::Refresh => {}
         }
 
-        // Router discovery is preferable to re-verifying only the stale host:
-        // a rotation may publish a replacement router as well as a new pin.
+        // Shared Tinfoil may discover a replacement router. Maple always
+        // reattests the same explicit host and immutable current/staged policy;
+        // certificate rotation never changes endpoint or trust authority.
         let refreshed = run_tinfoil_discovery_attempt_with_timeout(
-            tinfoil::Client::new_default_with_api_key(self.api_key.clone()),
+            self.create_client(),
             TINFOIL_DISCOVERY_ATTEMPT_TIMEOUT,
         )
         .await;
@@ -471,25 +586,28 @@ impl SecureTinfoilTransport {
             }
             Ok(Err(error)) => {
                 tracing::warn!(
-                    error = %error,
-                    "Tinfoil router refresh failed; transitioning unavailable"
+                    provider = self.target.label(),
+                    error_is_attestation = error.is_attestation(),
+                    error_is_fetch = error.is_fetch(),
+                    "Provider attestation refresh failed; transitioning unavailable"
                 );
                 slot.client = None;
                 drop(slot);
                 drop(refresh_guard);
                 self.start_background_initialization();
-                Err(ProviderRequestError::TinfoilUnavailable)
+                Err(self.target.unavailable())
             }
             Err(_) => {
                 tracing::warn!(
                     attempt_timeout_seconds = TINFOIL_DISCOVERY_ATTEMPT_TIMEOUT.as_secs(),
-                    "Tinfoil router refresh timed out; transitioning unavailable"
+                    provider = self.target.label(),
+                    "Provider attestation refresh timed out; transitioning unavailable"
                 );
                 slot.client = None;
                 drop(slot);
                 drop(refresh_guard);
                 self.start_background_initialization();
-                Err(ProviderRequestError::TinfoilUnavailable)
+                Err(self.target.unavailable())
             }
         }
     }
@@ -501,7 +619,7 @@ impl TinfoilTransport {
             Self::Secure(transport) => transport
                 .snapshot()
                 .map(TinfoilAttempt::Secure)
-                .ok_or(ProviderRequestError::TinfoilUnavailable),
+                .ok_or_else(|| transport.target.unavailable()),
             #[cfg(test)]
             Self::Plain {
                 client,
@@ -538,6 +656,44 @@ impl TinfoilTransport {
     }
 }
 
+/// Route eligibility follows the active verified direct transport, including
+/// its hard freshness deadline. A stale/missing client starts body-free recovery
+/// but remains ineligible until that recovery succeeds.
+#[derive(Clone)]
+pub(crate) struct MapleReadiness {
+    transport: Option<TinfoilTransport>,
+}
+
+impl MapleReadiness {
+    pub(crate) fn is_ready(&self) -> bool {
+        let Some(transport) = &self.transport else {
+            return false;
+        };
+        transport.start_background_initialization();
+        transport.snapshot().is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(ready: bool) -> Self {
+        Self {
+            transport: ready.then(|| TinfoilTransport::Plain {
+                client: test_http_client().expect("test client"),
+                base_url: "http://127.0.0.1:9".to_owned(),
+                api_key: String::new(),
+            }),
+        }
+    }
+}
+
+impl std::fmt::Debug for MapleReadiness {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MapleReadiness")
+            .field("configured", &self.transport.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Shared outbound provider clients.
 ///
 /// Tinfoil discovery and attestation retry in the background so an external
@@ -548,6 +704,7 @@ impl TinfoilTransport {
 #[derive(Clone)]
 pub struct ProviderClient {
     tinfoil: TinfoilTransport,
+    maple: Option<TinfoilTransport>,
     standard: StandardHttpClient,
 }
 
@@ -556,21 +713,42 @@ impl ProviderClient {
         crate::http_client::install_ring_crypto_provider()
             .map_err(|_| ProviderClientError::CryptoProvider)?;
 
-        let secure_transport = Arc::new(SecureTinfoilTransport {
-            api_key: tinfoil_api_key,
-            client: RwLock::new(SecureClientSlot {
-                client: None,
-                refresh_attempt: 0,
-            }),
-            refresh_gate: Mutex::new(()),
-            initialization_started: AtomicBool::new(false),
-        });
+        let secure_transport = Arc::new(SecureTinfoilTransport::new(
+            tinfoil_api_key,
+            AttestationTarget::SharedRouter,
+        ));
         secure_transport.start_background_initialization();
 
         Ok(Self {
             tinfoil: TinfoilTransport::Secure(secure_transport),
+            maple: None,
             standard: standard_http_client()?,
         })
+    }
+
+    /// Enable Maple's dedicated direct-attested transport with its own key.
+    /// Missing/blank configuration leaves Maple unavailable; it never borrows
+    /// the shared Tinfoil credential or uses an ordinary HTTP transport.
+    pub fn with_maple_api_key(
+        mut self,
+        api_key: Option<String>,
+    ) -> Result<Self, ProviderClientError> {
+        self.maple = if let Some(api_key) = api_key.filter(|key| !key.trim().is_empty()) {
+            let policy = crate::maple_inference::direct_policy()
+                .map_err(|_| ProviderClientError::MaplePolicy)?;
+            let transport = Arc::new(SecureTinfoilTransport::new(
+                api_key,
+                AttestationTarget::MapleDirect {
+                    host: crate::maple_inference::HOST,
+                    policy,
+                },
+            ));
+            transport.start_background_initialization();
+            Some(TinfoilTransport::Secure(transport))
+        } else {
+            None
+        };
+        Ok(self)
     }
 
     #[cfg(test)]
@@ -581,6 +759,8 @@ impl ProviderClient {
         Ok(Self {
             tinfoil: TinfoilTransport::Secure(Arc::new(SecureTinfoilTransport {
                 api_key: "unused-test-key".to_string(),
+                target: AttestationTarget::SharedRouter,
+                client_factory: None,
                 client: RwLock::new(SecureClientSlot {
                     client: None,
                     refresh_attempt: 0,
@@ -590,6 +770,7 @@ impl ProviderClient {
                 // without creating a real discovery request.
                 initialization_started: AtomicBool::new(true),
             })),
+            maple: None,
             standard: standard_http_client()?,
         })
     }
@@ -606,8 +787,15 @@ impl ProviderClient {
                 base_url,
                 api_key: "test-tinfoil-key".to_string(),
             },
+            maple: None,
             standard: standard_http_client()?,
         })
+    }
+
+    pub(crate) fn maple_readiness(&self) -> MapleReadiness {
+        MapleReadiness {
+            transport: self.maple.clone(),
+        }
     }
 
     pub fn tinfoil_base_url(&self) -> String {
@@ -634,16 +822,23 @@ impl ProviderClient {
         provider: &ProxyConfig,
         request: ProviderRequest<'_>,
     ) -> ProviderSendTrace {
-        if provider.provider_name != ProviderId::Tinfoil.as_str() {
+        let transport = if provider.provider_name == ProviderId::Tinfoil.as_str() {
+            &self.tinfoil
+        } else if provider.provider_name == ProviderId::Maple.as_str() {
+            let Some(transport) = &self.maple else {
+                return ProviderSendTrace::terminal(Err(ProviderRequestError::MapleUnavailable));
+            };
+            transport
+        } else {
             return ProviderSendTrace::terminal(self.send_standard(provider, request).await);
-        }
+        };
 
         let response_start_timeout = request.response_start_timeout;
         // Construction already starts this loop. Calling it here also makes the
         // request path self-healing if construction behavior changes later;
         // the atomic claim prevents discovery herds.
-        self.tinfoil.start_background_initialization();
-        let attempt = match self.tinfoil.snapshot() {
+        transport.start_background_initialization();
+        let attempt = match transport.snapshot() {
             Ok(attempt) => attempt,
             Err(error) => return ProviderSendTrace::terminal(Err(error)),
         };
@@ -659,10 +854,18 @@ impl ProviderClient {
         let send = async {
             match attempt {
                 TinfoilAttempt::Secure(failed_snapshot) => {
-                    let http_client = failed_snapshot
-                        .client
-                        .http_client()
-                        .map_err(|error| ProviderRequestError::Send(error.to_string()))?;
+                    let http_client = failed_snapshot.client.http_client().map_err(|error| {
+                        if !transport
+                            .secure()
+                            .target
+                            .client_is_current(&failed_snapshot.client)
+                        {
+                            transport.start_background_initialization();
+                            transport.secure().target.unavailable()
+                        } else {
+                            ProviderRequestError::Send(error.to_string())
+                        }
+                    })?;
                     match http_client.execute(first_request).await {
                         Ok(response) => Ok(response),
                         // reqwest's typed connect class is limited to connector setup
@@ -676,13 +879,13 @@ impl ProviderClient {
                                 .expect("provider attempt trace mutex poisoned")
                                 .push(ProviderRequestError::Connect(error.to_string()));
                             let refreshed = spawn_tinfoil_refresh_after_connect_failure(
-                                Arc::clone(self.tinfoil.secure()),
+                                Arc::clone(transport.secure()),
                                 failed_snapshot.clone(),
                             )
                             .await
                             // A task panic/cancellation is an availability
                             // failure; do not expose JoinError internals.
-                            .map_err(|_| ProviderRequestError::TinfoilUnavailable)??;
+                            .map_err(|_| transport.secure().target.unavailable())??;
                             let retry_attempt = TinfoilAttempt::Secure(refreshed.clone());
                             let retry_request = self.build_tinfoil_request_for_attempt(
                                 provider,
@@ -692,22 +895,49 @@ impl ProviderClient {
                             refreshed
                                 .client
                                 .http_client()
-                                .map_err(|error| ProviderRequestError::Send(error.to_string()))?
-                                .execute(retry_request)
-                                .await
                                 .map_err(|error| {
-                                    if error.is_connect() {
-                                        ProviderRequestError::Connect(error.to_string())
+                                    if !transport
+                                        .secure()
+                                        .target
+                                        .client_is_current(&refreshed.client)
+                                    {
+                                        transport.start_background_initialization();
+                                        transport.secure().target.unavailable()
                                     } else {
                                         ProviderRequestError::Send(error.to_string())
                                     }
+                                })?
+                                .execute(retry_request)
+                                .await
+                                .map_err(|error| {
+                                    let (error, recover) = classify_post_execute_failure(
+                                        error.is_connect(),
+                                        transport
+                                            .secure()
+                                            .target
+                                            .client_is_current(&refreshed.client),
+                                        error.to_string(),
+                                    );
+                                    if recover {
+                                        transport.start_background_initialization();
+                                    }
+                                    error
                                 })
                         }
-                        Err(error) => Err(if error.is_connect() {
-                            ProviderRequestError::Connect(error.to_string())
-                        } else {
-                            ProviderRequestError::Send(error.to_string())
-                        }),
+                        Err(error) => {
+                            let (error, recover) = classify_post_execute_failure(
+                                error.is_connect(),
+                                transport
+                                    .secure()
+                                    .target
+                                    .client_is_current(&failed_snapshot.client),
+                                error.to_string(),
+                            );
+                            if recover {
+                                transport.start_background_initialization();
+                            }
+                            Err(error)
+                        }
                     }
                 }
                 #[cfg(test)]
@@ -755,7 +985,10 @@ impl ProviderClient {
         request: ProviderRequest<'_>,
         attempt: &TinfoilAttempt,
     ) -> Result<ReqwestRequest, ProviderRequestError> {
-        debug_assert_eq!(provider.provider_name, ProviderId::Tinfoil.as_str());
+        debug_assert!(
+            provider.provider_name == ProviderId::Tinfoil.as_str()
+                || provider.provider_name == ProviderId::Maple.as_str()
+        );
         let ProviderRequest {
             method,
             path,
@@ -954,9 +1187,232 @@ mod tests {
         }
     }
 
+    fn maple_proxy() -> ProxyConfig {
+        ProxyConfig {
+            // Deliberately misleading: attested transports must select their
+            // verified endpoint and own key, never these proxy fields.
+            base_url: "http://127.0.0.1:9/should-not-be-used".to_owned(),
+            api_key: Some("wrong-shared-key".to_owned()),
+            provider_name: ProviderId::Maple.as_str().to_owned(),
+        }
+    }
+
+    fn direct_target() -> AttestationTarget {
+        AttestationTarget::MapleDirect {
+            host: crate::maple_inference::HOST,
+            policy: crate::maple_inference::direct_policy().unwrap(),
+        }
+    }
+
+    #[test]
+    fn expiry_during_ambiguous_execute_never_makes_the_request_replay_safe() {
+        for verified_state_current in [true, false] {
+            let (error, recover) = classify_post_execute_failure(
+                false,
+                verified_state_current,
+                "synthetic connection reset after POST".to_owned(),
+            );
+            assert!(matches!(error, ProviderRequestError::Send(_)));
+            assert_eq!(recover, !verified_state_current);
+        }
+        let (error, _) =
+            classify_post_execute_failure(true, false, "synthetic TLS setup failure".to_owned());
+        assert!(matches!(error, ProviderRequestError::Connect(_)));
+    }
+
+    #[test]
+    fn populated_noncurrent_slot_is_unavailable_and_can_claim_recovery() {
+        // The fork separately exercises actual verified-client expiration.
+        // This checks the backend slot selection used by snapshot(): presence
+        // of an Arc alone must not make expired state ready or block recovery.
+        let current = Arc::new(AtomicBool::new(true));
+        let candidate = Some(Arc::clone(&current));
+        assert!(
+            current_slot_client(candidate.as_ref(), |state| state.load(Ordering::Acquire))
+                .is_some()
+        );
+        current.store(false, Ordering::Release);
+        assert!(
+            candidate.is_some(),
+            "the old client remains present in the slot"
+        );
+        assert!(
+            current_slot_client(candidate.as_ref(), |state| state.load(Ordering::Acquire))
+                .is_none()
+        );
+        let transport = uninitialized_secure_transport();
+        assert!(transport.claim_background_initialization());
+        assert!(!transport.claim_background_initialization());
+        let mut claim = InitializationClaim::new(Arc::clone(&transport));
+        claim.release();
+        assert!(
+            transport.claim_background_initialization(),
+            "recovery remains claimable after a completed attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_maple_key_never_uses_shared_or_standard_transport() {
+        let client = ProviderClient::for_test("http://127.0.0.1:9".to_owned())
+            .unwrap()
+            .with_maple_api_key(None)
+            .unwrap();
+        assert!(!client.maple_readiness().is_ready());
+        let result = client
+            .send(
+                &maple_proxy(),
+                ProviderRequest::new(
+                    Method::POST,
+                    "/v1/chat/completions",
+                    Duration::from_millis(50),
+                )
+                .body(Bytes::from_static(b"synthetic-test-body")),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ProviderRequestError::MapleUnavailable)
+        ));
+        let client = client.with_maple_api_key(Some("   ".to_owned())).unwrap();
+        assert!(!client.maple_readiness().is_ready());
+    }
+
+    #[tokio::test]
+    async fn direct_target_factory_keeps_immutable_host_policy_and_separate_key() {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = Arc::clone(&captured);
+        let mut transport =
+            SecureTinfoilTransport::new("dedicated-test-key".to_owned(), direct_target());
+        transport.client_factory = Some(Arc::new(move |target, key| {
+            let AttestationTarget::MapleDirect { host, policy } = target else {
+                panic!("dedicated verification must never discover a shared router");
+            };
+            observed
+                .lock()
+                .unwrap()
+                .push((host, format!("{policy:?}"), key));
+            Box::pin(async {
+                Err(tinfoil::Error::Configuration(
+                    "injected verifier failure".to_owned(),
+                ))
+            })
+        }));
+        // The central factory is reused for initialization and each refresh.
+        assert!(transport.create_client().await.is_err());
+        assert!(transport.create_client().await.is_err());
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0], captured[1]);
+        assert_eq!(captured[0].0, crate::maple_inference::HOST);
+        assert_eq!(captured[0].2, "dedicated-test-key");
+    }
+
+    #[tokio::test]
+    async fn maple_readiness_recovers_single_flight_without_waiting_for_attestation() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let mut transport =
+            SecureTinfoilTransport::new("dedicated-test-key".to_owned(), direct_target());
+        transport.client_factory = Some(Arc::new(move |target, _| {
+            assert!(matches!(target, AttestationTarget::MapleDirect { .. }));
+            observed.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }));
+        let transport = Arc::new(transport);
+        let readiness = MapleReadiness {
+            transport: Some(TinfoilTransport::Secure(Arc::clone(&transport))),
+        };
+        for _ in 0..20 {
+            assert!(!readiness.clone().is_ready());
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            !readiness.is_ready(),
+            "pending attestation must not make a route eligible"
+        );
+        assert!(matches!(
+            transport.try_refresh_gate(),
+            Err(ProviderRequestError::MapleUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn maple_dispatch_preserves_own_key_cache_salt_body_and_stream_bytes() {
+        let (capture_tx, mut capture_rx) = mpsc::channel(1);
+        let expected_stream = "data: {\"choices\":[]}\n\ndata: [DONE]\n\n";
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            any(move |headers: HeaderMap, body: Bytes| {
+                let capture_tx = capture_tx.clone();
+                async move {
+                    capture_tx.send((headers, body)).await.unwrap();
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        expected_stream,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut client = ProviderClient::for_test("http://127.0.0.1:9".to_owned()).unwrap();
+        client.maple = Some(TinfoilTransport::Plain {
+            client: test_http_client().unwrap(),
+            base_url: format!("http://{address}"),
+            api_key: "dedicated-test-key".to_owned(),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer caller-secret"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("wrong-host.invalid"));
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("x-private-hop"),
+        );
+        headers.insert("x-private-hop", HeaderValue::from_static("must-be-removed"));
+        let body = Bytes::from_static(br#"{"model":"deepseek-v4-1-flash","cache_salt":"backend-owned-synthetic-user","stream":true}"#);
+        let response = client
+            .send(
+                &maple_proxy(),
+                ProviderRequest::new(Method::POST, "/v1/chat/completions", Duration::from_secs(2))
+                    .source_headers(&headers)
+                    .content_type("application/json")
+                    .body(body.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(&response, ProviderResponse::Tinfoil(_)));
+        assert_eq!(response.content_type(), Some("text/event-stream"));
+        let (headers, captured_body) = capture_rx.recv().await.unwrap();
+        assert_eq!(headers[header::AUTHORIZATION], "Bearer dedicated-test-key");
+        assert_eq!(headers[header::HOST], address.to_string());
+        assert!(!headers.contains_key("x-private-hop"));
+        assert_eq!(captured_body, body);
+        let mut stream = response.bytes_stream();
+        let mut received = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            received.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(received, expected_stream.as_bytes());
+        server.abort();
+    }
+
     fn uninitialized_secure_transport() -> Arc<SecureTinfoilTransport> {
         Arc::new(SecureTinfoilTransport {
             api_key: "unused-test-key".to_string(),
+            target: AttestationTarget::SharedRouter,
+            client_factory: None,
             client: RwLock::new(SecureClientSlot {
                 client: None,
                 refresh_attempt: 0,

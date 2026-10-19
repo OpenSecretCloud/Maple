@@ -10,11 +10,13 @@ use crate::model_config::{
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-preferred-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
     Tinfoil,
     Continuum,
+    Maple,
 }
 
 impl ProviderId {
@@ -22,6 +24,7 @@ impl ProviderId {
         match self {
             Self::Tinfoil => "tinfoil",
             Self::Continuum => "continuum",
+            Self::Maple => "maple",
         }
     }
 }
@@ -33,6 +36,9 @@ pub(crate) enum RouteSelectionSource {
     /// Routing kept the account's remembered same-model provider instead of
     /// its weighted bucket while that provider stays eligible.
     Sticky,
+    /// An authorized rollout cohort prefers its dedicated provider while it
+    /// remains eligible, ahead of a previously remembered shared route.
+    Preferred,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +110,11 @@ const PROVIDERS: &[ProviderSpec] = &[
         weight: 30,
         enabled: true,
     },
+    ProviderSpec {
+        id: ProviderId::Maple,
+        weight: 100,
+        enabled: true,
+    },
 ];
 
 const GPT_OSS_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
@@ -158,13 +169,24 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
-    provider: ProviderId::Tinfoil,
-    provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-    response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-    weight: 100,
-    enabled: true,
-}];
+const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
+    ModelRouteSpec {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        weight: 100,
+        enabled: true,
+    },
+    // Eligibility is request-scoped and fail-closed in the planner/router.
+    // This is one dedicated endpoint, independently keyed from shared Tinfoil.
+    ModelRouteSpec {
+        provider: ProviderId::Maple,
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        weight: 100,
+        enabled: true,
+    },
+];
 
 const LLAMA3_3_70B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
@@ -330,6 +352,12 @@ mod tests {
                 (
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     ProviderId::Tinfoil,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID
+                ),
+                (
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    ProviderId::Maple,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),

@@ -19,6 +19,8 @@ impl std::fmt::Debug for ProxyConfig {
 pub struct ProxyRouter {
     default_proxy: ProxyConfig,
     tinfoil_proxy: ProxyConfig,
+    maple_proxy: Option<ProxyConfig>,
+    maple_readiness: Option<crate::provider_client::MapleReadiness>,
 }
 
 impl ProxyRouter {
@@ -51,7 +53,42 @@ impl ProxyRouter {
         Self {
             default_proxy,
             tinfoil_proxy,
+            maple_proxy: None,
+            maple_readiness: None,
         }
+    }
+
+    pub(crate) fn with_maple_api_key(mut self, api_key: Option<String>) -> Self {
+        self.maple_proxy = api_key
+            .filter(|key| !key.trim().is_empty())
+            .map(|key| ProxyConfig {
+                base_url: crate::maple_inference::BASE_URL.to_owned(),
+                api_key: Some(key),
+                provider_name: "maple".to_string(),
+            });
+        self
+    }
+
+    pub(crate) fn with_maple_readiness(
+        mut self,
+        readiness: crate::provider_client::MapleReadiness,
+    ) -> Self {
+        self.maple_readiness = Some(readiness);
+        self
+    }
+
+    /// Configuration alone is insufficient: the direct client must have a
+    /// currently verified transport. Checking also starts body-free renewal.
+    pub(crate) fn get_maple_proxy(&self) -> Option<ProxyConfig> {
+        let proxy = self.maple_proxy.as_ref()?;
+        self.maple_readiness
+            .as_ref()?
+            .is_ready()
+            .then(|| proxy.clone())
+    }
+
+    pub(crate) fn maple_is_configured(&self) -> bool {
+        self.maple_proxy.is_some()
     }
 
     pub fn get_default_proxy(&self) -> ProxyConfig {

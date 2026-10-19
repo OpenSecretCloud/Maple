@@ -808,6 +808,7 @@ mod tests {
             &provider_router,
             &proxy_router,
             ModelResolutionRequest {
+                maple_inference_enabled: false,
                 account_uuid: Uuid::nil(),
                 surface: InferenceSurface::Responses,
                 requested_model_id: AUTO_QUICK_MODEL_ID,
@@ -836,6 +837,7 @@ mod tests {
                 &provider_router,
                 &proxy_router,
                 ModelResolutionRequest {
+                    maple_inference_enabled: false,
                     account_uuid: Uuid::nil(),
                     surface: InferenceSurface::Responses,
                     requested_model_id: AUTO_QUICK_MODEL_ID,
@@ -5873,7 +5875,7 @@ async fn create_response_stream(
         );
         return Err(ApiError::Unauthorized);
     }
-    let routing = InferenceRoutingContext::new(model_plan);
+    let routing = InferenceRoutingContext::for_user(&state, user.uuid, model_plan).await;
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let selected_model = alias_targets.resolve(&requested_model).to_string();
     let completion_provider = state.proxy_router.get_completion_proxy();
@@ -5952,6 +5954,7 @@ async fn create_response_stream(
             &state.provider_router,
             &state.proxy_router,
             ModelResolutionRequest {
+                maple_inference_enabled: routing.maple_inference_enabled(),
                 account_uuid: user.uuid,
                 surface: InferenceSurface::Responses,
                 requested_model_id: &requested_model,

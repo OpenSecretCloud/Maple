@@ -502,7 +502,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
-              "tinfoil-0.2.0" = "sha256-+J/9OtgO8kNba9UoWEmGuzpTxPKVV8VuSl05mNe8Kpw=";
+              "tinfoil-0.2.1-maple.1" = "sha256-vdpdRjBwQ7wyyyuTRZROpRJ7i8OttSrXjJxBG9vBs8s=";
               "tinfoil-ehbp-0.3.1" = "sha256-BSSob5uyIIOw/Zr5aZFTU0GOM5imxk7KoZ5g+I4+s70=";
             };
           };
@@ -552,6 +552,18 @@
 
         checks = {
           entrypoint-entropy-preflight = entrypointEntropyPreflight;
+          entrypoint-maple-inference-credential = pkgs.runCommand
+            "opensecret-entrypoint-maple-inference-credential"
+            {
+              nativeBuildInputs = [
+                pkgs.bash pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.jq
+              ];
+            }
+            ''
+              ENTRYPOINT_UNDER_TEST=${./entrypoint.sh} \
+                bash ${./scripts/test_maple_inference_entrypoint.sh}
+              touch "$out"
+            '';
           provider-cache-defaults = pkgs.runCommand "opensecret-provider-cache-defaults" {
             nativeBuildInputs = [ pkgs.gnugrep ];
           } ''

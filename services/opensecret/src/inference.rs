@@ -91,6 +91,9 @@ pub(crate) struct InferenceIntent {
     pub(crate) auto_model: Option<AutoModelDecision>,
     pub(crate) selection_mode: ModelSelectionMode,
     pub(crate) model_plan: ModelPlan,
+    /// Backend-resolved, request-scoped permission for the dedicated provider.
+    /// Never derived from caller JSON or a remembered route.
+    pub(crate) maple_inference_enabled: bool,
     pub(crate) surface: InferenceSurface,
     pub(crate) workload_class: WorkloadClass,
 }
@@ -113,9 +116,15 @@ impl InferenceIntent {
             public_model_id: public_model_id.into(),
             auto_model: None,
             model_plan,
+            maple_inference_enabled: false,
             surface,
             workload_class,
         }
+    }
+
+    pub(crate) fn with_maple_inference(mut self, enabled: bool) -> Self {
+        self.maple_inference_enabled = enabled;
+        self
     }
 
     /// Applies a finished Router v2 Auto model decision. The chosen model

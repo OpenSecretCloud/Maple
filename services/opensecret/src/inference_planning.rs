@@ -8,13 +8,15 @@
 
 use crate::inference::{InferenceIntent, RouteIdentity};
 use crate::provider_registry::{
-    ProviderId, ProviderRegistry, RouteSelectionSource, SHADOW_ROUTING_POLICY_VERSION,
+    ProviderId, ProviderRegistry, RouteSelectionSource, MAPLE_ROUTING_POLICY_VERSION,
+    SHADOW_ROUTING_POLICY_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ConfiguredProviders {
     tinfoil: bool,
     continuum: bool,
+    maple: bool,
 }
 
 impl ConfiguredProviders {
@@ -22,6 +24,7 @@ impl ConfiguredProviders {
         Self {
             tinfoil: false,
             continuum: false,
+            maple: false,
         }
     }
 
@@ -30,6 +33,7 @@ impl ConfiguredProviders {
         Self {
             tinfoil: true,
             continuum: true,
+            maple: true,
         }
     }
 
@@ -37,6 +41,7 @@ impl ConfiguredProviders {
         match provider {
             ProviderId::Tinfoil => self.tinfoil = true,
             ProviderId::Continuum => self.continuum = true,
+            ProviderId::Maple => self.maple = true,
         }
         self
     }
@@ -45,6 +50,7 @@ impl ConfiguredProviders {
         match provider {
             ProviderId::Tinfoil => self.tinfoil,
             ProviderId::Continuum => self.continuum,
+            ProviderId::Maple => self.maple,
         }
     }
 }
@@ -74,6 +80,7 @@ pub(crate) enum PlanDecision {
     /// The account's remembered provider was eligible and differed from its
     /// weighted bucket; the warmed route wins.
     RememberedRoute,
+    PreferredRoute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,12 +116,25 @@ pub(crate) fn plan_completion_route(
     let model = registry
         .completion_model(public_model_id)
         .ok_or_else(|| RoutePlanningError::UnsupportedModel(public_model_id.to_string()))?;
+    let policy_version = if input.intent.maple_inference_enabled
+        && model
+            .routes
+            .iter()
+            .any(|route| route.provider == ProviderId::Maple)
+    {
+        MAPLE_ROUTING_POLICY_VERSION
+    } else {
+        SHADOW_ROUTING_POLICY_VERSION
+    };
 
     let eligible_routes = model
         .routes
         .iter()
         .filter_map(|route| {
-            if !route.enabled || route.weight == 0 {
+            if !route.enabled
+                || route.weight == 0
+                || !provider_allowed(route.provider, input.intent.maple_inference_enabled)
+            {
                 return None;
             }
             let provider = registry.provider(route.provider)?;
@@ -150,6 +170,7 @@ pub(crate) fn plan_completion_route(
         .filter(|route| {
             route.enabled
                 && route.weight > 0
+                && provider_allowed(route.provider, input.intent.maple_inference_enabled)
                 && registry
                     .provider(route.provider)
                     .is_some_and(|provider| provider.enabled && provider.weight > 0)
@@ -161,6 +182,31 @@ pub(crate) fn plan_completion_route(
         RouteSelectionSource::StaticSplit
     };
 
+    // Rollout membership explicitly selects dedicated compute. A remembered
+    // shared route must not prevent a newly enabled account from trying it.
+    // Its ordinary route/capacity gates have already filtered this candidate.
+    if let Some(preferred) = eligible_routes
+        .iter()
+        .find(|route| route.candidate.provider == ProviderId::Maple)
+    {
+        let (source, decision) = if input.remembered_provider == Some(ProviderId::Maple) {
+            (RouteSelectionSource::Sticky, PlanDecision::RememberedRoute)
+        } else {
+            (
+                RouteSelectionSource::Preferred,
+                PlanDecision::PreferredRoute,
+            )
+        };
+        return Ok(build_plan(
+            preferred,
+            &eligible_routes,
+            source,
+            None,
+            decision,
+            policy_version,
+        ));
+    }
+
     if eligible_routes.len() == 1 {
         return Ok(build_plan(
             &eligible_routes[0],
@@ -168,6 +214,7 @@ pub(crate) fn plan_completion_route(
             selection_source,
             None,
             PlanDecision::FixedRoute,
+            policy_version,
         ));
     }
 
@@ -193,6 +240,7 @@ pub(crate) fn plan_completion_route(
             RouteSelectionSource::Sticky,
             None,
             PlanDecision::RememberedRoute,
+            policy_version,
         ));
     }
 
@@ -202,6 +250,7 @@ pub(crate) fn plan_completion_route(
         selection_source,
         Some(bucket),
         PlanDecision::StaticBucket,
+        policy_version,
     ))
 }
 
@@ -211,6 +260,7 @@ fn build_plan(
     selection_source: RouteSelectionSource,
     bucket: Option<u8>,
     decision: PlanDecision,
+    policy_version: &'static str,
 ) -> RoutePlan {
     let selected = &selected.candidate;
     RoutePlan {
@@ -228,8 +278,14 @@ fn build_plan(
             .collect(),
         decision,
         candidate_scope: CandidateScope::SamePublicModelOnly,
-        policy_version: SHADOW_ROUTING_POLICY_VERSION,
+        policy_version,
     }
+}
+
+/// Rollout policy is an authorization constraint, not a weighted preference.
+/// Apply it before health snapshots, sticky memory and fallback accounting.
+pub(crate) const fn provider_allowed(provider: ProviderId, maple_inference_enabled: bool) -> bool {
+    !matches!(provider, ProviderId::Maple) || maple_inference_enabled
 }
 
 fn select_weighted_route(bucket: u8, routes: &[EligibleRoute]) -> Option<&EligibleRoute> {
@@ -265,7 +321,8 @@ fn stable_account_bucket(account_uuid: uuid::Uuid) -> u8 {
 mod tests {
     use super::*;
     use crate::model_config::{
-        ModelPlan, AUTO_POWERFUL_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
+        ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
     };
     use crate::provider_registry::{ProviderId, PROVIDER_REGISTRY};
     use uuid::Uuid;
@@ -596,5 +653,139 @@ mod tests {
             excluded.selected.selection_source,
             RouteSelectionSource::Fallback
         );
+    }
+
+    #[test]
+    fn maple_rollout_is_an_eligibility_gate_on_every_surface_and_selector() {
+        use crate::inference::{InferenceSurface, WorkloadClass};
+        for (surface, workload) in [
+            (InferenceSurface::Responses, WorkloadClass::Interactive),
+            (
+                InferenceSurface::ChatCompletions,
+                WorkloadClass::Interactive,
+            ),
+            (InferenceSurface::Internal, WorkloadClass::Interactive),
+            (InferenceSurface::Internal, WorkloadClass::Background),
+        ] {
+            for selector in [
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                AUTO_POWERFUL_MODEL_ID,
+                AUTO_QUICK_MODEL_ID,
+            ] {
+                let unflagged = InferenceIntent::new(
+                    Uuid::from_u128(73),
+                    selector,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    ModelPlan::Paid,
+                    surface,
+                    workload,
+                );
+                // A remembered dedicated route is never authorization to use it.
+                let plan = plan_completion_route(
+                    &PROVIDER_REGISTRY,
+                    RoutePlanningInput {
+                        intent: &unflagged,
+                        configured_providers: ConfiguredProviders::all(),
+                        remembered_provider: Some(ProviderId::Maple),
+                    },
+                )
+                .expect("unflagged shared route");
+                assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
+                assert_eq!(plan.selected.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(
+                    plan.selected.selection_source,
+                    RouteSelectionSource::StaticSplit
+                );
+                assert_eq!(plan.decision, PlanDecision::FixedRoute);
+                assert_eq!(plan.eligible_routes.len(), 1);
+                assert_eq!(plan.policy_version, SHADOW_ROUTING_POLICY_VERSION);
+
+                let flagged = unflagged.with_maple_inference(true);
+                let preferred = plan_completion_route(
+                    &PROVIDER_REGISTRY,
+                    RoutePlanningInput {
+                        intent: &flagged,
+                        configured_providers: ConfiguredProviders::all(),
+                        remembered_provider: Some(ProviderId::Tinfoil),
+                    },
+                )
+                .expect("dedicated route");
+                assert_eq!(preferred.selected.provider, ProviderId::Maple);
+                assert_eq!(
+                    preferred.selected.public_model_id,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID
+                );
+                assert_eq!(
+                    preferred.selected.provider_model_id,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID
+                );
+                assert_eq!(
+                    preferred.selected.response_model_id,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID
+                );
+                assert_eq!(
+                    preferred.selected.selection_source,
+                    RouteSelectionSource::Preferred
+                );
+                assert_eq!(preferred.decision, PlanDecision::PreferredRoute);
+                assert_eq!(preferred.eligible_routes.len(), 2);
+                assert_eq!(preferred.policy_version, MAPLE_ROUTING_POLICY_VERSION);
+                assert_eq!(preferred.selected.bucket, None);
+
+                let remembered = plan_completion_route(
+                    &PROVIDER_REGISTRY,
+                    RoutePlanningInput {
+                        intent: &flagged,
+                        configured_providers: ConfiguredProviders::all(),
+                        remembered_provider: Some(ProviderId::Maple),
+                    },
+                )
+                .expect("remembered dedicated route");
+                assert_eq!(remembered.selected.provider, ProviderId::Maple);
+                assert_eq!(
+                    remembered.selected.selection_source,
+                    RouteSelectionSource::Sticky
+                );
+                assert_eq!(remembered.decision, PlanDecision::RememberedRoute);
+            }
+        }
+    }
+
+    #[test]
+    fn maple_denial_cannot_be_bypassed_by_missing_shared_configuration() {
+        let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let maple_only = ConfiguredProviders::none().with_provider(ProviderId::Maple);
+        assert_eq!(
+            plan_completion_route(
+                &PROVIDER_REGISTRY,
+                RoutePlanningInput {
+                    intent: &request,
+                    configured_providers: maple_only,
+                    remembered_provider: Some(ProviderId::Maple),
+                },
+            ),
+            Err(RoutePlanningError::NoEligibleRoute(
+                DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string()
+            ))
+        );
+
+        let flagged = request.with_maple_inference(true);
+        let fallback = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &flagged,
+                configured_providers: ConfiguredProviders::none()
+                    .with_provider(ProviderId::Tinfoil),
+                remembered_provider: Some(ProviderId::Maple),
+            },
+        )
+        .expect("shared fallback");
+        assert_eq!(fallback.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(
+            fallback.selected.selection_source,
+            RouteSelectionSource::Fallback
+        );
+        assert_eq!(fallback.eligible_routes.len(), 1);
+        assert_eq!(fallback.decision, PlanDecision::FixedRoute);
     }
 }

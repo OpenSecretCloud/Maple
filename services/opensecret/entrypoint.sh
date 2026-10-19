@@ -285,6 +285,67 @@ get_tinfoil_proxy_api_key_secret() {
     vsock_request $cid $port "$request"
 }
 
+# BEGIN OPTIONAL_MAPLE_INFERENCE_CREDENTIAL
+# The dedicated provider has an independent credential. Missing or unavailable
+# optional material disables only that provider; it never reuses TINFOIL_API_KEY.
+get_maple_inference_api_key_secret() {
+    local secret_name
+    case "$APP_MODE" in
+        prod) secret_name="maple_inference_prod_api_key" ;;
+        preview) secret_name="maple_inference_preview1_api_key" ;;
+        custom)
+            if [ -z "${ENV_NAME:-}" ]; then
+                return 1
+            fi
+            secret_name="maple_inference_${ENV_NAME}_api_key"
+            ;;
+        *) secret_name="maple_inference_dev_api_key" ;;
+    esac
+    local request="{\"request_type\":\"SecretsManager\",\"key_name\":\"$secret_name\"}"
+    # Optional work must not inherit the generic helper's long retry window.
+    timeout -k 2 15 python3 /app/vsock_helper.py 3 8003 "$request"
+}
+
+load_optional_maple_inference_api_key() {
+    local response encrypted output plaintext key
+    # Ignore inherited host values in Nitro mode. Only KMS-decrypted optional
+    # material may become the dedicated provider's credential there.
+    export MAPLE_INFERENCE_API_KEY=""
+    if ! response=$(get_maple_inference_api_key_secret); then
+        log "Maple dedicated inference credential unavailable; provider disabled"
+        return 0
+    fi
+    if ! encrypted=$(printf '%s' "$response" | jq -er \
+        'select(.response_type == "secret") | .response_value | fromjson | .api_key | select(type == "string" and length > 0)' 2>/dev/null); then
+        log "Maple dedicated inference credential absent or invalid; provider disabled"
+        return 0
+    fi
+    if ! output=$(timeout -k 2 15 kmstool_enclave_cli decrypt \
+        --region "$region" --proxy-port 8000 \
+        --aws-access-key-id "$access_key_id" \
+        --aws-secret-access-key "$secret_access_key" \
+        --aws-session-token "$session_token" \
+        --ciphertext "$encrypted" 2>&1); then
+        log "Maple dedicated inference credential could not be decrypted; provider disabled"
+        return 0
+    fi
+    plaintext=$(printf '%s\n' "$output" | sed -n 's/^PLAINTEXT: //p')
+    case "$plaintext" in
+        ""|*[!A-Za-z0-9+/=]*)
+            log "Maple dedicated inference credential is empty or invalid; provider disabled"
+            return 0
+            ;;
+    esac
+    if ! key=$(printf '%s' "$plaintext" | base64 -d 2>/dev/null) || [ -z "$key" ] \
+        || [ "$(printf '%s' "$key" | base64 | tr -d '\n')" != "$plaintext" ]; then
+        log "Maple dedicated inference credential is empty or invalid; provider disabled"
+        return 0
+    fi
+    export MAPLE_INFERENCE_API_KEY="$key"
+    log "Maple dedicated inference credential configured"
+}
+# END OPTIONAL_MAPLE_INFERENCE_CREDENTIAL
+
 # Get AWS credentials
 aws_creds=$(get_aws_credentials)
 if [ -z "$aws_creds" ]; then
@@ -427,6 +488,8 @@ echo "127.0.0.36 router-2.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.37 router-3.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.38 router-4.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.39 router-5.tinfoil.sh" >> /etc/hosts
+# Dedicated node: the same fixed HTTPS destination serves V3 evidence and inference.
+echo "127.0.0.42 i01.tfinf.maple.ai" >> /etc/hosts
 # Legacy Tinfoil router domains (retained for discovery and fallback)
 echo "127.0.0.26 router.inf4.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.27 router.inf5.tinfoil.sh" >> /etc/hosts
@@ -554,6 +617,9 @@ run_forever tf_tinfoil_router_4 python3 /app/traffic_forwarder.py 127.0.0.38 443
 
 log "Starting Tinfoil Router 5 traffic forwarder"
 run_forever tf_tinfoil_router_5 python3 /app/traffic_forwarder.py 127.0.0.39 443 3 8047 &
+
+log "Starting Maple dedicated inference traffic forwarder"
+run_forever tf_maple_inference_i01 python3 /app/traffic_forwarder.py 127.0.0.42 443 3 8050 &
 
 # Legacy Tinfoil router endpoints (retained for discovery and fallback)
 log "Starting Tinfoil Router Inf4 traffic forwarder"
@@ -954,6 +1020,8 @@ if [ "$APP_MODE" != "local" ]; then
         exit 1
     fi
 
+    load_optional_maple_inference_api_key
+
 else
     # For local mode, use the default OpenAI API base or the one set in the environment
     export OPENAI_API_BASE=${OPENAI_API_BASE:-"https://api.openai.com"}
@@ -963,7 +1031,7 @@ fi
 
 # Start the opensecret
 log "Starting opensecret..."
-RUST_LOG_STYLE=never RUST_LOG="${RUST_LOG:-info,opensecret=debug}" APP_MODE="$APP_MODE" OPENAI_API_BASE="$OPENAI_API_BASE" TINFOIL_API_KEY="$tinfoil_proxy_api_key" /app/opensecret &
+RUST_LOG_STYLE=never RUST_LOG="${RUST_LOG:-info,opensecret=debug}" APP_MODE="$APP_MODE" OPENAI_API_BASE="$OPENAI_API_BASE" TINFOIL_API_KEY="$tinfoil_proxy_api_key" MAPLE_INFERENCE_API_KEY="${MAPLE_INFERENCE_API_KEY:-}" /app/opensecret &
 
 # Wait for the opensecret to start
 log "Waiting for opensecret to start"
