@@ -448,6 +448,9 @@ pub enum ApiError {
     #[error("Model not available on current plan")]
     ModelNotAvailableOnPlan,
 
+    #[error("Model not found or not available to this account")]
+    ModelNotAvailable,
+
     #[error("Message exceeds context limit")]
     MessageExceedsContextLimit,
 
@@ -506,6 +509,7 @@ impl IntoResponse for ApiError {
             ApiError::UsageLimitReached => StatusCode::FORBIDDEN,
             ApiError::FreeTokenLimitExceeded => StatusCode::FORBIDDEN,
             ApiError::ModelNotAvailableOnPlan => StatusCode::FORBIDDEN,
+            ApiError::ModelNotAvailable => StatusCode::NOT_FOUND,
             ApiError::MessageExceedsContextLimit => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
@@ -518,6 +522,7 @@ impl IntoResponse for ApiError {
             ApiError::UsageLimitReached => Some("usage_limit_reached"),
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
+            ApiError::ModelNotAvailable => Some("model_not_found"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
             ApiError::SystemOneRequest(error) => Some(error.code()),
             ApiError::Transcription(error) => Some(error.code()),
@@ -699,7 +704,7 @@ mod api_error_contract_tests {
 
     #[tokio::test]
     async fn actionable_inference_errors_add_openai_details_and_preserve_legacy_fields() {
-        let cases: [(ApiError, StatusCode, &[u8], &str); 4] = [
+        let cases: [(ApiError, StatusCode, &[u8], &str); 5] = [
             (
                 ApiError::UsageLimitReached,
                 StatusCode::FORBIDDEN,
@@ -717,6 +722,12 @@ mod api_error_contract_tests {
                 StatusCode::FORBIDDEN,
                 br#"{"status":403,"message":"Model not available on current plan","error":{"message":"Model not available on current plan","code":"model_not_available_on_plan"}}"#,
                 "model_not_available_on_plan",
+            ),
+            (
+                ApiError::ModelNotAvailable,
+                StatusCode::NOT_FOUND,
+                br#"{"status":404,"message":"Model not found or not available to this account","error":{"message":"Model not found or not available to this account","code":"model_not_found"}}"#,
+                "model_not_found",
             ),
             (
                 ApiError::MessageExceedsContextLimit,

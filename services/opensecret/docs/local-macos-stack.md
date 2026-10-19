@@ -127,27 +127,6 @@ The backend recipe selects the loopback Continuum base. Any other custom
 provider base is a credential boundary; derive
 URL and header behavior from current source before supplying credentials.
 
-### Optional dedicated inference
-
-`MAPLE_INFERENCE_API_KEY` is independent of the shared `TINFOIL_API_KEY`.
-The optional `maple_inference_api_key` SecretSpec item is included in the
-backend and local scopes; `maple_inference` resolves only that optional item.
-If it is absent or empty, the dedicated provider stays disabled and shared
-providers can still start. Do not copy the shared key into the dedicated item
-or use it as an environment fallback. Creating or granting the dedicated
-credential is a separate operator action.
-
-The backend pins approved node hostnames, releases and current/staged
-measurements in source. Its direct V3 client fetches fresh evidence from the
-selected node, authenticates document-carried collateral offline, and uses
-attested origin-bound TLS for requests. It does not need a local Tinfoil
-daemon, nor does it learn approval pins from server responses or feature flags.
-This is separate from shared Tinfoil router discovery and the Continuum proxy.
-
-Use the managed workspace's SecretSpec launch flow; never save the optional
-value into a generated `.env` or a shared credential file. Local startup does
-not establish Nitro VSOCK egress, a deployed measurement, or production access.
-
 In Maple, set `apps/maple-research/frontend/.env.local` (relative to the
 monorepo root) to use this backend, preserving other existing configuration:
 

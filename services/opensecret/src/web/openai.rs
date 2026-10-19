@@ -11,7 +11,8 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan, ReasoningEffort,
+    model_catalog_response_with_maple, openai_models_response_with_maple, ModelAliasTargets,
+    ModelPlan, ReasoningEffort,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
@@ -1726,6 +1727,7 @@ pub(crate) fn resolve_inference_model<'a>(
     request: ModelResolutionRequest<'_>,
     requirements: impl FnOnce() -> AutoModelRequirements<'a>,
 ) -> Result<ResolvedInferenceModel, ApiError> {
+    ensure_maple_model_access(request.alias_target, request.maple_inference_enabled)?;
     if !needs_auto_model_decision(request.requested_model_id) {
         return Ok(ResolvedInferenceModel::Explicit(
             request.alias_target.to_string(),
@@ -2343,6 +2345,7 @@ pub(crate) async fn prepare_completion_request(
         return Err(ApiError::InternalServerError);
     }
 
+    ensure_maple_model_access(&intent.public_model_id, routing.maple_inference_enabled())?;
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
     // Helpers and re-plans retain the entrypoint's authenticated eligibility.
     // A fabricated internal intent cannot grant access to the dedicated node.
@@ -2799,7 +2802,7 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         auto_reason.map(|reason| reason.as_str()),
         attempt.route.selection_source,
         if pinned.intent.maple_inference_enabled
-            && pinned.intent.public_model_id == crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
+            && pinned.intent.public_model_id == crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
         { MAPLE_ROUTING_POLICY_VERSION } else { SHADOW_ROUTING_POLICY_VERSION },
         pinned.intent.auto_model.as_ref().map(|decision| decision.policy_version),
         pinned.intent.auto_model.as_ref().map(|decision| decision.rejected.as_slice()).unwrap_or_default(),
@@ -3203,6 +3206,15 @@ pub(crate) async fn get_chat_completion_response(
     let started =
         start_chat_completion_response(state, user, body, headers, execution, pinned).await?;
     finish_started_completion(state, user, started).await
+}
+
+/// The dedicated checkpoint is a separate internal rollout, never an alias of
+/// the older shared model. Enforce it before context assembly or any send.
+pub(crate) fn ensure_maple_model_access(model_name: &str, enabled: bool) -> Result<(), ApiError> {
+    if crate::model_config::is_maple_model(model_name) && !enabled {
+        return Err(ApiError::ModelNotAvailable);
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_completion_model_access(
@@ -3628,10 +3640,17 @@ async fn proxy_models(
     axum::Extension(session_id): axum::Extension<TransportSession>,
     user: Option<axum::Extension<User>>,
 ) -> Result<Response, ApiError> {
-    let _ = user;
+    let enabled = match user {
+        Some(axum::Extension(user)) => {
+            InferenceRoutingContext::for_user(&state, user.uuid, ModelPlan::Free)
+                .await
+                .maple_inference_enabled()
+        }
+        None => false,
+    };
     let proxy_config = state.proxy_router.get_completion_proxy();
     let models_response = if proxy_config.provider_name == "tinfoil" {
-        openai_models_response()
+        openai_models_response_with_maple(enabled, state.proxy_router.get_maple_proxy().is_some())
     } else {
         fetch_provider_models(&state.provider_client, &proxy_config).await?
     };
@@ -3695,7 +3714,12 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let catalog_response = model_catalog_response(model_plan);
+    let routing = InferenceRoutingContext::for_user(&state, user.uuid, model_plan).await;
+    let catalog_response = model_catalog_response_with_maple(
+        model_plan,
+        routing.maple_inference_enabled(),
+        state.proxy_router.get_maple_proxy().is_some(),
+    );
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 

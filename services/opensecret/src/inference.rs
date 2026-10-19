@@ -91,8 +91,9 @@ pub(crate) struct InferenceIntent {
     pub(crate) auto_model: Option<AutoModelDecision>,
     pub(crate) selection_mode: ModelSelectionMode,
     pub(crate) model_plan: ModelPlan,
-    /// Backend-resolved, request-scoped permission for the dedicated provider.
-    /// Never derived from caller JSON or a remembered route.
+    /// Backend-resolved, request-scoped permission for the dedicated 1017 model.
+    /// Never derived from caller JSON or a remembered route. Permission does
+    /// not change the public model or authorize an older-version fallback.
     pub(crate) maple_inference_enabled: bool,
     pub(crate) surface: InferenceSurface,
     pub(crate) workload_class: WorkloadClass,
@@ -406,6 +407,34 @@ mod tests {
 
         assert_eq!(intent.selection_mode, ModelSelectionMode::Explicit);
         assert!(!intent.selection_mode.is_auto());
+    }
+
+    #[test]
+    fn dedicated_rollout_permission_never_rewrites_deepseek_version() {
+        use crate::model_config::{
+            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        };
+        for model in [
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+        ] {
+            let intent = InferenceIntent::new(
+                Uuid::nil(),
+                model,
+                model,
+                ModelPlan::Paid,
+                InferenceSurface::ChatCompletions,
+                WorkloadClass::Interactive,
+            );
+            assert!(!intent.maple_inference_enabled);
+            for enabled in [false, true] {
+                let configured = intent.clone().with_maple_inference(enabled);
+                assert_eq!(configured.requested_model_id, model);
+                assert_eq!(configured.public_model_id, model);
+                assert_eq!(configured.selection_mode, ModelSelectionMode::Explicit);
+                assert_eq!(configured.maple_inference_enabled, enabled);
+            }
+        }
     }
 
     #[test]

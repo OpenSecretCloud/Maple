@@ -212,12 +212,15 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
         assert_eq!(child.maple_inference_enabled(), enabled);
         assert_eq!(caller.model_plan(), ModelPlan::Paid);
 
-        for provider in [ProviderId::Maple, ProviderId::Tinfoil] {
+        for (provider, public_model) in [
+            (ProviderId::Maple, "deepseek-v4-1-flash-1017"),
+            (ProviderId::Tinfoil, "deepseek-v4-1-flash"),
+        ] {
             let pinned = PinnedCompletionRequest::new(
                 InferenceIntent::new(
                     Uuid::from_u128(1),
-                    "deepseek-v4-1-flash",
-                    "deepseek-v4-1-flash",
+                    public_model,
+                    public_model,
                     ModelPlan::Paid,
                     InferenceSurface::Responses,
                     WorkloadClass::Interactive,
@@ -230,15 +233,15 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
                         api_key: None,
                         provider_name: provider.as_str().to_string(),
                     },
-                    public_model_id: "deepseek-v4-1-flash".to_string(),
+                    public_model_id: public_model.to_string(),
                     provider_model_id: "deepseek-v4-1-flash".to_string(),
-                    response_model_id: "deepseek-v4-1-flash".to_string(),
+                    response_model_id: public_model.to_string(),
                     bucket: None,
                     selection_source: RouteSelectionSource::Preferred,
                 },
             );
             let context = CompletionExecutionContext::for_pinned(
-                BillingContext::new(AuthMethod::ApiKey, "deepseek-v4-1-flash".to_string()),
+                BillingContext::new(AuthMethod::ApiKey, public_model.to_string()),
                 &pinned,
                 &cache,
             );
@@ -249,7 +252,7 @@ fn nested_and_pinned_completion_contexts_preserve_authenticated_rollout_decision
 }
 
 #[test]
-fn direct_maple_cache_salt_is_private_and_rebuilt_for_shared_provider_fallback() {
+fn direct_maple_cache_salt_is_private_and_provider_fields_are_rebuilt() {
     let user = Uuid::from_u128(1);
     let other_user = Uuid::from_u128(2);
     let root = CacheNamespaceRoot::from_bytes([0x42; 32]);
@@ -309,8 +312,9 @@ fn direct_maple_cache_salt_is_private_and_rebuilt_for_shared_provider_fallback()
             );
             assert_ne!(other_body.get("cache_salt"), body.get("cache_salt"));
 
-            // A permitted pre-send fallback must rebuild both field name and
-            // provider domain rather than forwarding Maple's native salt.
+            // Provider field normalization is independent of model identity.
+            // Rebuilding fields must never retain another provider's salt;
+            // this does not authorize fallback between different checkpoints.
             apply_provider_managed_request_fields(
                 &mut body,
                 ProviderId::Tinfoil.as_str(),
@@ -339,5 +343,18 @@ fn direct_maple_cache_salt_is_private_and_rebuilt_for_shared_provider_fallback()
             assert_eq!(body.get("cache_salt"), Some(&json!(continuum_expected)));
             assert_ne!(body.get("cache_salt"), Some(&json!(expected)));
         }
+    }
+}
+
+#[test]
+fn dedicated_checkpoint_access_requires_rollout_without_relabeling_old_model() {
+    let new_model = crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID;
+    assert!(matches!(
+        ensure_maple_model_access(new_model, false),
+        Err(ApiError::ModelNotAvailable)
+    ));
+    assert!(ensure_maple_model_access(new_model, true).is_ok());
+    for enabled in [false, true] {
+        assert!(ensure_maple_model_access("deepseek-v4-1-flash", enabled).is_ok());
     }
 }

@@ -1189,31 +1189,6 @@ A restart should not be needed but if you need to:
 sudo systemctl restart vsock-kagi-proxy.service
 ```
 
-## Dedicated inference VSOCK egress
-
-The dedicated direct client uses the same byte-forwarding topology as the
-shared Tinfoil client. TLS terminates inside the attested remote enclave; the
-parent and VSOCK forwarder do not decrypt it. The hostname in the HTTPS URL
-remains the approved hostname, preserving SNI, normal certificate validation,
-origin binding and the attested public-key pin.
-
-The entrypoint reserves `127.0.0.42:443` and parent VSOCK port `8050` for
-`i01.tfinf.maple.ai:443`. A parent-side byte forwarder must bind that VSOCK port
-to exactly this destination. Parent-specific allowlist and service provisioning
-belong in the private fleet runbook and require a separately authorized rollout;
-a local build does not activate them. The direct V3 client fetches nonce-bound
-attestation and encrypted inference over this one destination. Its verification
-collateral and trust roots are document-carried or compiled into the SDK;
-the direct path needs no additional GitHub, AMD KDS, or Sigstore destinations.
-Keep existing shared Tinfoil and Continuum egress, which have different flows.
-Do not widen the destination to a wildcard or replace it with a TLS-terminating
-HTTP proxy.
-
-The compiled node policy owns the hostname and current/staged approved
-release/measurement pairs. Feature flags may select registered routes, but
-cannot introduce a hostname or approve an unrecognized measurement. Parent
-egress alone neither enables routing nor authenticates a model request.
-
 ## Vsock Tinfoil proxies
 Create vsock proxy services so that the in-process Tinfoil Rust SDK can talk to Tinfoil services:
 
@@ -2171,36 +2146,6 @@ Take that value and insert into SecretsManager with the appropriate name:
 - `tinfoil_proxy_dev_api_key` for dev environment
 - `tinfoil_proxy_preview1_api_key` for preview environment
 - `tinfoil_proxy_prod_api_key` for prod environment
-
-#### Optional dedicated inference API key
-
-Dedicated inference consumes `MAPLE_INFERENCE_API_KEY`, independently from the
-existing `tinfoil_proxy_*` shared-inference credential. Its runtime contract is
-a separate KMS-encrypted Secrets Manager object with the same JSON shape
-(`api_key` containing the encrypted base64 plaintext), selected by environment:
-
-- `maple_inference_dev_api_key`
-- `maple_inference_preview1_api_key`
-- `maple_inference_prod_api_key`
-- `maple_inference_<ENV_NAME>_api_key` for custom mode
-
-Secret creation, KMS/IAM grants and credential authorization are separate
-operator actions. The entrypoint requests this optional object through the
-existing parent credential requester and decrypts it inside the enclave.
-An absent, invalid or undecryptable object leaves only the dedicated provider
-disabled; it does not stop shared inference startup. It never falls back to
-`TINFOIL_API_KEY`, and an inherited plaintext dedicated value is cleared in
-Nitro mode. Local mode receives the optional credential through SecretSpec.
-Missing credentials do not relax attestation, TLS pinning or routing policy.
-The optional lookup and KMS decrypt each have a 15-second timeout and a
-two-second forced-termination grace period, bounding their startup delay.
-
-The focused shell test exercises missing/invalid/decryption failures, distinct
-environment names and non-disclosure using synthetic values only:
-
-```sh
-bash scripts/test_maple_inference_entrypoint.sh
-```
 
 ## Credential Requester
 

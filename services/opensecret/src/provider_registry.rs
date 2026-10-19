@@ -5,12 +5,12 @@
 //! completion model.
 
 use crate::model_config::{
-    DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
-    QUICK_MODEL_ID,
+    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+    GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-preferred-v1";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-1017-only-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
@@ -169,24 +169,24 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
-    ModelRouteSpec {
-        provider: ProviderId::Tinfoil,
-        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        weight: 100,
-        enabled: true,
-    },
-    // Eligibility is request-scoped and fail-closed in the planner/router.
-    // This is one dedicated endpoint, independently keyed from shared Tinfoil.
-    ModelRouteSpec {
-        provider: ProviderId::Maple,
-        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        weight: 100,
-        enabled: true,
-    },
-];
+const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Tinfoil,
+    provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    weight: 100,
+    enabled: true,
+}];
+
+// The dedicated node serves the newer 1017 checkpoint under this wire alias.
+// Public identity remains versioned: shared Tinfoil is not a fallback for it.
+// Eligibility is request-scoped and fail-closed in the planner/router.
+const DEEPSEEK_V4_1_FLASH_1017_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Maple,
+    provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    response_model_id: DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+    weight: 100,
+    enabled: true,
+}];
 
 const LLAMA3_3_70B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
@@ -211,6 +211,10 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
     completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_ROUTES),
+    completion_model(
+        DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_1017_ROUTES,
+    ),
     completion_model("llama3-3-70b", LLAMA3_3_70B_ROUTES),
     completion_model("gpt-oss-safeguard-120b", GPT_OSS_SAFEGUARD_120B_ROUTES),
 ];
@@ -275,6 +279,7 @@ mod tests {
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
                 "llama3-3-70b",
                 "gpt-oss-safeguard-120b",
             ]
@@ -283,7 +288,7 @@ mod tests {
 
     #[test]
     fn registry_covers_exactly_enabled_api_completion_models() {
-        let expected = enabled_api_completion_model_ids().collect::<BTreeSet<_>>();
+        let expected = enabled_api_completion_model_ids(true).collect::<BTreeSet<_>>();
         let registered = PROVIDER_REGISTRY
             .completion_models()
             .iter()
@@ -356,10 +361,10 @@ mod tests {
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),
                 (
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
                     ProviderId::Maple,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID
+                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
                 ),
                 (
                     "llama3-3-70b",
@@ -386,5 +391,49 @@ mod tests {
         assert_eq!(flash.routes[0].provider, ProviderId::Continuum);
         assert_eq!(flash.routes[0].provider_model_id, "glm-5.3-flash");
         assert!(flash.routes[0].enabled);
+    }
+
+    #[test]
+    fn deepseek_versions_are_distinct_models_with_no_cross_version_routes() {
+        let shared = PROVIDER_REGISTRY
+            .completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID)
+            .expect("shared DeepSeek model");
+        let dedicated = PROVIDER_REGISTRY
+            .completion_model(DEEPSEEK_V4_1_FLASH_1017_MODEL_ID)
+            .expect("dedicated 1017 model");
+        assert_ne!(shared.public_model_id, dedicated.public_model_id);
+        assert_eq!(shared.routes.len(), 1);
+        assert_eq!(shared.routes[0].provider, ProviderId::Tinfoil);
+        assert_eq!(
+            shared.routes[0].response_model_id,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert_eq!(dedicated.routes.len(), 1);
+        assert_eq!(dedicated.routes[0].provider, ProviderId::Maple);
+        assert_eq!(
+            dedicated.routes[0].provider_model_id,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert_eq!(
+            dedicated.routes[0].response_model_id,
+            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
+        );
+    }
+
+    #[test]
+    fn dedicated_1017_is_not_an_auto_default_or_alternate() {
+        use crate::inference::auto_model::auto_model_candidates;
+        use crate::inference::ModelSelectionMode;
+        use crate::model_config::ModelPlan;
+
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            for mode in [
+                ModelSelectionMode::AutoQuick,
+                ModelSelectionMode::AutoPowerful,
+            ] {
+                let candidates = auto_model_candidates(mode, plan).expect("Auto candidates");
+                assert!(!candidates.contains(&DEEPSEEK_V4_1_FLASH_1017_MODEL_ID));
+            }
+        }
     }
 }
