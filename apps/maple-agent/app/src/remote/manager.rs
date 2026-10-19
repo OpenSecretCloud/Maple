@@ -54,7 +54,7 @@ pub struct Node {
     pub(super) controllers: Arc<Semaphore>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     pub enabled: bool,
     pub endpoint: Option<String>,

@@ -12,7 +12,7 @@ use zeroize::Zeroize;
 
 const MAX_PEERS: usize = 64;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Peer {
     pub name: String,

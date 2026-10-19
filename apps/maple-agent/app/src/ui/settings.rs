@@ -241,6 +241,15 @@ impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {
+    pub fn update_remote_status(
+        &mut self,
+        status: crate::remote::manager::Status,
+        cx: &mut Context<Self>,
+    ) {
+        self.remote_screen
+            .update(cx, |screen, cx| screen.update_status(status, cx));
+    }
+
     pub fn new(
         backend: Arc<AgentBackend>,
         integrations_backend: Arc<AgentBackend>,

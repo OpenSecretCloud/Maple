@@ -9,10 +9,15 @@ continue to share those tasks. ACP is not exposed over Iroh.
 
 ## Using it
 
-Open **Settings → Remote computers**, enable remote access on the computer that will run tasks,
-and choose **Pair another computer**. On the controller, refresh devices and
-enter the eight-character code displayed on the execution computer, grouped as
-`ABCD-EFGH`. The code field accepts it with or without the dash. Both must
+Open **Settings → Remote computers**. Under **This computer**, enable remote
+access on the computer that will run tasks, then choose **Show pairing code**.
+On the controller, use **Connect to another computer → Find computers**, choose
+**Enter code** beside that computer, and enter its code before choosing
+**Pair computer**. Code entry appears only for the selected computer; canceling,
+refreshing discovery, or selecting a different computer clears it. Codes are
+shown in eight individual boxes grouped as `ABCD-EFGH`. The single underlying
+field supports typing, selection and paste with or without the dash. Filling it
+does not submit a pairing attempt automatically. Both must
 be signed into the same Maple account and deployment/channel. Account login
 alone does not grant access. The code expires in five minutes and permits one
 attempt. A failed attempt requires a new, locally opened window.

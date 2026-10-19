@@ -1146,6 +1146,11 @@ pub fn run() {
                     if let Ok(Ok(status)) = task.await {
                         status_root.update(cx, |app, cx| {
                             if app.user_id == account && account.is_some() {
+                                if let Screen::Settings(settings) = &app.screen {
+                                    settings.update(cx, |settings, cx| {
+                                        settings.update_remote_status(status.clone(), cx)
+                                    });
+                                }
                                 app.update_computers(status, cx);
                             }
                         });
