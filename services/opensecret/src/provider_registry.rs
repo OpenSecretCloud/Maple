@@ -5,23 +5,63 @@
 //! completion model.
 
 use crate::model_config::{
-    DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
-    QUICK_MODEL_ID,
+    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+    GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v2";
+
+/// A backend-owned dedicated inference deployment. Its identity is internal to
+/// routing; customer pricing and accounting continue to use the Maple family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum MapleInstanceId {
+    I01,
+    I02,
+}
+
+impl MapleInstanceId {
+    pub(crate) const ALL: [Self; 2] = [Self::I01, Self::I02];
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
     Tinfoil,
     Continuum,
+    Maple(MapleInstanceId),
 }
 
 impl ProviderId {
+    /// Internal route identity, including the Maple deployment when present.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Tinfoil => "tinfoil",
             Self::Continuum => "continuum",
+            Self::Maple(MapleInstanceId::I01) => "maple-i01",
+            Self::Maple(MapleInstanceId::I02) => "maple-i02",
+        }
+    }
+
+    /// Stable logical provider for billing, request policy and cache namespaces.
+    pub(crate) const fn family_name(self) -> &'static str {
+        match self {
+            Self::Maple(_) => "maple",
+            _ => self.as_str(),
+        }
+    }
+
+    pub(crate) const fn is_maple(self) -> bool {
+        matches!(self, Self::Maple(_))
+    }
+
+    /// Parses only compiled internal identities, never an arbitrary endpoint.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "tinfoil" => Some(Self::Tinfoil),
+            "continuum" => Some(Self::Continuum),
+            "maple-i01" => Some(Self::Maple(MapleInstanceId::I01)),
+            "maple-i02" => Some(Self::Maple(MapleInstanceId::I02)),
+            _ => None,
         }
     }
 }
@@ -104,6 +144,16 @@ const PROVIDERS: &[ProviderSpec] = &[
         weight: 30,
         enabled: true,
     },
+    ProviderSpec {
+        id: ProviderId::Maple(MapleInstanceId::I01),
+        weight: 100,
+        enabled: true,
+    },
+    ProviderSpec {
+        id: ProviderId::Maple(MapleInstanceId::I02),
+        weight: 100,
+        enabled: true,
+    },
 ];
 
 const GPT_OSS_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
@@ -166,6 +216,26 @@ const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
+// The dedicated node serves the newer 1017 checkpoint under this wire alias.
+// Public identity remains versioned: shared Tinfoil is not a fallback for it.
+// Eligibility is request-scoped and fail-closed in the planner/router.
+const DEEPSEEK_V4_1_FLASH_1017_ROUTES: &[ModelRouteSpec] = &[
+    ModelRouteSpec {
+        provider: ProviderId::Maple(MapleInstanceId::I01),
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+        weight: 100,
+        enabled: true,
+    },
+    ModelRouteSpec {
+        provider: ProviderId::Maple(MapleInstanceId::I02),
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+        weight: 100,
+        enabled: true,
+    },
+];
+
 const LLAMA3_3_70B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
     provider_model_id: "llama3-3-70b",
@@ -189,6 +259,10 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
     completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_ROUTES),
+    completion_model(
+        DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_1017_ROUTES,
+    ),
     completion_model("llama3-3-70b", LLAMA3_3_70B_ROUTES),
     completion_model("gpt-oss-safeguard-120b", GPT_OSS_SAFEGUARD_120B_ROUTES),
 ];
@@ -205,6 +279,35 @@ mod tests {
         enabled_api_completion_model_ids, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn internal_instance_identity_is_distinct_from_logical_provider_family() {
+        for instance in MapleInstanceId::ALL {
+            let provider = ProviderId::Maple(instance);
+            assert!(provider.is_maple());
+            assert_eq!(provider.family_name(), "maple");
+            assert_eq!(ProviderId::from_name(provider.as_str()), Some(provider));
+            assert_ne!(provider.as_str(), provider.family_name());
+        }
+        assert_ne!(
+            ProviderId::Maple(MapleInstanceId::I01),
+            ProviderId::Maple(MapleInstanceId::I02)
+        );
+        for provider in [ProviderId::Tinfoil, ProviderId::Continuum] {
+            assert!(!provider.is_maple());
+            assert_eq!(provider.family_name(), provider.as_str());
+            assert_eq!(ProviderId::from_name(provider.as_str()), Some(provider));
+        }
+        for name in [
+            "maple",
+            "maple-i03",
+            "maple-i01.evil",
+            "MAPLE-I01",
+            "https://i01.tfinf.maple.ai",
+        ] {
+            assert_eq!(ProviderId::from_name(name), None);
+        }
+    }
 
     #[test]
     fn registry_is_structurally_valid_and_deterministic() {
@@ -253,6 +356,7 @@ mod tests {
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
                 "llama3-3-70b",
                 "gpt-oss-safeguard-120b",
             ]
@@ -261,7 +365,7 @@ mod tests {
 
     #[test]
     fn registry_covers_exactly_enabled_api_completion_models() {
-        let expected = enabled_api_completion_model_ids().collect::<BTreeSet<_>>();
+        let expected = enabled_api_completion_model_ids(true).collect::<BTreeSet<_>>();
         let registered = PROVIDER_REGISTRY
             .completion_models()
             .iter()
@@ -334,6 +438,18 @@ mod tests {
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),
                 (
+                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+                    ProviderId::Maple(MapleInstanceId::I01),
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
+                ),
+                (
+                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+                    ProviderId::Maple(MapleInstanceId::I02),
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
+                ),
+                (
                     "llama3-3-70b",
                     ProviderId::Tinfoil,
                     "llama3-3-70b",
@@ -358,5 +474,56 @@ mod tests {
         assert_eq!(flash.routes[0].provider, ProviderId::Continuum);
         assert_eq!(flash.routes[0].provider_model_id, "glm-5.3-flash");
         assert!(flash.routes[0].enabled);
+    }
+
+    #[test]
+    fn deepseek_versions_are_distinct_models_with_no_cross_version_routes() {
+        let shared = PROVIDER_REGISTRY
+            .completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID)
+            .expect("shared DeepSeek model");
+        let dedicated = PROVIDER_REGISTRY
+            .completion_model(DEEPSEEK_V4_1_FLASH_1017_MODEL_ID)
+            .expect("dedicated 1017 model");
+        assert_ne!(shared.public_model_id, dedicated.public_model_id);
+        assert_eq!(shared.routes.len(), 1);
+        assert_eq!(shared.routes[0].provider, ProviderId::Tinfoil);
+        assert_eq!(
+            shared.routes[0].response_model_id,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert_eq!(dedicated.routes.len(), 2);
+        assert_eq!(
+            dedicated
+                .routes
+                .iter()
+                .map(|route| route.provider)
+                .collect::<Vec<_>>(),
+            MapleInstanceId::ALL.map(ProviderId::Maple)
+        );
+        assert_eq!(
+            dedicated.routes[0].provider_model_id,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert_eq!(
+            dedicated.routes[0].response_model_id,
+            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
+        );
+    }
+
+    #[test]
+    fn dedicated_1017_is_not_an_auto_default_or_alternate() {
+        use crate::inference::auto_model::auto_model_candidates;
+        use crate::inference::ModelSelectionMode;
+        use crate::model_config::ModelPlan;
+
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            for mode in [
+                ModelSelectionMode::AutoQuick,
+                ModelSelectionMode::AutoPowerful,
+            ] {
+                let candidates = auto_model_candidates(mode, plan).expect("Auto candidates");
+                assert!(!candidates.contains(&DEEPSEEK_V4_1_FLASH_1017_MODEL_ID));
+            }
+        }
     }
 }

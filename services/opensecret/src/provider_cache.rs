@@ -14,6 +14,8 @@ pub(crate) const CACHE_NAMESPACE_ROOT_BYTES: usize = 32;
 const CACHE_NAMESPACE_ROOT_BASE64_BYTES: usize = 44;
 const TINFOIL_CACHE_NAMESPACE_V1_LABEL: &[u8] =
     b"opensecret/provider-cache/tinfoil/user-cache-namespace/v1";
+const MAPLE_CACHE_NAMESPACE_V1_LABEL: &[u8] =
+    b"opensecret/provider-cache/maple/user-cache-namespace/v1";
 const CONTINUUM_CACHE_NAMESPACE_V1_LABEL: &[u8] =
     b"opensecret/provider-cache/continuum/user-cache-namespace/v1";
 
@@ -102,6 +104,7 @@ impl<'de> Deserialize<'de> for CacheNamespaceRoot {
 #[derive(Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
 struct DerivedCacheNamespaceBytes {
     tinfoil: [u8; 32],
+    maple: [u8; 32],
     continuum: [u8; 32],
 }
 
@@ -113,6 +116,10 @@ pub(crate) struct DerivedCacheNamespaces(Arc<DerivedCacheNamespaceBytes>);
 impl DerivedCacheNamespaces {
     pub(crate) fn tinfoil_user_cache_secret(&self) -> String {
         hex::encode(self.0.tinfoil)
+    }
+
+    pub(crate) fn maple_user_cache_secret(&self) -> String {
+        hex::encode(self.0.maple)
     }
 
     pub(crate) fn continuum_cache_salt(&self) -> String {
@@ -132,6 +139,7 @@ pub(crate) fn derive_provider_cache_namespaces(
 ) -> DerivedCacheNamespaces {
     DerivedCacheNamespaces(Arc::new(DerivedCacheNamespaceBytes {
         tinfoil: derive_cache_namespace(root, verified_user_id, TINFOIL_CACHE_NAMESPACE_V1_LABEL),
+        maple: derive_cache_namespace(root, verified_user_id, MAPLE_CACHE_NAMESPACE_V1_LABEL),
         continuum: derive_cache_namespace(
             root,
             verified_user_id,
@@ -150,6 +158,21 @@ pub(crate) fn legacy_continuum_cache_salt(verified_user_id: Uuid) -> String {
         root,
         verified_user_id,
         CONTINUUM_CACHE_NAMESPACE_V1_LABEL,
+    ));
+    hex::encode(bytes.as_slice())
+}
+
+/// Legacy clients have no private cache root. Maple's dedicated instances get
+/// their own process-secret namespace, separate from shared Tinfoil and other
+/// providers even when the same authenticated user reaches both routes.
+/// Restarting the process intentionally cold-starts these namespaces.
+pub(crate) fn legacy_maple_user_cache_secret(verified_user_id: Uuid) -> String {
+    static ROOT: OnceLock<CacheNamespaceRoot> = OnceLock::new();
+    let root = ROOT.get_or_init(|| CacheNamespaceRoot(crate::encrypt::generate_random()));
+    let bytes = Zeroizing::new(derive_cache_namespace(
+        root,
+        verified_user_id,
+        MAPLE_CACHE_NAMESPACE_V1_LABEL,
     ));
     hex::encode(bytes.as_slice())
 }
@@ -212,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_namespace_vectors_preserve_tinfoil_and_separate_continuum() {
+    fn provider_namespace_vectors_preserve_existing_and_separate_maple() {
         // Independent Python hmac/hashlib vectors: root = 0x42 * 32, UUID = 1.
         let namespaces = derive_provider_cache_namespaces(
             &CacheNamespaceRoot::from_bytes([0x42; 32]),
@@ -225,6 +248,18 @@ mod tests {
         assert_eq!(
             namespaces.continuum_cache_salt(),
             "401dd4e7d9085fb325570cbfb84c29a5b27e4494c8f56c5765bf3a379bbd09b4"
+        );
+        assert_eq!(
+            namespaces.maple_user_cache_secret(),
+            "653fdf3cab5636e6ebd5bf3e917c543c9c502a4e30d7e82929c90afa8298123d"
+        );
+        assert_ne!(
+            namespaces.maple_user_cache_secret(),
+            namespaces.tinfoil_user_cache_secret()
+        );
+        assert_ne!(
+            namespaces.maple_user_cache_secret(),
+            namespaces.continuum_cache_salt()
         );
     }
 
@@ -242,6 +277,45 @@ mod tests {
             derive_provider_cache_namespaces(&CacheNamespaceRoot::from_bytes([0x24; 32]), user)
                 .continuum_cache_salt()
         );
+    }
+
+    #[test]
+    fn maple_namespace_is_separated_by_user_root_and_provider() {
+        let root = CacheNamespaceRoot::from_bytes([0x42; 32]);
+        let user = Uuid::from_u128(1);
+        let namespace = derive_provider_cache_namespaces(&root, user).maple_user_cache_secret();
+        assert_eq!(namespace.len(), 64);
+        assert_eq!(
+            namespace,
+            derive_provider_cache_namespaces(&root, user).maple_user_cache_secret()
+        );
+        assert_ne!(
+            namespace,
+            derive_provider_cache_namespaces(&root, Uuid::from_u128(2)).maple_user_cache_secret()
+        );
+        assert_ne!(
+            namespace,
+            derive_provider_cache_namespaces(&CacheNamespaceRoot::from_bytes([0x24; 32]), user)
+                .maple_user_cache_secret()
+        );
+        let namespaces = derive_provider_cache_namespaces(&root, user);
+        assert_ne!(namespace, namespaces.tinfoil_user_cache_secret());
+        assert_ne!(namespace, namespaces.continuum_cache_salt());
+    }
+
+    #[test]
+    fn legacy_maple_namespace_is_stable_user_bound_and_private() {
+        let user = Uuid::from_u128(1);
+        let namespace = legacy_maple_user_cache_secret(user);
+        assert_eq!(namespace.len(), 64);
+        assert_eq!(namespace, legacy_maple_user_cache_secret(user));
+        assert_ne!(
+            namespace,
+            legacy_maple_user_cache_secret(Uuid::from_u128(2))
+        );
+        assert_ne!(namespace, legacy_continuum_cache_salt(user));
+        // Tinfoil V1 uses this legacy UUID hash; Maple must not share it.
+        assert_ne!(namespace, hex::encode(Sha256::digest(user.as_bytes())));
     }
 
     #[test]

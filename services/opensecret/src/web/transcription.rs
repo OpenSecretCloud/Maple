@@ -421,9 +421,9 @@ fn multipart(prepared: PreparedTranscription) -> (String, Vec<u8>) {
 fn provider_error(error: ProviderRequestError) -> TranscriptionError {
     match error {
         ProviderRequestError::Timeout(_) => TranscriptionError::Timeout,
-        ProviderRequestError::TinfoilUnavailable | ProviderRequestError::Build(_) => {
-            TranscriptionError::Unavailable
-        }
+        ProviderRequestError::TinfoilUnavailable
+        | ProviderRequestError::MapleUnavailable
+        | ProviderRequestError::Build(_) => TranscriptionError::Unavailable,
         ProviderRequestError::Connect(_) | ProviderRequestError::Send(_) => {
             TranscriptionError::Upstream
         }

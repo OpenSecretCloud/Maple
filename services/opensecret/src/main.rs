@@ -106,6 +106,7 @@ mod jwt;
 mod kagi;
 mod lease_aware_cache;
 mod log_redaction;
+mod maple_inference;
 mod message_signing;
 mod migrations;
 mod model_config;
@@ -447,6 +448,9 @@ pub enum ApiError {
     #[error("Model not available on current plan")]
     ModelNotAvailableOnPlan,
 
+    #[error("Model not found or not available to this account")]
+    ModelNotAvailable,
+
     #[error("Message exceeds context limit")]
     MessageExceedsContextLimit,
 
@@ -505,6 +509,7 @@ impl IntoResponse for ApiError {
             ApiError::UsageLimitReached => StatusCode::FORBIDDEN,
             ApiError::FreeTokenLimitExceeded => StatusCode::FORBIDDEN,
             ApiError::ModelNotAvailableOnPlan => StatusCode::FORBIDDEN,
+            ApiError::ModelNotAvailable => StatusCode::NOT_FOUND,
             ApiError::MessageExceedsContextLimit => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
@@ -517,6 +522,7 @@ impl IntoResponse for ApiError {
             ApiError::UsageLimitReached => Some("usage_limit_reached"),
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
+            ApiError::ModelNotAvailable => Some("model_not_found"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
             ApiError::SystemOneRequest(error) => Some(error.code()),
             ApiError::Transcription(error) => Some(error.code()),
@@ -601,7 +607,9 @@ async fn add_error_contract_header(request: axum::extract::Request, next: Next) 
 impl From<ProviderRequestError> for ApiError {
     fn from(error: ProviderRequestError) -> Self {
         match error {
-            ProviderRequestError::TinfoilUnavailable => Self::ServiceUnavailable,
+            ProviderRequestError::TinfoilUnavailable | ProviderRequestError::MapleUnavailable => {
+                Self::ServiceUnavailable
+            }
             ProviderRequestError::Timeout(_)
             | ProviderRequestError::Build(_)
             | ProviderRequestError::Connect(_)
@@ -696,7 +704,7 @@ mod api_error_contract_tests {
 
     #[tokio::test]
     async fn actionable_inference_errors_add_openai_details_and_preserve_legacy_fields() {
-        let cases: [(ApiError, StatusCode, &[u8], &str); 4] = [
+        let cases: [(ApiError, StatusCode, &[u8], &str); 5] = [
             (
                 ApiError::UsageLimitReached,
                 StatusCode::FORBIDDEN,
@@ -714,6 +722,12 @@ mod api_error_contract_tests {
                 StatusCode::FORBIDDEN,
                 br#"{"status":403,"message":"Model not available on current plan","error":{"message":"Model not available on current plan","code":"model_not_available_on_plan"}}"#,
                 "model_not_available_on_plan",
+            ),
+            (
+                ApiError::ModelNotAvailable,
+                StatusCode::NOT_FOUND,
+                br#"{"status":404,"message":"Model not found or not available to this account","error":{"message":"Model not found or not available to this account","code":"model_not_found"}}"#,
+                "model_not_found",
             ),
             (
                 ApiError::MessageExceedsContextLimit,
@@ -1133,6 +1147,7 @@ pub struct AppStateBuilder {
     openai_api_key: Option<String>,
     openai_api_base: Option<String>,
     tinfoil_api_key: Option<String>,
+    maple_inference_api_key: Option<String>,
     #[cfg(test)]
     tinfoil_api_base: Option<String>,
     jwt_secret: Option<Vec<u8>>,
@@ -1188,6 +1203,11 @@ impl AppStateBuilder {
 
     pub fn tinfoil_api_key(mut self, tinfoil_api_key: String) -> Self {
         self.tinfoil_api_key = Some(tinfoil_api_key);
+        self
+    }
+
+    pub fn maple_inference_api_key(mut self, api_key: Option<String>) -> Self {
+        self.maple_inference_api_key = api_key.filter(|key| !key.trim().is_empty());
         self
     }
 
@@ -1319,6 +1339,11 @@ impl AppStateBuilder {
                     Error::BuilderError(format!("Failed to initialize provider client: {error}"))
                 })?
         };
+        let provider_client = provider_client
+            .with_maple_api_key(self.maple_inference_api_key.clone())
+            .map_err(|error| {
+                Error::BuilderError(format!("Failed to initialize dedicated provider: {error}"))
+            })?;
         let provider_client = Arc::new(provider_client);
 
         let config = Config {
@@ -1403,11 +1428,15 @@ impl AppStateBuilder {
         // Tinfoil routing is identified here, but the in-process SDK resolves
         // and attests its enclave independently in the background. Its control
         // plane therefore cannot gate AppState construction or non-Tinfoil routes.
-        let proxy_router = Arc::new(ProxyRouter::new(
-            openai_api_base.clone(),
-            self.openai_api_key.clone(),
-            provider_client.tinfoil_base_url(),
-        ));
+        let proxy_router = Arc::new(
+            ProxyRouter::new(
+                openai_api_base.clone(),
+                self.openai_api_key.clone(),
+                provider_client.tinfoil_base_url(),
+            )
+            .with_maple_api_key(self.maple_inference_api_key.clone())
+            .with_maple_readiness(provider_client.maple_readiness()),
+        );
         let provider_router = Arc::new(ProviderRouter::default());
         if proxy_router.continuum_proxy().is_none() {
             tracing::warn!(
@@ -4097,6 +4126,7 @@ async fn main() -> Result<(), Error> {
         .openai_api_key(openai_api_key)
         .openai_api_base(openai_api_base)
         .tinfoil_api_key(tinfoil_api_key)
+        .maple_inference_api_key(optional_env("MAPLE_INFERENCE_API_KEY"))
         .jwt_secret(jwt_secret)
         .resend_api_key(resend_api_key)
         .github_client_secret(github_client_secret.clone())

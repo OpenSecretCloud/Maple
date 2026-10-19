@@ -11,19 +11,22 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan, ReasoningEffort,
+    model_catalog_response_with_maple, openai_models_response_with_maple, ModelAliasTargets,
+    ModelPlan, ReasoningEffort,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
 use crate::provider_cache::{
-    derive_provider_cache_namespaces, legacy_continuum_cache_salt, CacheNamespaceRoot,
-    DerivedCacheNamespaces,
+    derive_provider_cache_namespaces, legacy_continuum_cache_salt, legacy_maple_user_cache_secret,
+    CacheNamespaceRoot, DerivedCacheNamespaces,
 };
 use crate::provider_client::{
     ProviderClient, ProviderRequest, ProviderRequestError, ProviderResponse, ProviderSendTrace,
     UpstreamProviderError,
 };
-use crate::provider_registry::{ProviderId, RouteSelectionSource, SHADOW_ROUTING_POLICY_VERSION};
+use crate::provider_registry::{
+    ProviderId, RouteSelectionSource, MAPLE_ROUTING_POLICY_VERSION, SHADOW_ROUTING_POLICY_VERSION,
+};
 use crate::provider_routing::{
     compare_shadow_route, ProviderRouter, ProviderRoutingError, SelectedProviderRoute,
     ShadowRouteComparison,
@@ -67,6 +70,9 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+#[cfg(test)]
+mod maple_tests;
 
 // Timeout constants for provider requests
 // Request timeout (generous for large non-streaming responses).
@@ -638,7 +644,8 @@ impl<'a> CompletionExecutionContext<'a> {
     ) -> Self {
         Self::new(
             billing,
-            InferenceRoutingContext::new(pinned.intent.model_plan),
+            InferenceRoutingContext::new(pinned.intent.model_plan)
+                .with_maple_inference(pinned.intent.maple_inference_enabled),
             cache,
         )
     }
@@ -672,19 +679,94 @@ impl BillingContext {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InferenceRoutingContext {
     model_plan: ModelPlan,
+    maple_inference_enabled: bool,
 }
 
 impl InferenceRoutingContext {
     pub(crate) const fn new(model_plan: ModelPlan) -> Self {
-        Self { model_plan }
+        Self {
+            model_plan,
+            maple_inference_enabled: false,
+        }
+    }
+
+    /// Resolve catalog visibility from the authenticated account and trusted flags
+    /// service. Completion entrypoints use `for_model` to avoid consulting flags
+    /// for models that do not need Maple eligibility.
+    pub(crate) async fn for_user(state: &AppState, user_uuid: Uuid, model_plan: ModelPlan) -> Self {
+        // An unconfigured dedicated provider cannot be selected. Preserve the
+        // existing request path without a new flags dependency in that case.
+        if !state.proxy_router.maple_is_configured() {
+            return Self::new(model_plan);
+        }
+        let enabled = maple_inference_eligibility(state.os_flags(), user_uuid).await;
+        Self::new(model_plan).with_maple_inference(enabled)
+    }
+
+    pub(crate) async fn for_model(
+        state: &AppState,
+        user_uuid: Uuid,
+        model_plan: ModelPlan,
+        model: &str,
+    ) -> Self {
+        if !state.proxy_router.maple_is_configured() {
+            return Self::new(model_plan);
+        }
+        let enabled =
+            maple_inference_eligibility_for_model(state.os_flags(), user_uuid, model).await;
+        Self::new(model_plan).with_maple_inference(enabled)
+    }
+
+    pub(crate) const fn with_maple_inference(self, enabled: bool) -> Self {
+        Self {
+            maple_inference_enabled: enabled,
+            ..self
+        }
+    }
+
+    pub(crate) const fn maple_inference_enabled(self) -> bool {
+        self.maple_inference_enabled
     }
 
     pub(crate) const fn with_model_plan(self, model_plan: ModelPlan) -> Self {
-        Self { model_plan }
+        Self { model_plan, ..self }
     }
 
     pub(crate) const fn model_plan(self) -> ModelPlan {
         self.model_plan
+    }
+}
+
+async fn maple_inference_eligibility_for_model(
+    client: Option<&crate::os_flags::OsFlagsClient>,
+    user_uuid: Uuid,
+    model: &str,
+) -> bool {
+    if !crate::model_config::is_maple_model(model) {
+        return false;
+    }
+    maple_inference_eligibility(client, user_uuid).await
+}
+
+async fn maple_inference_eligibility(
+    client: Option<&crate::os_flags::OsFlagsClient>,
+    user_uuid: Uuid,
+) -> bool {
+    let Some(client) = client else {
+        return false;
+    };
+    let key = crate::os_flags::MAPLE_INFERENCE_FEATURE_FLAG_KEY;
+    match client.get_user_flags(user_uuid, Some(&[key])).await {
+        Ok(response) if response.user_uuid == user_uuid => {
+            response.flags.get(key).copied().unwrap_or(false)
+        }
+        Ok(_) | Err(_) => {
+            warn!(
+                flag_key = key,
+                "Dedicated inference eligibility could not be verified; using existing providers"
+            );
+            false
+        }
     }
 }
 
@@ -960,11 +1042,13 @@ fn failed_completion_execution(
 
 pub(crate) fn attempt_failure_from_provider_error(error: &ProviderRequestError) -> AttemptFailure {
     match error {
-        ProviderRequestError::TinfoilUnavailable => AttemptFailure::new(
-            AttemptFailureKind::ProviderUnavailable,
-            AttemptStage::BeforeSend,
-            ReplaySafety::ProvenPreAcceptance,
-        ),
+        ProviderRequestError::TinfoilUnavailable | ProviderRequestError::MapleUnavailable => {
+            AttemptFailure::new(
+                AttemptFailureKind::ProviderUnavailable,
+                AttemptStage::BeforeSend,
+                ReplaySafety::ProvenPreAcceptance,
+            )
+        }
         ProviderRequestError::Build(_) => AttemptFailure::new(
             AttemptFailureKind::RequestBuild,
             AttemptStage::BeforeSend,
@@ -1641,6 +1725,7 @@ pub(crate) struct ModelResolutionRequest<'a> {
     pub(crate) requested_model_id: &'a str,
     pub(crate) alias_target: &'a str,
     pub(crate) model_plan: ModelPlan,
+    pub(crate) maple_inference_enabled: bool,
     /// An Auto candidate that already failed this request's model-dependent
     /// preparation or lost its routes before any send; the bounded second
     /// decision never returns to it and carries its cause forward.
@@ -1668,6 +1753,7 @@ pub(crate) fn resolve_inference_model<'a>(
     request: ModelResolutionRequest<'_>,
     requirements: impl FnOnce() -> AutoModelRequirements<'a>,
 ) -> Result<ResolvedInferenceModel, ApiError> {
+    ensure_maple_model_access(request.alias_target, request.maple_inference_enabled)?;
     if !needs_auto_model_decision(request.requested_model_id) {
         return Ok(ResolvedInferenceModel::Explicit(
             request.alias_target.to_string(),
@@ -1676,7 +1762,11 @@ pub(crate) fn resolve_inference_model<'a>(
     let mode = ModelSelectionMode::from_requested_model(request.requested_model_id);
     let requirements = requirements();
     let candidates = auto_model_candidates(mode, request.model_plan).unwrap_or_default();
-    let availability = provider_router.model_availability(proxy_router, &candidates);
+    let availability = provider_router.model_availability_with_maple(
+        proxy_router,
+        &candidates,
+        request.maple_inference_enabled,
+    );
     let sticky = provider_router.sticky_route(
         request.account_uuid,
         request.surface,
@@ -1949,9 +2039,10 @@ async fn proxy_openai(
         })?
         .to_string();
 
-    let routing = InferenceRoutingContext::new(model_plan);
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
+    let routing =
+        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &alias_target).await;
     let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
@@ -1969,6 +2060,7 @@ async fn proxy_openai(
             &state.provider_router,
             &state.proxy_router,
             ModelResolutionRequest {
+                maple_inference_enabled: routing.maple_inference_enabled(),
                 account_uuid: user.uuid,
                 surface: InferenceSurface::ChatCompletions,
                 requested_model_id: &requested_model_name,
@@ -2280,7 +2372,11 @@ pub(crate) async fn prepare_completion_request(
         return Err(ApiError::InternalServerError);
     }
 
+    ensure_maple_model_access(&intent.public_model_id, routing.maple_inference_enabled())?;
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
+    // Helpers and re-plans retain the entrypoint's authenticated eligibility.
+    // A fabricated internal intent cannot grant access to the dedicated node.
+    let intent = intent.with_maple_inference(routing.maple_inference_enabled());
     let shadow = state
         .provider_router
         .shadow_completion_plan(&state.proxy_router, &intent);
@@ -2730,7 +2826,9 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         attempt.route.provider_model_id,
         auto_reason.map(|reason| reason.as_str()),
         attempt.route.selection_source,
-        SHADOW_ROUTING_POLICY_VERSION,
+        if pinned.intent.maple_inference_enabled
+            && pinned.intent.public_model_id == crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
+        { MAPLE_ROUTING_POLICY_VERSION } else { SHADOW_ROUTING_POLICY_VERSION },
         pinned.intent.auto_model.as_ref().map(|decision| decision.policy_version),
         pinned.intent.auto_model.as_ref().map(|decision| decision.rejected.as_slice()).unwrap_or_default(),
     );
@@ -2752,7 +2850,9 @@ async fn get_chat_completion_response_with_options(
         response_execution,
         response_execution_guard,
     } = execution;
-    if routing.model_plan() != pinned.intent.model_plan {
+    if routing.model_plan() != pinned.intent.model_plan
+        || routing.maple_inference_enabled() != pinned.intent.maple_inference_enabled
+    {
         error!("Completion policy did not match its pinned inference route");
         return Err(ApiError::InternalServerError.into());
     }
@@ -2825,7 +2925,7 @@ async fn get_chat_completion_response_with_options(
     );
     apply_provider_managed_request_fields(
         &mut modified_body,
-        &selected_route.proxy.provider_name,
+        selected_route.provider.family_name(),
         user.uuid,
         cache_policy,
     );
@@ -2850,7 +2950,10 @@ async fn get_chat_completion_response_with_options(
 
         ensure_stream_usage(&mut request_body);
 
-        let request_body_value = Value::Object(request_body);
+        let mut request_body_value = Value::Object(request_body);
+        if selected_route.provider.is_maple() {
+            crate::maple_inference::sanitize_completion_request(&mut request_body_value);
+        }
         let attempt = execution.begin_attempt(route_identity.clone());
         let mut terminal_guard = AttemptObservationGuard::new_with_probe(
             attempt.clone(),
@@ -2930,7 +3033,7 @@ async fn get_chat_completion_response_with_options(
                 terminal_guard.set_stage(AttemptStage::ResponseBody);
                 (
                     response,
-                    selected_route.provider.as_str().to_string(),
+                    selected_route.provider.family_name().to_string(),
                     attempt,
                     terminal_guard,
                 )
@@ -3133,6 +3236,15 @@ pub(crate) async fn get_chat_completion_response(
     finish_started_completion(state, user, started).await
 }
 
+/// The dedicated checkpoint is a separate internal rollout, never an alias of
+/// the older shared model. Enforce it before context assembly or any send.
+pub(crate) fn ensure_maple_model_access(model_name: &str, enabled: bool) -> Result<(), ApiError> {
+    if crate::model_config::is_maple_model(model_name) && !enabled {
+        return Err(ApiError::ModelNotAvailable);
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_completion_model_access(
     model_name: &str,
     model_plan: ModelPlan,
@@ -3251,11 +3363,24 @@ pub(crate) fn apply_provider_managed_request_fields(
         debug!("Stripped provider-managed completion request field: user_cache_secret");
     }
 
-    if provider_name == ProviderId::Continuum.as_str() {
-        let cache_salt = match cache_policy {
-            CompletionCachePolicy::LegacyV1 => legacy_continuum_cache_salt(user_uuid),
-            CompletionCachePolicy::BoundV2(namespaces) => namespaces.continuum_cache_salt(),
-        };
+    let cache_salt = match (provider_name, cache_policy) {
+        // Direct vLLM consumes cache_salt. user_cache_secret is translated only
+        // by Tinfoil's shared router, which this endpoint deliberately bypasses.
+        ("maple", CompletionCachePolicy::LegacyV1) => {
+            Some(legacy_maple_user_cache_secret(user_uuid))
+        }
+        ("maple", CompletionCachePolicy::BoundV2(namespaces)) => {
+            Some(namespaces.maple_user_cache_secret())
+        }
+        ("continuum", CompletionCachePolicy::LegacyV1) => {
+            Some(legacy_continuum_cache_salt(user_uuid))
+        }
+        ("continuum", CompletionCachePolicy::BoundV2(namespaces)) => {
+            Some(namespaces.continuum_cache_salt())
+        }
+        _ => None,
+    };
+    if let Some(cache_salt) = cache_salt {
         body.insert(
             PROVIDER_MANAGED_CACHE_SALT_FIELD.to_string(),
             json!(cache_salt),
@@ -3543,10 +3668,17 @@ async fn proxy_models(
     axum::Extension(session_id): axum::Extension<TransportSession>,
     user: Option<axum::Extension<User>>,
 ) -> Result<Response, ApiError> {
-    let _ = user;
+    let enabled = match user {
+        Some(axum::Extension(user)) => {
+            InferenceRoutingContext::for_user(&state, user.uuid, ModelPlan::Free)
+                .await
+                .maple_inference_enabled()
+        }
+        None => false,
+    };
     let proxy_config = state.proxy_router.get_completion_proxy();
     let models_response = if proxy_config.provider_name == "tinfoil" {
-        openai_models_response()
+        openai_models_response_with_maple(enabled, state.proxy_router.maple_is_available())
     } else {
         fetch_provider_models(&state.provider_client, &proxy_config).await?
     };
@@ -3610,7 +3742,12 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let catalog_response = model_catalog_response(model_plan);
+    let routing = InferenceRoutingContext::for_user(&state, user.uuid, model_plan).await;
+    let catalog_response = model_catalog_response_with_maple(
+        model_plan,
+        routing.maple_inference_enabled(),
+        state.proxy_router.maple_is_available(),
+    );
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 
@@ -7330,6 +7467,7 @@ mod tests {
         for (provider, public_model) in [
             ("tinfoil", "gpt-oss-120b"),
             ("tinfoil", "deepseek-v4-1-flash"),
+            ("maple", "deepseek-v4-1-flash"),
             ("tinfoil", "kimi-k3"),
             ("tinfoil", "glm-5-3"),
             ("tinfoil", "glm-5-3-flash"),
@@ -7758,6 +7896,7 @@ mod tests {
             provider_router,
             proxy_router,
             ModelResolutionRequest {
+                maple_inference_enabled: false,
                 account_uuid: account,
                 surface,
                 requested_model_id: requested,
@@ -8370,6 +8509,7 @@ mod tests {
                 &provider_router,
                 &proxy_router,
                 ModelResolutionRequest {
+                    maple_inference_enabled: false,
                     account_uuid: account,
                     surface,
                     requested_model_id: AUTO_POWERFUL_MODEL_ID,
@@ -8542,6 +8682,7 @@ mod tests {
             &provider_router,
             &proxy_router,
             ModelResolutionRequest {
+                maple_inference_enabled: false,
                 account_uuid: Uuid::nil(),
                 surface: InferenceSurface::ChatCompletions,
                 requested_model_id: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,

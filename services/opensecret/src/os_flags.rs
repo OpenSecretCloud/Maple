@@ -15,6 +15,7 @@ const USER_FLAGS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 // externally configured identifiers.
 #[allow(dead_code)]
 pub const AGENT_FEATURE_FLAG_KEY: &str = "agent";
+pub(crate) const MAPLE_INFERENCE_FEATURE_FLAG_KEY: &str = "maple_inference";
 
 #[derive(Debug, thiserror::Error)]
 pub enum OsFlagsError {
