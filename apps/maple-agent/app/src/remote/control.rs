@@ -2,7 +2,7 @@
 //! this transport; accepted sends and their receipts belong exclusively to B.
 use super::{
     manager::{Manager, Node},
-    wire,
+    streams, wire,
 };
 use crate::host::protocol::{self, Message, Request};
 use iroh::{
@@ -11,7 +11,7 @@ use iroh::{
 };
 use maple_agent::agent::AgentServiceEvent;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 
 pub(super) fn listen(node: Arc<Node>) {
     tokio::spawn(async move {
@@ -92,93 +92,130 @@ async fn serve(
     peer: EndpointId,
     connection: Connection,
     mut tx: SendStream,
-    mut rx: RecvStream,
+    _rx: RecvStream,
 ) {
     let _questions = node.backend.question_responder();
     let mut events = node.events.subscribe();
     let mut revoked = node.revoked.subscribe();
-    let (incoming, mut requests) = mpsc::channel(1);
-    let reader = tokio::spawn(async move {
+    let capacity = Arc::new(streams::Capacity::new());
+    let mut calls = tokio::task::JoinSet::new();
+    // A slow event consumer cannot hold the request accept/dispatch loop.
+    let event_node = node.clone();
+    let _ = tx.set_priority(1);
+    let mut event_writer = tokio::task::JoinSet::new();
+    event_writer.spawn(async move {
         loop {
-            let request = wire::read::<wire::Command>(&mut rx, wire::MAX_FRAME).await;
-            let terminal = request.is_err();
-            if incoming.send(request).await.is_err() || terminal {
-                break;
+            let event = events
+                .recv()
+                .await
+                .map_err(|_| "Remote event stream fell behind")?;
+            event_node.ensure_valid().await?;
+            if !event_node.store.lock().unwrap().permits(peer)
+                || matches!(&*event, AgentServiceEvent::AccountChanged(_))
+            {
+                return Ok::<(), String>(());
+            }
+            if remote_event(&event) {
+                send(&mut tx, &Message::Event(Box::new((*event).clone()))).await?;
             }
         }
     });
-    let (responses, mut output) = mpsc::channel(16);
-    // Desktop bootstrap fans out independent history, model and integration reads.
-    // Bound that burst without rejecting ordinary startup; urgent task controls
-    // retain their own capacity. Remote work never borrows local IPC slots.
-    let permits = Arc::new(Semaphore::new(32));
-    let control_permits = Arc::new(Semaphore::new(2));
-    let mut calls = tokio::task::JoinSet::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
-    let result: Result<(), String> = async {
-        loop {
-            tokio::select! {
-                _ = node.stopped.cancelled() => break,
-                _ = connection.closed() => break,
-                _ = tick.tick() => {
-                    node.ensure_valid().await?;
-                    if !node.store.lock().unwrap().permits(peer) { break; }
+    loop {
+        tokio::select! {
+            _ = node.stopped.cancelled() => break,
+            _ = connection.closed() => break,
+            _ = event_writer.join_next() => break,
+            _ = tick.tick() => {
+                if !node.valid().await || !node.store.lock().unwrap().permits(peer) { break; }
+            }
+            event = revoked.recv() => {
+                if event.is_err() || event.ok().is_some_and(|key| key == peer || key == node.endpoint.id()) { break; }
+            }
+            _ = calls.join_next(), if !calls.is_empty() => {},
+            incoming = connection.accept_bi() => {
+                let Ok((mut tx, mut rx)) = incoming else { break; };
+                if calls.len() >= streams::MAX_REQUESTS {
+                    let _ = tx.reset(1u32.into());
+                    let _ = rx.stop(1u32.into());
+                    continue;
                 }
-                event = revoked.recv() => {
-                    if event.is_err() || event.ok().is_some_and(|key| key == peer || key == node.endpoint.id()) { break; }
-                }
-                _ = calls.join_next(), if !calls.is_empty() => {},
-                request = requests.recv() => {
-                    let Some(request) = request else { break; };
-                    let request = match request {
-                        Ok(request) => request,
-                        Err(wire::Error::Disconnected) => break,
-                        Err(error) => { send(&mut tx, &Message::Closed { reason: error.to_string() }).await?; break; }
-                    };
-                    node.ensure_valid().await?;
-                    if !node.store.lock().unwrap().permits(peer) { break; }
-                    let urgent = matches!(request.method, wire::Method::CancelRun | wire::Method::AnswerQuestion | wire::Method::CancelExternalAgent);
-                    let slot = if urgent { control_permits.clone() } else { permits.clone() }.try_acquire_owned();
-                    let Ok(slot) = slot else {
-                        send(&mut tx, &Message::Response { id: request.id, result: Err("Remote computer is busy; try again".into()) }).await?;
-                        continue;
-                    };
-                    let node = node.clone(); let responses = responses.clone();
-                    calls.spawn(async move {
-                        let _slot = slot;
-                        let id = request.id;
-                        let result = crate::host::dispatch_remote_with_receipt(&node.backend, Request {
-                            id, method: if request.method == wire::Method::TaskBootstrap { "start_runtime".into() } else { request.method.name() },
-                            send_id: request.send_id, params: if request.method == wire::Method::TaskBootstrap { serde_json::json!([node.account, null]) } else { request.params }
-                        }, node.receipts.clone(), &node.session, &node.account).await;
-                        if node.valid().await && node.store.lock().unwrap().permits(peer) {
-                            let _ = responses.send(Message::Response { id, result }).await;
-                        }
-                    });
-                }
-                Some(response) = output.recv() => send(&mut tx, &response).await?,
-                event = events.recv() => {
-                    let event = event.map_err(|_| "Remote event stream fell behind")?;
-                    node.ensure_valid().await?;
-                    if !node.store.lock().unwrap().permits(peer) { break; }
-                    // Account transitions are terminal for this connection.
-                    // Local lifecycle markers can never control another UI.
-                    if matches!(&*event, AgentServiceEvent::AccountChanged(_)) { break; }
-                    if remote_event(&event) { send(&mut tx, &Message::Event(Box::new((*event).clone()))).await?; }
-                }
+                let node = node.clone();
+                let capacity = capacity.clone();
+                calls.spawn(async move {
+                    let _ = serve_request(node, peer, tx, rx, capacity).await;
+                });
             }
         }
-        Ok(())
-    }.await;
-    let _ = tx.finish();
-    let _ = tokio::time::timeout(Duration::from_secs(2), tx.stopped()).await;
-    if result.is_err() {
-        connection.close(1u32.into(), b"remote stream closed");
     }
-    reader.abort();
-    // As in local IPC, an admitted mutation finishes even if the viewer leaves.
-    drop(output);
+    event_writer.abort_all();
+    connection.close(0u32.into(), b"remote stream closed");
+    // Closing streams stops incomplete transfers. An already admitted mutation
+    // still finishes on B, as with local IPC; A never resends it.
     while calls.join_next().await.is_some() {}
+}
+
+async fn serve_request(
+    node: Arc<Node>,
+    peer: EndpointId,
+    mut tx: SendStream,
+    mut rx: RecvStream,
+    capacity: Arc<streams::Capacity>,
+) -> Result<(), String> {
+    let header = match streams::Header::read(&mut rx).await {
+        Ok(header) => header,
+        Err(reason) => return streams::reply(&mut tx, &Message::Closed { reason }).await,
+    };
+    tx.set_priority(if header.method.urgent() { 10 } else { 0 })
+        .map_err(|_| "Remote reply closed")?;
+    let _slot = match capacity.acquire(header.method) {
+        Ok(slot) => slot,
+        Err(error) => {
+            return streams::reply(
+                &mut tx,
+                &Message::Response {
+                    id: header.id,
+                    result: Err(error),
+                },
+            )
+            .await;
+        }
+    };
+    let request = match header.body(&mut rx).await {
+        Ok(request) => request,
+        Err(reason) => return streams::reply(&mut tx, &Message::Closed { reason }).await,
+    };
+    // Recheck after the potentially slow upload, before any backend effect.
+    node.ensure_valid().await?;
+    if !node.store.lock().unwrap().permits(peer) {
+        return Err("Remote access revoked".into());
+    }
+    let id = request.id;
+    let result = crate::host::dispatch_remote_with_receipt(
+        &node.backend,
+        Request {
+            id,
+            method: if request.method == wire::Method::TaskBootstrap {
+                "start_runtime".into()
+            } else {
+                request.method.name()
+            },
+            send_id: request.send_id,
+            params: if request.method == wire::Method::TaskBootstrap {
+                serde_json::json!([node.account, null])
+            } else {
+                request.params
+            },
+        },
+        node.receipts.clone(),
+        &node.session,
+        &node.account,
+    )
+    .await;
+    if node.valid().await && node.store.lock().unwrap().permits(peer) {
+        streams::reply(&mut tx, &Message::Response { id, result }).await?;
+    }
+    Ok(())
 }
 
 fn remote_event(event: &AgentServiceEvent) -> bool {
@@ -215,7 +252,6 @@ pub struct Link {
     pub node: Arc<Node>,
     pub peer: EndpointId,
     pub connection: Connection,
-    pub tx: SendStream,
     pub rx: RecvStream,
 }
 
@@ -262,11 +298,11 @@ impl Manager {
         .map_err(|e| e.to_string())?;
         accepted.map_err(|error| format!("Remote access ended: {error}"))?;
         node.ensure_valid().await?;
+        tx.finish().map_err(|_| "Remote handshake closed")?;
         Ok(Link {
             node,
             peer,
             connection,
-            tx,
             rx,
         })
     }
@@ -279,13 +315,17 @@ pub async fn bridge(
     let (mut local_rx, mut local_tx) = tokio::io::split(connection);
     let (frames, mut frame_rx) = mpsc::channel(16);
     let mut revoked = link.node.revoked.subscribe();
-    let reader = tokio::spawn(async move {
+    let mut readers = tokio::task::JoinSet::new();
+    readers.spawn(async move {
         loop {
             let message = match wire::read::<Message>(&mut link.rx, wire::MAX_FRAME).await {
                 Ok(Message::Event(event)) if !remote_event(&event) => Message::Closed {
                     reason: "Unexpected remote event; update both computers".into(),
                 },
-                Ok(message) => message,
+                Ok(message @ (Message::Event(_) | Message::Closed { .. })) => message,
+                Ok(Message::Response { .. }) => Message::Closed {
+                    reason: "Unexpected reply on the remote event stream".into(),
+                },
                 Err(wire::Error::Disconnected) => break,
                 Err(error) => Message::Closed {
                     reason: error.to_string(),
@@ -298,13 +338,15 @@ pub async fn bridge(
         }
     });
     let (requests, mut request_rx) = mpsc::channel(1);
-    let local_reader = tokio::spawn(async move {
+    readers.spawn(async move {
         while let Ok(request) = protocol::read::<Request>(&mut local_rx).await {
             if requests.send(request).await.is_err() {
                 break;
             }
         }
     });
+    let capacity = streams::Capacity::new();
+    let mut calls = tokio::task::JoinSet::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let result = async {
         loop {
@@ -315,35 +357,58 @@ pub async fn bridge(
                 change = revoked.recv() => {
                     if change.is_err() || change.ok() == Some(link.peer) { return Ok(false); }
                 }
+                Some(completed) = calls.join_next(), if !calls.is_empty() => {
+                    let frame = completed.map_err(|_| "Remote request interrupted")??;
+                    link.node.ensure_valid().await?;
+                    let terminal = matches!(frame, Message::Closed { .. });
+                    local_send(&mut local_tx, &frame).await?;
+                    if terminal { return Ok(true); }
+                }
                 frame = frame_rx.recv() => {
                     let Some(frame) = frame else { return Ok(false); };
                     link.node.ensure_valid().await?;
-                    protocol::write(&mut local_tx, &frame).await?;
+                    let terminal = matches!(frame, Message::Closed { .. });
+                    local_send(&mut local_tx, &frame).await?;
+                    if terminal { return Ok(true); }
                 }
                 request = request_rx.recv() => {
                     let Some(request) = request else { return Ok(true); };
                     if request.method == "detach" {
-                        protocol::write(&mut local_tx, &Message::Response { id: request.id, result: Ok(serde_json::Value::Null) }).await?;
+                        local_send(&mut local_tx, &Message::Response { id: request.id, result: Ok(serde_json::Value::Null) }).await?;
                         return Ok(true);
                     }
                     let selected = if request.method == "start_runtime" { Ok(wire::Method::TaskBootstrap) } else { wire::Method::parse(&request.method) };
                     let method = match selected {
                         Ok(method) => method,
-                        Err(error) => { protocol::write(&mut local_tx, &Message::Response { id: request.id, result: Err(error) }).await?; continue; }
+                        Err(error) => { local_send(&mut local_tx, &Message::Response { id: request.id, result: Err(error) }).await?; continue; }
                     };
                     link.node.ensure_valid().await?;
-                    let sent = wire::write(&mut link.tx, &wire::Command { id: request.id, method, send_id: request.send_id, params: request.params }, wire::MAX_FRAME).await;
-                    match sent {
-                        Ok(()) => {},
-                        Err(wire::Error::InvalidFrame) => protocol::write(&mut local_tx, &Message::Response { id: request.id, result: Err("Remote message is too large. Try fewer or smaller images.".into()) }).await?,
-                        Err(error) => return Err(error.to_string()),
-                    }
+                    let slot = match capacity.acquire(method) {
+                        Ok(slot) => slot,
+                        Err(error) => {
+                            local_send(&mut local_tx, &Message::Response { id: request.id, result: Err(error) }).await?;
+                            continue;
+                        }
+                    };
+                    let connection = link.connection.clone();
+                    calls.spawn(async move {
+                        let _slot = slot;
+                        streams::call(&connection, wire::Command { id: request.id, method, send_id: request.send_id, params: request.params }).await
+                    });
                 }
             }
         }
     }.await;
-    reader.abort();
-    local_reader.abort();
+    readers.abort_all();
     link.connection.close(0u32.into(), b"viewer disconnected");
     result
+}
+
+async fn local_send(
+    tx: &mut (impl tokio::io::AsyncWrite + Unpin),
+    message: &Message,
+) -> Result<(), String> {
+    tokio::time::timeout(streams::IO_TIMEOUT, protocol::write(tx, message))
+        .await
+        .map_err(|_| "Local remote viewer stopped reading")?
 }

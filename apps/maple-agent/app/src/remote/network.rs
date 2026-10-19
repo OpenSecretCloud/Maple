@@ -23,6 +23,7 @@ fn builder(key: SecretKey, relays: RelayMode, relay_only: bool) -> iroh::endpoin
         .secret_key(key)
         .alpns(vec![ALPN.to_vec()])
         .relay_mode(relays)
+        .transport_config(super::streams::transport_config())
         .clear_address_lookup();
     // Used for forced-relay validation without changing this machine's firewall
     // or any other process. Production uses Iroh's ordinary path selection.

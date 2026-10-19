@@ -63,11 +63,33 @@ updates without transcript loading, a thousand streamed chunks during catalog
 recovery, background unread state and superseded navigation during startup.
 The full component checks below were rerun after this navigation change.
 
+## Independent request streams
+
+The pre-review audit found that reserved request slots did not prevent a large
+transfer from blocking control messages on the original single ordered stream.
+Wire version 2 uses one bounded QUIC stream per request/reply and a separate
+ordered event stream, retaining the existing authentication, receipts and recovery.
+
+The new transport tests use actual Iroh endpoints with the production flow-control
+configuration. They leave an upload incomplete and an image reply larger than its
+receive window unread, fill ordinary admission capacity, and verify that Stop and
+question answers still complete. Finishing the upload admits the original send
+once. Additional coverage closes an incomplete transfer before admission, rejects
+oversized urgent bodies before transmission, and refuses a mismatched reply ID.
+These are transport tests, not evidence of latency across a real slow network.
+
+A fresh isolated headless build of this correction also repeated the Local
+registration, pairing and control flow with IP transports disabled. GLM 5.3 Flash
+completed its tool turn after the controller restarted with an unread send
+acknowledgement; the original receipt and exactly one proof-file write were
+verified. Revocation refused reconnect. All test-owned daemons were stopped, and
+the user's existing desktop builds remained untouched.
+
 ## Automated checks
 
 - Full Agent `just ci`: all four Clippy configurations, workspace build/tests and
-  headless tests. Runtime: 271 passed / 2 ignored; desktop app: 486 passed /
-  1 ignored; headless app: 82 passed / 1 ignored. The ignored app test contacts
+  headless tests. Runtime: 271 passed / 2 ignored; desktop app: 494 passed /
+  1 ignored; headless app: 86 passed / 1 ignored. The ignored app test contacts
   public relays and is run explicitly for this validation, not silently counted
   as ordinary offline CI coverage. Existing Pi/runtime workspace suites pass too.
 - OpenSecret all-feature Clippy and unit tests: 817 passed / 32 ignored.
@@ -85,6 +107,31 @@ The full component checks below were rerun after this navigation change.
   [qualification and evidence limits](remote-security.md); this is not a claim
   that the complete Maple implementation received an external security audit.
 
+At the audit baseline `3bd0c4a3`, GitHub Actions ran actual Linux, macOS and Windows
+Agent tests, unsigned Dev/Prod macOS packaging and downloaded Linux artifact
+verification successfully. Signed macOS jobs intentionally skipped. Those results
+do not validate subsequent transport edits; those have the local checks above
+and require their own hosted CI results.
+
+## Open implementation findings
+
+These remain review/rollout work, rather than newly accepted design exceptions:
+
+- Disabling incoming remote access closes control connections but leaves an
+  initialized networking endpoint alive until account/daemon teardown. Closing
+  unused networking must preserve any outgoing controller role.
+- User/project deletion cascades to enrollment records; destructive password
+  reset does not yet remove them. Expired device/admission rows are removed on
+  that account's later writes, while its latest window tombstones are retained.
+  Reset cleanup and idle-record retention need resolution before hosted rollout.
+- Enrollment has row caps, leases and payload bounds, but no dedicated
+  publish/list/admission request-rate enforcement yet. Row caps do not bound
+  request traffic.
+
+Cancel/disable is authoritative on the device even if discovery briefly retains
+stale pairing readiness until refresh/expiry. That is a UI freshness limitation;
+it does not permit another code attempt or grant control.
+
 ## Remaining trial/release evidence
 
 Public relay validation does not exercise the prepared Maple relay admission
@@ -92,8 +139,8 @@ callback in a deployed relay. The callback has unit/disposable-DB coverage; actu
 Maple Dev relay/TLS/credential configuration, DNS and enclave deployment are
 separate authorized rollout work. No service or production release was deployed.
 
-Windows/Linux native builds, status-tray interaction and named-pipe behavior must
-be checked on those platforms. Two physical machines behind independent networks,
+Windows/Linux interactive status-tray behavior still needs platform testing;
+builds and automated tests are covered by the baseline CI above. Two physical machines behind independent networks,
 sleep/wake recovery, and signed macOS permissions/CUA remain distinct trial gates.
 This same-machine debug exercise does not establish those results. A VM bridged
 address did not establish the direct test path; the explicit loopback and forced

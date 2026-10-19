@@ -2,6 +2,7 @@
 mod network;
 mod pairing;
 mod store;
+mod streams;
 mod wire;
 
 pub mod control;

@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+// Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 
@@ -95,6 +96,12 @@ pub enum Method {
 }
 
 impl Method {
+    pub fn urgent(self) -> bool {
+        matches!(
+            self,
+            Self::CancelRun | Self::AnswerQuestion | Self::CancelExternalAgent
+        )
+    }
     pub fn parse(value: &str) -> Result<Self, String> {
         serde_json::from_value(serde_json::Value::String(value.into()))
             .map_err(|_| "This operation is available only on the local computer.".into())
@@ -156,16 +163,28 @@ pub async fn write<T: Serialize>(
     value: &T,
     limit: usize,
 ) -> Result<(), Error> {
+    let bytes = encode(value, limit)?;
+    write_encoded(writer, &bytes).await
+}
+
+pub fn encode<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>, Error> {
     let bytes = serde_json::to_vec(value).map_err(|_| Error::InvalidFrame)?;
     if bytes.len() > limit.min(MAX_FRAME) {
         return Err(Error::InvalidFrame);
     }
+    Ok(bytes)
+}
+
+pub async fn write_encoded(
+    writer: &mut (impl AsyncWrite + Unpin),
+    bytes: &[u8],
+) -> Result<(), Error> {
     writer
         .write_u32(bytes.len() as u32)
         .await
         .map_err(|_| Error::Disconnected)?;
     writer
-        .write_all(&bytes)
+        .write_all(bytes)
         .await
         .map_err(|_| Error::Disconnected)?;
     writer.flush().await.map_err(|_| Error::Disconnected)
@@ -231,8 +250,8 @@ mod tests {
     #[test]
     fn compatible_versions_do_not_depend_on_build_identity() {
         let mut hello = Hello {
-            version: 1,
-            minimum_version: 1,
+            version: VERSION,
+            minimum_version: VERSION,
             account: "a".into(),
             project: "p".into(),
             deployment: "d".into(),
@@ -240,11 +259,15 @@ mod tests {
             mode: Mode::Control,
         };
         assert!(hello.check_version().is_ok());
-        hello.version = 2;
-        assert!(hello.check_version().is_ok());
-        hello.minimum_version = 2;
+        hello.version = VERSION - 1;
+        hello.minimum_version = VERSION - 1;
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
-        hello.version = 1;
+        hello.minimum_version = VERSION;
+        hello.version = VERSION + 1;
+        assert!(hello.check_version().is_ok());
+        hello.minimum_version = VERSION + 1;
+        assert_eq!(hello.check_version(), Err(Error::Incompatible));
+        hello.version = VERSION;
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
     }
 }

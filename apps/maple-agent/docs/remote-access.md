@@ -64,14 +64,21 @@ These administer only the local computer. Never put a pairing code in argv or lo
 Iroh 1.3.0 supplies authenticated QUIC, direct connectivity and relay fallback.
 The minimal preset disables public address lookup and router port mapping.
 There is no second encryption tunnel or custom routing layer. The remote
-protocol uses `maple-agent/remote/1`, a simple minimum-version contract independent
-of application builds, bounded frames and an explicit task-operation allowlist.
+protocol keeps the `maple-agent/remote/1` ALPN family and requires wire version 2
+or newer, independent of application builds. Older peers receive an explicit
+version refusal. Bounded frames and an explicit task-operation allowlist apply.
 Account operations and whole-host administration cannot be forwarded.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps
-separate capacity for cancellation/questions. Slow readers lose their stream and
-recover from an authoritative snapshot. Accepted mutations finish on the host;
+separate capacity for cancellation/questions. Each request/reply uses an
+independent bidirectional QUIC stream; the authenticated initial stream carries
+ordered events. A bounded header admits each request before its attachment body
+is read. Stop and question answers have reserved capacity and higher native stream
+priority, so an incomplete upload or unread image reply cannot hold their dispatch
+loop. Streams still share the connection's bandwidth; this is not a latency
+guarantee on a saturated or unavailable network. Stalled transfers are bounded,
+and a failed connection recovers from an authoritative snapshot. Accepted mutations finish on the host;
 transport loss never causes an automatic prompt replay. A stable send identity
 crosses both IPC and Iroh; only the execution daemon records its admission and
 result, account-bound in its receipt database.
