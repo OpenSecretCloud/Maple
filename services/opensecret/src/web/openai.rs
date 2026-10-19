@@ -11,8 +11,7 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_catalog_response_with_maple, openai_models_response_with_maple, ModelAliasTargets,
-    ModelPlan, ReasoningEffort,
+    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan, ReasoningEffort,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
@@ -25,7 +24,8 @@ use crate::provider_client::{
     UpstreamProviderError,
 };
 use crate::provider_registry::{
-    ProviderId, RouteSelectionSource, MAPLE_ROUTING_POLICY_VERSION, SHADOW_ROUTING_POLICY_VERSION,
+    ProviderId, RouteSelectionSource, MAPLE_ROUTING_POLICY_VERSION, PROVIDER_REGISTRY,
+    SHADOW_ROUTING_POLICY_VERSION,
 };
 use crate::provider_routing::{
     compare_shadow_route, ProviderRouter, ProviderRoutingError, SelectedProviderRoute,
@@ -690,19 +690,8 @@ impl InferenceRoutingContext {
         }
     }
 
-    /// Resolve catalog visibility from the authenticated account and trusted flags
-    /// service. Completion entrypoints use `for_model` to avoid consulting flags
-    /// for models that do not need Maple eligibility.
-    pub(crate) async fn for_user(state: &AppState, user_uuid: Uuid, model_plan: ModelPlan) -> Self {
-        // An unconfigured dedicated provider cannot be selected. Preserve the
-        // existing request path without a new flags dependency in that case.
-        if !state.proxy_router.maple_is_configured() {
-            return Self::new(model_plan);
-        }
-        let enabled = maple_inference_eligibility(state.os_flags(), user_uuid).await;
-        Self::new(model_plan).with_maple_inference(enabled)
-    }
-
+    /// Capture the authenticated account's dedicated-provider eligibility only
+    /// when the requested model or an existing Auto candidate can use Maple.
     pub(crate) async fn for_model(
         state: &AppState,
         user_uuid: Uuid,
@@ -713,7 +702,8 @@ impl InferenceRoutingContext {
             return Self::new(model_plan);
         }
         let enabled =
-            maple_inference_eligibility_for_model(state.os_flags(), user_uuid, model).await;
+            maple_inference_eligibility_for_model(state.os_flags(), user_uuid, model, model_plan)
+                .await;
         Self::new(model_plan).with_maple_inference(enabled)
     }
 
@@ -740,9 +730,28 @@ impl InferenceRoutingContext {
 async fn maple_inference_eligibility_for_model(
     client: Option<&crate::os_flags::OsFlagsClient>,
     user_uuid: Uuid,
-    model: &str,
+    requested_model: &str,
+    model_plan: ModelPlan,
 ) -> bool {
-    if !crate::model_config::is_maple_model(model) {
+    // Auto can select an alternate after the entrypoint captures its immutable
+    // routing context. Include the existing candidate set so a DeepSeek fallback
+    // can use Maple without making unrelated explicit models consult flags.
+    let has_maple_route = |model: &str| {
+        PROVIDER_REGISTRY
+            .completion_model(model)
+            .is_some_and(|model| {
+                model
+                    .routes
+                    .iter()
+                    .any(|route| route.provider.is_maple() && route.enabled && route.weight > 0)
+            })
+    };
+    let mode = ModelSelectionMode::from_requested_model(requested_model);
+    let needs_eligibility = match auto_model_candidates(mode, model_plan) {
+        Some(candidates) => candidates.into_iter().any(has_maple_route),
+        None => has_maple_route(requested_model),
+    };
+    if !needs_eligibility {
         return false;
     }
     maple_inference_eligibility(client, user_uuid).await
@@ -1753,7 +1762,6 @@ pub(crate) fn resolve_inference_model<'a>(
     request: ModelResolutionRequest<'_>,
     requirements: impl FnOnce() -> AutoModelRequirements<'a>,
 ) -> Result<ResolvedInferenceModel, ApiError> {
-    ensure_maple_model_access(request.alias_target, request.maple_inference_enabled)?;
     if !needs_auto_model_decision(request.requested_model_id) {
         return Ok(ResolvedInferenceModel::Explicit(
             request.alias_target.to_string(),
@@ -2042,7 +2050,8 @@ async fn proxy_openai(
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
     let routing =
-        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &alias_target).await;
+        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &requested_model_name)
+            .await;
     let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
@@ -2372,7 +2381,6 @@ pub(crate) async fn prepare_completion_request(
         return Err(ApiError::InternalServerError);
     }
 
-    ensure_maple_model_access(&intent.public_model_id, routing.maple_inference_enabled())?;
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
     // Helpers and re-plans retain the entrypoint's authenticated eligibility.
     // A fabricated internal intent cannot grant access to the dedicated node.
@@ -2827,7 +2835,7 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         auto_reason.map(|reason| reason.as_str()),
         attempt.route.selection_source,
         if pinned.intent.maple_inference_enabled
-            && pinned.intent.public_model_id == crate::model_config::DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
+            && pinned.intent.public_model_id == crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
         { MAPLE_ROUTING_POLICY_VERSION } else { SHADOW_ROUTING_POLICY_VERSION },
         pinned.intent.auto_model.as_ref().map(|decision| decision.policy_version),
         pinned.intent.auto_model.as_ref().map(|decision| decision.rejected.as_slice()).unwrap_or_default(),
@@ -3234,15 +3242,6 @@ pub(crate) async fn get_chat_completion_response(
     let started =
         start_chat_completion_response(state, user, body, headers, execution, pinned).await?;
     finish_started_completion(state, user, started).await
-}
-
-/// The dedicated checkpoint is a separate internal rollout, never an alias of
-/// the older shared model. Enforce it before context assembly or any send.
-pub(crate) fn ensure_maple_model_access(model_name: &str, enabled: bool) -> Result<(), ApiError> {
-    if crate::model_config::is_maple_model(model_name) && !enabled {
-        return Err(ApiError::ModelNotAvailable);
-    }
-    Ok(())
 }
 
 pub(crate) fn ensure_completion_model_access(
@@ -3666,19 +3665,10 @@ fn sse_event_from_encoded_data(event_data: &str) -> Event {
 async fn proxy_models(
     State(state): State<Arc<AppState>>,
     axum::Extension(session_id): axum::Extension<TransportSession>,
-    user: Option<axum::Extension<User>>,
 ) -> Result<Response, ApiError> {
-    let enabled = match user {
-        Some(axum::Extension(user)) => {
-            InferenceRoutingContext::for_user(&state, user.uuid, ModelPlan::Free)
-                .await
-                .maple_inference_enabled()
-        }
-        None => false,
-    };
     let proxy_config = state.proxy_router.get_completion_proxy();
     let models_response = if proxy_config.provider_name == "tinfoil" {
-        openai_models_response_with_maple(enabled, state.proxy_router.maple_is_available())
+        openai_models_response()
     } else {
         fetch_provider_models(&state.provider_client, &proxy_config).await?
     };
@@ -3742,12 +3732,7 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let routing = InferenceRoutingContext::for_user(&state, user.uuid, model_plan).await;
-    let catalog_response = model_catalog_response_with_maple(
-        model_plan,
-        routing.maple_inference_enabled(),
-        state.proxy_router.maple_is_available(),
-    );
+    let catalog_response = model_catalog_response(model_plan);
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 

@@ -537,8 +537,8 @@ mod tests {
     };
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
-        DEEPSEEK_V4_1_FLASH_1017_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-        GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
+        QUICK_MODEL_ID,
     };
     use crate::provider_registry::MapleInstanceId;
     use std::time::Duration;
@@ -960,6 +960,7 @@ mod tests {
             "deepseek-v4-flash-0731",
             "deepseek-v4.1-flash",
             "deepseek-v4-1-flash-latest",
+            "deepseek-v4-1-flash-1017",
         ] {
             let account_uuid = uuid_for_bucket(50);
             let intent = InferenceIntent::new(
@@ -1613,6 +1614,7 @@ mod tests {
             "deepseek-v4flash",
             "deepseek-v4.1-flash",
             "deepseek-v4-1-flash-latest",
+            "deepseek-v4-1-flash-1017",
             "deepseek-v41-flash",
             "glm-5.3-flash",
             "glm-5-3-flash-latest",
@@ -2206,7 +2208,7 @@ mod tests {
     }
 
     #[test]
-    fn maple_1017_keeps_versioned_public_identity_and_independent_sticky_memory() {
+    fn unified_deepseek_preserves_public_identity_and_distinct_instance_routes() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple();
         for surface in [
@@ -2214,92 +2216,108 @@ mod tests {
             InferenceSurface::ChatCompletions,
             InferenceSurface::Internal,
         ] {
-            let mut request = intent(
-                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-            )
-            .with_maple_inference(true);
-            request.surface = surface;
-            let mut older = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
-                .with_maple_inference(true);
-            older.surface = surface;
-            let shared = router
-                .select_active_completion_route(&proxies, &older)
-                .expect("older shared model");
-            router.remember_route(&older, &shared);
+            let mut routes = HashSet::new();
+            for (bucket, provider) in [
+                (0, ProviderId::Tinfoil),
+                (5, ProviderId::Maple(MapleInstanceId::I01)),
+                (52, ProviderId::Maple(MapleInstanceId::I02)),
+            ] {
+                let mut request =
+                    intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+                        .with_maple_inference(true);
+                request.account_uuid = uuid_for_bucket(bucket);
+                request.surface = surface;
+                let selected = router
+                    .select_active_completion_route(&proxies, &request)
+                    .expect("eligible same-model route");
+                assert_eq!(selected.provider, provider);
+                assert_eq!(selected.proxy.provider_name, provider.as_str());
+                assert_eq!(selected.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(selected.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(selected.response_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
+                assert!(routes.insert(selected.identity().route_key()));
 
-            let selected = router
-                .select_active_completion_route(&proxies, &request)
-                .expect("dedicated 1017 route");
-            assert_eq!(selected.provider, ProviderId::Maple(MapleInstanceId::I01));
-            assert_eq!(selected.proxy.provider_name, "maple-i01");
-            assert_eq!(selected.public_model_id, DEEPSEEK_V4_1_FLASH_1017_MODEL_ID);
-            assert_eq!(selected.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-            assert_eq!(
-                selected.response_model_id,
-                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
-            );
-            assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
-            assert_ne!(
-                selected.identity().route_key(),
-                shared.identity().route_key()
-            );
+                router.remember_route(&request, &selected);
+                let remembered = router
+                    .select_active_completion_route(&proxies, &request)
+                    .expect("accepted route remains available");
+                assert_eq!(remembered.provider, provider);
+                // An unchanged weighted choice retains its static identity.
+                assert_eq!(
+                    remembered.selection_source,
+                    RouteSelectionSource::StaticSplit
+                );
 
-            router.remember_route(&request, &selected);
-            let sticky = router
-                .select_active_completion_route(&proxies, &request)
-                .expect("sticky dedicated route");
-            assert_eq!(sticky.provider, ProviderId::Maple(MapleInstanceId::I01));
-            assert_eq!(sticky.selection_source, RouteSelectionSource::StaticSplit);
+                let disabled = request.with_maple_inference(false);
+                assert_eq!(
+                    router
+                        .select_active_completion_route(&proxies, &disabled)
+                        .expect("flag off excludes even a remembered Maple route")
+                        .provider,
+                    ProviderId::Tinfoil
+                );
+            }
+            assert_eq!(routes.len(), 3);
+        }
+    }
+
+    #[test]
+    fn unified_deepseek_preserves_existing_tinfoil_stickiness_when_maple_is_enabled() {
+        let router = ProviderRouter::default();
+        let proxies = proxy_router_with_maple();
+        let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        request.account_uuid = uuid_for_bucket(25);
+        let shared = router
+            .select_active_completion_route(&proxies, &request)
+            .expect("unflagged request uses shared Tinfoil");
+        assert_eq!(shared.provider, ProviderId::Tinfoil);
+        router.remember_route(&request, &shared);
+
+        let enabled = request.with_maple_inference(true);
+        let sticky = router
+            .select_active_completion_route(&proxies, &enabled)
+            .expect("healthy shared cache is preserved after enabling Maple");
+        assert_eq!(sticky.provider, ProviderId::Tinfoil);
+        assert_eq!(sticky.selection_source, RouteSelectionSource::Sticky);
+        assert_eq!(sticky.bucket, None);
+
+        let mut other_account = enabled.clone();
+        other_account.account_uuid = uuid_for_bucket(125);
+        let mut other_surface = enabled.clone();
+        other_surface.surface = InferenceSurface::ChatCompletions;
+        for isolated in [other_account, other_surface] {
             assert_eq!(
                 router
-                    .select_active_completion_route(&proxies, &older)
-                    .expect("older checkpoint remains shared")
+                    .select_active_completion_route(&proxies, &isolated)
+                    .unwrap()
                     .provider,
-                ProviderId::Tinfoil
-            );
-
-            let disabled = request.clone().with_maple_inference(false);
-            assert_eq!(
-                router
-                    .select_active_completion_route(&proxies, &disabled)
-                    .unwrap_err(),
-                ProviderRoutingError::NoEligibleRoute(
-                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID.to_string()
-                )
+                ProviderId::Maple(MapleInstanceId::I01)
             );
         }
     }
 
     #[test]
-    fn deepseek_version_capacity_is_independent_without_cross_version_fallback() {
+    fn unified_deepseek_shared_and_maple_capacity_remain_independent() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple().with_maple_readiness(
             crate::provider_client::MapleReadiness::for_test_instances(&[MapleInstanceId::I01]),
         );
-        let dedicated = intent(
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-        )
-        .with_maple_inference(true);
-        let older = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+        let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
             .with_maple_inference(true);
+        request.account_uuid = uuid_for_bucket(25);
         open_route_with_capacity_failure(
             &router,
             ProviderId::Maple(MapleInstanceId::I01),
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
             DEEPSEEK_V4_1_FLASH_MODEL_ID,
             429,
             60,
         );
-        assert!(matches!(
-            router.select_active_completion_route(&proxies, &dedicated),
-            Err(ProviderRoutingError::CapacityUnavailable { .. })
-        ));
         assert_eq!(
             router
-                .select_active_completion_route(&proxies, &older)
-                .expect("Maple capacity does not affect older shared checkpoint")
+                .select_active_completion_route(&proxies, &request)
+                .expect("Maple capacity failure permits same-model shared fallback")
                 .provider,
             ProviderId::Tinfoil
         );
@@ -2315,13 +2333,16 @@ mod tests {
         );
         assert_eq!(
             other_router
-                .select_active_completion_route(&proxies, &dedicated)
-                .expect("older shared capacity does not affect 1017")
+                .select_active_completion_route(&proxies, &request)
+                .expect("shared capacity failure leaves Maple available")
                 .provider,
             ProviderId::Maple(MapleInstanceId::I01)
         );
         assert!(matches!(
-            other_router.select_active_completion_route(&proxies, &older),
+            other_router.select_active_completion_route(
+                &proxies,
+                &request.clone().with_maple_inference(false)
+            ),
             Err(ProviderRoutingError::CapacityUnavailable { .. })
         ));
 
@@ -2329,50 +2350,32 @@ mod tests {
             provider: ProviderId::Maple(MapleInstanceId::I01),
             provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
         }]);
-        assert_eq!(
-            other_router
-                .select_active_completion_route_excluding(&proxies, &dedicated, &excluded)
-                .unwrap_err(),
-            ProviderRoutingError::NoEligibleRoute(DEEPSEEK_V4_1_FLASH_1017_MODEL_ID.to_string())
-        );
-        assert_eq!(
-            other_router
-                .select_active_completion_route(&proxies, &dedicated.with_maple_inference(false))
-                .unwrap_err(),
-            ProviderRoutingError::NoEligibleRoute(DEEPSEEK_V4_1_FLASH_1017_MODEL_ID.to_string())
-        );
+        assert!(matches!(
+            other_router.select_active_completion_route_excluding(&proxies, &request, &excluded),
+            Err(ProviderRoutingError::CapacityUnavailable { .. })
+        ));
     }
 
     #[test]
-    fn model_availability_keeps_deepseek_versions_and_rollout_gate_distinct() {
+    fn unified_deepseek_availability_applies_the_gate_to_providers() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple().with_maple_readiness(
             crate::provider_client::MapleReadiness::for_test_instances(&[MapleInstanceId::I01]),
         );
-        let models = [
-            DEEPSEEK_V4_1_FLASH_MODEL_ID,
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-        ];
+        let models = [DEEPSEEK_V4_1_FLASH_MODEL_ID];
         let shared_only = ConfiguredProviders::none().with_provider(ProviderId::Tinfoil);
         let maple_only =
             ConfiguredProviders::none().with_provider(ProviderId::Maple(MapleInstanceId::I01));
-        let unflagged = router.model_availability(&proxies, &models);
         assert_eq!(
-            unflagged[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            router.model_availability(&proxies, &models)[DEEPSEEK_V4_1_FLASH_MODEL_ID],
             ModelAvailability::Available(shared_only)
         );
         assert_eq!(
-            unflagged[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
-            ModelAvailability::NotConfigured
-        );
-        let flagged = router.model_availability_with_maple(&proxies, &models, true);
-        assert_eq!(
-            flagged[DEEPSEEK_V4_1_FLASH_MODEL_ID],
-            ModelAvailability::Available(shared_only)
-        );
-        assert_eq!(
-            flagged[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
-            ModelAvailability::Available(maple_only)
+            router.model_availability_with_maple(&proxies, &models, true)
+                [DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Available(
+                shared_only.with_provider(ProviderId::Maple(MapleInstanceId::I01))
+            )
         );
         open_route_with_capacity_failure(
             &router,
@@ -2382,103 +2385,97 @@ mod tests {
             429,
             60,
         );
-        let after_shared = router.model_availability_with_maple(&proxies, &models, true);
         assert!(matches!(
-            after_shared[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            router.model_availability(&proxies, &models)[DEEPSEEK_V4_1_FLASH_MODEL_ID],
             ModelAvailability::Unavailable { .. }
         ));
         assert_eq!(
-            after_shared[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
+            router.model_availability_with_maple(&proxies, &models, true)
+                [DEEPSEEK_V4_1_FLASH_MODEL_ID],
             ModelAvailability::Available(maple_only)
         );
         open_route_with_capacity_failure(
             &router,
             ProviderId::Maple(MapleInstanceId::I01),
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
             DEEPSEEK_V4_1_FLASH_MODEL_ID,
             503,
             60,
         );
         assert!(matches!(
             router.model_availability_with_maple(&proxies, &models, true)
-                [DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
+                [DEEPSEEK_V4_1_FLASH_MODEL_ID],
             ModelAvailability::Unavailable { .. }
         ));
     }
 
     #[test]
-    fn maple_1017_missing_or_expired_attestation_never_substitutes_older_shared_model() {
+    fn unified_deepseek_uses_shared_capacity_when_maple_attestation_is_unready() {
         let router = ProviderRouter::default();
-        let dedicated = intent(
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-        )
-        .with_maple_inference(true);
-        let older = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+        let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
             .with_maple_inference(true);
+        request.account_uuid = uuid_for_bucket(25);
+        let ready = proxy_router_with_maple();
+        let dedicated = router
+            .select_active_completion_route(&ready, &request)
+            .expect("ready Maple route");
+        assert_eq!(dedicated.provider, ProviderId::Maple(MapleInstanceId::I01));
+        router.remember_route(&request, &dedicated);
+
         let key_only =
             proxy_router_with_both_providers().with_maple_api_key(Some("test-key".to_string()));
         let unready = key_only
             .clone()
             .with_maple_readiness(crate::provider_client::MapleReadiness::for_test(false));
-        for proxies in [key_only, unready] {
-            assert_eq!(
-                router
-                    .select_active_completion_route(&proxies, &dedicated)
-                    .unwrap_err(),
-                ProviderRoutingError::NoEligibleRoute(
-                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID.to_string()
-                )
-            );
-            assert_eq!(
-                router
-                    .select_active_completion_route(&proxies, &older)
-                    .expect("older shared model unaffected")
-                    .provider,
-                ProviderId::Tinfoil
-            );
+        for proxies in [proxy_router_with_both_providers(), key_only, unready] {
+            let shared = router
+                .select_active_completion_route(&proxies, &request)
+                .expect("unready Maple is excluded before planning");
+            assert_eq!(shared.provider, ProviderId::Tinfoil);
+            assert_eq!(shared.selection_source, RouteSelectionSource::Fallback);
+            assert_eq!(shared.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
             assert_eq!(
                 router.model_availability_with_maple(
                     &proxies,
-                    &[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
+                    &[DEEPSEEK_V4_1_FLASH_MODEL_ID],
                     true
-                )[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
-                ModelAvailability::NotConfigured
+                )[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+                ModelAvailability::Available(
+                    ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+                )
             );
         }
     }
 
     #[test]
-    fn maple_replica_weighting_and_predispatch_failover_preserve_warmed_instance() {
+    fn unified_deepseek_weighting_and_predispatch_failover_preserve_warmed_instance() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple();
-        let mut request = intent(
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-            DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-        )
-        .with_maple_inference(true);
-        let mut counts = [0; 2];
+        let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+            .with_maple_inference(true);
+        let mut counts = [0; 3];
         for bucket in 0..100u8 {
             request.account_uuid = uuid_for_bucket(bucket);
             let selected = router
                 .select_active_completion_route(&proxies, &request)
                 .unwrap();
-            let index = usize::from(bucket >= 50);
+            let (index, expected) = if bucket < 5 {
+                (0, ProviderId::Tinfoil)
+            } else if bucket < 52 {
+                (1, ProviderId::Maple(MapleInstanceId::I01))
+            } else {
+                (2, ProviderId::Maple(MapleInstanceId::I02))
+            };
             counts[index] += 1;
-            assert_eq!(
-                selected.provider,
-                ProviderId::Maple(MapleInstanceId::ALL[index])
-            );
+            assert_eq!(selected.provider, expected);
             assert_eq!(selected.proxy.provider_name, selected.provider.as_str());
-            assert_eq!(selected.public_model_id, DEEPSEEK_V4_1_FLASH_1017_MODEL_ID);
-            assert_eq!(
-                selected.response_model_id,
-                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID
-            );
+            assert_eq!(selected.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(selected.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(selected.response_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         }
-        assert_eq!(counts, [50, 50]);
+        assert_eq!(counts, [5, 47, 48]);
 
-        request.account_uuid = uuid_for_bucket(0);
+        request.account_uuid = uuid_for_bucket(25);
         let initial = router
             .select_active_completion_route(&proxies, &request)
             .unwrap();
@@ -2499,37 +2496,38 @@ mod tests {
         assert_eq!(sticky.bucket, None);
 
         let mut other_account = request.clone();
-        other_account.account_uuid = uuid_for_bucket(100);
-        assert_eq!(
-            router
-                .select_active_completion_route(&proxies, &other_account)
-                .unwrap()
-                .provider,
-            initial.provider
-        );
+        other_account.account_uuid = uuid_for_bucket(125);
         let mut other_surface = request.clone();
         other_surface.surface = InferenceSurface::ChatCompletions;
-        assert_eq!(
-            router
-                .select_active_completion_route(&proxies, &other_surface)
-                .unwrap()
-                .provider,
-            initial.provider
-        );
-        let excluded = HashSet::from([
+        for isolated in [other_account, other_surface] {
+            assert_eq!(
+                router
+                    .select_active_completion_route(&proxies, &isolated)
+                    .unwrap()
+                    .provider,
+                initial.provider
+            );
+        }
+        let mut excluded = HashSet::from([
             initial.identity().route_key(),
             fallback.identity().route_key(),
         ]);
+        let shared = router
+            .select_active_completion_route_excluding(&proxies, &request, &excluded)
+            .expect("both Maple routes excluded before send permits Tinfoil");
+        assert_eq!(shared.provider, ProviderId::Tinfoil);
+        assert_eq!(shared.selection_source, RouteSelectionSource::Fallback);
+        excluded.insert(shared.identity().route_key());
         assert_eq!(
             router
                 .select_active_completion_route_excluding(&proxies, &request, &excluded)
                 .unwrap_err(),
-            ProviderRoutingError::NoEligibleRoute(DEEPSEEK_V4_1_FLASH_1017_MODEL_ID.to_string())
+            ProviderRoutingError::NoEligibleRoute(DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string())
         );
     }
 
     #[test]
-    fn maple_replica_capacity_and_circuit_failures_are_isolated_in_both_directions() {
+    fn unified_deepseek_capacity_and_circuit_failures_are_isolated_per_provider() {
         let proxies = proxy_router_with_maple();
         for failed in MapleInstanceId::ALL {
             for capacity in [false, true] {
@@ -2541,13 +2539,11 @@ mod tests {
                     MapleInstanceId::I01
                 };
                 let healthy_provider = ProviderId::Maple(healthy);
-                let mut request = intent(
-                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-                )
-                .with_maple_inference(true);
+                let mut request =
+                    intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+                        .with_maple_inference(true);
                 request.account_uuid = uuid_for_bucket(if failed == MapleInstanceId::I01 {
-                    0
+                    25
                 } else {
                     75
                 });
@@ -2560,7 +2556,7 @@ mod tests {
                     open_route_with_capacity_failure(
                         &router,
                         failed_provider,
-                        DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+                        DEEPSEEK_V4_1_FLASH_MODEL_ID,
                         DEEPSEEK_V4_1_FLASH_MODEL_ID,
                         429,
                         60,
@@ -2569,7 +2565,7 @@ mod tests {
                     open_route_with_transport_failures(
                         &router,
                         failed_provider,
-                        DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+                        DEEPSEEK_V4_1_FLASH_MODEL_ID,
                         DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     );
                 }
@@ -2578,7 +2574,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(fallback.provider, healthy_provider);
                 assert_eq!(fallback.selection_source, RouteSelectionSource::Fallback);
-                assert_eq!(fallback.public_model_id, DEEPSEEK_V4_1_FLASH_1017_MODEL_ID);
+                assert_eq!(fallback.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
                 let failed_snapshot = router
                     .shadow_health_snapshot(&selected.identity().route_key())
                     .unwrap();
@@ -2601,42 +2597,56 @@ mod tests {
                 open_route_with_capacity_failure(
                     &router,
                     healthy_provider,
-                    DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     503,
                     60,
                 );
-                assert!(matches!(
-                    router.select_active_completion_route(&proxies, &request),
-                    Err(ProviderRoutingError::CapacityUnavailable { .. })
-                ));
-                let older = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                let shared = router
+                    .select_active_completion_route(&proxies, &request)
+                    .expect("both Maple providers unavailable permits shared DeepSeek");
+                assert_eq!(shared.provider, ProviderId::Tinfoil);
+                assert_eq!(shared.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(shared.selection_source, RouteSelectionSource::Fallback);
                 assert_eq!(
                     router
-                        .select_active_completion_route(&proxies, &older)
+                        .shadow_health_snapshot(&shared.identity().route_key())
                         .unwrap()
-                        .provider,
-                    ProviderId::Tinfoil
+                        .effective,
+                    ShadowDisposition::Healthy
                 );
+                open_route_with_capacity_failure(
+                    &router,
+                    ProviderId::Tinfoil,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    429,
+                    60,
+                );
+                assert!(matches!(
+                    router.select_active_completion_route(&proxies, &request),
+                    Err(ProviderRoutingError::CapacityUnavailable { model, .. })
+                        if model == DEEPSEEK_V4_1_FLASH_MODEL_ID
+                ));
             }
         }
     }
 
     #[test]
-    fn maple_replica_readiness_is_independent_and_recovery_keeps_the_warmed_alternate() {
-        let router = ProviderRouter::default();
-        let both = proxy_router_with_maple();
+    fn unified_deepseek_readiness_is_independent_and_recovery_keeps_warmed_alternate() {
         for ready in MapleInstanceId::ALL {
+            let router = ProviderRouter::default();
+            let both = proxy_router_with_maple();
             let proxies = both.clone().with_maple_readiness(
                 crate::provider_client::MapleReadiness::for_test_instances(&[ready]),
             );
-            let mut request = intent(
-                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-                DEEPSEEK_V4_1_FLASH_1017_MODEL_ID,
-            )
-            .with_maple_inference(true);
-            request.account_uuid =
-                uuid_for_bucket(if ready == MapleInstanceId::I01 { 75 } else { 0 });
+            let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
+                .with_maple_inference(true);
+            request.account_uuid = uuid_for_bucket(if ready == MapleInstanceId::I01 {
+                75
+            } else {
+                25
+            });
             let selected = router
                 .select_active_completion_route(&proxies, &request)
                 .unwrap();
@@ -2651,11 +2661,13 @@ mod tests {
             assert_eq!(
                 router.model_availability_with_maple(
                     &proxies,
-                    &[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
+                    &[DEEPSEEK_V4_1_FLASH_MODEL_ID],
                     true
-                )[DEEPSEEK_V4_1_FLASH_1017_MODEL_ID],
+                )[DEEPSEEK_V4_1_FLASH_MODEL_ID],
                 ModelAvailability::Available(
-                    ConfiguredProviders::none().with_provider(ProviderId::Maple(ready))
+                    ConfiguredProviders::none()
+                        .with_provider(ProviderId::Tinfoil)
+                        .with_provider(ProviderId::Maple(ready))
                 ),
             );
         }

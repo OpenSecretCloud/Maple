@@ -726,6 +726,7 @@ impl MapleReadiness {
         transport.snapshot().is_ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn any_ready(&self) -> bool {
         // Check every configured guest so one ready replica does not suppress
         // background recovery of the other.
@@ -1754,7 +1755,7 @@ mod tests {
             );
             headers.insert("x-private-hop", HeaderValue::from_static("must-be-removed"));
             headers.insert("x-vllm-priority", HeaderValue::from_static("-100"));
-            let body = Bytes::from_static(br#"{"model":"deepseek-v4-1-flash-1017","cache_salt":"backend-owned-synthetic-user","stream":true}"#);
+            let body = Bytes::from_static(br#"{"model":"deepseek-v4-1-flash","cache_salt":"backend-owned-synthetic-user","stream":true}"#);
             let response = client
                 .send(
                     &maple_proxy_for(instance),

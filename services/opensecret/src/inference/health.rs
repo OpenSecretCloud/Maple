@@ -2457,7 +2457,7 @@ mod tests {
         let routes = MapleInstanceId::ALL.map(|instance| {
             route(
                 ProviderId::Maple(instance),
-                "deepseek-v4-1-flash-1017",
+                "deepseek-v4-1-flash",
                 "deepseek-v4-1-flash",
             )
         });
