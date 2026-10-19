@@ -60,40 +60,64 @@ impl StdioAcpClient {
             .await;
     }
 
+    /// Read one frame, recording updates and answering the agent's requests.
+    async fn receive(&mut self) -> Value {
+        let mut line = String::new();
+        let read = self
+            .read
+            .read_line(&mut line)
+            .await
+            .expect("reading the agent's side should not fail");
+        assert!(
+            read > 0,
+            "the agent closed the connection before the expected frame"
+        );
+        let message: Value =
+            serde_json::from_str(line.trim()).expect("every frame should be valid JSON");
+        match message.get("method").and_then(Value::as_str) {
+            Some("session/update") => self.updates.push(message["params"].clone()),
+            Some(method) => {
+                if let Some(request_id) = message.get("id").cloned() {
+                    self.requests.push(method.to_string());
+                    let result = (self.answer)(method, &message["params"]);
+                    self.send_line(json!({"jsonrpc": "2.0", "id": request_id, "result": result}))
+                        .await;
+                }
+            }
+            None => {}
+        }
+        message
+    }
+
     /// The response for `id`. Updates on the way are kept, and the agent's
     /// own requests answered.
     async fn response(&mut self, id: u64) -> Value {
         loop {
-            let mut line = String::new();
-            let read =
-                tokio::time::timeout(Duration::from_secs(30), self.read.read_line(&mut line))
-                    .await
-                    .expect("a response should arrive within 30s")
-                    .expect("reading the agent's side should not fail");
-            assert!(
-                read > 0,
-                "the agent closed the connection before answering id {id}"
-            );
-            let message: Value =
-                serde_json::from_str(line.trim()).expect("every frame should be valid JSON");
-            match message.get("method").and_then(Value::as_str) {
-                Some("session/update") => self.updates.push(message["params"].clone()),
-                Some(method) => {
-                    if let Some(request_id) = message.get("id").cloned() {
-                        self.requests.push(method.to_string());
-                        let result = (self.answer)(method, &message["params"]);
-                        self.send_line(
-                            json!({"jsonrpc": "2.0", "id": request_id, "result": result}),
-                        )
-                        .await;
-                    }
-                }
-                None if message.get("id").and_then(Value::as_u64) == Some(id) => {
-                    return message;
-                }
-                None => {}
+            let message = tokio::time::timeout(Duration::from_secs(30), self.receive())
+                .await
+                .expect("a response should arrive within 30s");
+            if message.get("method").is_none()
+                && message.get("id").and_then(Value::as_u64) == Some(id)
+            {
+                return message;
             }
         }
+    }
+
+    /// Drain notifications directly while a prompt is held open. Polling
+    /// session/list adds unrelated storage work and can consume a prompt reply.
+    async fn wait_for_updates(&mut self, description: &str, received: impl Fn(&[Value]) -> bool) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !received(&self.updates) {
+                let message = self.receive().await;
+                assert!(
+                    message.get("method").is_some(),
+                    "{description}: received a response before the expected updates: {message}"
+                );
+            }
+        })
+        .await
+        .expect(description);
     }
 
     /// Send a request and wait for its result, which must not be an error.
@@ -1546,10 +1570,14 @@ async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
     // keeps reading. A metadata update must not stall the observer behind
     // the originating prompt's whole-turn history gate.
     let reply = "word".repeat(400);
-    std::fs::write(harness.project.path().join("notes.txt"), "notes").unwrap();
-    harness
-        .faux
-        .push_message(vec![faux_tool_call("read", json!({"path": "notes.txt"}))]);
+    // Keep the prompt active until both observer updates are received.
+    // Chunk delays alone do not guarantee overlap on a busy Windows runner.
+    let _responder = harness.handle.question_responder();
+    let mut events = harness.handle.subscribe();
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question": "Continue?", "options": [{"label": "Yes"}]}),
+    )]);
     harness.faux.push_text(&reply);
     let (mut client, serving) = connect(&harness.handle, no_answers());
     client.initialize(json!({})).await;
@@ -1560,20 +1588,36 @@ async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
             json!({"sessionId": task, "prompt": [{"type": "text", "text": "First turn"}]}),
         )
         .await;
-    let call_id = tokio::time::timeout(Duration::from_secs(5), async {
+    let question_id = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            client.call("session/list", json!({})).await;
-            if let Some(update) = client
-                .updates
-                .iter()
-                .find(|update| update["update"]["sessionUpdate"] == "tool_call")
+            if let crate::agent::AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                ..
+            } = events.recv().await.unwrap()
+                && session_id == task
             {
-                break update["update"]["toolCallId"].as_str().unwrap().to_string();
+                break request_id;
             }
         }
     })
     .await
-    .unwrap();
+    .expect("the turn waits for an answer before observer updates");
+    client
+        .wait_for_updates("the prompt announces its tool call", |updates| {
+            updates
+                .iter()
+                .any(|update| update["update"]["sessionUpdate"] == "tool_call")
+        })
+        .await;
+    let call_id = client
+        .updates
+        .iter()
+        .find(|update| update["update"]["sessionUpdate"] == "tool_call")
+        .unwrap()["update"]["toolCallId"]
+        .as_str()
+        .unwrap()
+        .to_string();
     // External-agent activity is published outside the originating run's
     // stream. It must reach this client without waiting for its prompt to end.
     let activity: AgentTimelineItem = serde_json::from_value(json!({
@@ -1598,6 +1642,28 @@ async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
             .await
             .unwrap();
     }
+    client
+        .wait_for_updates(
+            "observer updates arrive before the prompt can finish",
+            |updates| {
+                updates
+                    .iter()
+                    .any(|update| update["update"]["title"] == title)
+                    && updates.iter().any(|update| {
+                        update["update"]["toolCallId"] == call_id
+                            && update["update"]["content"][0]["content"]["text"]
+                                == "External agent is working"
+                    })
+            },
+        )
+        .await;
+    assert!(
+        harness
+            .handle
+            .answer_question_via_handle(&question_id, "Yes".into())
+            .await
+            .unwrap()
+    );
     assert_eq!(
         client.response(first).await["result"]["stopReason"],
         "end_turn"
@@ -1640,23 +1706,16 @@ async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
     harness.faux.push_text("Desktop reply");
     let mut desktop = harness.send(&task, "Desktop message").await;
     crate::agent::tests::finished(&mut desktop).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            client.call("session/list", json!({})).await;
-            let received: String = client
-                .updates
+    client
+        .wait_for_updates("the desktop reply reaches the idle ACP client", |updates| {
+            let received: String = updates
                 .iter()
                 .filter(|update| update["update"]["sessionUpdate"] == "agent_message_chunk")
                 .filter_map(|update| update["update"]["content"]["text"].as_str())
                 .collect();
-            if received == "Desktop reply" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the desktop reply reaches the idle ACP client");
+            received == "Desktop reply"
+        })
+        .await;
     assert!(
         client
             .texts("user_message_chunk")
