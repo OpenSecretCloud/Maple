@@ -100,6 +100,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
@@ -151,6 +152,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
@@ -207,6 +209,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
@@ -255,6 +258,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Cache Agent release dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
@@ -334,6 +338,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
@@ -389,6 +394,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
       - name: Download exact Agent packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

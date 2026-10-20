@@ -97,6 +97,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Install pinned Windows Rust

@@ -39,7 +39,16 @@ class NixWorkflowPinTests(unittest.TestCase):
         self.assertNotIn("DeterminateSystems/nix-installer-action@", source)
 
         for path in sorted(WORKFLOWS.glob("*.yml")):
-            for job_name, job in workflow(path).get("jobs", {}).items():
+            config = workflow(path)
+            workflow_directory = (
+                config.get("defaults", {}).get("run", {}).get("working-directory", ".")
+            )
+            for job_name, job in config.get("jobs", {}).items():
+                job_directory = (
+                    job.get("defaults", {}).get("run", {}).get(
+                        "working-directory", workflow_directory
+                    )
+                )
                 steps = job.get("steps", [])
                 for index, step in enumerate(steps):
                     action = step.get("uses", "")
@@ -53,7 +62,16 @@ class NixWorkflowPinTests(unittest.TestCase):
                             item.startswith("actions/checkout@") for item in prior_actions
                         ))
                         self.assertLess(index + 1, len(steps))
-                        self.assertEqual(steps[index + 1], VERIFY_STEP)
+                        verify = steps[index + 1]
+                        self.assertEqual(
+                            {key: verify.get(key) for key in VERIFY_STEP}, VERIFY_STEP
+                        )
+                        self.assertLessEqual(
+                            set(verify), {"name", "run", "working-directory"}
+                        )
+                        self.assertEqual(
+                            verify.get("working-directory", job_directory), "."
+                        )
                     installs.append((path.name, job_name))
 
         self.assertEqual(len(installs), EXPECTED_INSTALLS)
