@@ -91,10 +91,6 @@ pub(crate) struct InferenceIntent {
     pub(crate) auto_model: Option<AutoModelDecision>,
     pub(crate) selection_mode: ModelSelectionMode,
     pub(crate) model_plan: ModelPlan,
-    /// Backend-resolved, request-scoped permission for the dedicated 1017 model.
-    /// Never derived from caller JSON or a remembered route. Permission does
-    /// not change the public model or authorize an older-version fallback.
-    pub(crate) maple_inference_enabled: bool,
     pub(crate) surface: InferenceSurface,
     pub(crate) workload_class: WorkloadClass,
 }
@@ -117,15 +113,9 @@ impl InferenceIntent {
             public_model_id: public_model_id.into(),
             auto_model: None,
             model_plan,
-            maple_inference_enabled: false,
             surface,
             workload_class,
         }
-    }
-
-    pub(crate) fn with_maple_inference(mut self, enabled: bool) -> Self {
-        self.maple_inference_enabled = enabled;
-        self
     }
 
     /// Applies a finished Router v2 Auto model decision. The chosen model
@@ -407,29 +397,6 @@ mod tests {
 
         assert_eq!(intent.selection_mode, ModelSelectionMode::Explicit);
         assert!(!intent.selection_mode.is_auto());
-    }
-
-    #[test]
-    fn provider_rollout_permission_preserves_public_model_identity() {
-        use crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID;
-        for model in [DEEPSEEK_V4_1_FLASH_MODEL_ID, "glm-5-3"] {
-            let intent = InferenceIntent::new(
-                Uuid::nil(),
-                model,
-                model,
-                ModelPlan::Paid,
-                InferenceSurface::ChatCompletions,
-                WorkloadClass::Interactive,
-            );
-            assert!(!intent.maple_inference_enabled);
-            for enabled in [false, true] {
-                let configured = intent.clone().with_maple_inference(enabled);
-                assert_eq!(configured.requested_model_id, model);
-                assert_eq!(configured.public_model_id, model);
-                assert_eq!(configured.selection_mode, ModelSelectionMode::Explicit);
-                assert_eq!(configured.maple_inference_enabled, enabled);
-            }
-        }
     }
 
     #[test]

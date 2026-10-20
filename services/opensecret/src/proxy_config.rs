@@ -111,6 +111,7 @@ impl ProxyRouter {
                 .is_some_and(|readiness| readiness.any_ready())
     }
 
+    #[cfg(test)]
     pub(crate) fn maple_is_configured(&self) -> bool {
         !self.maple_proxies.is_empty()
     }

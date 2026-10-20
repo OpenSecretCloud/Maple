@@ -120,9 +120,7 @@ pub(crate) fn plan_completion_route(
     let model = registry
         .completion_model(public_model_id)
         .ok_or_else(|| RoutePlanningError::UnsupportedModel(public_model_id.to_string()))?;
-    let policy_version = if input.intent.maple_inference_enabled
-        && model.routes.iter().any(|route| route.provider.is_maple())
-    {
+    let policy_version = if model.routes.iter().any(|route| route.provider.is_maple()) {
         MAPLE_ROUTING_POLICY_VERSION
     } else {
         SHADOW_ROUTING_POLICY_VERSION
@@ -132,10 +130,7 @@ pub(crate) fn plan_completion_route(
         .routes
         .iter()
         .filter_map(|route| {
-            if !route.enabled
-                || route.weight == 0
-                || !provider_allowed(route.provider, input.intent.maple_inference_enabled)
-            {
+            if !route.enabled || route.weight == 0 {
                 return None;
             }
             let provider = registry.provider(route.provider)?;
@@ -171,7 +166,6 @@ pub(crate) fn plan_completion_route(
         .filter(|route| {
             route.enabled
                 && route.weight > 0
-                && provider_allowed(route.provider, input.intent.maple_inference_enabled)
                 && registry
                     .provider(route.provider)
                     .is_some_and(|provider| provider.enabled && provider.weight > 0)
@@ -256,12 +250,6 @@ fn build_plan(
         candidate_scope: CandidateScope::SamePublicModelOnly,
         policy_version,
     }
-}
-
-/// Rollout policy is an authorization constraint, not a weighted preference.
-/// Apply it before health snapshots, sticky memory and fallback accounting.
-pub(crate) const fn provider_allowed(provider: ProviderId, maple_inference_enabled: bool) -> bool {
-    !provider.is_maple() || maple_inference_enabled
 }
 
 fn select_weighted_route(bucket: u8, routes: &[EligibleRoute]) -> Option<&EligibleRoute> {
@@ -632,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn maple_rollout_gates_providers_without_hiding_the_shared_model() {
+    fn maple_routes_are_eligible_for_the_shared_model_without_a_feature_flag() {
         use crate::inference::{InferenceSurface, WorkloadClass};
         for (surface, workload) in [
             (InferenceSurface::Responses, WorkloadClass::Interactive),
@@ -643,7 +631,7 @@ mod tests {
             (InferenceSurface::Internal, WorkloadClass::Interactive),
             (InferenceSurface::Internal, WorkloadClass::Background),
         ] {
-            let unflagged = InferenceIntent::new(
+            let intent = InferenceIntent::new(
                 Uuid::from_u128(73),
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -651,24 +639,10 @@ mod tests {
                 surface,
                 workload,
             );
-            let shared = plan_completion_route(
-                &PROVIDER_REGISTRY,
-                RoutePlanningInput {
-                    intent: &unflagged,
-                    configured_providers: ConfiguredProviders::all(),
-                    remembered_provider: Some(ProviderId::Maple(MapleInstanceId::I01)),
-                },
-            )
-            .unwrap();
-            assert_eq!(shared.selected.provider, ProviderId::Tinfoil);
-            assert_eq!(shared.eligible_routes.len(), 1);
-            assert_eq!(shared.policy_version, SHADOW_ROUTING_POLICY_VERSION);
-
-            let flagged = unflagged.with_maple_inference(true);
             let weighted = plan_completion_route(
                 &PROVIDER_REGISTRY,
                 RoutePlanningInput {
-                    intent: &flagged,
+                    intent: &intent,
                     configured_providers: ConfiguredProviders::all(),
                     remembered_provider: None,
                 },
@@ -693,13 +667,12 @@ mod tests {
             assert_eq!(weighted.eligible_routes.len(), 3);
             assert_eq!(weighted.policy_version, MAPLE_ROUTING_POLICY_VERSION);
 
-            // Turning the rollout on retains a previously accepted healthy
-            // shared route, following the existing warmed-cache policy.
+            // A remembered healthy shared or Maple route stays eligible.
             for provider in [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)] {
                 let remembered = plan_completion_route(
                     &PROVIDER_REGISTRY,
                     RoutePlanningInput {
-                        intent: &flagged,
+                        intent: &intent,
                         configured_providers: ConfiguredProviders::all(),
                         remembered_provider: Some(provider),
                     },
@@ -723,8 +696,7 @@ mod tests {
         ];
         let mut counts = [0; 3];
         for bucket in 0..100u8 {
-            let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
-                .with_maple_inference(true);
+            let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
             request.account_uuid = Uuid::from_u128(u128::from(bucket));
             let input = RoutePlanningInput {
                 intent: &request,
@@ -754,8 +726,7 @@ mod tests {
 
     #[test]
     fn configured_maple_instances_are_independent_and_sticky_cannot_restore_excluded_instance() {
-        let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
-            .with_maple_inference(true);
+        let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         for instance in MapleInstanceId::ALL {
             let provider = ProviderId::Maple(instance);
             let configured = ConfiguredProviders::none().with_provider(provider);
@@ -790,8 +761,7 @@ mod tests {
 
     #[test]
     fn unavailable_maple_routes_leave_the_same_shared_model_eligible() {
-        let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID)
-            .with_maple_inference(true);
+        let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {
