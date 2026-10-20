@@ -14,6 +14,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 mod diagnostics;
+#[cfg(test)]
+pub(crate) use diagnostics::DiagnosticBodyState;
 pub use diagnostics::UpstreamDiagnostic;
 
 type StandardHttpClient = reqwest::Client;

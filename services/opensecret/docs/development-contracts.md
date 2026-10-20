@@ -61,6 +61,12 @@ transport; protected routes are not ordinary plaintext `fetch`, `curl`, or
 - Retry only when the failure is known to precede request acceptance. An
   ambiguous POST, response failure, or partial stream is not generally safe to
   replay.
+- Responses may retry a complete, recognized vLLM input-context validation
+  rejection before a successful HTTP response starts, at most twice on the same
+  pinned route. Only the request-local optional history is reduced; instructions,
+  the actual current user/tool suffix and caller output allowance remain intact.
+  Unknown/output-only failures and accepted or partial streams are never replayed;
+  rejected attempts publish no successful usage and canonical history is unchanged.
 - Treat provider responses, model output, web results, and extracted pages as
   untrusted. Bound data and loops, preserve URL provenance, and enforce the
   current SSRF policy.

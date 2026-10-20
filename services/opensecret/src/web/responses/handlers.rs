@@ -9,8 +9,8 @@ use crate::{
         auto_model::{
             AutoModelDecision, AutoModelRequirements, ExcludedAutoCandidate, PromptTokenEstimate,
         },
-        AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceIntent, InferenceSurface,
-        ReplaySafety, WorkloadClass,
+        AttemptFailure, AttemptFailureKind, AttemptStage, AttemptTerminal, InferenceIntent,
+        InferenceSurface, ReplaySafety, WorkloadClass,
     },
     jwt::AuthContext,
     model_config::{
@@ -42,9 +42,10 @@ use crate::{
         openai_auth::AuthMethod,
         provider_error::PublicProviderError,
         responses::{
-            build_prompt, build_prompt_with_token_reserve, build_usage,
+            build_prompt_with_token_reserve, build_usage,
             constants::*,
-            context_builder::normalize_tool_call_ids_for_model,
+            context_builder::{build_prompt_for_recovery, normalize_tool_call_ids_for_model},
+            context_recovery::{drop_optional_history, reduce_optional_history},
             error_mapping,
             image_describer::{
                 describe_image_with_fallback, ImageDescriptionAttemptError,
@@ -93,6 +94,7 @@ const RESPONSE_CANCEL_ACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_WEB_SEARCH_TOOL_TURNS_FREE: usize = 5;
 const MAX_WEB_SEARCH_TOOL_TURNS_PAID: usize = 30;
 const RESPONSE_EXECUTION_DEADLINE: Duration = Duration::from_secs(10 * 60);
+const MAX_CONTEXT_RECOVERY_RETRIES: usize = 2;
 
 /// vLLM's per-request loop guard: generation stops with finish reason
 /// `repetition` once a 4 to 64 token pattern repeats 16 times in a row. Both
@@ -639,12 +641,14 @@ mod tests {
         ensure_prompt_fits_model, final_assistant_finish_reason, finalize_first_model_tool_call,
         forward_authoritative_response_terminal, has_streamed_tool_call_entries, image_attachments,
         image_description_access, image_description_api_error,
-        image_description_attempt_failure_class, maple_kagi_web_search_prompt,
-        model_turn_request_without_user_payload, normalize_responses_input,
+        image_description_attempt_failure_class, is_recoverable_context_rejection,
+        maple_kagi_web_search_prompt, model_turn_request_without_user_payload,
+        normalize_responses_input, output_allows_context_recovery,
         reserve_response_message_uuid_with_check, resolve_responses_model,
         resolve_responses_sampling, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
-        send_storage_message, wait_for_local_response_execution_quiescence, web_search_is_selected,
+        send_storage_message, start_with_context_recovery,
+        wait_for_local_response_execution_quiescence, web_search_is_selected,
         web_search_tool_turn_limit, web_search_tool_turn_limit_error,
         web_search_tool_turn_limit_reached, AssistantTurnOutcome, ClientResponseState,
         ConversationParam, ImageAttachment, ImageDescriptionFailureClass, ImageDescriptionInput,
@@ -667,6 +671,7 @@ mod tests {
         },
         model_config::{ModelAliasTargets, ModelPlan},
         models::responses::ResponseStatus,
+        provider_client::{DiagnosticBodyState, UpstreamDiagnostic},
         provider_registry::{ProviderId, RouteSelectionSource},
         web::{
             openai::{CompletionChunk, CompletionExecutionError, CompletionUsage},
@@ -684,6 +689,296 @@ mod tests {
         time::{timeout, Duration},
     };
     use uuid::Uuid;
+
+    fn context_recovery_error(
+        status: u16,
+        stage: AttemptStage,
+        kind: AttemptFailureKind,
+        known_input: bool,
+        complete: bool,
+    ) -> CompletionExecutionError {
+        let CompletionChunk::Terminal(AttemptTerminal::Completed { attempt, .. }) =
+            completed_attempt_chunk()
+        else {
+            panic!("fixture must contain an attempt");
+        };
+        let failure = AttemptFailure::new(kind, stage, ReplaySafety::NotProvenPreAcceptance)
+            .with_upstream_response(status, None, None)
+            .with_upstream_diagnostic(Some(UpstreamDiagnostic {
+                body_state: if complete {
+                    DiagnosticBodyState::Complete
+                } else {
+                    DiagnosticBodyState::Truncated
+                },
+                code: None,
+                error_type: Some("BadRequestError"),
+                summary: Some("upstream context or token limit exceeded"),
+                input_context_overflow: known_input,
+            }));
+        CompletionExecutionError::Attempt {
+            terminal: AttemptTerminal::Failed { attempt, failure },
+            public_error: ApiError::BadRequest,
+        }
+    }
+
+    fn known_context_recovery_error() -> CompletionExecutionError {
+        context_recovery_error(
+            400,
+            AttemptStage::AwaitingResponse,
+            AttemptFailureKind::HttpStatus,
+            true,
+            true,
+        )
+    }
+
+    fn recovery_history() -> Vec<serde_json::Value> {
+        vec![
+            json!({"role":"system","content":"Required instructions."}),
+            json!({"role":"user","content":"First historical question."}),
+            json!({"role":"assistant","content":"First historical answer."}),
+            json!({"role":"user","content":"Middle historical question."}),
+            json!({"role":"assistant","content":"Middle historical answer."}),
+            json!({"role":"user","content":"Recent historical question."}),
+            json!({"role":"assistant","content":"Recent historical answer."}),
+            json!({"role":"user","content":"Required current question."}),
+        ]
+    }
+
+    #[test]
+    fn context_recovery_requires_typed_complete_rejection_before_response_acceptance() {
+        assert!(is_recoverable_context_rejection(
+            &known_context_recovery_error()
+        ));
+        assert!(is_recoverable_context_rejection(&context_recovery_error(
+            422,
+            AttemptStage::AwaitingResponse,
+            AttemptFailureKind::HttpStatus,
+            true,
+            true,
+        )));
+        for error in [
+            CompletionExecutionError::Request(ApiError::BadRequest),
+            context_recovery_error(
+                400,
+                AttemptStage::AwaitingResponse,
+                AttemptFailureKind::HttpStatus,
+                false,
+                true,
+            ),
+            context_recovery_error(
+                400,
+                AttemptStage::AwaitingResponse,
+                AttemptFailureKind::HttpStatus,
+                true,
+                false,
+            ),
+            context_recovery_error(
+                429,
+                AttemptStage::AwaitingResponse,
+                AttemptFailureKind::HttpStatus,
+                true,
+                true,
+            ),
+            context_recovery_error(
+                503,
+                AttemptStage::AwaitingResponse,
+                AttemptFailureKind::CapacityRejected,
+                true,
+                true,
+            ),
+            context_recovery_error(
+                200,
+                AttemptStage::ResponseBody,
+                AttemptFailureKind::HttpStatus,
+                true,
+                true,
+            ),
+            context_recovery_error(
+                400,
+                AttemptStage::ResponseBody,
+                AttemptFailureKind::UpstreamStreamError,
+                true,
+                true,
+            ),
+            context_recovery_error(
+                400,
+                AttemptStage::AwaitingResponse,
+                AttemptFailureKind::ResponseStartTimeout,
+                true,
+                true,
+            ),
+            context_recovery_error(
+                400,
+                AttemptStage::BeforeSend,
+                AttemptFailureKind::Connect,
+                true,
+                true,
+            ),
+        ] {
+            assert!(!is_recoverable_context_rejection(&error));
+        }
+    }
+
+    #[tokio::test]
+    async fn context_recovery_is_bounded_and_preserves_required_turn_and_output_caps() {
+        for output in [None, Some(16_000)] {
+            let mut body = responses_request_for_model("deepseek-v4-1-flash");
+            body.max_output_tokens = output;
+            let canonical = recovery_history();
+            let mut prompt = canonical.clone();
+            let mut boundary = Some(7);
+            let mut attempts = Vec::new();
+            let result = start_with_context_recovery(
+                &mut prompt,
+                &mut boundary,
+                output_allows_context_recovery(&body),
+                |messages| {
+                    attempts.push(build_model_turn_request(&body, &messages, false));
+                    std::future::ready(if attempts.len() < 3 {
+                        Err(known_context_recovery_error())
+                    } else {
+                        Ok(())
+                    })
+                },
+            )
+            .await;
+            assert!(result.is_ok());
+            assert_eq!(attempts.len(), 3);
+            assert!(attempts
+                .windows(2)
+                .all(|pair| pair[1]["messages"].as_array().unwrap().len()
+                    < pair[0]["messages"].as_array().unwrap().len()));
+            for request in &attempts {
+                assert_eq!(request["model"], json!(body.model));
+                assert_eq!(request["max_tokens"], json!(output));
+                assert!(request.get("max_completion_tokens").is_none());
+                assert_eq!(request["messages"][0], canonical[0]);
+                assert_eq!(
+                    request["messages"].as_array().unwrap().last(),
+                    canonical.last()
+                );
+            }
+            assert_eq!(prompt, vec![canonical[0].clone(), canonical[7].clone()]);
+            assert_eq!(boundary, Some(1));
+            assert_eq!(canonical, recovery_history());
+            assert_eq!(body.max_output_tokens, output);
+        }
+    }
+
+    #[tokio::test]
+    async fn context_recovery_keeps_current_tool_suffix_and_never_reexecutes_it() {
+        let mut prompt = recovery_history();
+        prompt.extend([
+            json!({"role":"assistant","content":"","tool_calls":[{"id":"current-tool","type":"function","function":{"name":"web_search","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"current-tool","content":"Required persisted tool output."}),
+        ]);
+        let required = prompt[7..].to_vec();
+        let mut boundary = Some(7);
+        let mut attempts = 0;
+        let result = start_with_context_recovery(&mut prompt, &mut boundary, true, |messages| {
+            attempts += 1;
+            assert!(messages.ends_with(&required));
+            std::future::ready(if attempts == 1 {
+                Err(known_context_recovery_error())
+            } else {
+                Ok(())
+            })
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+        assert_eq!(&prompt[boundary.unwrap()..], &required);
+    }
+
+    #[tokio::test]
+    async fn context_recovery_stops_when_optional_history_or_provenance_is_unavailable() {
+        for (mut prompt, mut boundary) in [
+            (
+                vec![json!({"role":"user","content":"Only required input."})],
+                Some(0),
+            ),
+            (recovery_history(), None),
+        ] {
+            let snapshot = prompt.clone();
+            let mut attempts = 0;
+            assert!(
+                start_with_context_recovery(&mut prompt, &mut boundary, true, |_| {
+                    attempts += 1;
+                    std::future::ready::<Result<(), _>>(Err(known_context_recovery_error()))
+                })
+                .await
+                .is_err()
+            );
+            assert_eq!(attempts, 1);
+            assert_eq!(prompt, snapshot);
+        }
+    }
+
+    #[tokio::test]
+    async fn context_recovery_never_replays_success_unknown_failure_or_reduces_output() {
+        let mut body = responses_request_for_model("deepseek-v4-1-flash");
+        for output in [Some(-1), Some(0), Some(1_048_576), Some(i32::MAX)] {
+            body.max_output_tokens = output;
+            assert!(!output_allows_context_recovery(&body));
+            let mut prompt = recovery_history();
+            let mut boundary = Some(7);
+            let mut attempts = 0;
+            assert!(
+                start_with_context_recovery(&mut prompt, &mut boundary, false, |_| {
+                    attempts += 1;
+                    std::future::ready::<Result<(), _>>(Err(known_context_recovery_error()))
+                })
+                .await
+                .is_err()
+            );
+            assert_eq!(attempts, 1);
+            assert_eq!(body.max_output_tokens, output);
+            assert_eq!(prompt, recovery_history());
+        }
+        let mut prompt = recovery_history();
+        let mut boundary = Some(7);
+        let mut attempts = 0;
+        let accepted = start_with_context_recovery(&mut prompt, &mut boundary, true, |_| {
+            attempts += 1;
+            std::future::ready(Ok(
+                json!({"error":"Accepted body is not inspected by recovery."}),
+            ))
+        })
+        .await
+        .unwrap();
+        assert!(accepted.get("error").is_some());
+        assert_eq!(attempts, 1);
+        assert_eq!(prompt, recovery_history());
+
+        attempts = 0;
+        assert!(
+            start_with_context_recovery(&mut prompt, &mut boundary, true, |_| {
+                attempts += 1;
+                std::future::ready::<Result<(), _>>(Err(CompletionExecutionError::Request(
+                    ApiError::ServiceUnavailable,
+                )))
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(attempts, 1);
+        assert_eq!(prompt, recovery_history());
+    }
+
+    #[tokio::test]
+    async fn context_recovery_exhaustion_returns_last_rejection_without_extra_sends() {
+        let mut prompt = recovery_history();
+        let mut boundary = Some(7);
+        let mut attempts = 0;
+        let error = start_with_context_recovery(&mut prompt, &mut boundary, true, |_| {
+            attempts += 1;
+            std::future::ready::<Result<(), _>>(Err(known_context_recovery_error()))
+        })
+        .await
+        .unwrap_err();
+        assert!(is_recoverable_context_rejection(&error));
+        assert_eq!(attempts, 3);
+    }
 
     async fn test_chat_billing_access(can_use: bool, is_free: bool) -> ChatBillingAccess {
         let app = Router::new().route(
@@ -4325,6 +4620,8 @@ struct BuiltContext {
     prompt_messages: Arc<Vec<Value>>,
     total_prompt_tokens: usize,
     web_search_enabled: bool,
+    required_user_uuid: Uuid,
+    required_from: Option<usize>,
 }
 
 /// Persisted database records
@@ -4722,6 +5019,7 @@ async fn build_context_and_check_billing(
         "role": "user",
         "content": MessageContentConverter::to_model_format(&prepared.message_content)
     });
+    let required_from = prompt_messages.len();
     prompt_messages.push(user_message_for_prompt);
     total_prompt_tokens += prepared.user_message_tokens as usize;
 
@@ -4768,6 +5066,8 @@ async fn build_context_and_check_billing(
         prompt_messages: Arc::new(prompt_messages),
         total_prompt_tokens,
         web_search_enabled,
+        required_user_uuid: prepared.user_message_id,
+        required_from: Some(required_from),
     })
 }
 
@@ -5234,6 +5534,125 @@ async fn ensure_message_started(
     Ok(id)
 }
 
+/// A context-validation response rejects this model turn before generation.
+/// Keep this separate from general replay safety: statuses, broad summaries,
+/// timeouts, response-body failures and partial streams never authorize it.
+fn is_recoverable_context_rejection(error: &CompletionExecutionError) -> bool {
+    matches!(
+        error.terminal(),
+        Some(AttemptTerminal::Failed { failure, .. })
+            if failure.kind == AttemptFailureKind::HttpStatus
+                && failure.stage == AttemptStage::AwaitingResponse
+                && matches!(failure.status, Some(400 | 422))
+                && failure.upstream_diagnostic.as_deref().is_some_and(|diagnostic|
+                    diagnostic.is_input_context_overflow())
+    )
+}
+
+fn output_allows_context_recovery(body: &ResponsesCreateRequest) -> bool {
+    body.max_output_tokens.is_none_or(|output| {
+        usize::try_from(output)
+            .is_ok_and(|output| output > 0 && output < prompt_token_budget(&body.model))
+    })
+}
+
+async fn start_with_context_recovery<T, F, Fut>(
+    prompt_messages: &mut Vec<Value>,
+    required_from: &mut Option<usize>,
+    output_allows_recovery: bool,
+    mut start: F,
+) -> Result<T, CompletionExecutionError>
+where
+    F: FnMut(Vec<Value>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CompletionExecutionError>>,
+{
+    let mut retries = 0;
+    loop {
+        match start(prompt_messages.clone()).await {
+            Ok(started) => return Ok(started),
+            Err(error) => {
+                if !output_allows_recovery
+                    || retries == MAX_CONTEXT_RECOVERY_RETRIES
+                    || !is_recoverable_context_rejection(&error)
+                {
+                    return Err(error);
+                }
+                let Some(boundary) = *required_from else {
+                    return Err(error);
+                };
+                let reduced = if retries == 0 {
+                    reduce_optional_history(prompt_messages, boundary)
+                } else {
+                    drop_optional_history(prompt_messages, boundary)
+                };
+                let Some((messages, boundary)) = reduced else {
+                    return Err(error);
+                };
+                let removed_messages = prompt_messages.len().saturating_sub(messages.len());
+                if removed_messages == 0 {
+                    return Err(error);
+                }
+                retries += 1;
+                warn!(
+                    retry = retries,
+                    removed_messages,
+                    prompt_message_count = messages.len(),
+                    "Retrying rejected Responses model turn with less optional history"
+                );
+                *prompt_messages = messages;
+                *required_from = Some(boundary);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_responses_assistant_turn_with_recovery(
+    state: &Arc<AppState>,
+    user: &User,
+    body: &ResponsesCreateRequest,
+    pinned_completion: &PinnedCompletionRequest,
+    headers: &HeaderMap,
+    prompt_messages: &mut Vec<Value>,
+    required_from: &mut Option<usize>,
+    tools_enabled: bool,
+    response_uuid: Uuid,
+    conversation_uuid: Uuid,
+    tool_turn_count: usize,
+    prompt_token_estimate: usize,
+    response_execution: ResponseExecution,
+    cache_policy: &CompletionCachePolicy,
+) -> Result<StartedCompletion, CompletionExecutionError> {
+    let output_allows_recovery = output_allows_context_recovery(body);
+    start_with_context_recovery(
+        prompt_messages,
+        required_from,
+        output_allows_recovery,
+        |messages| {
+            let response_execution = response_execution.clone();
+            async move {
+                start_responses_assistant_turn(
+                    state,
+                    user,
+                    body,
+                    pinned_completion,
+                    headers,
+                    &messages,
+                    tools_enabled,
+                    response_uuid,
+                    conversation_uuid,
+                    tool_turn_count,
+                    prompt_token_estimate,
+                    response_execution,
+                    cache_policy,
+                )
+                .await
+            }
+        },
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_responses_assistant_turn(
     state: &Arc<AppState>,
@@ -5610,6 +6029,7 @@ async fn setup_completion_processor(
 ) -> ResponseTerminal {
     let tools_requested = context.web_search_enabled;
     let mut prompt_messages = Arc::as_ref(&context.prompt_messages).clone();
+    let mut required_from = context.required_from;
     let mut prompt_token_estimate = context.total_prompt_tokens;
     let mut kagi_allowed_urls = tools::collect_kagi_allowed_urls_from_prompt(&prompt_messages);
     let mut next_message_id = Some(assistant_message_id);
@@ -5633,13 +6053,14 @@ async fn setup_completion_processor(
 
         let started = match first_started.take() {
             Some(started) => started,
-            None => match start_responses_assistant_turn(
+            None => match start_responses_assistant_turn_with_recovery(
                 state,
                 user,
                 body,
                 pinned_completion,
                 headers,
-                &prompt_messages,
+                &mut prompt_messages,
+                &mut required_from,
                 tools_enabled,
                 persisted.response.uuid,
                 context.conversation.uuid,
@@ -5710,21 +6131,24 @@ async fn setup_completion_processor(
                 let internal_system_prompt =
                     build_internal_system_prompt(tools_requested, model_plan);
                 let next_turn_tools_enabled = tools_requested && !force_final_without_tools;
-                let (rebuilt_messages, rebuilt_tokens) = match build_prompt(
-                    state.db.as_ref(),
-                    context.conversation.id,
-                    user.uuid,
-                    user_key,
-                    &body.model,
-                    body.instructions.as_deref(),
-                    Some(&internal_system_prompt),
-                    model_reasoning_replay(&body.model, next_turn_tools_enabled),
-                ) {
-                    Ok(prompt) => prompt,
-                    Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
-                };
+                let (rebuilt_messages, rebuilt_tokens, rebuilt_boundary) =
+                    match build_prompt_for_recovery(
+                        state.db.as_ref(),
+                        context.conversation.id,
+                        user.uuid,
+                        user_key,
+                        &body.model,
+                        body.instructions.as_deref(),
+                        Some(&internal_system_prompt),
+                        model_reasoning_replay(&body.model, next_turn_tools_enabled),
+                        context.required_user_uuid,
+                    ) {
+                        Ok(prompt) => prompt,
+                        Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
+                    };
                 prompt_messages = rebuilt_messages;
                 prompt_token_estimate = rebuilt_tokens;
+                required_from = rebuilt_boundary;
             }
             AssistantTurnOutcome::Final { finish_reason } => {
                 return ResponseTerminal::Completed { finish_reason };
@@ -6087,7 +6511,7 @@ async fn create_response_stream(
     } else {
         None
     };
-    let (context, pinned_completion) = loop {
+    let (mut context, pinned_completion) = loop {
         let built = match context.take() {
             Some(built) => built,
             None => {
@@ -6185,6 +6609,22 @@ async fn create_response_stream(
         }
     };
 
+    // Title eligibility uses the original context shape, before any rejected
+    // request causes optional history to be omitted from its retry.
+    let (user_count, assistant_count) =
+        context
+            .prompt_messages
+            .iter()
+            .fold((0, 0), |(users, assistants), msg| {
+                match msg.get("role").and_then(|r| r.as_str()) {
+                    Some(ROLE_USER) => (users + 1, assistants),
+                    Some(ROLE_ASSISTANT) if msg.get("tool_calls").is_none() => {
+                        (users, assistants + 1)
+                    }
+                    _ => (users, assistants),
+                }
+            });
+
     // Start only the first provider request before persistence. Only locally
     // proven pre-send/pre-acceptance capacity failures can authorize replay:
     // an upstream capacity rejection remains ambiguous even without durable
@@ -6213,13 +6653,15 @@ async fn create_response_stream(
         .begin_task()
         .map_err(|_| ApiError::InternalServerError)?;
     let model_turn_body = model_turn_request_without_user_payload(&body);
-    let first_started = start_responses_assistant_turn(
+    let mut first_prompt_messages = Arc::as_ref(&context.prompt_messages).clone();
+    let first_started = start_responses_assistant_turn_with_recovery(
         &state,
         &user,
         &model_turn_body,
         &pinned_completion,
         &headers,
-        context.prompt_messages.as_ref(),
+        &mut first_prompt_messages,
+        &mut context.required_from,
         context.web_search_enabled,
         response_uuid,
         context.conversation.uuid,
@@ -6230,6 +6672,7 @@ async fn create_response_stream(
     )
     .await
     .map_err(|error| responses_pre_persistence_api_error(error, !image_descriptions.is_empty()))?;
+    context.prompt_messages = Arc::new(first_prompt_messages);
 
     // Phase 3: Persist request data
     let persisted = persist_request_data(
@@ -6245,20 +6688,6 @@ async fn create_response_stream(
 
     // Capture stream and title data before moving execution state into the
     // supervisor task.
-    let (user_count, assistant_count) =
-        context
-            .prompt_messages
-            .iter()
-            .fold((0, 0), |(users, assistants), msg| {
-                match msg.get("role").and_then(|r| r.as_str()) {
-                    Some(ROLE_USER) => (users + 1, assistants),
-                    Some(ROLE_ASSISTANT) if msg.get("tool_calls").is_none() => {
-                        (users, assistants + 1)
-                    }
-                    _ => (users, assistants),
-                }
-            });
-
     let title_request = (user_count == 1 && assistant_count == 0).then(|| {
         (
             context.conversation.id,
