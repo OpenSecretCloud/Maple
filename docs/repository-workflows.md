@@ -45,8 +45,14 @@ Research desktop, Android and iOS PR workflows group runs by workflow and PR.
 A new run cancels earlier runs for that same unsigned preview; unrelated PRs
 and signed, master and manual queues keep their existing behavior.
 The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
-same-repository PRs changing measured inputs without editing PCR approvals;
-these diagnostic builds do not publish an artifact. It compares measurements
+same-repository PRs changing measured inputs without editing PCR approvals.
+Each diagnostic build checks the exact user ramdisk selected by its EIF
+derivation: the entrypoint's effective CA bundle is present in that archive,
+matches its Nix store input, and omits the affected emSign roots. It records
+whether retained Comodo AAA is excluded from ordinary TLS PEMs and explicitly
+rejected by OpenSSL for server trust. It records the bundle and EIF hashes with
+the PCRs in the job summary; it does not upload
+an artifact. The workflow compares measurements
 on PRs editing approved PCR JSON, relevant master changes, and manual runs.
 Preserve ordinary backend PRs without fresh approvals and meaningful master
 mismatches; these checks never change approvals, sign, release, or authorize

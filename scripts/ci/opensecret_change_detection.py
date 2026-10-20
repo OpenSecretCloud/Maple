@@ -26,6 +26,8 @@ EIF_CI_INPUTS = frozenset({
     ".github/workflows/opensecret-eif.yml",
     "scripts/ci/build_opensecret_eif.sh",
     "scripts/ci/check_opensecret_eif.sh",
+    "scripts/ci/verify_opensecret_eif_rootfs.py",
+    "scripts/ci/fixtures/eif/comodo-aaa-services-root.pem",
 })
 # Shell test inputs consumed directly by the component flake, not Cargo.
 NIX_TEST_INPUTS = frozenset({"tests/entrypoint_entropy_preflight.sh"})

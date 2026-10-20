@@ -76,7 +76,14 @@ artifact's `pcr.json`; the deployment verifier rejects anything else.
 
 `opensecret-eif.yml` builds dev/prod EIF candidates on Linux ARM64 for
 same-repository PRs that change measured inputs without editing PCR approvals.
-This diagnostic path does not publish an artifact or require an approval match. A PR
+The candidate job inspects the exact user initramfs passed to the EIF builder,
+resolves its entrypoint's CA path, and reports the archived bundle's hash and
+affected-root check alongside the EIF hash and PCRs. The diagnostic checks
+that retained Comodo AAA is excluded from ordinary TLS PEM roots and rejected
+by OpenSSL for server trust; that result does not prove the compiled Rustls
+client's trust behavior. This checks a build input;
+it does not independently extract the final EIF, upload a deployable artifact,
+or require an approval match. A PR
 runs approval comparisons only if its own diff edits
 `pcrDev.json`, `pcrProd.json`, `pcrDevHistory.json`, or `pcrProdHistory.json`
 under `services/opensecret/`. Backend code changes alone do not require new
@@ -114,7 +121,8 @@ Trusted EIF builds, approval comparisons, and release builders use
 builder. They retain the 180-minute limit and independent dev/prod inputs.
 The provider executes build code and receives the job's existing OIDC/cache
 permissions; the release builder also attests its output. PR candidate builds
-do not upload artifacts, sign approvals, or deploy. PCR signing remains on
+inspect their exact user ramdisk input but do not upload artifacts, sign
+approvals, or deploy. PCR signing remains on
 standard `ubuntu-latest` behind its protected environment. The runner group
 must allow the public Maple repository, with capacity for both dev/prod jobs.
 Unprivileged jobs retain standard `ubuntu-24.04-arm` and their 90-minute limit.
