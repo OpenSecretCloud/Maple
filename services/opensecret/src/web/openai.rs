@@ -644,8 +644,7 @@ impl<'a> CompletionExecutionContext<'a> {
     ) -> Self {
         Self::new(
             billing,
-            InferenceRoutingContext::new(pinned.intent.model_plan)
-                .with_maple_inference(pinned.intent.maple_inference_enabled),
+            InferenceRoutingContext::new(pinned.intent.model_plan),
             cache,
         )
     }
@@ -679,103 +678,19 @@ impl BillingContext {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InferenceRoutingContext {
     model_plan: ModelPlan,
-    maple_inference_enabled: bool,
 }
 
 impl InferenceRoutingContext {
     pub(crate) const fn new(model_plan: ModelPlan) -> Self {
-        Self {
-            model_plan,
-            maple_inference_enabled: false,
-        }
-    }
-
-    /// Capture the authenticated account's dedicated-provider eligibility only
-    /// when the requested model or an existing Auto candidate can use Maple.
-    pub(crate) async fn for_model(
-        state: &AppState,
-        user_uuid: Uuid,
-        model_plan: ModelPlan,
-        model: &str,
-    ) -> Self {
-        if !state.proxy_router.maple_is_configured() {
-            return Self::new(model_plan);
-        }
-        let enabled =
-            maple_inference_eligibility_for_model(state.os_flags(), user_uuid, model, model_plan)
-                .await;
-        Self::new(model_plan).with_maple_inference(enabled)
-    }
-
-    pub(crate) const fn with_maple_inference(self, enabled: bool) -> Self {
-        Self {
-            maple_inference_enabled: enabled,
-            ..self
-        }
-    }
-
-    pub(crate) const fn maple_inference_enabled(self) -> bool {
-        self.maple_inference_enabled
+        Self { model_plan }
     }
 
     pub(crate) const fn with_model_plan(self, model_plan: ModelPlan) -> Self {
-        Self { model_plan, ..self }
+        Self { model_plan }
     }
 
     pub(crate) const fn model_plan(self) -> ModelPlan {
         self.model_plan
-    }
-}
-
-async fn maple_inference_eligibility_for_model(
-    client: Option<&crate::os_flags::OsFlagsClient>,
-    user_uuid: Uuid,
-    requested_model: &str,
-    model_plan: ModelPlan,
-) -> bool {
-    // Auto can select an alternate after the entrypoint captures its immutable
-    // routing context. Include the existing candidate set so a DeepSeek fallback
-    // can use Maple without making unrelated explicit models consult flags.
-    let has_maple_route = |model: &str| {
-        PROVIDER_REGISTRY
-            .completion_model(model)
-            .is_some_and(|model| {
-                model
-                    .routes
-                    .iter()
-                    .any(|route| route.provider.is_maple() && route.enabled && route.weight > 0)
-            })
-    };
-    let mode = ModelSelectionMode::from_requested_model(requested_model);
-    let needs_eligibility = match auto_model_candidates(mode, model_plan) {
-        Some(candidates) => candidates.into_iter().any(has_maple_route),
-        None => has_maple_route(requested_model),
-    };
-    if !needs_eligibility {
-        return false;
-    }
-    maple_inference_eligibility(client, user_uuid).await
-}
-
-async fn maple_inference_eligibility(
-    client: Option<&crate::os_flags::OsFlagsClient>,
-    user_uuid: Uuid,
-) -> bool {
-    let Some(client) = client else {
-        return false;
-    };
-    let key = crate::os_flags::MAPLE_INFERENCE_FEATURE_FLAG_KEY;
-    match client.get_user_flags(user_uuid, Some(&[key])).await {
-        Ok(response) if response.user_uuid == user_uuid => {
-            response.flags.get(key).copied().unwrap_or(false)
-        }
-        Ok(_) | Err(_) => {
-            warn!(
-                flag_key = key,
-                "Dedicated inference eligibility could not be verified; using existing providers"
-            );
-            false
-        }
     }
 }
 
@@ -1734,7 +1649,6 @@ pub(crate) struct ModelResolutionRequest<'a> {
     pub(crate) requested_model_id: &'a str,
     pub(crate) alias_target: &'a str,
     pub(crate) model_plan: ModelPlan,
-    pub(crate) maple_inference_enabled: bool,
     /// An Auto candidate that already failed this request's model-dependent
     /// preparation or lost its routes before any send; the bounded second
     /// decision never returns to it and carries its cause forward.
@@ -1770,11 +1684,7 @@ pub(crate) fn resolve_inference_model<'a>(
     let mode = ModelSelectionMode::from_requested_model(request.requested_model_id);
     let requirements = requirements();
     let candidates = auto_model_candidates(mode, request.model_plan).unwrap_or_default();
-    let availability = provider_router.model_availability_with_maple(
-        proxy_router,
-        &candidates,
-        request.maple_inference_enabled,
-    );
+    let availability = provider_router.model_availability(proxy_router, &candidates);
     let sticky = provider_router.sticky_route(
         request.account_uuid,
         request.surface,
@@ -2049,9 +1959,7 @@ async fn proxy_openai(
 
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
-    let routing =
-        InferenceRoutingContext::for_model(&state, user.uuid, model_plan, &requested_model_name)
-            .await;
+    let routing = InferenceRoutingContext::new(model_plan);
     let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
@@ -2069,7 +1977,6 @@ async fn proxy_openai(
             &state.provider_router,
             &state.proxy_router,
             ModelResolutionRequest {
-                maple_inference_enabled: routing.maple_inference_enabled(),
                 account_uuid: user.uuid,
                 surface: InferenceSurface::ChatCompletions,
                 requested_model_id: &requested_model_name,
@@ -2382,9 +2289,8 @@ pub(crate) async fn prepare_completion_request(
     }
 
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
-    // Helpers and re-plans retain the entrypoint's authenticated eligibility.
-    // A fabricated internal intent cannot grant access to the dedicated node.
-    let intent = intent.with_maple_inference(routing.maple_inference_enabled());
+    // Helpers and re-plans retain the authenticated account and plan. Model
+    // access is checked above; configured providers are selected by Router v2.
     let shadow = state
         .provider_router
         .shadow_completion_plan(&state.proxy_router, &intent);
@@ -2834,8 +2740,9 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         attempt.route.provider_model_id,
         auto_reason.map(|reason| reason.as_str()),
         attempt.route.selection_source,
-        if pinned.intent.maple_inference_enabled
-            && pinned.intent.public_model_id == crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
+        if PROVIDER_REGISTRY
+            .completion_model(&pinned.intent.public_model_id)
+            .is_some_and(|model| model.routes.iter().any(|route| route.provider.is_maple()))
         { MAPLE_ROUTING_POLICY_VERSION } else { SHADOW_ROUTING_POLICY_VERSION },
         pinned.intent.auto_model.as_ref().map(|decision| decision.policy_version),
         pinned.intent.auto_model.as_ref().map(|decision| decision.rejected.as_slice()).unwrap_or_default(),
@@ -2858,9 +2765,7 @@ async fn get_chat_completion_response_with_options(
         response_execution,
         response_execution_guard,
     } = execution;
-    if routing.model_plan() != pinned.intent.model_plan
-        || routing.maple_inference_enabled() != pinned.intent.maple_inference_enabled
-    {
+    if routing.model_plan() != pinned.intent.model_plan {
         error!("Completion policy did not match its pinned inference route");
         return Err(ApiError::InternalServerError.into());
     }
@@ -7881,7 +7786,6 @@ mod tests {
             provider_router,
             proxy_router,
             ModelResolutionRequest {
-                maple_inference_enabled: false,
                 account_uuid: account,
                 surface,
                 requested_model_id: requested,
@@ -8494,7 +8398,6 @@ mod tests {
                 &provider_router,
                 &proxy_router,
                 ModelResolutionRequest {
-                    maple_inference_enabled: false,
                     account_uuid: account,
                     surface,
                     requested_model_id: AUTO_POWERFUL_MODEL_ID,
@@ -8667,7 +8570,6 @@ mod tests {
             &provider_router,
             &proxy_router,
             ModelResolutionRequest {
-                maple_inference_enabled: false,
                 account_uuid: Uuid::nil(),
                 surface: InferenceSurface::ChatCompletions,
                 requested_model_id: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
