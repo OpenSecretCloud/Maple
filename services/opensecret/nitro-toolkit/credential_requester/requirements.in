@@ -2,5 +2,8 @@
 # in the Nitro Toolkit README; the generated lock pins the full closure.
 boto3>=1.43,<2
 botocore>=1.43,<2
+# Reviewed CA bundle after removal of compromised eMudhra G3; update with the
+# image trust test whenever the root set changes.
+certifi==2026.10.19
 requests>=2.32,<3
 urllib3>=2.8,<3
