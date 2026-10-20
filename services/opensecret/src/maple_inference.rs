@@ -23,14 +23,14 @@ const I01_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I01,
     host: "i01.tfinf.maple.ai",
     base_url: "https://i01.tfinf.maple.ai",
-    current_release: &CURRENT_RELEASE,
+    current_release: &I01_CURRENT_RELEASE,
     staged_releases: &[],
 };
 const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I02,
     host: "i02.tfinf.maple.ai",
     base_url: "https://i02.tfinf.maple.ai",
-    current_release: &CURRENT_RELEASE,
+    current_release: &I02_CURRENT_RELEASE,
     staged_releases: &[],
 };
 
@@ -111,11 +111,22 @@ struct ReleasePin {
     registers: &'static [&'static str],
 }
 
-// Independently qualified own-node release; these identify the published code
-// artifact and full multiplatform launch measurement, not a cached live quote.
-// Keep the current release accepted while an explicitly reviewed staged release
-// is deployed. Remove retired entries after the rollout completes.
-const CURRENT_RELEASE: ReleasePin = ReleasePin {
+// Keep each guest's release pins independent, even while both run the same
+// artifact. A staged i02 update must never broaden i01's attestation policy.
+// These identify the published artifact and full multiplatform measurement,
+// not a cached live quote. Remove retired entries after rollout completes.
+const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
+    repo: "MaplePrivacyLabs/inference-deepseek",
+    tag: "v0.1.1",
+    digest: "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
+    registers: &[
+        "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
+        "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
+        "4dac875226df9a0a2dcc8e2c535ebf4ed26398dd3581ab62eba5580a5d155a8c62b66c8f073884c6b3b9a03b34e7bf94",
+    ],
+};
+
+const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-deepseek",
     tag: "v0.1.1",
     digest: "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
@@ -126,8 +137,11 @@ const CURRENT_RELEASE: ReleasePin = ReleasePin {
     ],
 };
 pub(crate) fn direct_policy(instance: MapleInstanceId) -> Result<DirectPolicy, tinfoil::Error> {
-    let endpoint = endpoint(instance);
-    let approved = std::iter::once(endpoint.current_release)
+    DirectPolicy::new(approved_releases(endpoint(instance)))
+}
+
+fn approved_releases(endpoint: &MapleEndpoint) -> Vec<ApprovedRelease> {
+    std::iter::once(endpoint.current_release)
         .chain(endpoint.staged_releases.iter())
         .map(|pin| ApprovedRelease {
             release: PinnedRelease {
@@ -144,8 +158,7 @@ pub(crate) fn direct_policy(instance: MapleInstanceId) -> Result<DirectPolicy, t
                     .collect(),
             },
         })
-        .collect();
-    DirectPolicy::new(approved)
+        .collect()
 }
 
 #[cfg(test)]
@@ -316,6 +329,37 @@ mod tests {
         }
         assert_eq!(endpoint(MapleInstanceId::I01).host, "i01.tfinf.maple.ai");
         assert_eq!(endpoint(MapleInstanceId::I02).host, "i02.tfinf.maple.ai");
+    }
+
+    #[test]
+    fn staging_i02_release_does_not_approve_it_for_i01() {
+        // Synthetic release identity is local to this test; no endpoint uses it.
+        const I02_TEST_STAGE: ReleasePin = ReleasePin {
+            repo: "MaplePrivacyLabs/inference-deepseek",
+            tag: "test-i02-only-stage",
+            digest: I02_CURRENT_RELEASE.digest,
+            registers: I02_CURRENT_RELEASE.registers,
+        };
+        const STAGED_I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
+            instance: MapleInstanceId::I02,
+            host: "i02.tfinf.maple.ai",
+            base_url: "https://i02.tfinf.maple.ai",
+            current_release: &I02_CURRENT_RELEASE,
+            staged_releases: &[I02_TEST_STAGE],
+        };
+
+        let i01_approved = approved_releases(endpoint(MapleInstanceId::I01));
+        let current_i02_approved = approved_releases(endpoint(MapleInstanceId::I02));
+        let staged_i02_approved = approved_releases(&STAGED_I02_ENDPOINT);
+        assert_eq!(i01_approved.len(), 1);
+        assert_eq!(current_i02_approved.len(), 1);
+        assert_eq!(staged_i02_approved.len(), 2);
+        assert_eq!(staged_i02_approved[1].release.tag, I02_TEST_STAGE.tag);
+        assert!(i01_approved
+            .iter()
+            .all(|approved| approved.release.tag != I02_TEST_STAGE.tag));
+        DirectPolicy::new(i01_approved).expect("i01 current policy remains valid");
+        DirectPolicy::new(staged_i02_approved).expect("i02 staged policy remains valid");
     }
 
     #[test]
