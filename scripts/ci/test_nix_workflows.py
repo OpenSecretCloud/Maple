@@ -67,8 +67,9 @@ class NixWorkflowPinTests(unittest.TestCase):
                             {key: verify.get(key) for key in VERIFY_STEP}, VERIFY_STEP
                         )
                         self.assertLessEqual(
-                            set(verify), {"name", "run", "working-directory"}
+                            set(verify), {"name", "run", "if", "working-directory"}
                         )
+                        self.assertEqual(verify.get("if"), step.get("if"))
                         self.assertEqual(
                             verify.get("working-directory", job_directory), "."
                         )

@@ -97,6 +97,7 @@ jobs:
           github-token: ""
 
       - name: Verify pinned Nix runtime
+        if: runner.os != 'Windows'
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
 
