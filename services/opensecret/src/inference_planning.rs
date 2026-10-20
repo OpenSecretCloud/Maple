@@ -288,7 +288,7 @@ mod tests {
         ModelPlan, AUTO_POWERFUL_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
         GLM_5_3_MODEL_ID,
     };
-    use crate::provider_registry::{ProviderId, PROVIDER_REGISTRY};
+    use crate::provider_registry::{ProviderId, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY};
     use uuid::Uuid;
 
     fn intent(requested_model: &str, public_model: &str) -> InferenceIntent {
@@ -650,7 +650,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 weighted.selected.provider,
-                ProviderId::Maple(MapleInstanceId::I02)
+                ProviderId::Maple(MapleInstanceId::I01)
             );
             assert_eq!(
                 weighted.selected.public_model_id,
@@ -664,37 +664,30 @@ mod tests {
                 weighted.selected.response_model_id,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID
             );
-            assert_eq!(weighted.eligible_routes.len(), 3);
+            assert_eq!(weighted.eligible_routes.len(), 2);
             assert_eq!(weighted.policy_version, MAPLE_ROUTING_POLICY_VERSION);
 
-            // A remembered healthy shared or Maple route stays eligible.
-            for provider in [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)] {
-                let remembered = plan_completion_route(
-                    &PROVIDER_REGISTRY,
-                    RoutePlanningInput {
-                        intent: &intent,
-                        configured_providers: ConfiguredProviders::all(),
-                        remembered_provider: Some(provider),
-                    },
-                )
-                .unwrap();
-                assert_eq!(remembered.selected.provider, provider);
-                assert_eq!(
-                    remembered.selected.selection_source,
-                    RouteSelectionSource::Sticky
-                );
-            }
+            let remembered_shared = plan_completion_route(
+                &PROVIDER_REGISTRY,
+                RoutePlanningInput {
+                    intent: &intent,
+                    configured_providers: ConfiguredProviders::all(),
+                    remembered_provider: Some(ProviderId::Tinfoil),
+                },
+            )
+            .unwrap();
+            assert_eq!(remembered_shared.selected.provider, ProviderId::Tinfoil);
+            assert_eq!(
+                remembered_shared.selected.selection_source,
+                RouteSelectionSource::Sticky
+            );
         }
     }
 
     #[test]
-    fn deepseek_allocates_five_shared_and_ninety_five_maple_account_buckets() {
-        let providers = [
-            ProviderId::Tinfoil,
-            ProviderId::Maple(MapleInstanceId::I01),
-            ProviderId::Maple(MapleInstanceId::I02),
-        ];
-        let mut counts = [0; 3];
+    fn stock_deepseek_allocates_fifty_shared_and_fifty_i01_account_buckets() {
+        let providers = [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)];
+        let mut counts = [0; 2];
         for bucket in 0..100u8 {
             let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
             request.account_uuid = Uuid::from_u128(u128::from(bucket));
@@ -708,45 +701,74 @@ mod tests {
                 plan,
                 plan_completion_route(&PROVIDER_REGISTRY, input).unwrap()
             );
-            let index = if bucket < 5 {
-                0
-            } else if bucket < 52 {
-                1
-            } else {
-                2
-            };
+            let index = usize::from(bucket >= 50);
             counts[index] += 1;
             assert_eq!(plan.selected.provider, providers[index]);
             assert_eq!(plan.selected.bucket, Some(bucket));
             assert_eq!(plan.decision, PlanDecision::StaticBucket);
-            assert_eq!(plan.eligible_routes.len(), 3);
+            assert_eq!(plan.eligible_routes.len(), 2);
         }
-        assert_eq!(counts, [5, 47, 48]);
+        assert_eq!(counts, [50, 50]);
     }
 
     #[test]
-    fn configured_maple_instances_are_independent_and_sticky_cannot_restore_excluded_instance() {
+    fn drained_i02_cannot_be_restored_by_configuration_or_sticky_memory() {
+        let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let i01 = ProviderId::Maple(MapleInstanceId::I01);
+        let i02 = ProviderId::Maple(MapleInstanceId::I02);
+        let configured = ConfiguredProviders::all();
+        let plan = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &request,
+                configured_providers: configured,
+                remembered_provider: Some(i02),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.selected.provider, i01);
+        assert_eq!(
+            plan.selected.selection_source,
+            RouteSelectionSource::StaticSplit
+        );
+        assert!(plan
+            .eligible_routes
+            .iter()
+            .all(|route| route.provider != i02));
+
+        let only_i02 = ConfiguredProviders::none().with_provider(i02);
+        assert_eq!(
+            plan_completion_route(
+                &PROVIDER_REGISTRY,
+                RoutePlanningInput {
+                    intent: &request,
+                    configured_providers: only_i02,
+                    remembered_provider: Some(i02),
+                }
+            )
+            .unwrap_err(),
+            RoutePlanningError::NoEligibleRoute(DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string())
+        );
+    }
+
+    #[test]
+    fn synthetic_dual_instance_registry_keeps_both_replicas_independent() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         for instance in MapleInstanceId::ALL {
             let provider = ProviderId::Maple(instance);
             let configured = ConfiguredProviders::none().with_provider(provider);
-            for other in MapleInstanceId::ALL {
-                assert_eq!(
-                    configured.contains(ProviderId::Maple(other)),
-                    other == instance
-                );
-            }
-            let excluded = if instance == MapleInstanceId::I01 {
+            let other = ProviderId::Maple(if instance == MapleInstanceId::I01 {
                 MapleInstanceId::I02
             } else {
                 MapleInstanceId::I01
-            };
+            });
+            assert!(!configured.contains(other));
             let plan = plan_completion_route(
-                &PROVIDER_REGISTRY,
+                &DUAL_INSTANCE_TEST_REGISTRY,
                 RoutePlanningInput {
                     intent: &request,
                     configured_providers: configured,
-                    remembered_provider: Some(ProviderId::Maple(excluded)),
+                    remembered_provider: Some(other),
                 },
             )
             .unwrap();

@@ -1,6 +1,6 @@
 //! Offline tests for Maple routing, cache boundaries, and usage identity.
 use super::*;
-use crate::provider_registry::MapleInstanceId;
+use crate::provider_registry::{MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY};
 
 #[test]
 fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
@@ -77,7 +77,7 @@ fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
         .with_maple_readiness(crate::provider_client::MapleReadiness::for_test_instances(
             &[instance],
         ));
-        let route = ProviderRouter::default()
+        let route = ProviderRouter::with_test_registry(&DUAL_INSTANCE_TEST_REGISTRY)
             .select_active_completion_route(&proxies, &intent)
             .unwrap();
         assert_eq!(route.provider, ProviderId::Maple(instance));
