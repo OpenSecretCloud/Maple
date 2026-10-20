@@ -29,9 +29,15 @@ menus. Each group is **computer · folder**, with its tasks beneath it; a globe
 marks remote folders. The sidebar only shows folders with visible tasks; empty
 folders remain available in the project menus. Selecting a task or project also
 selects its execution computer. Select a **This computer** project to return to
-local work. Local-only installations retain the existing sidebar layout. In Remote computers settings,
-**Rename** changes the computer's label on this desktop; it does not change its
-identity or pairing grant.
+local work. Local-only installations retain the existing sidebar layout.
+
+The computer name defaults to its OS hostname. In **Remote computers → Computer
+name → Rename**, set the name advertised by this computer for this account and
+profile. This works with remote access off and does not change the system
+hostname. Other paired computers learn changes when refreshing discovery or
+reconnecting; the name is not broadcast over active task streams. **Nickname**
+on a paired row overrides its label on the viewing desktop only. Neither name
+changes device identity or pairing authority.
 
 Each computer loads independently. The desktop first reads project/task
 summaries and opens a transcript only when that computer is used. Cached groups

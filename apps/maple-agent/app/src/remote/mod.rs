@@ -7,3 +7,5 @@ mod wire;
 
 pub mod control;
 pub mod manager;
+
+pub(crate) use store::validate_name;

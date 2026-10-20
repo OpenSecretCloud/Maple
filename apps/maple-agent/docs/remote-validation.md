@@ -167,6 +167,16 @@ All owned probe processes were stopped; user applications were untouched. These
 probes used the changed source atop `ca4b2bbf` before commit, not a production
 package or a second physical machine.
 
+## Computer names, October 20
+
+Two fresh Local profiles verified OS-derived defaults, renaming while remote
+access is off without starting networking, and discovery of both names during
+public-relay pairing. Subsequent discovery refreshes propagated each rename
+without changing endpoint identity, grants or direction. Remote task access and
+both names survived restarting both daemons. A remote request to rename the
+execution computer was refused; naming is local administration. This uses the
+existing discovery metadata and leaves Iroh wire version 4 unchanged.
+
 ## Initial October 19 automated checks
 
 - Full Agent `just ci`: all four Clippy configurations, workspace build/tests and

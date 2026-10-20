@@ -2672,7 +2672,7 @@ mod tests {
         let receipts = Arc::new(
             crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
         );
-        let remote = crate::remote::manager::Manager::new(backend, events, receipts);
+        let remote = crate::remote::manager::Manager::new(backend.clone(), events, receipts);
         remote.restore().await;
         let status = remote
             .dispatch(crate::host::protocol::Request {
@@ -2686,6 +2686,34 @@ mod tests {
         assert_eq!(status["enabled"], false);
         assert!(status["endpoint"].is_null());
         assert!(!root.path().join("remote").exists());
+        assert!(!remote.stays_running());
+        // Naming an offline computer is local even when authentication cannot
+        // finish. It must not bind an endpoint or enable incoming access.
+        let _validation = backend.restore_lock.lock().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            remote.dispatch(crate::host::protocol::Request {
+                id: 2,
+                method: "remote_set_name".into(),
+                params: serde_json::json!(["Offline Mac"]),
+                send_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let status = remote
+            .dispatch(crate::host::protocol::Request {
+                id: 3,
+                method: "remote_status".into(),
+                params: serde_json::json!([]),
+                send_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(status["name"], "Offline Mac");
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["enabled"], false);
         assert!(!remote.stays_running());
     }
 

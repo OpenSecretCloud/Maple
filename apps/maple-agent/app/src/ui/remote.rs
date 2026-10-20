@@ -41,6 +41,7 @@ pub struct RemoteScreen {
     code_input: Entity<TextInput>,
     names: std::collections::HashMap<String, String>,
     renaming: Option<(String, Entity<TextInput>)>,
+    local_name_input: Option<Entity<TextInput>>,
     local_code: Option<(String, Instant)>,
     error: Option<String>,
     notice: Option<String>,
@@ -77,6 +78,7 @@ impl RemoteScreen {
             code_input,
             names,
             renaming: None,
+            local_name_input: None,
             local_code: None,
             error: None,
             notice: None,
@@ -217,6 +219,42 @@ impl RemoteScreen {
         cx.notify();
     }
 
+    fn rename_this_computer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(status) = &self.status else {
+            return;
+        };
+        let current = status.name.clone();
+        let weak = cx.entity().downgrade();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("Computer name", cx).on_enter(move |_, _, cx| {
+                let weak = weak.clone();
+                cx.defer(move |cx| {
+                    weak.update(cx, |screen, cx| screen.save_this_computer_name(cx))
+                        .ok();
+                });
+            });
+            input.set_text(&current, cx);
+            input
+        });
+        window.focus(&input.focus_handle(cx), cx);
+        self.local_name_input = Some(input);
+        self.error = None;
+        cx.notify();
+    }
+
+    fn save_this_computer_name(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = &self.local_name_input else {
+            return;
+        };
+        match crate::remote::validate_name(&input.read(cx).text()) {
+            Ok(name) => self.action("remote_set_name", serde_json::json!([name]), cx),
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
     fn save_name(&mut self, cx: &mut Context<Self>) {
         let Some((key, input)) = &self.renaming else {
             return;
@@ -261,12 +299,12 @@ impl RemoteScreen {
         let bridge = task::call(
             &self.backend,
             async move {
-                let status: Status = backend.remote_setting("remote_status", ()).await?;
                 let devices = if discover {
                     backend.remote_setting("remote_discover", ()).await?
                 } else {
                     Vec::new()
                 };
+                let status: Status = backend.remote_setting("remote_status", ()).await?;
                 let window: Option<PairingWindow> =
                     backend.remote_setting("remote_pairing_window", ()).await?;
                 Ok((status, devices, window))
@@ -348,6 +386,9 @@ impl RemoteScreen {
                             );
                         } else if method == "remote_revoke" {
                             screen.notice = Some("Computer unpaired.".into());
+                        } else if method == "remote_set_name" {
+                            screen.local_name_input = None;
+                            screen.notice = Some("Computer name saved. Other computers pick it up when they refresh devices or reconnect.".into());
                         }
                         screen.refresh(false, cx);
                     }
@@ -409,6 +450,28 @@ impl RemoteScreen {
     fn render_this_computer(&self, cx: &mut Context<Self>) -> Div {
         let enabled = self.status.as_ref().is_some_and(|s| s.enabled);
         widgets::card_row().flex().flex_col().gap_4()
+            .when_some(self.status.as_ref(), |view, status| {
+                view.child(div().flex().items_center().gap_3().justify_between()
+                    .child(div().flex_1().flex().flex_col().gap_1()
+                        .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child("Computer name"))
+                        .child(div().text_lg().child(status.name.clone())))
+                    .when(self.local_name_input.is_none(), |row| row.child(
+                        widgets::ghost_button("rename-this-computer").aria_label("Rename this computer").child("Rename")
+                            .debug_selector(|| "rename-this-computer".to_string())
+                            .on_click(cx.listener(|screen, _, window, cx| screen.rename_this_computer(window, cx))))))
+            })
+            .when_some(self.local_name_input.as_ref(), |view, input| {
+                view.child(div().id("this-computer-name-editor").flex().flex_col().gap_2()
+                    .debug_selector(|| "this-computer-name-editor".to_string())
+                    .child(div().border_1().border_color(gpui::rgb(theme::border())).rounded_lg().p_3().child(input.clone()))
+                    .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child("Shown to your other computers. This does not change the system hostname."))
+                    .child(div().flex().gap_2()
+                        .child(widgets::secondary_button("save-this-computer-name").aria_label("Save computer name").child("Save")
+                            .on_click(cx.listener(|screen, _, _, cx| screen.save_this_computer_name(cx))))
+                        .child(widgets::ghost_button("cancel-this-computer-name").aria_label("Cancel rename").child("Cancel")
+                            .debug_selector(|| "cancel-this-computer-name".to_string())
+                            .on_click(cx.listener(|screen, _, _, cx| { screen.local_name_input = None; screen.error = None; cx.notify(); })))))
+            })
             .child(div().flex().gap_4().items_center().justify_between()
                 .child(div().flex_1().flex().flex_col().gap_1()
                     .child(div().text_lg().child("This computer"))
@@ -595,7 +658,7 @@ impl RemoteScreen {
                                     (false, true) => "Can use this computer’s projects and tools",
                                     (false, false) => "Pairing needs confirmation",
                                 })))
-                        .child(widgets::ghost_button(format!("rename-{key}")).aria_label("Rename").child("Rename")
+                        .child(widgets::ghost_button(format!("rename-{key}")).aria_label("Set local nickname").child("Nickname")
                             .on_click(cx.listener(move |screen, _, _, cx| screen.rename(rename.clone(), name.clone(), cx))))
                         .when(peer.can_connect, |row| row.child(widgets::secondary_button(format!("connect-{key}")).aria_label("Open projects").child("Open projects")
                             .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConnectComputer(connect.clone()))))))

@@ -12,6 +12,50 @@ use zeroize::Zeroize;
 
 const MAX_PEERS: usize = 64;
 
+pub(super) fn default_name() -> &'static str {
+    static NAME: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        default_name_from(&hostname::get().unwrap_or_default().to_string_lossy())
+    });
+    &NAME
+}
+
+fn default_name_from(hostname: &str) -> String {
+    let mut name = String::new();
+    for ch in hostname
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(64)
+    {
+        if name.len() + ch.len_utf8() > 128 {
+            break;
+        }
+        name.push(ch);
+    }
+    if name.trim().is_empty() {
+        if cfg!(target_os = "macos") {
+            "Mac".into()
+        } else if cfg!(target_os = "windows") {
+            "Windows PC".into()
+        } else {
+            "Linux PC".into()
+        }
+    } else {
+        name.trim().to_string()
+    }
+}
+
+pub(crate) fn validate_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        return Err("Enter a computer name without control characters.".into());
+    }
+    if name.len() > 128 || name.chars().count() > 64 {
+        return Err("Use a shorter computer name.".into());
+    }
+    Ok(name)
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Peer {
@@ -32,6 +76,8 @@ struct Record {
     scope: String,
     secret: [u8; 32],
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     peers: BTreeMap<String, Peer>,
     #[serde(default)]
     attempted_windows: BTreeMap<String, Vec<[u8; 16]>>,
@@ -93,6 +139,7 @@ impl Store {
                     scope: scope.clone(),
                     secret: SecretKey::generate().to_bytes(),
                     enabled: false,
+                    name: None,
                     peers: BTreeMap::new(),
                     attempted_windows: BTreeMap::new(),
                 };
@@ -107,6 +154,9 @@ impl Store {
             || record.attempted_windows.len() > MAX_PEERS
         {
             return Err("Remote identity does not match this account and profile".into());
+        }
+        if let Some(name) = &record.name {
+            validate_name(name)?;
         }
         for (key, peer) in &record.peers {
             if key
@@ -139,6 +189,46 @@ impl Store {
     }
     pub fn enabled(&self) -> bool {
         self.record.enabled
+    }
+    pub fn name(&self) -> &str {
+        self.record
+            .name
+            .as_deref()
+            .unwrap_or_else(|| default_name())
+    }
+    pub fn set_name(&mut self, name: &str) -> Result<(), String> {
+        let name = validate_name(name)?.to_owned();
+        self.update(|record| {
+            record.name = Some(name);
+            Ok(())
+        })
+    }
+    /// Discovery supplies display metadata only. It cannot create a peer or
+    /// change its grant, direction, or pending confirmation.
+    pub fn refresh_peer_names<'a>(
+        &mut self,
+        names: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<(), String> {
+        let changes: Vec<_> = names
+            .into_iter()
+            .filter(|(key, name)| {
+                !name.trim().is_empty()
+                    && name.len() <= 128
+                    && !name.chars().any(char::is_control)
+                    && self.record.peers.get(*key).is_some_and(|p| p.name != *name)
+            })
+            .collect();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        self.update(|record| {
+            for (key, name) in changes {
+                if let Some(peer) = record.peers.get_mut(key) {
+                    peer.name = name.into();
+                }
+            }
+            Ok(())
+        })
     }
     pub fn peers(&self) -> &BTreeMap<String, Peer> {
         &self.record.peers
@@ -249,6 +339,72 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn computer_names_upgrade_old_records_and_survive_restart_without_changing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let open = || Store::open(root.path(), "local", "p", "c", "a").unwrap();
+        let mut store = open();
+        let key = store.key().public();
+        // An unset name is omitted, matching records from before names existed.
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&store.path).unwrap()).unwrap();
+        assert!(record.get("name").is_none());
+        assert!(validate_name(open().name()).is_ok());
+        store.set_name("  Anthony’s Mac  ").unwrap();
+        for invalid in ["", "bad\nname", &"x".repeat(65), &"🦀".repeat(33)] {
+            assert!(store.set_name(invalid).is_err());
+        }
+        drop(store);
+        let store = open();
+        assert_eq!(store.name(), "Anthony’s Mac");
+        assert_eq!(store.key().public(), key);
+        assert!(!store.enabled());
+        assert!(store.peers().is_empty());
+        let other = Store::open(root.path(), "local", "p", "c", "b").unwrap();
+        assert!(other.record.name.is_none());
+        assert_eq!(
+            default_name_from("  Anthony-Mac.local  "),
+            "Anthony-Mac.local"
+        );
+        for hostname in ["", "\n\t", &"🦀".repeat(70)] {
+            assert!(validate_name(&default_name_from(hostname)).is_ok());
+        }
+    }
+
+    #[test]
+    fn discovered_names_never_change_or_restore_pairing_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let open = || Store::open(root.path(), "local", "p", "c", "a").unwrap();
+        let mut store = open();
+        let peer = SecretKey::generate().public();
+        let unknown = SecretKey::generate().public().to_string();
+        let key = peer.to_string();
+        let mut expected = Peer {
+            name: "Maple computer".into(),
+            grant: [1; 16],
+            controls_this_computer: true,
+            can_connect: false,
+            pending_confirmation: Some([2; 16]),
+        };
+        store.grant(peer, expected.clone()).unwrap();
+        store
+            .refresh_peer_names([(key.as_str(), "Office Mac"), (&unknown, "Unknown")])
+            .unwrap();
+        expected.name = "Office Mac".into();
+        assert!(open().peers()[&key] == expected);
+        assert_eq!(store.peers().len(), 1);
+        assert!(!store.enabled());
+        store
+            .refresh_peer_names([(key.as_str(), "bad\nname")])
+            .unwrap();
+        assert!(store.peers()[&key] == expected);
+        store.revoke(peer).unwrap();
+        store
+            .refresh_peer_names([(key.as_str(), "Office Mac")])
+            .unwrap();
+        assert!(open().peers().is_empty());
+    }
+
     #[test]
     fn identities_and_grants_survive_restart_but_not_scope_changes() {
         let root = tempfile::tempdir().unwrap();

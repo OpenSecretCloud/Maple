@@ -59,6 +59,7 @@ pub struct Node {
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
+    pub name: String,
     pub enabled: bool,
     pub endpoint: Option<String>,
     pub ready: bool,
@@ -217,6 +218,7 @@ impl Manager {
             &key,
             (&account, &project, &deployment),
             RemoteAddresses::default(),
+            store.name().to_owned(),
             store.enabled(),
             None,
         )
@@ -330,6 +332,7 @@ impl Manager {
                 &account,
             ) {
                 return encode(Status {
+                    name: super::store::default_name().into(),
                     enabled: false,
                     endpoint: None,
                     ready: false,
@@ -340,6 +343,7 @@ impl Manager {
             let current = self.node.lock().await;
             let store = self.store(&account)?;
             return encode(Status {
+                name: store.name().into(),
                 enabled: store.enabled(),
                 endpoint: Some(store.key().public().to_string()),
                 ready: current
@@ -348,6 +352,32 @@ impl Manager {
                 error: self.last_error.lock().unwrap().clone(),
                 peers: store.peers().clone(),
             });
+        }
+        if request.method == "remote_set_name" {
+            let (name,): (String,) =
+                serde_json::from_value(request.params).map_err(|_| "Invalid computer name")?;
+            super::validate_name(&name)?;
+            let account = self
+                .backend
+                .saved_user_id()
+                .ok_or("Sign in before naming this computer")?;
+            // Like enable/revoke, serialize local writes with node installation.
+            // Naming an offline/disabled computer must not start networking.
+            let current = self.node.lock().await;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            let node = current.as_ref().filter(|n| n.account == account).cloned();
+            if let Some(node) = &node {
+                node.store.lock().unwrap().set_name(&name)?;
+            } else {
+                self.store(&account)?.set_name(&name)?;
+            }
+            drop(current);
+            if let Some(node) = node {
+                tokio::spawn(async move {
+                    let _ = node.publish().await;
+                });
+            }
+            return Ok(serde_json::Value::Null);
         }
         if matches!(
             request.method.as_str(),
@@ -424,6 +454,7 @@ impl Manager {
                 let list = node.session.list_remote_devices().await?;
                 validate_devices(&list.devices)?;
                 node.ensure_valid().await?;
+                node.remember_peer_names(&list.devices);
                 serde_json::to_value(
                     list.devices
                         .into_iter()
@@ -506,6 +537,7 @@ impl Node {
         self.ensure_valid().await?;
         let key = self.store.lock().unwrap().key();
         let enabled = self.store.lock().unwrap().enabled();
+        let name = self.store.lock().unwrap().name().to_owned();
         let window = self
             .window
             .lock()
@@ -525,6 +557,7 @@ impl Node {
                 relays: address.relay_urls().map(ToString::to_string).collect(),
                 direct: address.ip_addrs().map(ToString::to_string).collect(),
             },
+            name,
             enabled,
             window,
         )
@@ -556,6 +589,7 @@ impl Node {
         let generation = self.pairing_generation.load(Ordering::SeqCst);
         let next = pairing::Window::new();
         let key = self.store.lock().unwrap().key();
+        let name = self.store.lock().unwrap().name().to_owned();
         let address = self.endpoint.addr();
         let registration = register(
             &self.session,
@@ -565,6 +599,7 @@ impl Node {
                 relays: address.relay_urls().map(ToString::to_string).collect(),
                 direct: address.ip_addrs().map(ToString::to_string).collect(),
             },
+            name,
             true,
             Some(RemoteWindowInit {
                 id: Uuid::from_bytes(next.id),
@@ -614,6 +649,7 @@ impl Node {
             }
         };
         validate_devices(&list.devices)?;
+        self.remember_peer_names(&list.devices);
         let device = list
             .devices
             .into_iter()
@@ -636,6 +672,33 @@ impl Node {
             }
         }
         Ok((address, device))
+    }
+    fn remember_peer_names(&self, devices: &[RemoteDevice]) {
+        let names = devices
+            .iter()
+            .filter(|d| d.channel == crate::profile::PROFILE)
+            .map(|d| (d.endpoint.as_str(), d.name.as_str()));
+        if self
+            .store
+            .lock()
+            .unwrap()
+            .refresh_peer_names(names)
+            .is_err()
+        {
+            log::warn!("Could not save updated remote computer names");
+        }
+    }
+
+    /// Pairing authority is already persisted. Resolve the controller's label
+    /// separately, so optional discovery metadata cannot delay or fail pairing.
+    pub(super) async fn refresh_peer_names(&self) {
+        if let Ok(Ok(list)) =
+            tokio::time::timeout(Duration::from_secs(3), self.session.list_remote_devices()).await
+            && validate_devices(&list.devices).is_ok()
+            && self.valid().await
+        {
+            self.remember_peer_names(&list.devices);
+        }
     }
     async fn pair(&self, peer: EndpointId, code: pairing::Code) -> Result<(), String> {
         let generation = self.pairing_generation.load(Ordering::SeqCst);
@@ -893,6 +956,7 @@ async fn register(
     key: &SecretKey,
     (account, project, deployment): (&str, &str, &str),
     addresses: RemoteAddresses,
+    name: String,
     enabled: bool,
     window: Option<RemoteWindowInit>,
 ) -> Result<RemoteDevice, String> {
@@ -902,7 +966,7 @@ async fn register(
         deployment: deployment.into(),
         channel: crate::profile::PROFILE.into(),
         endpoint: key.public().to_string(),
-        name: "Maple computer".into(),
+        name,
         addresses,
         accepting_connections: enabled,
         window,

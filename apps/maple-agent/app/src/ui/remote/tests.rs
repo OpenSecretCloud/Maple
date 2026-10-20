@@ -10,6 +10,7 @@ fn screen(cx: &mut TestAppContext) -> Entity<RemoteScreen> {
     cx.new(|cx| RemoteScreen {
         backend,
         status: Some(Status {
+            name: "Test Mac".into(),
             enabled: true,
             ready: true,
             error: None,
@@ -21,6 +22,7 @@ fn screen(cx: &mut TestAppContext) -> Entity<RemoteScreen> {
         code_input: cx.new(|cx| TextInput::new("Pairing code", cx).pairing_code()),
         names: Default::default(),
         renaming: None,
+        local_name_input: None,
         local_code: None,
         error: None,
         notice: None,
@@ -42,6 +44,54 @@ fn device(key: &str) -> RemoteDevice {
         }),
         expires_at: i64::MAX,
     }
+}
+
+#[gpui::test]
+fn own_name_editor_is_visible_and_preserves_edits_during_status_refresh(cx: &mut TestAppContext) {
+    struct Host(Entity<RemoteScreen>);
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(950.)).h(px(850.)).child(self.0.clone())
+        }
+    }
+    let screen = screen(cx);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        window.activate_window();
+        crate::desktop::register_key_bindings(cx);
+        Host(screen.clone())
+    });
+    cx.simulate_resize(gpui::size(px(950.), px(850.)));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("this-computer-name-editor").is_none());
+    let rename = cx.debug_bounds("rename-this-computer").unwrap();
+    cx.simulate_click(rename.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("this-computer-name-editor").is_some());
+    screen.update(cx, |screen, cx| {
+        let input = screen.local_name_input.as_ref().unwrap().clone();
+        assert_eq!(input.read(cx).text(), "Test Mac");
+        input.update(cx, |input, cx| input.set_text("Office Mac", cx));
+        let mut status = screen.status.clone().unwrap();
+        status.ready = false;
+        screen.update_status(status, cx);
+        assert_eq!(input.read(cx).text(), "Office Mac");
+        input.update(cx, |input, cx| input.clear(cx));
+        screen.save_this_computer_name(cx);
+        assert!(screen.error.is_some());
+        assert!(screen.busy.is_none(), "invalid input never sends a request");
+    });
+    cx.run_until_parked();
+    let cancel = cx.debug_bounds("cancel-this-computer-name").unwrap();
+    cx.simulate_click(cancel.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("this-computer-name-editor").is_none());
+    screen.read_with(cx, |screen, _| {
+        assert_eq!(screen.status.as_ref().unwrap().name, "Test Mac");
+        assert!(
+            screen.names.is_empty(),
+            "own-name editing never sets a peer nickname"
+        );
+    });
 }
 
 #[gpui::test]

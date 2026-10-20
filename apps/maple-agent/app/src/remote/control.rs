@@ -56,6 +56,8 @@ pub(super) fn listen(node: Arc<Node>) {
                                     node.accept_pairing(peer, window, admission, &mut tx, &mut rx).await?;
                                     let _ = tx.finish();
                                     let _ = tokio::time::timeout(Duration::from_secs(3), tx.stopped()).await;
+                                    let names = node.clone();
+                                    tokio::spawn(async move { names.refresh_peer_names().await; });
                                     Ok(None)
                                 }
                                 wire::Mode::ConfirmGrant { window } => {

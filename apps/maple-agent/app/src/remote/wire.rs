@@ -345,6 +345,7 @@ mod tests {
             "detach",
             "stop",
             "remote_enable",
+            "remote_set_name",
             "remote_pair",
             "transcribe_audio",
             "synthesize_speech",

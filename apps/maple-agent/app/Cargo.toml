@@ -71,6 +71,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 # Hidden password prompt for `maple-agent login`.
 rpassword = "7"
+hostname = "0.4"
 maple-proxy = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json"] }
 percent-encoding = "2"
