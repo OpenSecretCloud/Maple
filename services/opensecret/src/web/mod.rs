@@ -8,6 +8,7 @@ mod oauth_routes;
 mod openai;
 pub mod openai_auth;
 pub mod platform;
+pub(crate) mod prompt_validation;
 pub mod protected_routes;
 pub mod provider_error;
 pub mod responses;
