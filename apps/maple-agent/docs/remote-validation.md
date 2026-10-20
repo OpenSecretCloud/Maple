@@ -89,13 +89,16 @@ the user's existing desktop builds remained untouched.
 
 The branch was rebased onto `339d306e`, including the merged Windows ACP
 streaming-test correction (#1174). The focused fixes keep the existing
-daemon/pairing architecture; the protocol is now version 3.
+daemon/pairing architecture; that revision used protocol version 3.
 
 Full Agent `just ci` passed again on macOS: all four lint configurations,
 workspace build/tests, 271 runtime tests / 2 ignored, 501 desktop tests /
 1 ignored and 92 headless tests / 1 ignored. The new regressions cover image
-readback, inactivity deadlines, handshake refusals, wire examples, uncertain
-draft retention, initialization cancellation and Stop with a lost acknowledgement.
+readback, inactivity deadlines, Hello parsing/refusal framing, wire envelopes,
+uncertain draft retention, disabling while initialization waits on credentials,
+and Stop with a lost acknowledgement. The initialization test does not itself
+prove successful retry or a late valid endpoint install; the Local probes below
+provide the separate runtime evidence.
 These local results do not establish the rebased head's hosted CI status.
 
 Fresh disposable Local profiles repeated the following through public Iroh relays,
@@ -128,6 +131,41 @@ OpenSecret Clippy and unit tests passed (865 passed / 33 ignored). The guarded D
 run used `PGGSSENCMODE=disable` only for its temporary loopback database after a
 macOS Kerberos-library teardown abort; no application authentication setting or
 test was disabled.
+
+## Final focused follow-up, October 20
+
+The next change closes the remaining five trial issues without changing the
+pairing or daemon architecture. Wire version 4 adds an explicit interrupted-send
+receipt; mixed builds receive an update-required refusal. On startup, only the
+new exclusive owner marks unfinished receipts interrupted. Those identities stay
+reserved, the UI warns that effects may exist, and the task can continue without
+replaying or overwriting a newer draft. Quit checks ownership before treating a
+missing endpoint as stopped, and failed Stop offers a visible Quit anyway choice.
+Settings re-entry establishes a baseline before detecting a newly paired computer;
+mid-handshake EOF remains a transient disconnect.
+
+Full Agent `just ci` passed on macOS: four lint configurations, 271 runtime tests /
+2 ignored, 507 desktop tests / 1 ignored, and 94 headless tests / 1 ignored, plus
+the workspace suites. Focused regressions exercise startup receipt classification
+and account isolation, the send gate/draft preservation, truncated acknowledgement
+versus invalid frames/revocation, Settings re-entry with an existing controller,
+absent versus unreachable host ownership, and the tray Quit confirmation with no
+main window. Wire fixtures cover selected forwarded events, attachment send
+parameters, session summaries and receipt outcomes; they are not exhaustive
+protocol conformance or mixed-build interoperability evidence.
+
+Fresh disposable Local profiles repeated one-attempt pairing/refusals, unchanged
+pairing-window reattachment, 5,881,918-byte image readback plus a subsequent task
+request, disable/re-enable, and revoke over forced public Iroh relays. With the
+execution daemon stopped, a synthetic unfinished row was inserted only into its
+disposable receipt database. Restart classified it as `Interrupted` and remote
+task access recovered. This is a deterministic crash-state fixture, not a claim
+that a real crash was timed inside the admission transaction. Separately, a live
+GLM 5.3 Flash/Bash turn survived controller restart with an unread acknowledgement;
+the original execution receipt and exactly one proof-file write were verified.
+All owned probe processes were stopped; user applications were untouched. These
+probes used the changed source atop `ca4b2bbf` before commit, not a production
+package or a second physical machine.
 
 ## Initial October 19 automated checks
 
@@ -170,6 +208,10 @@ These remain review/rollout work, rather than newly accepted design exceptions:
   tombstones using authenticated expiry after 24 hours, preserving the current
   endpoint's repeated-W guard. Reset cleanup and cleanup for accounts that never
   write again remain hosted-rollout work.
+- Pre-admission has a global connection cap and deadline. A separate per-peer
+  validation bound remains hosted-rollout work.
+- Quit/sign-out close local authority but do not yet unpublish discovery
+  best-effort. Listings can remain stale until lease expiry; they confer no grant.
 - Enrollment has row caps, leases and payload bounds, but no dedicated
   publish/list/admission request-rate enforcement yet. Row caps do not bound
   request traffic.

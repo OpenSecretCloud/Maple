@@ -22,7 +22,10 @@ An unexpected desktop connection loss instead reserves thirty seconds for recove
 including when another client briefly connects and leaves during that interval.
 Attached clients keep the host alive. With incoming remote access enabled, the
 host stays available without attached clients; closing the desktop window
-backgrounds it through the Dock/tray. Explicit desktop Quit stops that local host.
+backgrounds it through the Dock/tray. Explicit desktop Quit requests that local
+host stop. A missing owner needs no stop; if ownership remains but Stop fails,
+a visible confirmation offers Keep open or Quit anyway, including with no main
+window open. Quit anyway exits the desktop without claiming the host stopped.
 See [remote access](remote-access.md) for the no-tray fallback and controller role.
 `maple-agent host stop`
 explicitly stops this profile and all its tasks, even with clients attached.

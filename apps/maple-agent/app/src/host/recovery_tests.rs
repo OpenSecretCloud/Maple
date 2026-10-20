@@ -449,3 +449,14 @@ async fn explicit_stop_survives_a_client_that_leaves_before_the_acknowledgement(
     .await
     .unwrap();
 }
+
+#[cfg(feature = "desktop")]
+#[tokio::test]
+async fn quit_accepts_a_missing_owner_but_not_an_unreachable_live_owner() {
+    let (_root, endpoint) = endpoint();
+    let owner = endpoint.lock("host.lock").unwrap();
+    owner.try_lock().unwrap();
+    assert!(request_stop_endpoint(&endpoint).await.is_err());
+    drop(owner);
+    assert!(request_stop_endpoint(&endpoint).await.is_ok());
+}

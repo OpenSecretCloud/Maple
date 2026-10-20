@@ -529,6 +529,7 @@ async fn serve(endpoint: ipc::Endpoint, backend: Arc<LocalBackend>) -> Result<()
     let receipts = Arc::new(receipts::Receipts::open(
         &backend::local::host_data_root().join("send-receipts.db"),
     )?);
+    receipts.recover_after_restart()?;
     serve_with_receipts(endpoint, backend, receipts).await
 }
 
@@ -792,9 +793,30 @@ async fn accept_scoped_handshake(
 #[cfg(feature = "desktop")]
 pub async fn request_stop(api_url: &str) -> Result<(), String> {
     let endpoint = ipc::Endpoint::new(api_url)?;
-    connect(&endpoint, ConnectionMode::Stop, false)
-        .await
-        .map(|_| ())
+    request_stop_endpoint(&endpoint).await
+}
+
+#[cfg(feature = "desktop")]
+async fn request_stop_endpoint(endpoint: &ipc::Endpoint) -> Result<(), String> {
+    match connect(endpoint, ConnectionMode::Stop, false).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // A missing/inaccessible endpoint alone does not prove the host is
+            // gone. The same ownership lock protects startup and the full drain.
+            let endpoint = endpoint.clone();
+            let absent = tokio::task::spawn_blocking(move || {
+                let ownership = endpoint.lock("host.lock")?;
+                match ownership.try_lock() {
+                    Ok(()) => Ok(true),
+                    Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+                    Err(error) => Err(error.to_string()),
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            if absent { Ok(()) } else { Err(error) }
+        }
+    }
 }
 
 pub fn stop(api_url: &str) -> Result<(), String> {
@@ -976,7 +998,7 @@ async fn recover_send(endpoint: &ipc::Endpoint, id: &str) -> Result<serde_json::
                                 "The host did not admit this message. It is safe to send again."
                                     .into(),
                             ),
-                            receipts::Outcome::Pending => break,
+                            receipts::Outcome::Pending | receipts::Outcome::Interrupted => break,
                         }
                     }
                     Message::Event(_) => {}

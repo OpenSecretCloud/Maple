@@ -343,10 +343,20 @@ fn draft_mcp_rows(
 }
 
 struct UnresolvedSend {
+    outcome: Option<crate::host::receipts::Outcome>,
     session: String,
     text: String,
     images: Vec<DraftImage>,
     from_composer: bool,
+}
+
+impl UnresolvedSend {
+    fn awaiting_receipt(&self) -> bool {
+        matches!(
+            self.outcome,
+            None | Some(crate::host::receipts::Outcome::Pending)
+        )
+    }
 }
 
 pub struct ChatScreen {
@@ -4264,7 +4274,7 @@ impl ChatScreen {
         if self
             .unresolved_sends
             .values()
-            .any(|send| send.session == session_id)
+            .any(|send| send.session == session_id && send.awaiting_receipt())
         {
             self.notice =
                 Some("Checking the previous send before another message can be sent.".into());
@@ -4344,33 +4354,18 @@ impl ChatScreen {
                     }
                 }
                 Err(message) => {
-                    if message.starts_with("Send outcome unknown") {
-                        this.unresolved_sends.insert(send_id, UnresolvedSend {
-                            session: session_id, text, images: drafts, from_composer,
-                        });
-                        this.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
-                        this.awaiting_first_token = false;
-                        this.check_unresolved_sends(cx);
-                        return;
-                    }
-                    // Show the failure in the transcript and give the draft
-                    // back instead of silently dropping it. The composer
-                    // belongs to the selected session: a draft from another
-                    // task must not land in it.
-                    this.push_local_error("Send failed", &message, cx);
-                    if from_composer
-                        && this.selected_session.as_deref() == Some(session_id.as_str())
-                    {
-                        if let Some(composer) = this.composer.clone() {
-                            composer.update(cx, |input, cx| input.set_text(&text, cx));
-                        }
-                        let mut restored = drafts;
-                        restored.append(&mut this.draft_images);
-                        this.draft_images = restored;
-                    } else {
-                        this.notice = Some(format!("Send failed: {message}").into());
-                    }
+                    let uncertain = message.starts_with("Send outcome unknown");
+                    this.unresolved_sends.insert(send_id.clone(), UnresolvedSend {
+                        outcome: None, session: session_id, text, images: drafts, from_composer,
+                    });
                     this.awaiting_first_token = false;
+                    if uncertain {
+                        this.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
+                        this.check_unresolved_sends(cx);
+                    } else {
+                        this.push_local_error("Send failed", &message, cx);
+                        this.apply_send_receipt(&send_id, Some(crate::host::receipts::Outcome::Finished(Err(message))), cx);
+                    }
                 }
             },
         );
@@ -4382,12 +4377,26 @@ impl ChatScreen {
             return;
         }
         self.checking_sends = true;
-        let ids: Vec<_> = self.unresolved_sends.keys().cloned().collect();
+        let ids: Vec<_> = self
+            .unresolved_sends
+            .iter()
+            .map(|(id, send)| {
+                let settled = send
+                    .outcome
+                    .clone()
+                    .filter(|o| !matches!(o, crate::host::receipts::Outcome::Pending));
+                (id.clone(), settled)
+            })
+            .collect();
         let backend = self.backend.clone();
         self.call(
             async move {
                 let mut results = Vec::new();
-                for id in ids {
+                for (id, settled) in ids {
+                    if settled.is_some() {
+                        results.push((id, settled));
+                        continue;
+                    }
                     let result = tokio::time::timeout(
                         std::time::Duration::from_secs(40),
                         backend.send_outcome(id.clone()),
@@ -4418,12 +4427,18 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         use crate::host::receipts::Outcome;
+        let Some(send) = self.unresolved_sends.get_mut(id) else {
+            return;
+        };
+        if outcome.is_some() {
+            send.outcome = outcome.clone();
+        }
         match outcome {
             Some(Outcome::Finished(Ok(_))) => {
                 self.unresolved_sends.remove(id);
                 self.notice = Some("The host received your message. Nothing was resent.".into());
             }
-            Some(Outcome::Missing | Outcome::Finished(Err(_))) => {
+            Some(Outcome::Missing | Outcome::Interrupted | Outcome::Finished(Err(_))) => {
                 let Some(send) = self.unresolved_sends.get(id) else {
                     return;
                 };
@@ -4444,9 +4459,17 @@ impl ChatScreen {
                         composer.update(cx, |input, cx| input.set_text(&send.text, cx));
                     }
                     self.draft_images = send.images;
-                    self.notice = Some("The host has no successful receipt. Your draft is restored; check the task before sending again.".into());
+                    self.notice = Some(if matches!(outcome, Some(Outcome::Interrupted)) {
+                        "The host restarted before recording this send’s result. It may have taken effect. Your draft is restored; check the task before sending again."
+                    } else {
+                        "The send did not complete successfully. Your draft is restored; check the task before sending again."
+                    }.into());
                 } else {
-                    self.notice = Some("An uncertain draft is retained. Open its task with an empty composer to recover it before sending again.".into());
+                    self.notice = Some(if matches!(outcome, Some(Outcome::Interrupted)) {
+                        "The host restarted before recording this send’s result; it may have taken effect. You can continue. The original draft is retained; open its task with an empty composer to recover it."
+                    } else {
+                        "The failed draft is retained. You can continue; open its task with an empty composer to recover it."
+                    }.into());
                 }
             }
             _ => {

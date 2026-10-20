@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn shipped_wire_examples_are_stable() {
         let examples: serde_json::Value =
-            serde_json::from_str(include_str!("wire_v3.json")).unwrap();
+            serde_json::from_str(include_str!("wire_v4.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
             let decoded: T = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
@@ -466,8 +466,26 @@ mod tests {
         check::<super::super::streams::Header>(&examples["header"]);
         check::<Command>(&examples["command"]);
         check::<Result<(), Refusal>>(&examples["refusal"]);
-        for key in ["image", "failure", "event"] {
+        for key in ["image", "failure", "sessions", "receipt"] {
             check::<crate::host::protocol::Message>(&examples[key]);
+        }
+        check::<Command>(&examples["send"]);
+        check::<(String, maple_agent::agent::AgentSendMessageRequest)>(&examples["send"]["params"]);
+        check::<Vec<maple_agent::agent::AgentSessionSummary>>(
+            &examples["sessions"]["Response"]["result"]["Ok"],
+        );
+        check::<crate::host::receipts::Outcome>(&examples["receipt"]["Response"]["result"]["Ok"]);
+        for value in examples["events"].as_array().unwrap() {
+            check::<crate::host::protocol::Message>(value);
+            let crate::host::protocol::Message::Event(event) =
+                serde_json::from_value(value.clone()).unwrap()
+            else {
+                panic!("expected event");
+            };
+            assert!(
+                super::super::control::remote_event(&event),
+                "fixture must exercise a forwarded event"
+            );
         }
         assert_eq!(examples["hello"]["version"], VERSION);
     }

@@ -138,3 +138,29 @@ fn incoming_pairing_closes_the_code_but_an_outgoing_grant_does_not(cx: &mut Test
         assert!(screen.status.as_ref().unwrap().peers["peer"].controls_this_computer);
     });
 }
+
+#[gpui::test]
+fn settings_reentry_keeps_the_open_window_with_existing_controllers(cx: &mut TestAppContext) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        let mut status = screen.status.take().unwrap();
+        status.peers.insert(
+            "existing".into(),
+            serde_json::from_value(serde_json::json!({
+                "name": "Existing", "grant": vec![1; 16], "can_connect": false,
+                "controls_this_computer": true, "pending_confirmation": null
+            }))
+            .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(120);
+        screen.local_code = Some(("ABCD-EFGH".into(), deadline));
+        screen.update_status(status.clone(), cx);
+        assert_eq!(screen.local_code, Some(("ABCD-EFGH".into(), deadline)));
+        assert!(screen.notice.is_none());
+        // A real new grant after that baseline still closes the displayed code.
+        status.peers.get_mut("existing").unwrap().grant = [2; 16];
+        screen.update_status(status, cx);
+        assert!(screen.local_code.is_none());
+        assert!(screen.notice.as_ref().unwrap().contains("Computer paired"));
+    });
+}

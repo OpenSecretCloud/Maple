@@ -132,7 +132,8 @@ impl RemoteScreen {
         if self.status.as_ref() == Some(&status) {
             return;
         }
-        let paired_controller = self.local_code.is_some()
+        let paired_controller = self.status.is_some()
+            && self.local_code.is_some()
             && status.peers.iter().any(|(key, peer)| {
                 peer.controls_this_computer
                     && self

@@ -69,8 +69,7 @@ Iroh 1.3.0 supplies authenticated QUIC, direct connectivity and relay fallback.
 Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
-protocol keeps the `maple-agent/remote/1` ALPN family and requires wire version 3
-or newer, independent of application builds. Older peers receive an explicit
+protocol keeps the `maple-agent/remote/1` ALPN family and requires compatible wire version 4 or newer, independent of application builds. Older peers receive an explicit
 version refusal. Bounded frames and an explicit task-operation allowlist apply.
 Account operations and whole-host administration cannot be forwarded.
 
@@ -94,7 +93,12 @@ crosses both IPC and Iroh; only the execution daemon records its admission and
 result, account-bound in its receipt database. An uncertain send keeps its original
 identity, text and draft images in the desktop view and queries the execution
 host's receipt after reconnecting. It never replays the command or overwrites a
-newer draft. This is in-memory recovery, not persistence across desktop crashes.
+newer draft. If the execution daemon restarts before recording a send's result,
+it marks that receipt interrupted, preserving the identity against replay. The
+message may already have taken effect: the desktop says so, retains/restores its
+draft without overwriting newer input, and lets the user continue the task. A
+pending receipt from a live daemon still blocks another send until resolved.
+This is in-memory draft recovery, not persistence across desktop crashes.
 
 A remote-enabled daemon retries transient startup failures with bounded backoff.
 Local settings show whether networking is ready and retain actionable configuration

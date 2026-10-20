@@ -12,6 +12,8 @@ use std::{path::Path, sync::Mutex};
 pub enum Outcome {
     Missing,
     Pending,
+    /// The previous owner stopped before recording the result. Effects may exist.
+    Interrupted,
     Finished(Result<serde_json::Value, String>),
 }
 
@@ -30,21 +32,38 @@ impl Receipts {
             );",
             )
             .map_err(|e| e.to_string())?;
-        let has_account = connection
+        let columns = connection
             .prepare("PRAGMA table_info(sends)")
             .map_err(|e| e.to_string())?
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|name| name == "account");
-        if !has_account {
+            .map_err(|e| e.to_string())?;
+        if !columns.iter().any(|name| name == "account") {
             connection
                 .execute_batch("ALTER TABLE sends ADD COLUMN account TEXT")
                 .map_err(|e| e.to_string())?;
         }
+        if !columns.iter().any(|name| name == "interrupted") {
+            connection
+                .execute_batch(
+                    "ALTER TABLE sends ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Self(Mutex::new(connection)))
+    }
+
+    /// Call once after taking exclusive host ownership, before accepting clients.
+    /// These sends may have taken effect. Keep their identities reserved forever;
+    /// expose uncertainty as settled so clients can continue without replaying.
+    pub fn recover_after_restart(&self) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .execute("UPDATE sends SET interrupted=1 WHERE result IS NULL", [])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Returns None only to the first caller. Reusing an ID with different
@@ -58,15 +77,15 @@ impl Receipts {
             .and_then(serde_json::Value::as_str)
             .ok_or("Invalid send parameters")?;
         let connection = self.0.lock().unwrap();
-        let existing: Option<(String, Option<String>)> = connection
+        let existing: Option<(String, Option<String>, bool)> = connection
             .query_row(
-                "SELECT fingerprint, result FROM sends WHERE id=?1",
+                "SELECT fingerprint, result, interrupted FROM sends WHERE id=?1",
                 [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some((saved, result)) = existing {
+        if let Some((saved, result, interrupted)) = existing {
             if saved != fingerprint {
                 return Err("Send identity was reused for different content".into());
             }
@@ -77,7 +96,11 @@ impl Receipts {
                         .map(Some)
                         .map_err(|e| e.to_string())
                 })
-                .unwrap_or(Ok(Some(Outcome::Pending)));
+                .unwrap_or(Ok(Some(if interrupted {
+                    Outcome::Interrupted
+                } else {
+                    Outcome::Pending
+                })));
         }
         connection
             .execute(
@@ -127,19 +150,22 @@ impl Receipts {
     }
 
     pub fn outcome(&self, id: &str) -> Result<Outcome, String> {
-        let result: Option<Option<String>> = self
+        let result: Option<(Option<String>, bool)> = self
             .0
             .lock()
             .unwrap()
-            .query_row("SELECT result FROM sends WHERE id=?1", [id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT result, interrupted FROM sends WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(|e| e.to_string())?;
         match result {
             None => Ok(Outcome::Missing),
-            Some(None) => Ok(Outcome::Pending),
-            Some(Some(result)) => serde_json::from_str(&result)
+            Some((None, true)) => Ok(Outcome::Interrupted),
+            Some((None, false)) => Ok(Outcome::Pending),
+            Some((Some(result), _)) => serde_json::from_str(&result)
                 .map(Outcome::Finished)
                 .map_err(|e| e.to_string()),
         }
@@ -167,6 +193,35 @@ mod tests {
         assert!(receipts.authorize(&id, "alice").is_ok());
         assert!(receipts.authorize(&id, "bob").is_err());
         assert!(receipts.authorize("missing", "bob").is_ok());
+    }
+
+    #[test]
+    fn new_owner_marks_unfinished_receipts_interrupted_without_releasing_their_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("receipts.db");
+        let id = uuid::Uuid::new_v4().to_string();
+        let done = uuid::Uuid::new_v4().to_string();
+        let params =
+            serde_json::json!(["alice", {"sessionId":"task", "text":"may already have run"}]);
+        let receipts = Receipts::open(&path).unwrap();
+        receipts.reserve(&id, &params).unwrap();
+        receipts.reserve(&done, &params).unwrap();
+        let result = Ok(serde_json::json!("run-1"));
+        receipts.finish(&done, &result).unwrap();
+        drop(receipts); // The owner died without recording the first result.
+        let receipts = Receipts::open(&path).unwrap();
+        receipts.recover_after_restart().unwrap();
+        assert_eq!(receipts.outcome(&id).unwrap(), Outcome::Interrupted);
+        assert_eq!(
+            receipts.reserve(&id, &params).unwrap(),
+            Some(Outcome::Interrupted)
+        );
+        assert_eq!(receipts.outcome(&done).unwrap(), Outcome::Finished(result));
+        assert!(receipts.authorize(&id, "alice").is_ok());
+        assert!(receipts.authorize(&id, "bob").is_err());
+        let next = uuid::Uuid::new_v4().to_string();
+        assert_eq!(receipts.reserve(&next, &params).unwrap(), None);
+        assert_eq!(receipts.outcome(&next).unwrap(), Outcome::Pending);
     }
 
     #[test]

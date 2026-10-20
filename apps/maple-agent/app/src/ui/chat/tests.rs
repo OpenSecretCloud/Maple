@@ -6614,6 +6614,7 @@ mod state_tests {
             chat.unresolved_sends.insert(
                 "send-original".into(),
                 UnresolvedSend {
+                    outcome: None,
                     session: "s1".into(),
                     text: "original message".into(),
                     from_composer: true,
@@ -6639,6 +6640,53 @@ mod state_tests {
             assert_eq!(composer.read(cx).text_ref(), "original message");
             assert_eq!(chat.draft_images[0].name, "image.png");
             assert!(chat.unresolved_sends.is_empty());
+        });
+    }
+    #[gpui::test]
+    fn failed_and_interrupted_sends_preserve_newer_text_and_release_the_send_gate(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::host::receipts::Outcome;
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            chat.composer = Some(composer.clone());
+            chat.selected_session = Some("s1".into());
+            for outcome in [
+                Outcome::Interrupted,
+                Outcome::Finished(Err("Not admitted".into())),
+            ] {
+                composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+                chat.unresolved_sends.insert(
+                    "original".into(),
+                    UnresolvedSend {
+                        outcome: None,
+                        session: "s1".into(),
+                        text: "original draft".into(),
+                        images: vec![],
+                        from_composer: true,
+                    },
+                );
+                assert!(chat.unresolved_sends["original"].awaiting_receipt());
+                chat.apply_send_receipt("original", Some(outcome.clone()), cx);
+                assert_eq!(composer.read(cx).text_ref(), "newer draft");
+                assert!(
+                    !chat.unresolved_sends["original"].awaiting_receipt(),
+                    "a settled receipt cannot block the next send"
+                );
+                if outcome == Outcome::Interrupted {
+                    assert!(
+                        chat.notice
+                            .as_ref()
+                            .unwrap()
+                            .contains("may have taken effect")
+                    );
+                }
+                composer.update(cx, |input, cx| input.clear(cx));
+                chat.apply_send_receipt("original", Some(outcome), cx);
+                assert_eq!(composer.read(cx).text_ref(), "original draft");
+                assert!(chat.unresolved_sends.is_empty());
+            }
         });
     }
 }

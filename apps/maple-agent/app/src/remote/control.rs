@@ -13,6 +13,22 @@ use maple_agent::agent::AgentServiceEvent;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
+async fn read_control_ack(reader: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<(), String> {
+    let accepted: Result<(), wire::Refusal> = tokio::time::timeout(
+        Duration::from_secs(10),
+        wire::read(reader, wire::MAX_PREFACE),
+    )
+    .await
+    .map_err(|_| "Remote handshake timed out")?
+    .map_err(|error| match error {
+        wire::Error::InvalidFrame | wire::Error::Incompatible => {
+            format!("Remote access ended: {error}")
+        }
+        _ => error.to_string(),
+    })?;
+    accepted.map_err(wire::Refusal::into_error)
+}
+
 pub(super) fn listen(node: Arc<Node>) {
     tokio::spawn(async move {
         let mut connections = tokio::task::JoinSet::new();
@@ -231,7 +247,7 @@ async fn serve_request(
     Ok(())
 }
 
-fn remote_event(event: &AgentServiceEvent) -> bool {
+pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
     // Exhaustive on purpose: new local events need an explicit remote decision.
     match event {
         AgentServiceEvent::RuntimeStatus(_)
@@ -302,14 +318,7 @@ impl Manager {
         wire::write(&mut tx, &node.hello(wire::Mode::Control), wire::MAX_PREFACE)
             .await
             .map_err(|e| e.to_string())?;
-        let accepted: Result<(), wire::Refusal> = tokio::time::timeout(
-            Duration::from_secs(10),
-            wire::read(&mut rx, wire::MAX_PREFACE),
-        )
-        .await
-        .map_err(|_| "Remote handshake timed out")?
-        .map_err(|e| format!("Remote access ended: {e}"))?;
-        accepted.map_err(wire::Refusal::into_error)?;
+        read_control_ack(&mut rx).await?;
         node.ensure_valid().await?;
         tx.finish().map_err(|_| "Remote handshake closed")?;
         Ok(Link {
@@ -432,4 +441,52 @@ async fn local_send(
     tokio::time::timeout(streams::IO_TIMEOUT, protocol::write(tx, message))
         .await
         .map_err(|_| "Local remote viewer stopped reading")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn control_handshake_retries_disconnect_but_not_invalid_frames_or_revocation() {
+        let (mut tx, mut rx) = tokio::io::duplex(1024);
+        tx.write_u32(32).await.unwrap();
+        tx.write_all(b"{\"Ok\":").await.unwrap();
+        drop(tx);
+        assert_eq!(
+            read_control_ack(&mut rx).await.unwrap_err(),
+            "Remote computer disconnected"
+        );
+        let (mut tx, mut rx) = tokio::io::duplex(1024);
+        wire::write(
+            &mut tx,
+            &serde_json::json!({"unexpected": true}),
+            wire::MAX_PREFACE,
+        )
+        .await
+        .unwrap();
+        assert!(
+            read_control_ack(&mut rx)
+                .await
+                .unwrap_err()
+                .starts_with("Remote access ended:")
+        );
+        let (mut tx, mut rx) = tokio::io::duplex(1024);
+        wire::write(
+            &mut tx,
+            &Err::<(), _>(wire::Refusal::terminal("Revoked")),
+            wire::MAX_PREFACE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_control_ack(&mut rx).await.unwrap_err(),
+            "Remote access ended: Revoked"
+        );
+        wire::write(&mut tx, &Ok::<(), wire::Refusal>(()), wire::MAX_PREFACE)
+            .await
+            .unwrap();
+        assert!(read_control_ack(&mut rx).await.is_ok());
+    }
 }

@@ -721,6 +721,7 @@ struct DesktopLifecycle {
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
     can_background: bool,
     closing: std::rc::Rc<std::cell::Cell<bool>>,
+    quit_stop_attempted: std::rc::Rc<std::cell::Cell<bool>>,
 }
 impl gpui::Global for DesktopLifecycle {}
 
@@ -743,24 +744,52 @@ fn quit_app(cx: &mut App) {
     let stop = state
         .backend
         .spawn(async move { crate::host::request_stop(&api).await });
-    cx.spawn(async move |cx| {
-        match stop.await {
-            Ok(Ok(())) => cx.update(|cx| cx.quit()),
-            result => {
-                state.closing.set(false);
-                log::warn!("Could not stop Maple host on Quit: {result:?}");
-                cx.update(|cx| {
-                    for handle in cx.windows() {
-                        let _ = handle.update(cx, |_, window, cx| {
-                            let prompt = window.prompt(gpui::PromptLevel::Warning, "Maple could not stop its background host",
-                                Some("Remote access may still be running. Keep Maple open and try Quit again."), &["OK"], cx);
-                            cx.spawn(async move |_| { let _ = prompt.await; }).detach();
-                        });
-                    }
-                });
-            }
+    cx.spawn(async move |cx| match stop.await {
+        Ok(Ok(())) => cx.update(|cx| {
+            state.quit_stop_attempted.set(true);
+            cx.quit();
+        }),
+        result => {
+            state.closing.set(false);
+            log::warn!("Could not stop Maple host on Quit: {result:?}");
+            cx.update(show_quit_warning);
         }
-    }).detach();
+    })
+    .detach();
+}
+
+/// A separate window also works when Quit comes from a tray with no open window.
+fn show_quit_warning(cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(540.), px(230.)), cx);
+    if let Err(error) = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        },
+        |_, cx| cx.new(|_| QuitWarning),
+    ) {
+        log::error!("Could not show Quit confirmation: {error}");
+    }
+    cx.activate(true);
+}
+
+struct QuitWarning;
+impl Render for QuitWarning {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().flex().flex_col().gap_4().p_6()
+            .bg(gpui::rgb(ui::theme::bg_app())).text_color(gpui::rgb(ui::theme::text_primary()))
+            .child(div().text_lg().child("Maple could not stop its background host"))
+            .child("Remote access and running tasks may still be active. Keep Maple open to retry, or quit this window anyway.")
+            .child(div().flex().gap_4()
+                .child(ui::widgets::secondary_button("keep-maple-open").debug_selector(|| "keep-maple-open".to_string()).child("Keep open")
+                    .on_click(|_, window, _| window.remove_window()))
+                .child(ui::widgets::secondary_button("quit-maple-anyway").debug_selector(|| "quit-maple-anyway".to_string()).child("Quit anyway")
+                    .on_click(|_, _, cx| {
+                        // Do not repeat the failed stop in the app-quit callback.
+                        if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.quit_stop_attempted.set(true); }
+                        cx.quit();
+                    })))
+    }
 }
 
 /// The native close button and our Linux title bar share this policy.
@@ -1161,14 +1190,21 @@ pub fn run() {
                 remote_enabled: remote_enabled.clone(),
                 can_background: false,
                 closing: Default::default(),
+                quit_stop_attempted: Default::default(),
             });
             let quit_remote_enabled = remote_enabled.clone();
             let quit_backend = backend.clone();
-            cx.on_app_quit(move |_cx| {
+            cx.on_app_quit(move |cx| {
+                let stop_attempted = cx
+                    .try_global::<DesktopLifecycle>()
+                    .is_some_and(|state| state.quit_stop_attempted.get());
                 let backend = quit_backend.clone();
                 let remote_enabled = quit_remote_enabled.clone();
                 async move {
                     persist_window_state();
+                    if stop_attempted {
+                        return;
+                    }
                     if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
                         let api = backend.api_url().to_owned();
                         let _ = backend
@@ -1421,6 +1457,25 @@ mod tests {
 
     fn bounds(width: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(gpui::point(px(0.), px(0.)), size(px(width), px(height)))
+    }
+
+    #[gpui::test]
+    fn failed_tray_quit_opens_a_visible_confirmation_without_an_existing_window(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        assert!(cx.windows().is_empty());
+        cx.update(show_quit_warning);
+        assert_eq!(cx.windows().len(), 1);
+        let mut view = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        view.run_until_parked();
+        assert!(view.debug_bounds("quit-maple-anyway").is_some());
+        let keep = view.debug_bounds("keep-maple-open").unwrap();
+        view.simulate_click(keep.center(), gpui::Modifiers::default());
+        view.run_until_parked();
+        assert!(
+            cx.windows().is_empty(),
+            "Keep open dismisses the confirmation, not the app"
+        );
     }
 
     #[test]
