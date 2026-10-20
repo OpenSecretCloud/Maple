@@ -590,10 +590,3 @@ are replaced by root monorepo CI.
 ## License
 
 MIT. See `LICENSE`.
-
-## Desktop remote access
-
-See [remote access](docs/remote-access.md) for pairing, host selection, recovery,
-local-only account controls and the separate infrastructure/native trial gates.
-Remote access is off by default; the initial development configuration has no
-implicit public-relay fallback.

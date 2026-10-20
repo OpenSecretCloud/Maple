@@ -31,8 +31,6 @@ use crate::ui::widgets;
 mod cache;
 mod commands;
 mod composer;
-pub(crate) mod computers;
-use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod dialogs;
 mod images;
 mod navigation;
@@ -342,36 +340,11 @@ fn draft_mcp_rows(
     rows
 }
 
-struct UnresolvedSend {
-    outcome: Option<crate::host::receipts::Outcome>,
-    session: String,
-    text: String,
-    images: Vec<DraftImage>,
-    from_composer: bool,
-}
-
-impl UnresolvedSend {
-    fn awaiting_receipt(&self) -> bool {
-        matches!(
-            self.outcome,
-            None | Some(crate::host::receipts::Outcome::Pending)
-        )
-    }
-}
-
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
     /// The task list; its own entity so it renders only when it changes.
     sidebar: Entity<Sidebar>,
-    computers: Arc<Vec<Computer>>,
-    navigation_ready: bool,
-    /// Paired computers initially observe only navigation summaries. Catalogs,
-    /// tools and a conversation are loaded when that computer is first opened.
-    navigation_only: bool,
-    visible: bool,
-    next_navigation_refresh: std::time::Instant,
-    pending_navigation: Option<(u64, Destination)>,
     sessions: Vec<AgentSessionSummary>,
     selected_session: Option<String>,
     timeline: Vec<AgentTimelineItem>,
@@ -521,8 +494,6 @@ pub struct ChatScreen {
     sidebar_collapsed: bool,
     /// Images staged for the next message.
     draft_images: Vec<DraftImage>,
-    unresolved_sends: HashMap<String, UnresolvedSend>,
-    checking_sends: bool,
     /// Source of `DraftImage::id`.
     draft_counter: u64,
     /// True while the native file dialog is open.
@@ -687,7 +658,6 @@ enum LoadMode {
 struct HostRecovery {
     epoch: u64,
     unavailable: bool,
-    ended: bool,
     events: Option<Vec<AgentServiceEvent>>,
     overflow: bool,
 }
@@ -699,14 +669,6 @@ const LOAD_RETRIES: u8 = 2;
 const FINISHED_RUNS_KEPT: usize = 64;
 
 impl ChatScreen {
-    pub fn connection_ended(&self) -> bool {
-        self.host_recovery.ended
-    }
-
-    pub(crate) fn execution_backend(&self) -> Arc<AgentBackend> {
-        self.backend.clone()
-    }
-
     pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let this = Self::new_mounted(backend, user_id, cx);
         this.start(cx);
@@ -747,12 +709,6 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         match event.clone() {
-            SidebarEvent::Navigate(request) => cx.emit(request),
-            SidebarEvent::PreferencesChanged => {
-                self.refresh_project_caption();
-                cx.emit(NavigationChanged);
-                cx.notify();
-            }
             SidebarEvent::Select(id) => self.select_session(&id, cx),
             SidebarEvent::SessionChanged(session) => {
                 self.upsert_session(session, cx);
@@ -788,7 +744,6 @@ impl ChatScreen {
             sidebar.set_recent_roots(roots, cx);
         });
         self.refresh_selected_title();
-        cx.emit(NavigationChanged);
     }
 
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
@@ -1088,12 +1043,6 @@ impl ChatScreen {
             backend,
             user_id,
             sidebar,
-            computers: Arc::new(Vec::new()),
-            navigation_ready: false,
-            navigation_only: false,
-            visible: true,
-            next_navigation_refresh: std::time::Instant::now() + std::time::Duration::from_secs(30),
-            pending_navigation: None,
             sessions: Vec::new(),
             selected_session: None,
             timeline: Vec::new(),
@@ -1151,8 +1100,6 @@ impl ChatScreen {
             trust_prompts: true,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
-            unresolved_sends: HashMap::new(),
-            checking_sends: false,
             draft_counter: 0,
             image_picking: false,
             model_catalog: HashMap::new(),
@@ -1299,7 +1246,6 @@ impl ChatScreen {
                     // Not fatal: the runtime start below retreads all of it.
                     Err(message) => log::debug!("local bootstrap unavailable: {message}"),
                 }
-                this.finish_navigation_bootstrap(cx);
                 this.refresh_slash_commands(cx);
                 this.start_runtime(cx);
             },
@@ -1425,11 +1371,8 @@ impl ChatScreen {
         roots: Vec<maple_agent::agent::RecentProjectRoot>,
         cx: &mut Context<Self>,
     ) {
-        let roots = roots.into_iter().map(|root| root.path).collect::<Vec<_>>();
-        if self.recent_roots != roots {
-            self.recent_roots = roots;
-            self.sync_sidebar(cx);
-        }
+        self.recent_roots = roots.into_iter().map(|root| root.path).collect();
+        self.sync_sidebar(cx);
     }
 
     /// Select the project context for new tasks without disturbing work that
@@ -1447,9 +1390,7 @@ impl ChatScreen {
             return;
         }
         let path = path.trim().to_string();
-        if path.is_empty()
-            || (self.backend.remote_host().is_none() && !std::path::Path::new(&path).is_absolute())
-        {
+        if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
             self.notice = Some("Enter an absolute directory path".into());
             cx.notify();
             return;
@@ -1570,10 +1511,6 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.backend.remote_host().is_some() {
-            self.show_root_input(cx);
-            return;
-        }
         // The platform folder picker through gpui: NSOpenPanel on macOS,
         // the common file dialog on Windows, the XDG portal on Linux.
         // The panel closes with the app, so quit is never blocked on it.
@@ -1614,7 +1551,7 @@ impl ChatScreen {
     /// The root changed: update the header label, then read its branch
     /// and watch its git dir.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
-        self.refresh_project_caption();
+        self.project_label = SharedString::from(self.project_label());
         self.refresh_branch(cx);
     }
 
@@ -1687,11 +1624,6 @@ impl ChatScreen {
     /// dir comes back with it so the watcher follows a root change without
     /// a file stat on the UI thread.
     fn read_branch(&mut self, cx: &mut Context<Self>) {
-        if self.backend.remote_host().is_some() {
-            self.branch_watcher = None;
-            self.set_branch(None, cx);
-            return;
-        }
         let Some(root) = self.project_root.clone() else {
             return;
         };
@@ -2867,9 +2799,7 @@ impl ChatScreen {
         // Opening the task is what reads its completion, so the unread
         // marker goes. Only an explicit settle ever moves a task out of
         // the active inbox.
-        if self.visible {
-            self.completed_unread_sessions.remove(&session.id);
-        }
+        self.completed_unread_sessions.remove(&session.id);
         self.selected_session = Some(session.id.clone());
         self.draft = false;
         self.sync_sidebar(cx);
@@ -2901,7 +2831,6 @@ impl ChatScreen {
         {
             self.start_usage_poller(session_id, cx);
         }
-        self.check_unresolved_sends(cx);
         cx.notify();
     }
 
@@ -3640,22 +3569,16 @@ impl ChatScreen {
     /// Open the task before or after the selected one, in sidebar order.
     /// Defaults are Command-Option-Up/Down on macOS and Alt-Up/Down elsewhere.
     fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some((row, request)) = self.task_step_target(delta, cx) else {
+        let Some((row, id)) = self.task_step_target(delta, cx) else {
             return;
         };
         self.sidebar.read(cx).reveal_row(row);
-        if request.computer.as_deref() == self.backend.remote_host() {
-            if let Destination::Task(id) = request.destination {
-                self.select_session(&id, cx);
-            }
-        } else {
-            cx.emit(request);
-        }
+        self.select_session(&id, cx);
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
-    /// row it sits on and its computer-scoped destination.
-    fn task_step_target(&self, delta: isize, cx: &gpui::App) -> Option<(usize, Navigate)> {
+    /// row it sits on and its id.
+    fn task_step_target(&self, delta: isize, cx: &gpui::App) -> Option<(usize, String)> {
         self.sidebar.read(cx).step_target(delta)
     }
 
@@ -4271,19 +4194,6 @@ impl ChatScreen {
         queue_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .unresolved_sends
-            .values()
-            .any(|send| send.session == session_id && send.awaiting_receipt())
-        {
-            self.notice =
-                Some("Checking the previous send before another message can be sent.".into());
-            self.check_unresolved_sends(cx);
-            cx.notify();
-            return;
-        }
-        let send_id = uuid::Uuid::new_v4().to_string();
-        let outgoing_id = send_id.clone();
         let session_id = session_id.to_string();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -4342,7 +4252,7 @@ impl ChatScreen {
         }
         cx.notify();
         self.call(
-            async move { backend.send_message_identified(&user_id, request, outgoing_id).await },
+            async move { backend.send_message(&user_id, request).await },
             cx,
             move |this, result, cx| match result {
                 Ok(run_id) => {
@@ -4354,128 +4264,28 @@ impl ChatScreen {
                     }
                 }
                 Err(message) => {
-                    let uncertain = message.starts_with("Send outcome unknown");
-                    this.unresolved_sends.insert(send_id.clone(), UnresolvedSend {
-                        outcome: None, session: session_id, text, images: drafts, from_composer,
-                    });
+                    // Show the failure in the transcript and give the draft
+                    // back instead of silently dropping it. The composer
+                    // belongs to the selected session: a draft from another
+                    // task must not land in it.
+                    this.push_local_error("Send failed", &message, cx);
+                    if from_composer
+                        && !message.starts_with("Send outcome unknown")
+                        && this.selected_session.as_deref() == Some(session_id.as_str())
+                    {
+                        if let Some(composer) = this.composer.clone() {
+                            composer.update(cx, |input, cx| input.set_text(&text, cx));
+                        }
+                        let mut restored = drafts;
+                        restored.append(&mut this.draft_images);
+                        this.draft_images = restored;
+                    } else {
+                        this.notice = Some(format!("Send failed: {message}").into());
+                    }
                     this.awaiting_first_token = false;
-                    if uncertain {
-                        this.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
-                        this.check_unresolved_sends(cx);
-                    } else {
-                        this.push_local_error("Send failed", &message, cx);
-                        this.apply_send_receipt(&send_id, Some(crate::host::receipts::Outcome::Finished(Err(message))), cx);
-                    }
                 }
             },
         );
-    }
-
-    fn check_unresolved_sends(&mut self, cx: &mut Context<Self>) {
-        if self.checking_sends || self.unresolved_sends.is_empty() || self.host_recovery.unavailable
-        {
-            return;
-        }
-        self.checking_sends = true;
-        let ids: Vec<_> = self
-            .unresolved_sends
-            .iter()
-            .map(|(id, send)| {
-                let settled = send
-                    .outcome
-                    .clone()
-                    .filter(|o| !matches!(o, crate::host::receipts::Outcome::Pending));
-                (id.clone(), settled)
-            })
-            .collect();
-        let backend = self.backend.clone();
-        self.call(
-            async move {
-                let mut results = Vec::new();
-                for (id, settled) in ids {
-                    if settled.is_some() {
-                        results.push((id, settled));
-                        continue;
-                    }
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(40),
-                        backend.send_outcome(id.clone()),
-                    )
-                    .await;
-                    results.push((id, result.ok().and_then(Result::ok)));
-                }
-                Ok(results)
-            },
-            cx,
-            |this, result, cx| {
-                this.checking_sends = false;
-                let Ok(results) = result else {
-                    return;
-                };
-                for (id, outcome) in results {
-                    this.apply_send_receipt(&id, outcome, cx);
-                }
-                cx.notify();
-            },
-        );
-    }
-
-    fn apply_send_receipt(
-        &mut self,
-        id: &str,
-        outcome: Option<crate::host::receipts::Outcome>,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::host::receipts::Outcome;
-        let Some(send) = self.unresolved_sends.get_mut(id) else {
-            return;
-        };
-        if outcome.is_some() {
-            send.outcome = outcome.clone();
-        }
-        match outcome {
-            Some(Outcome::Finished(Ok(_))) => {
-                self.unresolved_sends.remove(id);
-                self.notice = Some("The host received your message. Nothing was resent.".into());
-            }
-            Some(Outcome::Missing | Outcome::Interrupted | Outcome::Finished(Err(_))) => {
-                let Some(send) = self.unresolved_sends.get(id) else {
-                    return;
-                };
-                // Never overwrite text typed since the uncertain send,
-                // or restore a draft into another task/computer.
-                if !send.from_composer {
-                    self.unresolved_sends.remove(id);
-                    return;
-                }
-                let empty = self
-                    .composer
-                    .as_ref()
-                    .is_some_and(|c| c.read(cx).text_ref().trim().is_empty())
-                    && self.draft_images.is_empty();
-                if self.selected_session.as_deref() == Some(&send.session) && empty {
-                    let send = self.unresolved_sends.remove(id).unwrap();
-                    if let Some(composer) = self.composer.clone() {
-                        composer.update(cx, |input, cx| input.set_text(&send.text, cx));
-                    }
-                    self.draft_images = send.images;
-                    self.notice = Some(if matches!(outcome, Some(Outcome::Interrupted)) {
-                        "The host restarted before recording this send’s result. It may have taken effect. Your draft is restored; check the task before sending again."
-                    } else {
-                        "The send did not complete successfully. Your draft is restored; check the task before sending again."
-                    }.into());
-                } else {
-                    self.notice = Some(if matches!(outcome, Some(Outcome::Interrupted)) {
-                        "The host restarted before recording this send’s result; it may have taken effect. You can continue. The original draft is retained; open its task with an empty composer to recover it."
-                    } else {
-                        "The failed draft is retained. You can continue; open its task with an empty composer to recover it."
-                    }.into());
-                }
-            }
-            _ => {
-                self.notice = Some("Send outcome is still unknown. Your message and images are retained; Maple will check again after reconnecting.".into());
-            }
-        }
     }
 
     fn push_local_error(&mut self, title: &str, message: &str, cx: &mut Context<Self>) {
@@ -5111,21 +4921,16 @@ impl ChatScreen {
                         this.handle_service_events(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error = None;
-                        this.check_unresolved_sends(cx);
-                        cx.emit(NavigationChanged);
-                        if !this.navigation_only {
-                            this.refresh_models(cx);
-                            this.refresh_roots(cx);
-                            this.refresh_slash_commands(cx);
-                        }
-                        if !running && !this.navigation_only {
+                        this.refresh_models(cx);
+                        this.refresh_roots(cx);
+                        this.refresh_slash_commands(cx);
+                        if !running {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
                             // this does not resume or submit any prompt.
                             this.booting = true;
                             this.start_runtime(cx);
                         }
-                        this.finish_navigation_bootstrap(cx);
                     }
                     Err(error) => {
                         this.host_recovery.events = None;
@@ -5161,10 +4966,6 @@ impl ChatScreen {
         self.question_selected.clear();
         self.sessions = snapshot.bootstrap.sessions;
         self.recent_roots = snapshot.bootstrap.recent_roots;
-        if self.navigation_only {
-            self.project_root = snapshot.bootstrap.project_root;
-            self.refresh_project_caption();
-        }
         self.handle_service_events(snapshot.bootstrap.questions, cx);
         if self.selection_generation == selection {
             if let Some(detail) = snapshot.selected {
@@ -5184,26 +4985,6 @@ impl ChatScreen {
 
     /// Apply one event; returns false when nothing visible changed.
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
-        use maple_agent::agent::AgentRunEvent;
-        // A computer that has not been opened needs navigation state only.
-        // Do this before the recovery buffer: a busy transcript must not make
-        // the summary snapshot overflow and reload forever.
-        if self.navigation_only
-            && match &event {
-                AgentServiceEvent::TimelineItem { .. }
-                | AgentServiceEvent::ThinkingChanged { .. }
-                | AgentServiceEvent::SideQuestion { .. } => true,
-                AgentServiceEvent::Run { event, .. } => !matches!(
-                    event,
-                    AgentRunEvent::Started
-                        | AgentRunEvent::Finished(_)
-                        | AgentRunEvent::SessionUpdated(_)
-                ),
-                _ => false,
-            }
-        {
-            return false;
-        }
         match event {
             AgentServiceEvent::HostReconnecting => {
                 self.host_recovery.epoch += 1;
@@ -5223,32 +5004,17 @@ impl ChatScreen {
                 self.begin_navigation();
                 self.runtime_error =
                     Some("Connection lost. Reconnecting to the Maple host…".into());
-                cx.emit(NavigationChanged);
                 return true;
             }
             AgentServiceEvent::HostReconnected => {
                 self.recover_host(cx);
                 return true;
             }
-            AgentServiceEvent::RemoteAccessEnded(reason) => {
-                self.host_recovery.epoch += 1;
-                self.host_recovery.unavailable = true;
-                self.host_recovery.ended = true;
-                self.host_recovery.events = None;
-                self.runtime_error = Some(reason.into());
-                cx.emit(NavigationChanged);
-                return true;
-            }
             AgentServiceEvent::HostDisconnected => {
-                if self.host_recovery.ended {
-                    return true;
-                }
-                self.host_recovery.ended = true;
                 self.host_recovery.epoch += 1;
                 self.host_recovery.unavailable = true;
                 self.host_recovery.events = None;
                 self.runtime_error = Some("The Maple host is unavailable. Reopen Maple to reload your tasks. No message was resent.".into());
-                cx.emit(NavigationChanged);
                 return true;
             }
             _ => {}
@@ -5298,14 +5064,13 @@ impl ChatScreen {
                     self.thinking = Some(state);
                 }
             }
-            AgentServiceEvent::RemoteAccessEnded(_)
-            | AgentServiceEvent::HostDisconnected
+            AgentServiceEvent::HostDisconnected
             | AgentServiceEvent::HostReconnecting
             | AgentServiceEvent::HostReconnected => return false,
             AgentServiceEvent::RuntimeStatus(mut status) => {
                 // A runtime that just started points Goose at the account's
                 // skills, which the first scan ran before; ask again.
-                if status.running && !self.runtime_running_seen && !self.navigation_only {
+                if status.running && !self.runtime_running_seen {
                     self.runtime_running_seen = true;
                     self.refresh_slash_commands(cx);
                 }
@@ -5535,7 +5300,7 @@ impl ChatScreen {
                     // task (`set_active_session`) is the only other writer.
                     self.completed_unread_sessions.remove(session_id);
                     if matches!(terminal, maple_agent::agent::AgentRunTerminal::Completed)
-                        && !(self.visible && self.is_selected(session_id))
+                        && !self.is_selected(session_id)
                     {
                         self.completed_unread_sessions
                             .insert(session_id.to_string());
@@ -6044,11 +5809,7 @@ impl ChatScreen {
             return;
         }
         log::info!("desktop notification sent: {title}");
-        let tag = match self.backend.remote_host() {
-            Some(host) => format!("remote-task:{host}:{tag}"),
-            None => format!("task:{tag}"),
-        };
-        crate::notify::notify(cx, tag, title, body, &[]);
+        crate::notify::notify(cx, format!("task:{tag}"), title, body, &[]);
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the

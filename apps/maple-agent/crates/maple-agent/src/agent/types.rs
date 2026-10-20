@@ -666,8 +666,6 @@ pub enum AgentServiceEvent {
     HostReconnected,
     /// Automatic recovery ended; reopening is required. No commands were replayed.
     HostDisconnected,
-    /// Remote authorization/protocol ended; reconnecting cannot repair it.
-    RemoteAccessEnded(String),
     RuntimeStatus(AgentRuntimeStatus),
     /// The agent asked the user one or more related questions (ask_user
     /// tool); every question in the batch is answered in one card.

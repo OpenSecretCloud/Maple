@@ -82,11 +82,7 @@ impl ChatScreen {
                 ChatPopup::Project,
                 chip(
                     "root-picker",
-                    Some(if self.backend.remote_host().is_some() {
-                        "globe"
-                    } else {
-                        "folder-open"
-                    }),
+                    Some("folder-open"),
                     self.project_label.clone(),
                     true,
                     self.popup.is_open(&ChatPopup::Project),
@@ -159,9 +155,6 @@ impl ChatScreen {
         let mut menu = Menu::new("project-menu", px(480.))
             .label("Projects")
             .application_vim(self.application_vim_enabled);
-        if self.computers.len() > 1 && self.root_input.is_none() {
-            return self.computers_project_menu();
-        }
         for path in header_project_paths(&self.recent_roots) {
             let pick = path.clone();
             let label =

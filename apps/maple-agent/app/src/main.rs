@@ -20,12 +20,9 @@ mod notify;
 #[cfg(feature = "desktop")]
 mod platform;
 mod profile;
-mod remote;
 mod settings;
 #[cfg(feature = "desktop")]
 mod shortcuts;
-#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
-mod tray;
 #[cfg(feature = "desktop")]
 mod ui;
 #[cfg(feature = "desktop")]
@@ -73,11 +70,6 @@ enum Mode {
         #[command(subcommand)]
         command: HostCommand,
     },
-    /// Manage this computer's remote access and paired computers.
-    Remote {
-        #[command(subcommand)]
-        command: RemoteCommand,
-    },
     /// Serve the Agent Client Protocol on stdio.
     ///
     /// Trailing arguments belong to the ACP client and are ignored.
@@ -98,53 +90,6 @@ enum HostCommand {
     Serve,
     /// Stop this profile's host and all its running tasks.
     Stop,
-}
-
-#[derive(Debug, Subcommand, PartialEq, Eq)]
-enum RemoteCommand {
-    Status,
-    Enable,
-    Disable,
-    Discover,
-    /// Display a new five-minute, single-attempt code on this computer.
-    BeginPairing,
-    CancelPairing,
-    /// Pair with an endpoint from Discover; the code is prompted privately.
-    Pair {
-        endpoint: String,
-    },
-    Revoke {
-        endpoint: String,
-    },
-}
-
-fn run_remote(command: RemoteCommand) -> Result<(), String> {
-    let backend = AgentBackend::new(configured_api_url(), String::new())?;
-    let (method, params) = match command {
-        RemoteCommand::Status => ("remote_status", serde_json::json!([])),
-        RemoteCommand::Enable => ("remote_enable", serde_json::json!([true])),
-        RemoteCommand::Disable => ("remote_enable", serde_json::json!([false])),
-        RemoteCommand::Discover => ("remote_discover", serde_json::json!([])),
-        RemoteCommand::BeginPairing => ("remote_begin_pairing", serde_json::json!([])),
-        RemoteCommand::CancelPairing => ("remote_cancel_pairing", serde_json::json!([])),
-        RemoteCommand::Pair { endpoint } => {
-            let code = rpassword::prompt_password("Code shown on the other computer: ")
-                .map_err(|_| "Could not read pairing code")?;
-            (
-                "remote_pair",
-                serde_json::json!([endpoint, code.trim().to_ascii_uppercase()]),
-            )
-        }
-        RemoteCommand::Revoke { endpoint } => ("remote_revoke", serde_json::json!([endpoint])),
-    };
-    let value: serde_json::Value = backend
-        .runtime_handle()
-        .block_on(backend.remote_setting(method, params))?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).map_err(|_| "Could not display remote status")?
-    );
-    Ok(())
 }
 
 /// Settings for `maple-agent login`. The password is always prompted for
@@ -238,13 +183,6 @@ fn main() {
                 HostCommand::Stop => host::stop(&configured_api_url()),
             };
             if let Err(error) = result {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
-        Some(Mode::Remote { command }) => {
-            init_logging(LogOutput::FileOnly);
-            if let Err(error) = run_remote(command) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -456,8 +394,7 @@ fn init_logging(output: LogOutput) {
             .open(log_dir.join("maple-agent.log"))
             .ok()
     });
-    const DEFAULT_FILTER: &str =
-        "info,iroh=warn,iroh_relay=warn,noq=warn,noq_proto=warn,netwatch=warn,tracing::span=warn";
+    const DEFAULT_FILTER: &str = "info";
     let mut builder = match output {
         LogOutput::FileAndStderr => env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or(DEFAULT_FILTER),

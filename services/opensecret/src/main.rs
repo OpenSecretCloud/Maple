@@ -120,7 +120,6 @@ mod provider_client;
 mod provider_registry;
 mod provider_routing;
 mod proxy_config;
-mod remote_enrollment;
 mod secret_cache_maintenance;
 #[cfg(test)]
 mod security_invariants;
@@ -1034,7 +1033,6 @@ pub struct AppState {
     apple_jwt_verifier: Arc<AppleJwtVerifier>,
     response_executions: web::responses::ResponseExecutionRegistry,
     kagi_client: Option<Arc<crate::kagi::KagiClient>>,
-    remote_relay_token: Option<zeroize::Zeroizing<String>>,
 }
 
 #[derive(Clone, Default)]
@@ -1167,14 +1165,9 @@ pub struct AppStateBuilder {
     os_flags_base_url: Option<String>,
     os_flags_api_key: Option<String>,
     kagi_api_key: Option<String>,
-    remote_relay_token: Option<zeroize::Zeroizing<String>>,
 }
 
 impl AppStateBuilder {
-    pub fn remote_relay_token(mut self, token: Option<zeroize::Zeroizing<String>>) -> Self {
-        self.remote_relay_token = token;
-        self
-    }
     pub fn app_mode(mut self, app_mode: AppMode) -> Self {
         self.app_mode = Some(app_mode);
         self
@@ -1499,7 +1492,6 @@ impl AppStateBuilder {
             apple_jwt_verifier,
             response_executions: web::responses::ResponseExecutionRegistry::default(),
             kagi_client,
-            remote_relay_token: self.remote_relay_token,
         })
     }
 }
@@ -3775,9 +3767,7 @@ async fn retrieve_kagi_api_key(
 
 fn application_routes(app_state: Arc<AppState>) -> Router<()> {
     protected_routes(app_state.clone())
-        .merge(web::remote::router(app_state.clone()))
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
-        .merge(web::remote::relay::router(app_state.clone()))
         .merge(login_routes(app_state.clone()))
         .merge(
             openai_routes(app_state.clone())
@@ -4128,9 +4118,6 @@ async fn main() -> Result<(), Error> {
         optional_env("OS_FLAGS_BASE_URL")
     };
 
-    let remote_relay_token =
-        web::remote::relay::load_token(&app_mode, aws_credential_manager.clone(), db.clone())
-            .await?;
     let app_state = AppStateBuilder::default()
         .app_mode(app_mode.clone())
         .db(db)
@@ -4152,7 +4139,6 @@ async fn main() -> Result<(), Error> {
         .os_flags_base_url(os_flags_base_url)
         .os_flags_api_key(os_flags_api_key)
         .kagi_api_key(kagi_api_key)
-        .remote_relay_token(remote_relay_token)
         .build()
         .await?;
     tracing::info!("App state created, app_mode: {:?}", app_mode);

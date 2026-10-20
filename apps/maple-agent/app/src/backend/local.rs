@@ -87,7 +87,7 @@ pub struct RecoverySnapshot {
 pub struct LocalBackend {
     #[cfg(test)]
     pub(super) ui_fixture: bool,
-    pub(crate) account_gate: tokio::sync::RwLock<()>,
+    pub(super) account_gate: tokio::sync::RwLock<()>,
     restore_lock: tokio::sync::Mutex<()>,
     service: MapleAgentService,
     auth: MapleApiAuthState,
@@ -978,26 +978,6 @@ impl LocalBackend {
         self.auth.session_for(user_id).await
     }
 
-    /// Snapshot the locally selected account for remote enrollment.
-    pub(crate) fn remote_storage_root(&self) -> PathBuf {
-        self.persisted_auth
-            .path
-            .parent()
-            .expect("auth store has a parent")
-            .to_path_buf()
-    }
-    pub(crate) fn remote_api_url(&self) -> &str {
-        &self.api_url
-    }
-
-    pub(crate) async fn remote_session(
-        &self,
-        user_id: &str,
-    ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
-        self.authorize_account(user_id)?;
-        self.session_for(user_id).await
-    }
-
     /// Sign out completely: invalidate the live session first, then remove
     /// only the persisted credentials that this sign-out observed.
     pub async fn logout_and_clear(&self, user_id: &str) -> Result<(), String> {
@@ -1656,16 +1636,6 @@ impl LocalBackend {
     /// holds the lifecycle lock across its network round trips, and these
     /// reads would queue behind it.
     pub async fn local_bootstrap(&self, user_id: &str) -> Result<LocalBootstrap, String> {
-        self.read_bootstrap(user_id, true).await
-    }
-
-    /// Navigation and reconnect snapshots need summaries, not an unrelated
-    /// latest transcript. A controller can observe several computers at once.
-    async fn read_bootstrap(
-        &self,
-        user_id: &str,
-        load_latest: bool,
-    ) -> Result<LocalBootstrap, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         let config = handle.load_config().await?;
         let project_root = gui_project_root(&config);
@@ -1687,7 +1657,7 @@ impl LocalBackend {
                     && Some(&session.project_root) == project_root.as_ref()
             })
             .map(|session| session.id.clone());
-        let latest = match latest_id.filter(|_| load_latest) {
+        let latest = match latest_id {
             Some(id) => handle.load_session(id).await.ok(),
             None => None,
         };
@@ -1706,7 +1676,8 @@ impl LocalBackend {
         user_id: &str,
         session_id: Option<String>,
     ) -> Result<RecoverySnapshot, String> {
-        let bootstrap = self.read_bootstrap(user_id, false).await?;
+        let mut bootstrap = self.local_bootstrap(user_id).await?;
+        bootstrap.latest = None;
         let handle = self.service.handle_for_user(user_id).await?;
         let selected = match session_id.filter(|id| bootstrap.sessions.iter().any(|s| &s.id == id))
         {
@@ -2656,119 +2627,6 @@ mod tests {
                 .unwrap(),
             rows
         );
-    }
-
-    #[tokio::test]
-    async fn checking_remote_status_does_not_create_identity_or_require_network() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
-        backend.persisted_auth.claim_and_persist(&auth_snapshot(
-            "fixture-user",
-            "fixture-session",
-            1,
-            "fixture-token",
-        ));
-        let (events, _) = tokio::sync::broadcast::channel(8);
-        let receipts = Arc::new(
-            crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
-        );
-        let remote = crate::remote::manager::Manager::new(backend.clone(), events, receipts);
-        remote.restore().await;
-        let status = remote
-            .dispatch(crate::host::protocol::Request {
-                id: 1,
-                method: "remote_status".into(),
-                params: serde_json::json!([]),
-                send_id: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(status["enabled"], false);
-        assert!(status["endpoint"].is_null());
-        assert!(!root.path().join("remote").exists());
-        assert!(!remote.stays_running());
-        // Naming an offline computer is local even when authentication cannot
-        // finish. It must not bind an endpoint or enable incoming access.
-        let _validation = backend.restore_lock.lock().await;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            remote.dispatch(crate::host::protocol::Request {
-                id: 2,
-                method: "remote_set_name".into(),
-                params: serde_json::json!(["Offline Mac"]),
-                send_id: None,
-            }),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let status = remote
-            .dispatch(crate::host::protocol::Request {
-                id: 3,
-                method: "remote_status".into(),
-                params: serde_json::json!([]),
-                send_id: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(status["name"], "Offline Mac");
-        assert_eq!(status["ready"], false);
-        assert_eq!(status["enabled"], false);
-        assert!(!remote.stays_running());
-    }
-
-    #[tokio::test]
-    async fn disabling_remote_does_not_wait_for_initializing_credentials() {
-        use std::{future::Future, task::Poll};
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
-        backend.persisted_auth.claim_and_persist(&auth_snapshot(
-            "fixture-user",
-            "fixture-session",
-            1,
-            "fixture-token",
-        ));
-        let (events, _) = tokio::sync::broadcast::channel(8);
-        let receipts = Arc::new(
-            crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
-        );
-        let remote = crate::remote::manager::Manager::new(backend.clone(), events, receipts);
-        let request = |method: &str, params| crate::host::protocol::Request {
-            id: 1,
-            method: method.into(),
-            params,
-            send_id: None,
-        };
-        remote
-            .dispatch(request("remote_enable", serde_json::json!([true])))
-            .await
-            .unwrap();
-        let validation = backend.restore_lock.lock().await;
-        let active = remote.active();
-        tokio::pin!(active);
-        std::future::poll_fn(|cx| {
-            assert!(active.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            remote.dispatch(request("remote_enable", serde_json::json!([false]))),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(!remote.stays_running());
-        let status = remote
-            .dispatch(request("remote_status", serde_json::json!([])))
-            .await
-            .unwrap();
-        assert_eq!(status["enabled"], false);
-        assert_eq!(status["ready"], false);
-        drop(validation);
-        // Invalid fixture credentials cannot create a node after the cancellation.
-        assert!(active.await.is_err());
-        remote.shutdown().await;
     }
 
     #[tokio::test]

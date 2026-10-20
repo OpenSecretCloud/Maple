@@ -180,7 +180,7 @@ impl SettingsScreen {
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
                 )
                 .collect(),
-            Section::Remote | Section::Usage | Section::About => Vec::new(),
+            Section::Usage | Section::About => Vec::new(),
         }
     }
 
@@ -664,7 +664,6 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings::default(),
@@ -749,7 +748,6 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {
@@ -824,7 +822,6 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {
@@ -896,7 +893,6 @@ mod tests {
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {
@@ -979,7 +975,6 @@ mod tests {
         );
         cx.new(|cx| {
             SettingsScreen::new(
-                backend.clone(),
                 backend,
                 "user".to_string(),
                 crate::settings::AppSettings {

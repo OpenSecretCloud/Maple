@@ -99,7 +99,6 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "pake-cpace-0.1.0" = "07ig50fcmrlsccn0pmxk30bznbdqq9fgs01y9qw9881vv34a18gj";
                 "collections-0.1.0" = "sha256-d2GVmZgvJzLk1pbNtPedw0V09+ANZFORZjTSLVxw7jc=";
                 "proptest-1.10.0" = "sha256-p5NTcHhruI8QQvANACg8AMRVNmuvGxs2NLit+/8PaWo=";
                 "wasm_thread-0.3.3" = "sha256-+lRLCIk0S6Y5ORYjDKsYYHia2FtoSoh+rWkQh7mnPBE=";

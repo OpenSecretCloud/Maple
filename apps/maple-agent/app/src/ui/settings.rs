@@ -56,7 +56,6 @@ pub enum Section {
     Shortcuts,
     Prompt,
     Integrations,
-    Remote,
     Usage,
     About,
 }
@@ -71,13 +70,12 @@ impl Section {
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
-            Self::Remote => "Remote computers",
             Self::Usage => "Usage",
             Self::About => "About",
         }
     }
 
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 9] = [
         Self::General,
         Self::Account,
         Self::Billing,
@@ -85,7 +83,6 @@ impl Section {
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
-        Self::Remote,
         Self::Usage,
         Self::About,
     ];
@@ -125,8 +122,6 @@ pub struct SettingsScreen {
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     backend: Arc<AgentBackend>,
-    integrations_backend: Arc<AgentBackend>,
-    remote_screen: Entity<super::remote::RemoteScreen>,
     user_id: String,
     settings: AppSettings,
     /// `settings.theme` parsed once; render only reads the label.
@@ -232,70 +227,20 @@ struct McpEditor {
 /// Emitted with the section to open (composer "Manage integrations" link).
 pub struct OpenSettingsSection(pub Section);
 
-impl EventEmitter<super::remote::ComputersChanged> for SettingsScreen {}
-impl EventEmitter<super::remote::ConnectComputer> for SettingsScreen {}
-impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
 impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {
-    pub fn update_remote_status(
-        &mut self,
-        status: crate::remote::manager::Status,
-        cx: &mut Context<Self>,
-    ) {
-        self.remote_screen
-            .update(cx, |screen, cx| screen.update_status(status, cx));
-    }
-
     pub fn new(
         backend: Arc<AgentBackend>,
-        integrations_backend: Arc<AgentBackend>,
         user_id: String,
         settings: AppSettings,
         shortcut_snapshot: ShortcutSnapshot,
         section: Section,
         cx: &mut Context<Self>,
     ) -> Self {
-        let names = settings
-            .remote_sidebars
-            .iter()
-            .map(|(key, value)| (key.clone(), value.display_name.clone()))
-            .collect();
-        let remote_screen =
-            cx.new(|cx| super::remote::RemoteScreen::new(backend.clone(), names, cx));
-        cx.subscribe(
-            &remote_screen,
-            |this, _, event: &super::remote::ComputerNamed, cx| {
-                this.settings
-                    .remote_sidebars
-                    .entry(event.key.clone())
-                    .or_default()
-                    .display_name = event.name.clone();
-                cx.emit(super::remote::ComputerNamed {
-                    key: event.key.clone(),
-                    name: event.name.clone(),
-                });
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &remote_screen,
-            |_, _, event: &super::remote::ComputersChanged, cx| {
-                cx.emit(super::remote::ComputersChanged(event.0.clone()));
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &remote_screen,
-            |this, _, event: &super::remote::ConnectComputer, cx| {
-                cx.emit(SettingsClosed(this.settings.clone()));
-                cx.emit(super::remote::ConnectComputer(event.0.clone()));
-            },
-        )
-        .detach();
         let prompt_text = settings.effective_harness_instructions();
         let application_vim_enabled = settings.application_vim_enabled;
         let application_focus = cx.focus_handle();
@@ -338,8 +283,6 @@ impl SettingsScreen {
         let this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
-            integrations_backend,
-            remote_screen,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
             settings,
@@ -411,7 +354,7 @@ impl SettingsScreen {
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
-        let backend = self.integrations_backend.clone();
+        let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.list_mcp_servers(&user_id).await },
@@ -430,7 +373,7 @@ impl SettingsScreen {
     }
 
     fn load_integrations(&self, cx: &mut Context<Self>) {
-        let backend = self.integrations_backend.clone();
+        let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.list_integrations(&user_id).await },
@@ -486,7 +429,7 @@ impl SettingsScreen {
         self.integration_notice = None;
         cx.notify();
 
-        let backend = self.integrations_backend.clone();
+        let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let request_id = id.clone();
         self.call(
@@ -529,7 +472,7 @@ impl SettingsScreen {
         }
 
         let id = id.to_string();
-        let permissions = match self.integrations_backend.begin_integration_setup(&id) {
+        let permissions = match self.backend.begin_integration_setup(&id) {
             Ok(permissions) => permissions,
             Err(message) => {
                 self.integration_notice = Some(message);
@@ -541,7 +484,7 @@ impl SettingsScreen {
         self.integration_saving.insert(id.clone());
         cx.notify();
 
-        let backend = self.integrations_backend.clone();
+        let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let request_id = id.clone();
         self.call(
@@ -584,7 +527,7 @@ impl SettingsScreen {
         self.mcp_saving = true;
         self.mcp_notice = None;
         cx.notify();
-        let backend = self.integrations_backend.clone();
+        let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.save_mcp_servers(&user_id, servers).await },
@@ -1711,9 +1654,6 @@ impl SettingsScreen {
             Section::Integrations => {
                 pane = pane.child(self.render_integrations_pane(cx));
             }
-            Section::Remote => {
-                pane = pane.child(self.remote_screen.clone());
-            }
             Section::Usage => {
                 pane = pane.child(
                     div()
@@ -2196,10 +2136,6 @@ impl SettingsScreen {
             .flex_col()
             .gap_4()
             .child(section_title("Integrations"))
-            .child(div().text_sm().child(match self.integrations_backend.remote_host() {
-                Some(host) => format!("Execution computer: {}. Native setup and permissions must be completed there.", &host[..host.len().min(10)]),
-                None => "Execution computer: This computer".to_string(),
-            }))
             .child(
                 div()
                     .text_sm()

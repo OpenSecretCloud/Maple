@@ -13,7 +13,6 @@ actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
 
 use crate::backend::AgentBackend;
 use crate::ui;
-use crate::ui::chat::computers::{Computer, Destination, Navigate, NavigationChanged};
 use crate::ui::chat::{ChatScreen, LoggedOut};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
@@ -31,46 +30,6 @@ enum Screen {
     Settings(Entity<SettingsScreen>),
 }
 
-/// One cache and one initial connection attempt per paired endpoint. Once
-/// attached, the existing IPC/Iroh supervisor owns reconnects and snapshots.
-struct RemoteComputer {
-    name: String,
-    grant: [u8; 16],
-    chat: Option<Entity<ChatScreen>>,
-    attempt: ConnectionAttempt,
-}
-
-#[derive(Clone)]
-struct PendingNavigation {
-    request: Navigate,
-    source: Option<(gpui::EntityId, u64)>,
-}
-
-enum ConnectionAttempt {
-    Idle,
-    Connecting(u64),
-    Failed {
-        message: String,
-        retry_at: std::time::Instant,
-    },
-}
-impl RemoteComputer {
-    fn should_connect(&self, now: std::time::Instant) -> bool {
-        self.chat.is_none()
-            && match &self.attempt {
-                ConnectionAttempt::Idle => true,
-                ConnectionAttempt::Connecting(_) => false,
-                ConnectionAttempt::Failed { retry_at, .. } => now >= *retry_at,
-            }
-    }
-    fn error(&self) -> Option<String> {
-        match &self.attempt {
-            ConnectionAttempt::Failed { message, .. } => Some(message.clone()),
-            _ => None,
-        }
-    }
-}
-
 struct MapleApp {
     backend: Arc<AgentBackend>,
     screen: Screen,
@@ -78,16 +37,6 @@ struct MapleApp {
     /// The chat screen is parked while settings is open so Back returns to
     /// it with its state intact.
     parked_chat: Option<Entity<ChatScreen>>,
-    local_chat: Option<Entity<ChatScreen>>,
-    selected_host: Option<String>,
-    remote_computers: std::collections::BTreeMap<String, RemoteComputer>,
-    next_connection_attempt: u64,
-    requested_navigation: Option<PendingNavigation>,
-    computers_sync_pending: bool,
-    remote_enabled: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    tray: Option<crate::tray::StatusIcon>,
-    remote_bridges: std::cell::RefCell<Vec<gpui::Task<()>>>,
     settings: crate::settings::AppSettings,
     /// The complete live shortcut map. Settings mutations prepare a full
     /// replacement before this runtime clears GPUI's process-wide bindings.
@@ -130,8 +79,20 @@ impl MapleApp {
         events: Vec<maple_agent::agent::AgentServiceEvent>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(chat) = &self.local_chat {
+        let chat = match &self.screen {
+            Screen::Chat(chat) => Some(chat.clone()),
+            _ => self.parked_chat.clone(),
+        };
+        if let Some(chat) = chat {
             chat.update(cx, |chat, cx| chat.handle_service_events(events, cx));
+        }
+    }
+
+    /// Show a task, for a click on its notification. Only the chat screen
+    /// can: login has no tasks, and settings keeps its parked chat as is.
+    fn open_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if let Screen::Chat(chat) = &self.screen {
+            chat.update(cx, |chat, cx| chat.select_session(session_id, cx));
         }
     }
 
@@ -155,12 +116,7 @@ impl MapleApp {
     /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
         self.user_id = None;
-        self.set_remote_enabled(false, cx);
         self.parked_chat = None;
-        self.local_chat = None;
-        self.remote_computers.clear();
-        self.requested_navigation = None;
-        self.selected_host = None;
         if matches!(self.screen, Screen::Login(_)) {
             return;
         }
@@ -198,296 +154,8 @@ impl MapleApp {
         self.user_id = Some(user_id);
         self.parked_chat = None;
         self.screen = Screen::Chat(chat.clone());
-        self.local_chat = Some(chat.clone());
-        self.remote_computers.clear();
-        self.requested_navigation = None;
-        self.selected_host = None;
         self.subscribe_chat(&chat, cx);
         cx.notify();
-    }
-
-    fn update_computers(&mut self, status: crate::remote::manager::Status, cx: &mut Context<Self>) {
-        self.set_remote_enabled(status.enabled, cx);
-        let computers = status
-            .peers
-            .into_iter()
-            .filter(|(_, peer)| peer.can_connect)
-            .map(|(key, peer)| {
-                let alias = self
-                    .settings
-                    .remote_sidebars
-                    .get(&key)
-                    .map_or("", |s| s.display_name.as_str());
-                let label = ui::remote::computer_name(&key, &peer.name, alias);
-                (key, (label, peer.grant))
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let mut changed = self.remote_computers.len() != computers.len();
-        let mut selected_grant_changed = false;
-        self.remote_computers
-            .retain(|key, _| computers.contains_key(key));
-        for (key, (name, grant)) in computers {
-            match self.remote_computers.entry(key) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    changed = true;
-                    entry.insert(RemoteComputer {
-                        name,
-                        grant,
-                        chat: None,
-                        attempt: ConnectionAttempt::Idle,
-                    });
-                }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    if entry.get().grant != grant {
-                        changed = true;
-                        selected_grant_changed |= self.selected_host.as_ref() == Some(entry.key());
-                        let computer = entry.get_mut();
-                        computer.grant = grant;
-                        computer.chat = None;
-                        computer.attempt = ConnectionAttempt::Idle;
-                    }
-                    if entry.get().name != name {
-                        changed = true;
-                        entry.get_mut().name = name;
-                    }
-                }
-            }
-        }
-        if selected_grant_changed
-            || self
-                .selected_host
-                .as_ref()
-                .is_some_and(|key| !self.remote_computers.contains_key(key))
-        {
-            self.navigate(
-                Navigate {
-                    computer: None,
-                    destination: Destination::Overview,
-                },
-                cx,
-            );
-        }
-        if changed {
-            self.sync_computers(cx);
-        }
-        let now = std::time::Instant::now();
-        let ready = self
-            .remote_computers
-            .iter()
-            .filter(|(_, computer)| computer.should_connect(now))
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        for peer in ready {
-            self.connect_computer(peer, cx);
-        }
-        for chat in self.local_chat.iter().chain(
-            self.remote_computers
-                .values()
-                .filter_map(|c| c.chat.as_ref()),
-        ) {
-            chat.update(cx, |chat, cx| chat.refresh_navigation_if_due(cx));
-        }
-    }
-
-    fn sync_computers(&mut self, cx: &mut Context<Self>) {
-        let Some(local) = &self.local_chat else {
-            return;
-        };
-        let mut computers = vec![local.read(cx).computer_snapshot("This computer".into(), cx)];
-        for (key, computer) in &self.remote_computers {
-            computers.push(match &computer.chat {
-                Some(chat) => chat
-                    .read(cx)
-                    .computer_snapshot(computer.name.clone().into(), cx),
-                None => Computer::pending(key.clone(), computer.name.clone(), computer.error()),
-            });
-        }
-        let computers = Arc::new(computers);
-        for chat in std::iter::once(local).chain(
-            self.remote_computers
-                .values()
-                .filter_map(|c| c.chat.as_ref()),
-        ) {
-            chat.update(cx, |chat, cx| chat.set_computers(computers.clone(), cx));
-        }
-    }
-
-    fn schedule_computers_sync(&mut self, cx: &mut Context<Self>) {
-        if self.computers_sync_pending {
-            return;
-        }
-        self.computers_sync_pending = true;
-        let weak = cx.entity().downgrade();
-        cx.defer(move |cx| {
-            weak.update(cx, |app, cx| {
-                app.computers_sync_pending = false;
-                app.sync_computers(cx);
-            })
-            .ok();
-        });
-    }
-
-    fn navigate(&mut self, request: Navigate, cx: &mut Context<Self>) {
-        self.requested_navigation = Some(PendingNavigation {
-            request: request.clone(),
-            source: self.navigation_source(cx),
-        });
-        let chat = match &request.computer {
-            None => self.local_chat.clone(),
-            Some(peer) => self
-                .remote_computers
-                .get(peer)
-                .and_then(|computer| computer.chat.as_ref())
-                .filter(|chat| !chat.read(cx).connection_ended())
-                .cloned(),
-        };
-        if let Some(chat) = chat {
-            let browse = match &self.screen {
-                Screen::Chat(previous) if previous.entity_id() != chat.entity_id() => {
-                    Some(previous.read(cx).sidebar_browse_state(cx))
-                }
-                _ => None,
-            };
-            for other in self.local_chat.iter().chain(
-                self.remote_computers
-                    .values()
-                    .filter_map(|c| c.chat.as_ref()),
-            ) {
-                other.update(cx, |other, cx| other.set_visible(false, cx));
-            }
-            self.selected_host = request.computer;
-            self.screen = Screen::Chat(chat.clone());
-            self.parked_chat = None;
-            chat.update(cx, |chat, cx| {
-                chat.set_visible(true, cx);
-                if let Some(browse) = browse {
-                    chat.restore_sidebar_browse_state(browse, cx);
-                }
-                chat.navigate(request.destination, cx);
-            });
-            self.requested_navigation = None;
-            cx.notify();
-        } else if let Some(peer) = request.computer {
-            self.connect_computer(peer, cx);
-        }
-    }
-
-    fn navigation_source(&self, cx: &gpui::App) -> Option<(gpui::EntityId, u64)> {
-        match &self.screen {
-            Screen::Chat(chat) => Some((chat.entity_id(), chat.read(cx).navigation_generation())),
-            _ => None,
-        }
-    }
-
-    fn set_remote_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self
-            .remote_enabled
-            .swap(enabled, std::sync::atomic::Ordering::AcqRel)
-            == enabled
-        {
-            return;
-        }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if let Some(tray) = &self.tray {
-            tray.set_enabled(enabled);
-        }
-        cx.notify();
-    }
-
-    fn connect_computer(&mut self, peer: String, cx: &mut Context<Self>) {
-        let Some(user_id) = self.user_id.clone() else {
-            return;
-        };
-        let Some(computer) = self.remote_computers.get_mut(&peer) else {
-            return;
-        };
-        if matches!(computer.attempt, ConnectionAttempt::Connecting(_)) {
-            return;
-        }
-        self.next_connection_attempt += 1;
-        let attempt = self.next_connection_attempt;
-        computer.attempt = ConnectionAttempt::Connecting(attempt);
-        let backend = self.backend.clone();
-        let target = peer.clone();
-        self.sync_computers(cx);
-        let bridge = ui::task::call(
-            &self.backend,
-            async move { backend.remote(target).await },
-            cx,
-            move |app, result, cx| {
-                if app.user_id.as_deref() != Some(&user_id) {
-                    return;
-                }
-                // Unpairing/re-pairing or signing out discards an old attempt.
-                // A late completion never resurrects that computer or its view.
-                if !app.remote_computers.get(&peer).is_some_and(|computer| matches!(computer.attempt, ConnectionAttempt::Connecting(id) if id == attempt)) {
-                    return;
-                }
-                match result {
-                    Ok(backend) => {
-                        let source = backend.clone();
-                        let rx = backend.spawn(async move { source.take_events().await });
-                        let chat = cx.new(|cx| ChatScreen::new_catalog(backend, user_id, cx));
-                        app.subscribe_chat(&chat, cx);
-                        let weak = chat.downgrade();
-                        cx.spawn(async move |_, cx| {
-                            let Some(mut rx) = rx.await.ok().flatten() else {
-                                return;
-                            };
-                            while let Some(event) = rx.recv().await {
-                                let mut batch = vec![event];
-                                while batch.len() < 256 {
-                                    if let Ok(event) = rx.try_recv() {
-                                        batch.push(event);
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                if weak
-                                    .update(cx, |chat, cx| chat.handle_service_events(batch, cx))
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                        })
-                        .detach();
-                        if let Some(computer) = app.remote_computers.get_mut(&peer) {
-                            computer.chat = Some(chat.clone());
-                            computer.attempt = ConnectionAttempt::Idle;
-                        }
-                        if let Some(pending) = app.requested_navigation.clone()
-                            && pending.request.computer.as_deref() == Some(&peer)
-                        {
-                            if pending.source == app.navigation_source(cx) {
-                                app.navigate(pending.request, cx);
-                            } else {
-                                app.requested_navigation = None;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        if let Some(computer) = app.remote_computers.get_mut(&peer) {
-                            computer.attempt = ConnectionAttempt::Failed {
-                                message: error.clone(),
-                                retry_at: std::time::Instant::now()
-                                    + std::time::Duration::from_secs(30),
-                            };
-                        }
-                        if app.requested_navigation.as_ref().is_some_and(|pending| {
-                            pending.request.computer.as_deref() == Some(&peer)
-                        }) && let Screen::Chat(chat) = &app.screen
-                        {
-                            chat.update(cx, |chat, cx| chat.navigation_notice(error, cx));
-                            app.requested_navigation = None;
-                        }
-                    }
-                }
-                app.sync_computers(cx);
-                cx.notify();
-            },
-        );
-        ui::task::retain(&self.remote_bridges, bridge);
     }
 
     /// Park the chat screen and show settings.
@@ -499,51 +167,9 @@ impl MapleApp {
         let user_id = self.user_id.clone().unwrap_or_default();
         let settings = self.settings.clone();
         let shortcut_snapshot = self.shortcuts.snapshot();
-        let integrations_backend = chat.read(cx).execution_backend();
-        chat.update(cx, |chat, cx| chat.set_visible(false, cx));
         let screen = cx.new(|cx| {
-            SettingsScreen::new(
-                backend,
-                integrations_backend,
-                user_id,
-                settings,
-                shortcut_snapshot,
-                section,
-                cx,
-            )
+            SettingsScreen::new(backend, user_id, settings, shortcut_snapshot, section, cx)
         });
-        cx.subscribe(
-            &screen,
-            |app, _, event: &ui::remote::ComputersChanged, cx| {
-                app.update_computers(event.0.clone(), cx);
-            },
-        )
-        .detach();
-        cx.subscribe(&screen, |app, _, event: &ui::remote::ComputerNamed, cx| {
-            app.settings
-                .remote_sidebars
-                .entry(event.key.clone())
-                .or_default()
-                .display_name = event.name.clone();
-            if let Some(computer) = app.remote_computers.get_mut(&event.key) {
-                computer.name = event.name.clone();
-                app.sync_computers(cx);
-            }
-        })
-        .detach();
-        cx.subscribe(
-            &screen,
-            |app, _, event: &ui::remote::ConnectComputer, cx| {
-                app.navigate(
-                    Navigate {
-                        computer: Some(event.0.clone()),
-                        destination: Destination::Overview,
-                    },
-                    cx,
-                );
-            },
-        )
-        .detach();
         cx.subscribe(
             &screen,
             |app: &mut MapleApp, _emitter, event: &SettingsClosed, cx| {
@@ -566,7 +192,7 @@ impl MapleApp {
         cx.subscribe(
             &screen,
             |app: &mut MapleApp, _emitter, _event: &SignOutRequested, cx| {
-                if let Some(chat) = app.local_chat.take() {
+                if let Some(chat) = app.parked_chat.take() {
                     chat.update(cx, |chat, cx| chat.sign_out(cx));
                 }
                 app.show_login(cx);
@@ -590,14 +216,6 @@ impl MapleApp {
 
     /// Wire per-chat events: sign-out and the settings gear.
     fn subscribe_chat(&mut self, chat: &Entity<ChatScreen>, cx: &mut Context<Self>) {
-        cx.subscribe(chat, |app, _, _: &NavigationChanged, cx| {
-            app.schedule_computers_sync(cx)
-        })
-        .detach();
-        cx.subscribe(chat, |app, _, request: &Navigate, cx| {
-            app.navigate(request.clone(), cx)
-        })
-        .detach();
         cx.subscribe(
             chat,
             |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
@@ -629,15 +247,9 @@ impl MapleApp {
             ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family),
             self.settings.chat_font_size,
         );
-        for chat in self.local_chat.iter().chain(
-            self.remote_computers
-                .values()
-                .filter_map(|c| c.chat.as_ref()),
-        ) {
-            chat.update(cx, |chat, cx| chat.apply_defaults(&self.settings, cx));
-        }
         if let Some(chat) = self.parked_chat.take() {
-            chat.update(cx, |chat, cx| chat.set_visible(true, cx));
+            let settings = self.settings.clone();
+            chat.update(cx, |chat, cx| chat.apply_defaults(&settings, cx));
             self.screen = Screen::Chat(chat);
         }
         cx.notify();
@@ -713,151 +325,6 @@ impl Render for MapleApp {
                 Screen::Settings(screen) => screen.clone().into_any_element(),
             })
     }
-}
-
-#[derive(Clone)]
-struct DesktopLifecycle {
-    backend: Arc<AgentBackend>,
-    remote_enabled: Arc<std::sync::atomic::AtomicBool>,
-    can_background: bool,
-    closing: std::rc::Rc<std::cell::Cell<bool>>,
-    quit_stop_attempted: std::rc::Rc<std::cell::Cell<bool>>,
-}
-impl gpui::Global for DesktopLifecycle {}
-
-fn quit_app(cx: &mut App) {
-    let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
-        cx.quit();
-        return;
-    };
-    if !state
-        .remote_enabled
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        cx.quit();
-        return;
-    }
-    if state.closing.replace(true) {
-        return;
-    }
-    let api = state.backend.api_url().to_owned();
-    let stop = state
-        .backend
-        .spawn(async move { crate::host::request_stop(&api).await });
-    cx.spawn(async move |cx| match stop.await {
-        Ok(Ok(())) => cx.update(|cx| {
-            state.quit_stop_attempted.set(true);
-            cx.quit();
-        }),
-        result => {
-            state.closing.set(false);
-            log::warn!("Could not stop Maple host on Quit: {result:?}");
-            cx.update(show_quit_warning);
-        }
-    })
-    .detach();
-}
-
-/// A separate window also works when Quit comes from a tray with no open window.
-fn show_quit_warning(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(540.), px(230.)), cx);
-    if let Err(error) = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            ..Default::default()
-        },
-        |_, cx| cx.new(|_| QuitWarning),
-    ) {
-        log::error!("Could not show Quit confirmation: {error}");
-    }
-    cx.activate(true);
-}
-
-struct QuitWarning;
-impl Render for QuitWarning {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().flex().flex_col().gap_4().p_6()
-            .bg(gpui::rgb(ui::theme::bg_app())).text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child("Maple could not stop its background host"))
-            .child("Remote access and running tasks may still be active. Keep Maple open to retry, or quit this window anyway.")
-            .child(div().flex().gap_4()
-                .child(ui::widgets::secondary_button("keep-maple-open").debug_selector(|| "keep-maple-open".to_string()).child("Keep open")
-                    .on_click(|_, window, _| window.remove_window()))
-                .child(ui::widgets::secondary_button("quit-maple-anyway").debug_selector(|| "quit-maple-anyway".to_string()).child("Quit anyway")
-                    .on_click(|_, _, cx| {
-                        // Do not repeat the failed stop in the app-quit callback.
-                        if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.quit_stop_attempted.set(true); }
-                        cx.quit();
-                    })))
-    }
-}
-
-/// The native close button and our Linux title bar share this policy.
-pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
-    persist_window_state();
-    let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
-        cx.quit();
-        return;
-    };
-    if !state
-        .remote_enabled
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        quit_app(cx);
-        return;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = window;
-        cx.hide();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if state.closing.replace(true) {
-            return;
-        }
-        let check = state.backend.spawn(async move {
-            #[cfg(target_os = "linux")]
-            {
-                state.can_background && crate::tray::usable().await
-            }
-            #[cfg(target_os = "windows")]
-            {
-                state.can_background
-            }
-        });
-        window.spawn(cx, async move |cx| {
-            let usable = check.await.unwrap_or(false);
-            let prompt = cx.update(|window, cx| {
-                if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.closing.set(false); }
-                if usable { window.remove_window(); None } else {
-                    Some(window.prompt(gpui::PromptLevel::Warning, "Keep Maple open for remote access?",
-                        Some("This desktop has no available tray to reopen Maple. Quitting stops remote access and running tasks on this computer."),
-                        &["Keep open", "Quit Maple"], cx))
-                }
-            }).ok().flatten();
-            if let Some(prompt) = prompt && prompt.await == Ok(1) {
-                let _ = cx.update(|_, cx| quit_app(cx));
-            }
-        }).detach();
-    }
-}
-
-fn install_close_behavior(
-    window: &mut Window,
-    cx: &mut App,
-    remote_enabled: Arc<std::sync::atomic::AtomicBool>,
-    can_background: bool,
-) {
-    if cx.has_global::<DesktopLifecycle>() {
-        let state = cx.global_mut::<DesktopLifecycle>();
-        state.remote_enabled = remote_enabled;
-        state.can_background = can_background;
-    }
-    window.on_window_should_close(cx, |window, cx| {
-        close_window(window, cx);
-        false
-    });
 }
 
 /// Shown only if a paint happens before `run` picks the first screen,
@@ -942,59 +409,10 @@ fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
     }
 }
 
-struct StartupError {
-    message: String,
-    stopping: bool,
-}
-impl StartupError {
-    fn new(message: String) -> Self {
-        Self {
-            message,
-            stopping: false,
-        }
-    }
-    fn stop_old_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.stopping {
-            return;
-        }
-        let answer = window.prompt(gpui::PromptLevel::Warning, "Stop the existing Maple host?",
-            Some("This stops running tasks and remote access for this profile. Maple will reopen with this build."),
-            &["Cancel", "Stop and reopen"], cx);
-        self.stopping = true;
-        cx.spawn(async move |this, cx| {
-            let result = if answer.await == Ok(1) {
-                Some(
-                    cx.background_executor()
-                        .spawn(async move {
-                            crate::host::stop(&crate::configured_api_url())?;
-                            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-                            std::process::Command::new(exe)
-                                .spawn()
-                                .map_err(|e| e.to_string())?;
-                            Ok::<(), String>(())
-                        })
-                        .await,
-                )
-            } else {
-                None
-            };
-            let _ = this.update(cx, |this, cx| {
-                this.stopping = false;
-                match result {
-                    Some(Ok(())) => cx.quit(),
-                    Some(Err(error)) => this.message = format!("Could not restart Maple: {error}"),
-                    None => {}
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-}
+struct StartupError(String);
 
 impl Render for StartupError {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
@@ -1004,23 +422,7 @@ impl Render for StartupError {
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
             .child(div().text_lg().child("Maple could not start"))
-            .child(self.message.clone())
-            .when(
-                self.message.contains("Incompatible Maple host or profile"),
-                |view| {
-                    view.child(
-                        ui::widgets::secondary_button("stop-incompatible-host")
-                            .child(if self.stopping {
-                                "Stopping…"
-                            } else {
-                                "Stop existing host and reopen"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
-                            ),
-                    )
-                },
-            )
+            .child(self.0.clone())
             .child(
                 div()
                     .id("close-startup-error")
@@ -1038,7 +440,7 @@ impl Render for StartupError {
 fn show_startup_error(error: String) {
     gpui_platform::application().run(move |cx| {
         cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
-        cx.on_action(|_: &QuitApp, cx| quit_app(cx));
+        cx.on_action(|_: &QuitApp, cx| cx.quit());
         ui::menus::install(cx);
         let bounds = Bounds::centered(None, size(px(560.), px(260.)), cx);
         let result = cx.open_window(
@@ -1056,7 +458,7 @@ fn show_startup_error(error: String) {
                     cx.quit();
                     true
                 });
-                cx.new(|_| StartupError::new(error))
+                cx.new(|_| StartupError(error))
             },
         );
         if let Err(error) = result {
@@ -1102,7 +504,6 @@ pub fn run() {
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
             cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
-            cx.set_quit_mode(gpui::QuitMode::Explicit);
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
             if let Err(error) = cx.text_system().add_fonts(
                 crate::assets::FONTS
@@ -1113,7 +514,7 @@ pub fn run() {
                 log::warn!("failed to register bundled fonts: {error}");
             }
             ui::spell::preload();
-            cx.on_action(|_: &QuitApp, cx| quit_app(cx));
+            cx.on_action(|_: &QuitApp, cx| cx.quit());
             #[cfg(target_os = "macos")]
             {
                 cx.on_action(|_: &Hide, cx| cx.hide());
@@ -1136,36 +537,14 @@ pub fn run() {
             cx.on_system_notification_response(|response, cx| {
                 cx.activate(true);
                 let session_id = response.tag.strip_prefix("task:").map(str::to_owned);
-                let remote_task = response
-                    .tag
-                    .strip_prefix("remote-task:")
-                    .and_then(|tag| tag.split_once(':'))
-                    .map(|(host, task)| (host.to_owned(), task.to_owned()));
                 for window in cx.windows() {
                     window
                         .update(cx, |root, window, cx| {
                             window.activate_window();
-                            if let Ok(app) = root.downcast::<MapleApp>() {
-                                app.update(cx, |app, cx| {
-                                    if let Some((host, task)) = &remote_task {
-                                        app.navigate(
-                                            Navigate {
-                                                computer: Some(host.clone()),
-                                                destination: Destination::Task(task.clone()),
-                                            },
-                                            cx,
-                                        );
-                                    } else if let Some(task) = &session_id {
-                                        app.navigate(
-                                            Navigate {
-                                                computer: None,
-                                                destination: Destination::Task(task.clone()),
-                                            },
-                                            cx,
-                                        );
-                                    }
-                                    cx.notify();
-                                });
+                            if let (Some(session_id), Ok(app)) =
+                                (session_id.as_deref(), root.downcast::<MapleApp>())
+                            {
+                                app.update(cx, |app, cx| app.open_task(session_id, cx));
                             }
                         })
                         .ok();
@@ -1184,47 +563,15 @@ pub fn run() {
             } else {
                 WindowBounds::Windowed(bounds)
             };
-            let remote_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            cx.set_global(DesktopLifecycle {
-                backend: backend.clone(),
-                remote_enabled: remote_enabled.clone(),
-                can_background: false,
-                closing: Default::default(),
-                quit_stop_attempted: Default::default(),
-            });
-            let quit_remote_enabled = remote_enabled.clone();
             let quit_backend = backend.clone();
-            cx.on_app_quit(move |cx| {
-                let stop_attempted = cx
-                    .try_global::<DesktopLifecycle>()
-                    .is_some_and(|state| state.quit_stop_attempted.get());
+            cx.on_app_quit(move |_cx| {
                 let backend = quit_backend.clone();
-                let remote_enabled = quit_remote_enabled.clone();
                 async move {
                     persist_window_state();
-                    if stop_attempted {
-                        return;
-                    }
-                    if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
-                        let api = backend.api_url().to_owned();
-                        let _ = backend
-                            .spawn(async move { crate::host::request_stop(&api).await })
-                            .await;
-                    } else {
-                        let _ = backend.detach().await;
-                    }
+                    let _ = backend.detach().await;
                 }
             })
             .detach();
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            let (tray, tray_events) = match crate::tray::StatusIcon::new() {
-                Ok((tray, events)) => (Some(tray), Some(events)),
-                Err(error) => {
-                    log::warn!("{error}");
-                    (None, None)
-                }
-            };
-            let root_enabled = remote_enabled.clone();
             let root_backend = backend.clone();
             let root_settings = startup_settings.clone();
             let window = cx
@@ -1234,16 +581,6 @@ pub fn run() {
                         screen: Screen::Restoring,
                         user_id: None,
                         parked_chat: None,
-                        local_chat: None,
-                        selected_host: None,
-                        remote_computers: Default::default(),
-                        next_connection_attempt: 0,
-                        requested_navigation: None,
-                        computers_sync_pending: false,
-                        remote_enabled: root_enabled,
-                        #[cfg(any(target_os = "linux", target_os = "windows"))]
-                        tray,
-                        remote_bridges: std::cell::RefCell::new(Vec::new()),
                         settings: root_settings,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
@@ -1306,17 +643,14 @@ pub fn run() {
                 .detach();
             }
             let root = window
-                .update(cx, |app, window, cx| {
+                .update(cx, |_, window, cx| {
                     // The only window: closing it from the window manager
                     // ends the app the same way the title bar button does.
-                    #[cfg(target_os = "macos")]
-                    let can_background = {
-                        let _ = app;
+                    window.on_window_should_close(cx, |_window, cx| {
+                        persist_window_state();
+                        cx.quit();
                         true
-                    };
-                    #[cfg(any(target_os = "linux", target_os = "windows"))]
-                    let can_background = app.tray.is_some();
-                    install_close_behavior(window, cx, remote_enabled.clone(), can_background);
+                    });
                     // A system theme change must reach every view.
                     window
                         .observe_window_appearance(|_window, cx| cx.refresh_windows())
@@ -1324,76 +658,6 @@ pub fn run() {
                     cx.entity()
                 })
                 .expect("root entity");
-
-            // Local status is cheap and does not contact the enrollment
-            // service. This also notices changes made through the CLI.
-            let status_backend = backend.clone();
-            let status_root = root.clone();
-            cx.spawn(async move |cx| {
-                loop {
-                    let account = status_root.update(cx, |app, _| app.user_id.clone());
-                    let backend = status_backend.clone();
-                    let task = status_backend.spawn(async move {
-                        backend
-                            .remote_setting::<crate::remote::manager::Status>("remote_status", ())
-                            .await
-                    });
-                    if let Ok(Ok(status)) = task.await {
-                        status_root.update(cx, |app, cx| {
-                            if app.user_id == account && account.is_some() {
-                                if let Screen::Settings(settings) = &app.screen {
-                                    settings.update(cx, |settings, cx| {
-                                        settings.update_remote_status(status.clone(), cx)
-                                    });
-                                }
-                                app.update_computers(status, cx);
-                            }
-                        });
-                    }
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(5))
-                        .await;
-                }
-            })
-            .detach();
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            if let Some(mut events) = tray_events {
-                let tray_root = root.clone();
-                let enabled = remote_enabled.clone();
-                cx.spawn(async move |cx| {
-                    while let Some(action) = events.recv().await {
-                        match action {
-                            crate::tray::Action::Quit => {
-                                cx.update(quit_app);
-                            }
-                            crate::tray::Action::Open => {
-                                cx.update(|cx| {
-                                    if cx.windows().is_empty() {
-                                        let root = tray_root.clone();
-                                        let enabled = enabled.clone();
-                                        let bounds =
-                                            Bounds::centered(None, size(px(1280.), px(860.)), cx);
-                                        let _ = cx.open_window(
-                                            main_window_options(WindowBounds::Windowed(bounds)),
-                                            move |window, cx| {
-                                                install_close_behavior(window, cx, enabled, true);
-                                                root
-                                            },
-                                        );
-                                    } else {
-                                        for window in cx.windows() {
-                                            let _ = window.update(cx, |_, window, _| {
-                                                window.activate_window()
-                                            });
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
-                })
-                .detach();
-            }
 
             // The event pump runs once for the whole process and routes events to
             // whichever screen is active. It exits when the root entity is gone.
@@ -1426,56 +690,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn computer_connection_retries_are_independent_and_not_started_twice() {
-        let now = std::time::Instant::now();
-        let mut computer = super::RemoteComputer {
-            name: "Office".into(),
-            grant: [0; 16],
-            chat: None,
-            attempt: super::ConnectionAttempt::Idle,
-        };
-        assert!(computer.should_connect(now));
-        computer.attempt = super::ConnectionAttempt::Connecting(1);
-        assert!(!computer.should_connect(now));
-        computer.attempt = super::ConnectionAttempt::Failed {
-            message: "Offline".into(),
-            retry_at: now + std::time::Duration::from_secs(30),
-        };
-        assert!(!computer.should_connect(now));
-        assert!(computer.should_connect(now + std::time::Duration::from_secs(30)));
-        let other = super::RemoteComputer {
-            name: "Laptop".into(),
-            grant: [1; 16],
-            chat: None,
-            attempt: super::ConnectionAttempt::Idle,
-        };
-        assert!(other.should_connect(now));
-    }
-
     use super::*;
 
     fn bounds(width: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(gpui::point(px(0.), px(0.)), size(px(width), px(height)))
-    }
-
-    #[gpui::test]
-    fn failed_tray_quit_opens_a_visible_confirmation_without_an_existing_window(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        assert!(cx.windows().is_empty());
-        cx.update(show_quit_warning);
-        assert_eq!(cx.windows().len(), 1);
-        let mut view = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
-        view.run_until_parked();
-        assert!(view.debug_bounds("quit-maple-anyway").is_some());
-        let keep = view.debug_bounds("keep-maple-open").unwrap();
-        view.simulate_click(keep.center(), gpui::Modifiers::default());
-        view.run_until_parked();
-        assert!(
-            cx.windows().is_empty(),
-            "Keep open dismisses the confirmation, not the app"
-        );
     }
 
     #[test]
