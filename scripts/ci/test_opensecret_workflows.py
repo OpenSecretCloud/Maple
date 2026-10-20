@@ -34,6 +34,7 @@ PR_ROOTFS_CHECK = (
     'python3 scripts/ci/verify_opensecret_eif_rootfs.py "$EIF_MODE" '
     '"$RUNNER_TEMP/eif-candidate-$EIF_MODE" "$GITHUB_SHA"'
 )
+VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
 
 
 @functools.cache
@@ -114,8 +115,10 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                             self.assertIs(step["with"]["persist-credentials"], False)
                             self.assertNotIn("repository", step["with"])
                             self.assertNotIn("ref", step["with"])
-                        if action.startswith("DeterminateSystems/nix-installer-action@"):
-                            self.assertEqual(step["with"]["github-token"], "")
+                        if action.startswith("DeterminateSystems/determinate-nix-action@"):
+                            self.assertEqual(step["with"], {
+                                "source-tag": "v3.23.3", "github-token": "",
+                            })
 
     def test_custom_hosted_runner_is_registered_for_workflow_lint(self):
         result = subprocess.run(
@@ -166,7 +169,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             commands = [step["run"] for step in job["steps"] if "run" in step]
             expected_command = PR_CANDIDATE_BUILD if job_name == "eif-candidate" else (
                                 'bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"')
-            self.assertEqual(commands, [expected_command] + (
+            self.assertEqual(commands, [VERIFY_NIX, expected_command] + (
                 [PR_ROOTFS_CHECK] if job_name == "eif-candidate" else []
             ))
         for value in strings(config["jobs"]):
@@ -179,37 +182,40 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
 
     def test_eif_cache_setup_precedes_build_and_warms_fork_compatible_cache(self):
         jobs = workflow("opensecret-eif.yml")["jobs"]
-        installer_action = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
-        for job_name, cache_action, cache_inputs, determinate in (
+        installer_action = "DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28"
+        for job_name, cache_action, cache_inputs in (
             ("eif", "DeterminateSystems/magic-nix-cache-action@3c034b51a9deec0a09ef1df8b436ac5db50fae94", {
                 "source-revision": "4cc363589df8090801c098cdcde1bdd42562318a",
                 "use-flakehub": "disabled",
                 "use-gha-cache": "enabled",
-            }, False),
+            }),
             ("eif-trusted", "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea", {
                 "diff-store": True,
-            }, True),
+            }),
             ("eif-candidate", "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea", {
                 "diff-store": True,
-            }, True),
+            }),
         ):
             with self.subTest(job=job_name):
                 steps = jobs[job_name]["steps"]
-                self.assertEqual(len(steps), 5 if job_name == "eif-candidate" else 4)
+                self.assertEqual(len(steps), 6 if job_name == "eif-candidate" else 5)
                 self.assertTrue(steps[0]["uses"].startswith("actions/checkout@"))
                 self.assertEqual(steps[1]["uses"], installer_action)
-                self.assertEqual(steps[1]["with"], {"determinate": determinate, "github-token": ""})
-                self.assertEqual(steps[2]["uses"], cache_action)
-                self.assertEqual(steps[2]["with"], cache_inputs)
-                self.assertNotIn("if", steps[2])
-                self.assertNotIn("continue-on-error", steps[2])
+                self.assertEqual(steps[1]["with"], {
+                    "source-tag": "v3.23.3", "github-token": "",
+                })
+                self.assertEqual(steps[2]["run"], VERIFY_NIX)
+                self.assertEqual(steps[3]["uses"], cache_action)
+                self.assertEqual(steps[3]["with"], cache_inputs)
+                self.assertNotIn("if", steps[3])
+                self.assertNotIn("continue-on-error", steps[3])
                 expected_command = PR_CANDIDATE_BUILD if job_name == "eif-candidate" else (
                                     'bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"')
-                self.assertEqual(steps[3]["run"], expected_command)
+                self.assertEqual(steps[4]["run"], expected_command)
                 if job_name == "eif-candidate":
-                    self.assertEqual(steps[4]["run"], PR_ROOTFS_CHECK)
-                    self.assertEqual(steps[4]["shell"], "bash")
-                    self.assertNotIn("continue-on-error", steps[4])
+                    self.assertEqual(steps[5]["run"], PR_ROOTFS_CHECK)
+                    self.assertEqual(steps[5]["shell"], "bash")
+                    self.assertNotIn("continue-on-error", steps[5])
 
     def test_eif_event_gate_matches_the_approval_policy(self):
         # Exercise the actual GitHub boolean expression with a restricted,
@@ -294,12 +300,14 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             self.assertEqual(config["env"][key], "0")
         commands = [step["run"] for step in config["jobs"]["rust"]["steps"] if "run" in step]
         self.assertEqual(commands, [
+            VERIFY_NIX,
             "nix develop --no-update-lock-file '.?submodules=1' -c cargo fmt --all -- --check",
             "nix develop --no-update-lock-file '.?submodules=1' -c cargo clippy --locked --all-targets --all-features -- -D warnings",
             "nix develop --no-update-lock-file '.?submodules=1' -c cargo test --locked --all-features",
         ])
         nix_commands = [step["run"] for step in config["jobs"]["nix"]["steps"] if "run" in step]
         self.assertEqual(nix_commands, [
+            VERIFY_NIX,
             "nix flake check --no-update-lock-file --print-build-logs '.?submodules=1'",
             "nix build --no-link --no-update-lock-file '.?submodules=1#default'",
         ])
@@ -396,7 +404,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
 class EifReleaseWorkflowTests(unittest.TestCase):
     NAME = "opensecret-eif-release.yml"
     CHECKOUT = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
-    INSTALLER = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
+    INSTALLER = "DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28"
 
     def test_release_is_manual_and_never_creates_a_release_or_tag(self):
         config = workflow(self.NAME)
@@ -427,8 +435,10 @@ class EifReleaseWorkflowTests(unittest.TestCase):
                     self.assertEqual(step["with"], {
                         "persist-credentials": False, "submodules": "recursive", "fetch-depth": 0,
                     })
-                if action.startswith("DeterminateSystems/nix-installer-action@"):
-                    self.assertEqual(step["with"]["github-token"], "")
+                if action.startswith("DeterminateSystems/determinate-nix-action@"):
+                    self.assertEqual(step["with"], {
+                        "source-tag": "v3.23.3", "github-token": "",
+                    })
 
     def test_build_job_is_the_trusted_read_only_builder(self):
         job = workflow(self.NAME)["jobs"]["build"]
@@ -442,19 +452,20 @@ class EifReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(set(job["outputs"]), {"approval_needed", "pcr0", "eif_sha256", "artifact"})
         steps = job["steps"]
         self.assertEqual([step.get("uses", "run") for step in steps], [
-            self.CHECKOUT, self.INSTALLER,
+            self.CHECKOUT, self.INSTALLER, "run",
             "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea",
             "run",
             "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
             "actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb",
         ])
-        self.assertEqual(steps[1]["with"], {"determinate": True, "github-token": ""})
-        self.assertEqual(steps[2]["with"], {"diff-store": True})
-        self.assertEqual(steps[3]["run"], 'bash scripts/ci/build_opensecret_eif.sh "$EIF_MODE" eif-artifact')
-        self.assertEqual(steps[4]["with"]["path"], "eif-artifact")
-        self.assertEqual(steps[4]["with"]["if-no-files-found"], "error")
-        self.assertEqual(steps[5]["with"], {"subject-checksums": "eif-artifact/SHA256SUMS"})
-        self.assertNotIn("continue-on-error", steps[5])
+        self.assertEqual(steps[1]["with"], {"source-tag": "v3.23.3", "github-token": ""})
+        self.assertEqual(steps[2]["run"], VERIFY_NIX)
+        self.assertEqual(steps[3]["with"], {"diff-store": True})
+        self.assertEqual(steps[4]["run"], 'bash scripts/ci/build_opensecret_eif.sh "$EIF_MODE" eif-artifact')
+        self.assertEqual(steps[5]["with"]["path"], "eif-artifact")
+        self.assertEqual(steps[5]["with"]["if-no-files-found"], "error")
+        self.assertEqual(steps[6]["with"], {"subject-checksums": "eif-artifact/SHA256SUMS"})
+        self.assertNotIn("continue-on-error", steps[6])
 
     def test_sign_job_is_reviewer_gated_and_exposes_the_key_to_one_step(self):
         job = workflow(self.NAME)["jobs"]["sign"]
@@ -466,25 +477,26 @@ class EifReleaseWorkflowTests(unittest.TestCase):
         self.assertFalse(any("id-token" in value or "flakehub-cache" in value for value in strings(job)))
         steps = job["steps"]
         self.assertEqual([step.get("uses", "run") for step in steps], [
-            self.CHECKOUT, self.INSTALLER,
+            self.CHECKOUT, self.INSTALLER, "run",
             "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
             "bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793",
             "run", "run",
         ])
-        self.assertEqual(steps[1]["with"], {"determinate": False, "github-token": ""})
-        self.assertEqual(steps[2]["with"], {"name": "${{ env.APPROVAL_ARTIFACT }}", "path": "eif-artifact"})
-        bitwarden = steps[3]
+        self.assertEqual(steps[1]["with"], {"source-tag": "v3.23.3", "github-token": ""})
+        self.assertEqual(steps[2]["run"], VERIFY_NIX)
+        self.assertEqual(steps[3]["with"], {"name": "${{ env.APPROVAL_ARTIFACT }}", "path": "eif-artifact"})
+        bitwarden = steps[4]
         self.assertEqual(bitwarden["id"], "signing-key")
         self.assertEqual(bitwarden["with"]["access_token"],
                          "${{ secrets.OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN }}")
         self.assertEqual(bitwarden["with"]["secrets"].strip(),
                          "${{ vars.OPENSECRET_PCR_SIGNING_KEY_ID }} > SIGNING_PRIVATE_KEY")
         self.assertIs(bitwarden["with"]["set_env"], False)
-        sign = steps[4]
+        sign = steps[5]
         self.assertEqual(sign["env"], {"SIGNING_PRIVATE_KEY": "${{ steps.signing-key.outputs.SIGNING_PRIVATE_KEY }}"})
         self.assertEqual(sign["run"], "nix develop --no-update-lock-file './services/opensecret?submodules=1#signing'"
                                       ' -c bash services/opensecret/scripts/ci_sign_pcr.sh "$EIF_MODE" eif-artifact')
-        publish = steps[5]
+        publish = steps[6]
         self.assertEqual(publish["env"], {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"})
         self.assertEqual(publish["run"], 'bash scripts/ci/publish_opensecret_approval.sh "$EIF_MODE" eif-artifact')
         references = [value for value in strings(job) if "outputs.SIGNING_PRIVATE_KEY" in value]
@@ -1056,7 +1068,10 @@ class SdkWorkflowFailurePropagationTests(unittest.TestCase):
     )
 
     def run_checks(self, name, job, failure=""):
-        steps = [step["run"] for step in workflow(name)["jobs"][job]["steps"] if "run" in step]
+        steps = [
+            step["run"] for step in workflow(name)["jobs"][job]["steps"]
+            if "run" in step and step["run"] != VERIFY_NIX
+        ]
         # Execute the actual nested shell body, without letting an outer -e or
         # host login profile accidentally supply the workflow's missing guard.
         self.assertEqual(len(steps), 1)

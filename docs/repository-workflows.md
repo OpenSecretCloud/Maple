@@ -75,6 +75,18 @@ artifacts to TestFlight. Creating a GitHub Release starts release builds and
 downstream publication. Use `$release-maple` only for explicitly requested
 release work, and report the tag and commit before publishing.
 
+## Nix runtime
+
+GitHub Actions jobs use Determinate Nix 3.23.3 through an immutable
+`DeterminateSystems/determinate-nix-action` commit and an explicit
+`source-tag: v3.23.3`. Keep the action revision and source tag synchronized when
+upgrading. `scripts/ci/test_nix_workflows.py` rejects the floating installer,
+an unexpected action revision or tag, installation before checkout, or a missing
+runtime verification step. Each job checks the installed Determinate and
+upstream Nix versions before doing build work. The workflows pass no GitHub
+token to the installer; FlakeHub authentication remains limited to jobs that
+separately receive `id-token: write`.
+
 ## Linux runners
 
 Research desktop/Android compilation and Agent Linux CI/AppImage builds use

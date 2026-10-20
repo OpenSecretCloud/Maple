@@ -19,9 +19,13 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Test Pages artifact and deployment boundaries
         run: nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-linux.pages

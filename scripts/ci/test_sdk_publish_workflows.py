@@ -95,7 +95,7 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
                         self.assertNotIn("submodules", step["with"])
                         if kind != "tests":
                             self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
-                    if action.startswith("DeterminateSystems/nix-installer-action@"):
+                    if action.startswith("DeterminateSystems/determinate-nix-action@"):
                         self.assertEqual(step["with"]["github-token"], "")
 
     def test_publishers_only_upload_validated_same_run_artifacts(self):

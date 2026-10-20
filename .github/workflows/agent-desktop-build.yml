@@ -94,9 +94,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Install pinned Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
@@ -141,9 +145,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Install pinned Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
@@ -193,9 +201,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Install pinned Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
@@ -237,9 +249,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Install pinned Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
       - name: Cache Agent release dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
@@ -312,9 +328,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Install pinned Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
@@ -363,9 +383,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Install pinned Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
         with:
+          source-tag: v3.23.3
           github-token: ""
+
+      - name: Verify pinned Nix runtime
+        run: bash scripts/ci/verify-nix-runtime.sh
       - name: Download exact Agent packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
