@@ -414,3 +414,38 @@ async fn remote_protocol_refusal_ends_recovery_without_replaying_or_reconnecting
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn explicit_stop_survives_a_client_that_leaves_before_the_acknowledgement() {
+    let (_root, endpoint) = endpoint();
+    let mut listener = endpoint.bind().unwrap();
+    let (stop, mut stopped) = mpsc::channel(1);
+    let client = async {
+        let mut client = endpoint.connect().await.unwrap();
+        protocol::write(
+            &mut client,
+            &Hello {
+                version: 0,
+                profile: "older-profile".into(),
+                build: "older-build".into(),
+                mode: ConnectionMode::Stop,
+                remote_host: None,
+            },
+        )
+        .await
+        .unwrap();
+        drop(client);
+    };
+    let server = async {
+        let mut connection = listener.accept().await.unwrap();
+        let _ =
+            accept_scoped_handshake(&mut connection, &endpoint.profile, None, None, Some(&stop))
+                .await;
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(client, server);
+        stopped.recv().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

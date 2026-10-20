@@ -50,6 +50,19 @@ impl Record {
             .map_err(Into::into)
     }
 
+    /// A cleanup decision was made from authenticated ciphertext. Do not delete
+    /// a newer registration installed by another enclave in the meantime.
+    pub fn delete_unchanged(&self, conn: &mut PgConnection) -> Result<(), DBError> {
+        diesel::delete(
+            remote_enrollment_records::table
+                .find((self.user_id, &self.kind, &self.record_id))
+                .filter(remote_enrollment_records::nonce.eq(self.nonce))
+                .filter(remote_enrollment_records::ciphertext.eq(&self.ciphertext)),
+        )
+        .execute(conn)?;
+        Ok(())
+    }
+
     pub fn put(&self, conn: &mut PgConnection, now: i64) -> Result<Self, DBError> {
         conn.transaction(|conn| {
             // Serialize only this account's bounded enrollment writes across

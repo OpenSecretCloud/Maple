@@ -28,6 +28,9 @@ use crate::{
 
 const DEVICE_LEASE: i64 = 900;
 const ADMISSION_LEASE: i64 = 120;
+// Keep recent tombstones across short interruptions. Local device windows still
+// enforce their original deadline and one attempt after service cleanup.
+const WINDOW_RETENTION: i64 = 24 * 60 * 60;
 
 pub(crate) fn router(state: Arc<AppState>) -> Router<()> {
     Router::new()
@@ -197,6 +200,37 @@ fn validate_registration(
     .map_err(|_| ApiError::BadRequest)
 }
 
+fn prune_old_windows(
+    state: &AppState,
+    user: &User,
+    current_endpoint: &str,
+    now: i64,
+) -> Result<(), ApiError> {
+    let deployment = state.app_mode.to_string();
+    for row in state
+        .db
+        .list_remote_enrollment(user.uuid, "window")
+        .map_err(db_error)?
+    {
+        // Never remove the current endpoint's W before save_record compares it.
+        if row.record_id == current_endpoint {
+            continue;
+        }
+        let Ok(window) = binding(user, &deployment, "window", &row.record_id)
+            .open::<RemoteWindow>(&state.enclave_key, &row.ciphertext)
+        else {
+            continue;
+        };
+        if window.expires_at < now.saturating_sub(WINDOW_RETENTION) {
+            state
+                .db
+                .delete_remote_enrollment_unchanged(&row)
+                .map_err(db_error)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn register_inner(
     state: &AppState,
     user: &User,
@@ -205,6 +239,9 @@ pub(crate) fn register_inner(
     validate_registration(state, user, &request)?;
     let registration = request.registration;
     let now = Utc::now().timestamp();
+    if registration.window.is_some() {
+        prune_old_windows(state, user, &registration.endpoint, now)?;
+    }
     let window = registration
         .window
         .map(|window| {

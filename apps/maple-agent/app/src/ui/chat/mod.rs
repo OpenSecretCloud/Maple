@@ -342,6 +342,13 @@ fn draft_mcp_rows(
     rows
 }
 
+struct UnresolvedSend {
+    session: String,
+    text: String,
+    images: Vec<DraftImage>,
+    from_composer: bool,
+}
+
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
@@ -504,6 +511,8 @@ pub struct ChatScreen {
     sidebar_collapsed: bool,
     /// Images staged for the next message.
     draft_images: Vec<DraftImage>,
+    unresolved_sends: HashMap<String, UnresolvedSend>,
+    checking_sends: bool,
     /// Source of `DraftImage::id`.
     draft_counter: u64,
     /// True while the native file dialog is open.
@@ -1132,6 +1141,8 @@ impl ChatScreen {
             trust_prompts: true,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
+            unresolved_sends: HashMap::new(),
+            checking_sends: false,
             draft_counter: 0,
             image_picking: false,
             model_catalog: HashMap::new(),
@@ -2880,6 +2891,7 @@ impl ChatScreen {
         {
             self.start_usage_poller(session_id, cx);
         }
+        self.check_unresolved_sends(cx);
         cx.notify();
     }
 
@@ -4249,6 +4261,19 @@ impl ChatScreen {
         queue_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .unresolved_sends
+            .values()
+            .any(|send| send.session == session_id)
+        {
+            self.notice =
+                Some("Checking the previous send before another message can be sent.".into());
+            self.check_unresolved_sends(cx);
+            cx.notify();
+            return;
+        }
+        let send_id = uuid::Uuid::new_v4().to_string();
+        let outgoing_id = send_id.clone();
         let session_id = session_id.to_string();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -4307,7 +4332,7 @@ impl ChatScreen {
         }
         cx.notify();
         self.call(
-            async move { backend.send_message(&user_id, request).await },
+            async move { backend.send_message_identified(&user_id, request, outgoing_id).await },
             cx,
             move |this, result, cx| match result {
                 Ok(run_id) => {
@@ -4319,13 +4344,21 @@ impl ChatScreen {
                     }
                 }
                 Err(message) => {
+                    if message.starts_with("Send outcome unknown") {
+                        this.unresolved_sends.insert(send_id, UnresolvedSend {
+                            session: session_id, text, images: drafts, from_composer,
+                        });
+                        this.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
+                        this.awaiting_first_token = false;
+                        this.check_unresolved_sends(cx);
+                        return;
+                    }
                     // Show the failure in the transcript and give the draft
                     // back instead of silently dropping it. The composer
                     // belongs to the selected session: a draft from another
                     // task must not land in it.
                     this.push_local_error("Send failed", &message, cx);
                     if from_composer
-                        && !message.starts_with("Send outcome unknown")
                         && this.selected_session.as_deref() == Some(session_id.as_str())
                     {
                         if let Some(composer) = this.composer.clone() {
@@ -4341,6 +4374,85 @@ impl ChatScreen {
                 }
             },
         );
+    }
+
+    fn check_unresolved_sends(&mut self, cx: &mut Context<Self>) {
+        if self.checking_sends || self.unresolved_sends.is_empty() || self.host_recovery.unavailable
+        {
+            return;
+        }
+        self.checking_sends = true;
+        let ids: Vec<_> = self.unresolved_sends.keys().cloned().collect();
+        let backend = self.backend.clone();
+        self.call(
+            async move {
+                let mut results = Vec::new();
+                for id in ids {
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(40),
+                        backend.send_outcome(id.clone()),
+                    )
+                    .await;
+                    results.push((id, result.ok().and_then(Result::ok)));
+                }
+                Ok(results)
+            },
+            cx,
+            |this, result, cx| {
+                this.checking_sends = false;
+                let Ok(results) = result else {
+                    return;
+                };
+                for (id, outcome) in results {
+                    this.apply_send_receipt(&id, outcome, cx);
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn apply_send_receipt(
+        &mut self,
+        id: &str,
+        outcome: Option<crate::host::receipts::Outcome>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::host::receipts::Outcome;
+        match outcome {
+            Some(Outcome::Finished(Ok(_))) => {
+                self.unresolved_sends.remove(id);
+                self.notice = Some("The host received your message. Nothing was resent.".into());
+            }
+            Some(Outcome::Missing | Outcome::Finished(Err(_))) => {
+                let Some(send) = self.unresolved_sends.get(id) else {
+                    return;
+                };
+                // Never overwrite text typed since the uncertain send,
+                // or restore a draft into another task/computer.
+                if !send.from_composer {
+                    self.unresolved_sends.remove(id);
+                    return;
+                }
+                let empty = self
+                    .composer
+                    .as_ref()
+                    .is_some_and(|c| c.read(cx).text_ref().trim().is_empty())
+                    && self.draft_images.is_empty();
+                if self.selected_session.as_deref() == Some(&send.session) && empty {
+                    let send = self.unresolved_sends.remove(id).unwrap();
+                    if let Some(composer) = self.composer.clone() {
+                        composer.update(cx, |input, cx| input.set_text(&send.text, cx));
+                    }
+                    self.draft_images = send.images;
+                    self.notice = Some("The host has no successful receipt. Your draft is restored; check the task before sending again.".into());
+                } else {
+                    self.notice = Some("An uncertain draft is retained. Open its task with an empty composer to recover it before sending again.".into());
+                }
+            }
+            _ => {
+                self.notice = Some("Send outcome is still unknown. Your message and images are retained; Maple will check again after reconnecting.".into());
+            }
+        }
     }
 
     fn push_local_error(&mut self, title: &str, message: &str, cx: &mut Context<Self>) {
@@ -4976,6 +5088,7 @@ impl ChatScreen {
                         this.handle_service_events(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error = None;
+                        this.check_unresolved_sends(cx);
                         cx.emit(NavigationChanged);
                         if !this.navigation_only {
                             this.refresh_models(cx);

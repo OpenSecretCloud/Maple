@@ -266,13 +266,22 @@ impl RemoteScreen {
                 } else {
                     Vec::new()
                 };
-                Ok((status, devices))
+                let window: Option<PairingWindow> =
+                    backend.remote_setting("remote_pairing_window", ()).await?;
+                Ok((status, devices, window))
             },
             cx,
             move |screen, result, cx| {
                 screen.busy = None;
                 match result {
-                    Ok((status, devices)) => {
+                    Ok((status, devices, window)) => {
+                        screen.clear_local_code();
+                        if let Some(window) = window {
+                            screen.local_code = Some((
+                                window.code,
+                                Instant::now() + Duration::from_secs(window.expires_in),
+                            ));
+                        }
                         cx.emit(ComputersChanged(status.clone()));
                         screen.update_status(status, cx);
                         if discover {
@@ -382,6 +391,10 @@ impl Render for RemoteScreen {
             .when_some(self.notice.as_ref(), |view, notice| {
                 view.child(widgets::card_row().child(notice.clone()))
             })
+            .when_some(
+                self.status.as_ref().and_then(|s| s.error.as_ref()),
+                |view, error| view.child(widgets::card_row().child(error.clone())),
+            )
             .child(self.render_this_computer(cx))
             .child(self.render_discovery(cx))
             .when(
@@ -400,6 +413,7 @@ impl RemoteScreen {
                     .child(div().text_lg().child("This computer"))
                     .child(div().text_sm().text_color(gpui::rgb(theme::text_secondary()))
                         .child(if self.status.is_none() { "Loading remote access status…" }
+                            else if enabled && !self.status.as_ref().is_some_and(|s| s.ready) { "Starting remote access. Waiting for a connection…" }
                             else if enabled { "Remote access is on. Only paired computers can connect." }
                             else { "Remote access is off. Other computers cannot connect here." })))
                 .when(self.status.is_some(), |row| row.child(widgets::secondary_button("remote-enable")

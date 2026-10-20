@@ -1,0 +1,10 @@
+{
+  "hello": {"version":3,"minimum_version":3,"account":"account","project":"project","deployment":"local","channel":"unpackaged","mode":{"kind":"control"}},
+  "pair": {"version":3,"minimum_version":3,"account":"account","project":"project","deployment":"local","channel":"unpackaged","mode":{"kind":"pair","window":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"admission":"opaque-admission"}},
+  "header": {"id":7,"method":"send_message","send_id":"original-send"},
+  "command": {"id":8,"method":"send_outcome","send_id":null,"params":"original-send"},
+  "refusal": {"Err":{"terminal":false,"message":"Pairing window is closed"}},
+  "image": {"Response":{"id":9,"result":{"Ok":"AP8="}}},
+  "failure": {"Response":{"id":10,"result":{"Err":"Remote reply is too large to transfer"}}},
+  "event": {"Event":"HostReconnected"}
+}

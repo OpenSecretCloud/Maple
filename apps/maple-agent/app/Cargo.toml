@@ -26,6 +26,7 @@ desktop = [
     "dep:spellbook",
     "dep:wayland-client",
     "dep:tray-icon",
+    "dep:zbus",
 ]
 # `maple-agent acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
@@ -84,6 +85,7 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 # `ui::decorations`. gpui cannot answer that question.
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = { version = "0.31", optional = true }
+zbus = { version = "=5.19.0", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tray-icon = { version = "=0.26.1", default-features = false, features = ["ksni"], optional = true }

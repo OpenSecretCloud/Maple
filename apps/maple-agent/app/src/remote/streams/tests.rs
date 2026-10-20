@@ -259,3 +259,54 @@ async fn urgent_body_is_bounded_and_reply_identity_is_checked() {
     tokio::join!(a.close(), b.close());
     result.unwrap();
 }
+
+#[tokio::test]
+async fn large_image_and_oversized_reply_do_not_break_other_requests() {
+    let (a, b, client, server) = endpoints().await;
+    let exercise = async {
+        let bytes = vec![255_u8; 10 * 1024 * 1024];
+        let image = encode_result(
+            Method::ReadImageAttachment,
+            Ok(serde_json::to_value(&bytes).unwrap()),
+        )
+        .unwrap();
+        assert!(wire::encode(&image, wire::MAX_FRAME).is_ok());
+        let cases = [
+            (1, Method::ReadImageAttachment, image),
+            (2, Method::ListSessions, json!("x".repeat(wire::MAX_FRAME))),
+            (3, Method::CancelRun, json!("stopped")),
+        ];
+        for (id, method, value) in cases {
+            let send = call(&client, command(id, method));
+            let serve = async {
+                let capacity = Capacity::new();
+                let (header, mut tx, mut rx, _slot) = receive(&server, &capacity).await;
+                header.body(&mut rx).await.unwrap();
+                reply(
+                    &mut tx,
+                    &Message::Response {
+                        id,
+                        result: Ok(value),
+                    },
+                )
+                .await
+                .unwrap();
+            };
+            let (reply, ()) = tokio::join!(send, serve);
+            let Message::Response { result, .. } = decode_result(method, reply.unwrap()) else {
+                panic!("request closed the connection")
+            };
+            match id {
+                1 => assert_eq!(
+                    serde_json::from_value::<Vec<u8>>(result.unwrap()).unwrap(),
+                    bytes
+                ),
+                2 => assert!(result.unwrap_err().contains("too large")),
+                _ => assert_eq!(result.unwrap(), json!("stopped")),
+            }
+        }
+    };
+    let result = tokio::time::timeout(Duration::from_secs(30), exercise).await;
+    tokio::join!(a.close(), b.close());
+    result.unwrap();
+}

@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 
@@ -29,16 +29,78 @@ pub enum Mode {
     Pair { window: [u8; 16], admission: String },
 }
 
+// Refusals are readable at every handshake stage, including before the peer's
+// full Hello can be decoded. Only loss of authority/compatibility ends recovery.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Refusal {
+    pub terminal: bool,
+    pub message: String,
+}
+impl Refusal {
+    pub fn temporary(message: impl Into<String>) -> Self {
+        Self {
+            terminal: false,
+            message: message.into(),
+        }
+    }
+    pub fn terminal(message: impl Into<String>) -> Self {
+        Self {
+            terminal: true,
+            message: message.into(),
+        }
+    }
+    pub fn into_error(self) -> String {
+        if self.terminal {
+            format!("Remote access ended: {}", self.message)
+        } else {
+            self.message
+        }
+    }
+}
+impl From<String> for Refusal {
+    fn from(message: String) -> Self {
+        Self::temporary(message)
+    }
+}
+impl From<&str> for Refusal {
+    fn from(message: &str) -> Self {
+        Self::temporary(message)
+    }
+}
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+pub async fn read_hello(reader: &mut (impl AsyncRead + Unpin)) -> Result<Hello, Refusal> {
+    let value: serde_json::Value = read(reader, MAX_PREFACE)
+        .await
+        .map_err(|error| Refusal::terminal(error.to_string()))?;
+    #[derive(Deserialize)]
+    struct Version {
+        version: u32,
+        minimum_version: u32,
+    }
+    let version: Version = serde_json::from_value(value.clone())
+        .map_err(|_| Refusal::terminal(Error::InvalidFrame.to_string()))?;
+    check_version(version.version, version.minimum_version)
+        .map_err(|error| Refusal::terminal(error.to_string()))?;
+    serde_json::from_value(value).map_err(|_| Refusal::terminal(Error::InvalidFrame.to_string()))
+}
+
+fn check_version(version: u32, minimum: u32) -> Result<(), Error> {
+    if minimum == 0 || minimum > version || minimum > VERSION || version < VERSION {
+        Err(Error::Incompatible)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 impl Hello {
     pub fn check_version(&self) -> Result<(), Error> {
-        if self.minimum_version == 0
-            || self.minimum_version > self.version
-            || self.minimum_version > VERSION
-            || self.version < VERSION
-        {
-            return Err(Error::Incompatible);
-        }
-        Ok(())
+        check_version(self.version, self.minimum_version)
     }
 }
 
@@ -128,12 +190,14 @@ pub struct Command {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Disconnected,
+    TimedOut,
     InvalidFrame,
     Incompatible,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::TimedOut => "Remote transfer stopped making progress",
             Self::Disconnected => "Remote computer disconnected",
             Self::InvalidFrame => "The remote computer sent an invalid message. Update both computers before reconnecting.",
             Self::Incompatible => "These Maple remote protocol versions are incompatible. Update both computers.",
@@ -188,6 +252,74 @@ pub async fn write_encoded(
         .await
         .map_err(|_| Error::Disconnected)?;
     writer.flush().await.map_err(|_| Error::Disconnected)
+}
+
+/// Per-progress deadline, not a minimum network throughput requirement. The
+/// first reply byte may wait for backend work; once a frame starts, bounded
+/// buffers and an idle deadline prevent a stalled transfer retaining capacity.
+pub async fn read_progress<T: DeserializeOwned>(
+    reader: &mut (impl AsyncRead + Unpin),
+    limit: usize,
+    idle: std::time::Duration,
+    wait_for_reply: bool,
+) -> Result<T, Error> {
+    let mut prefix = [0; 4];
+    if wait_for_reply {
+        reader
+            .read_exact(&mut prefix[..1])
+            .await
+            .map_err(|_| Error::Disconnected)?;
+        read_progress_bytes(reader, &mut prefix[1..], idle).await?;
+    } else {
+        read_progress_bytes(reader, &mut prefix, idle).await?;
+    }
+    let size = u32::from_be_bytes(prefix) as usize;
+    if size == 0 || size > limit.min(MAX_FRAME) {
+        return Err(Error::InvalidFrame);
+    }
+    let mut bytes = vec![0; size];
+    read_progress_bytes(reader, &mut bytes, idle).await?;
+    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidFrame)
+}
+async fn read_progress_bytes(
+    reader: &mut (impl AsyncRead + Unpin),
+    mut bytes: &mut [u8],
+    idle: std::time::Duration,
+) -> Result<(), Error> {
+    while !bytes.is_empty() {
+        let count = tokio::time::timeout(idle, reader.read(bytes))
+            .await
+            .map_err(|_| Error::TimedOut)?
+            .map_err(|_| Error::Disconnected)?;
+        if count == 0 {
+            return Err(Error::Disconnected);
+        }
+        bytes = &mut bytes[count..];
+    }
+    Ok(())
+}
+pub async fn write_progress(
+    writer: &mut (impl AsyncWrite + Unpin),
+    bytes: &[u8],
+    idle: std::time::Duration,
+) -> Result<(), Error> {
+    let prefix = (bytes.len() as u32).to_be_bytes();
+    for mut chunk in std::iter::once(prefix.as_slice()).chain(bytes.chunks(64 * 1024)) {
+        while !chunk.is_empty() {
+            let count = tokio::time::timeout(idle, writer.write(chunk))
+                .await
+                .map_err(|_| Error::TimedOut)?
+                .map_err(|_| Error::Disconnected)?;
+            if count == 0 {
+                return Err(Error::Disconnected);
+            }
+            chunk = &chunk[count..];
+        }
+    }
+    tokio::time::timeout(idle, writer.flush())
+        .await
+        .map_err(|_| Error::TimedOut)?
+        .map_err(|_| Error::Disconnected)
 }
 
 #[cfg(test)]
@@ -269,5 +401,74 @@ mod tests {
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
         hello.version = VERSION;
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
+    }
+    #[tokio::test]
+    async fn future_and_malformed_hello_receive_explicit_terminal_refusals() {
+        for message in [
+            serde_json::json!({"version": VERSION + 1, "minimum_version": VERSION + 1, "future_field": true}),
+            serde_json::json!({"version": VERSION, "minimum_version": VERSION, "future_field": true}),
+        ] {
+            let (mut tx, mut rx) = tokio::io::duplex(4096);
+            write(&mut tx, &message, MAX_PREFACE).await.unwrap();
+            let refusal = match read_hello(&mut rx).await {
+                Err(r) => r,
+                Ok(_) => panic!("accepted malformed hello"),
+            };
+            assert!(refusal.terminal);
+            assert!(refusal.message.contains("Update both computers"));
+            // All pairing/confirmation stages can decode the same refusal.
+            let encoded = serde_json::to_value(Err::<(), _>(refusal)).unwrap();
+            let proof: Result<(Vec<u8>, Vec<u8>), Refusal> =
+                serde_json::from_value(encoded.clone()).unwrap();
+            let grant: Result<[u8; 16], Refusal> = serde_json::from_value(encoded).unwrap();
+            assert_eq!(proof.unwrap_err().message, grant.unwrap_err().message);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transfer_deadline_measures_inactivity_not_total_duration() {
+        use std::time::Duration;
+        let idle = Duration::from_secs(10);
+        let (mut tx, mut rx) = tokio::io::duplex(16);
+        let sender = tokio::spawn(async move {
+            let bytes = b"\"slow\"";
+            tx.write_u32(bytes.len() as u32).await.unwrap();
+            for byte in bytes {
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                tx.write_all(&[*byte]).await.unwrap();
+            }
+        });
+        let start = tokio::time::Instant::now();
+        assert_eq!(
+            read_progress::<String>(&mut rx, 64, idle, false)
+                .await
+                .unwrap(),
+            "slow"
+        );
+        assert!(start.elapsed() > idle);
+        sender.await.unwrap();
+        let (_tx, mut rx) = tokio::io::duplex(16);
+        assert_eq!(
+            read_progress::<String>(&mut rx, 64, idle, false).await,
+            Err(Error::TimedOut)
+        );
+    }
+    #[test]
+    fn shipped_wire_examples_are_stable() {
+        let examples: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v3.json")).unwrap();
+        fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
+            let decoded: T = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
+        }
+        check::<Hello>(&examples["hello"]);
+        check::<Hello>(&examples["pair"]);
+        check::<super::super::streams::Header>(&examples["header"]);
+        check::<Command>(&examples["command"]);
+        check::<Result<(), Refusal>>(&examples["refusal"]);
+        for key in ["image", "failure", "event"] {
+            check::<crate::host::protocol::Message>(&examples[key]);
+        }
+        assert_eq!(examples["hello"]["version"], VERSION);
     }
 }

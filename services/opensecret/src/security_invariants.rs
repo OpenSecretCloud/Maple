@@ -1440,8 +1440,9 @@ fn collect_schema_tables_with_encrypted_columns(schema_source: &str) -> BTreeSet
             continue;
         }
 
-        let is_encrypted_column =
-            trimmed.contains("_enc ->") || trimmed.contains("encrypted_code ->");
+        let is_encrypted_column = trimmed.contains("_enc ->")
+            || trimmed.contains("encrypted_code ->")
+            || trimmed.contains("ciphertext ->");
         if is_encrypted_column {
             let table_name = current_table.as_ref().unwrap_or_else(|| {
                 panic!("encrypted column `{trimmed}` should appear inside a table declaration")

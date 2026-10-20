@@ -126,6 +126,16 @@ impl RemoteClient {
         method: &str,
         params: impl Serialize,
     ) -> Result<R, String> {
+        let send_id = (method == "send_message").then(|| uuid::Uuid::new_v4().to_string());
+        self.call_identified(method, params, send_id).await
+    }
+
+    pub async fn call_identified<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+        send_id: Option<String>,
+    ) -> Result<R, String> {
         let params = serde_json::to_value(params)
             .map_err(|_| "Could not encode host request".to_string())?;
         let generation = self.state.generation.load(Ordering::Relaxed);
@@ -150,7 +160,6 @@ impl RemoteClient {
             state: &self.state,
             id,
         };
-        let send_id = (method == "send_message").then(|| uuid::Uuid::new_v4().to_string());
         let sent = self
             .requests
             .send(Request {
@@ -164,6 +173,11 @@ impl RemoteClient {
             self.state.disconnect();
         }
         let result = match (sent, reply.await) {
+            (Ok(()), Ok(Err(error)))
+                if error.starts_with("Send outcome unknown") && send_id.is_some() =>
+            {
+                recover_send(&self.endpoint, send_id.as_deref().unwrap()).await?
+            }
             (Ok(()), Ok(result)) => result?,
             (_, _) => match send_id {
                 Some(id) => recover_send(&self.endpoint, &id).await?,
@@ -604,6 +618,7 @@ async fn serve_client(
         &endpoint.profile,
         backend.saved_user_id(),
         Some(&remote),
+        Some(&stop),
     )
     .await?;
     if let Some(link) = link {
@@ -611,7 +626,6 @@ async fn serve_client(
     }
     match mode {
         ConnectionMode::Stop => {
-            let _ = stop.send(()).await;
             return std::future::pending().await;
         }
         ConnectionMode::Acp => {
@@ -696,7 +710,7 @@ async fn accept_handshake(
     profile: &str,
     user_id: Option<String>,
 ) -> Result<ConnectionMode, String> {
-    accept_scoped_handshake(connection, profile, user_id, None)
+    accept_scoped_handshake(connection, profile, user_id, None, None)
         .await
         .map(|(mode, _)| mode)
 }
@@ -706,6 +720,7 @@ async fn accept_scoped_handshake(
     profile: &str,
     user_id: Option<String>,
     remote: Option<&Arc<crate::remote::manager::Manager>>,
+    stop: Option<&mpsc::Sender<()>>,
 ) -> Result<(ConnectionMode, Option<crate::remote::control::Link>), String> {
     let hello = tokio::time::timeout(START_TIMEOUT, protocol::read::<Hello>(connection))
         .await
@@ -750,7 +765,10 @@ async fn accept_scoped_handshake(
         },
         None => None,
     };
-    protocol::write(
+    // Always commit an authorized Stop, including when the caller leaves before
+    // its acknowledgement. Attempt the small reply first so shutdown cannot
+    // abort this task before an attached caller receives it.
+    let welcome = protocol::write(
         connection,
         &Ok::<_, String>(Welcome {
             version: protocol::VERSION,
@@ -759,8 +777,24 @@ async fn accept_scoped_handshake(
             user_id,
         }),
     )
-    .await?;
+    .await;
+    if hello.mode == ConnectionMode::Stop
+        && let Some(stop) = stop
+    {
+        stop.send(())
+            .await
+            .map_err(|_| "Maple host is already stopping")?;
+    }
+    welcome?;
     Ok((hello.mode, link))
+}
+
+#[cfg(feature = "desktop")]
+pub async fn request_stop(api_url: &str) -> Result<(), String> {
+    let endpoint = ipc::Endpoint::new(api_url)?;
+    connect(&endpoint, ConnectionMode::Stop, false)
+        .await
+        .map(|_| ())
 }
 
 pub fn stop(api_url: &str) -> Result<(), String> {
@@ -955,7 +989,14 @@ async fn recover_send(endpoint: &ipc::Endpoint, id: &str) -> Result<serde_json::
             "Send outcome unknown ({id}). Reload this task before sending again."
         ))
     };
-    match tokio::time::timeout(Duration::from_secs(5), recovery).await {
+    // Remote receipt lookup includes enrollment/dial/handshake. Keep local
+    // recovery quick without squeezing the entire remote setup into five seconds.
+    let budget = if endpoint.remote_host.is_some() {
+        Duration::from_secs(40)
+    } else {
+        Duration::from_secs(5)
+    };
+    match tokio::time::timeout(budget, recovery).await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(error)) if error.starts_with("The host did not admit") => Err(error),
         _ => Err(format!(

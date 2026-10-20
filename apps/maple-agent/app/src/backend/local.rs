@@ -2690,6 +2690,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disabling_remote_does_not_wait_for_initializing_credentials() {
+        use std::{future::Future, task::Poll};
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
+        backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token",
+        ));
+        let (events, _) = tokio::sync::broadcast::channel(8);
+        let receipts = Arc::new(
+            crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
+        );
+        let remote = crate::remote::manager::Manager::new(backend.clone(), events, receipts);
+        let request = |method: &str, params| crate::host::protocol::Request {
+            id: 1,
+            method: method.into(),
+            params,
+            send_id: None,
+        };
+        remote
+            .dispatch(request("remote_enable", serde_json::json!([true])))
+            .await
+            .unwrap();
+        let validation = backend.restore_lock.lock().await;
+        let active = remote.active();
+        tokio::pin!(active);
+        std::future::poll_fn(|cx| {
+            assert!(active.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            remote.dispatch(request("remote_enable", serde_json::json!([false]))),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!remote.stays_running());
+        let status = remote
+            .dispatch(request("remote_status", serde_json::json!([])))
+            .await
+            .unwrap();
+        assert_eq!(status["enabled"], false);
+        assert_eq!(status["ready"], false);
+        drop(validation);
+        // Invalid fixture credentials cannot create a node after the cancellation.
+        assert!(active.await.is_err());
+        remote.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn credential_validation_and_acp_attachment_do_not_block_local_operations() {
         use std::{future::Future, task::Poll};
 

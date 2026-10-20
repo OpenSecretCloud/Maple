@@ -32,6 +32,8 @@ pub struct Manager {
     receipts: Arc<Receipts>,
     resident: AtomicBool,
     generation: AtomicU64,
+    resuming: AtomicBool,
+    last_error: Mutex<Option<String>>,
 }
 
 pub struct Node {
@@ -47,6 +49,7 @@ pub struct Node {
     pub(super) deployment: String,
     window: AsyncMutex<Option<pairing::Window>>,
     pairing_generation: AtomicU64,
+    registration: AsyncMutex<()>,
     pub(super) stopped: CancellationToken,
     pub(super) revoked: broadcast::Sender<EndpointId>,
     // Remote connections never occupy the local IPC/control capacity.
@@ -58,6 +61,8 @@ pub struct Node {
 pub struct Status {
     pub enabled: bool,
     pub endpoint: Option<String>,
+    pub ready: bool,
+    pub error: Option<String>,
     pub peers: std::collections::BTreeMap<String, Peer>,
 }
 
@@ -82,6 +87,8 @@ impl Manager {
             receipts,
             resident: AtomicBool::new(false),
             generation: AtomicU64::new(0),
+            resuming: AtomicBool::new(false),
+            last_error: Mutex::new(None),
         })
     }
     pub fn stays_running(&self) -> bool {
@@ -89,9 +96,13 @@ impl Manager {
     }
 
     pub async fn shutdown(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        self.resident.store(false, Ordering::Release);
-        if let Some(node) = self.node.lock().await.take() {
+        let node = {
+            let mut current = self.node.lock().await;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            self.resident.store(false, Ordering::Release);
+            current.take()
+        };
+        if let Some(node) = node {
             node.stopped.cancel();
             node.endpoint.close().await;
         }
@@ -108,24 +119,56 @@ impl Manager {
     }
 
     pub async fn restore(self: &Arc<Self>) {
-        let Some(account) = self.backend.saved_user_id() else {
+        let current = self.node.lock().await;
+        let enabled = self.backend.saved_user_id().is_some_and(|account| {
+            Store::exists(
+                &self.backend.remote_storage_root(),
+                self.backend.remote_api_url(),
+                &crate::backend::local::configured_client_id().to_string(),
+                crate::profile::PROFILE,
+                &account,
+            ) && self.store(&account).is_ok_and(|s| s.enabled())
+        });
+        if !enabled {
             return;
-        };
-        // Reading existing local settings does not start an endpoint or validate
-        // credentials on the UI thread. Disabled profiles stay entirely offline.
-        if Store::exists(
-            &self.backend.remote_storage_root(),
-            self.backend.remote_api_url(),
-            &crate::backend::local::configured_client_id().to_string(),
-            crate::profile::PROFILE,
-            &account,
-        ) && self.store(&account).is_ok_and(|store| store.enabled())
-        {
-            self.resident.store(true, Ordering::Release);
-            if let Err(error) = self.active().await {
-                log::warn!("Remote access could not resume: {error}");
-            }
         }
+        self.resident.store(true, Ordering::Release);
+        drop(current);
+        // Invalid configuration is actionable, not a network outage to retry.
+        if let Err(error) = configuration() {
+            *self.last_error.lock().unwrap() = Some(error);
+            return;
+        }
+        if self.resuming.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                let Some(manager) = weak.upgrade() else {
+                    return;
+                };
+                if !manager.stays_running() {
+                    manager.resuming.store(false, Ordering::Release);
+                    return;
+                }
+                match manager.active().await {
+                    Ok(_) => {
+                        *manager.last_error.lock().unwrap() = None;
+                        manager.resuming.store(false, Ordering::Release);
+                        return;
+                    }
+                    Err(error) if manager.stays_running() => {
+                        *manager.last_error.lock().unwrap() = Some(error)
+                    }
+                    Err(_) => {}
+                }
+                drop(manager);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+            }
+        });
     }
 
     pub async fn active(self: &Arc<Self>) -> Result<Arc<Node>, String> {
@@ -134,15 +177,20 @@ impl Manager {
             .saved_user_id()
             .ok_or("Sign in before using remote access")?;
         let _initializing = self.initializing.lock().await;
-        let generation = self.generation.load(Ordering::SeqCst);
-        let current = self.node.lock().await.clone();
+        let (generation, current) = {
+            let current = self.node.lock().await;
+            (self.generation.load(Ordering::SeqCst), current.clone())
+        };
         if let Some(node) = current {
             if node.account == account && node.valid().await {
                 return Ok(node);
             }
             node.stopped.cancel();
             node.endpoint.close().await;
-            self.node.lock().await.take();
+            let mut current = self.node.lock().await;
+            if current.as_ref().is_some_and(|n| Arc::ptr_eq(n, &node)) {
+                current.take();
+            }
         }
         let session = tokio::time::timeout(
             Duration::from_secs(15),
@@ -187,8 +235,8 @@ impl Manager {
             endpoint.close().await;
             return Err("The signed-in account changed".into());
         }
-        // Re-read after network awaits: local disable/revoke may have changed
-        // settings while initialization was in progress.
+        // Settings mutations advance generation under node's installation lock.
+        // Any older initialization is discarded, even after this disk read.
         let store = self.store(&account)?;
         let (revoked, _) = broadcast::channel(64);
         let node = Arc::new(Node {
@@ -204,6 +252,7 @@ impl Manager {
             deployment,
             window: AsyncMutex::new(None),
             pairing_generation: AtomicU64::new(0),
+            registration: AsyncMutex::new(()),
             stopped: CancellationToken::new(),
             revoked,
             admissions: Arc::new(Semaphore::new(4)),
@@ -212,6 +261,7 @@ impl Manager {
         {
             let mut current = self.node.lock().await;
             if self.generation.load(Ordering::SeqCst) != generation {
+                drop(current);
                 node.endpoint.close().await;
                 return Err("Remote access was stopped while connecting".into());
             }
@@ -231,7 +281,10 @@ impl Manager {
                     node.stopped.cancel();
                     node.endpoint.close().await;
                     if let Some(manager) = manager.upgrade() {
-                        manager.resident.store(false, Ordering::Release);
+                        let current = manager.node.lock().await;
+                        if current.as_ref().is_some_and(|n| Arc::ptr_eq(n, &node)) {
+                            manager.resident.store(false, Ordering::Release);
+                        }
                     }
                     break;
                 }
@@ -255,6 +308,15 @@ impl Manager {
         let encode = |value| {
             serde_json::to_value(value).map_err(|_| "Could not encode remote settings".to_string())
         };
+        if request.method == "remote_pairing_window" {
+            let current = self.node.lock().await.clone();
+            let window = match current {
+                Some(node) if node.valid().await => node.current_pairing().await,
+                _ => None,
+            };
+            return serde_json::to_value(window)
+                .map_err(|_| "Could not display pairing window".into());
+        }
         if request.method == "remote_status" {
             let account = self
                 .backend
@@ -270,86 +332,91 @@ impl Manager {
                 return encode(Status {
                     enabled: false,
                     endpoint: None,
+                    ready: false,
+                    error: None,
                     peers: Default::default(),
                 });
             }
+            let current = self.node.lock().await;
             let store = self.store(&account)?;
             return encode(Status {
                 enabled: store.enabled(),
                 endpoint: Some(store.key().public().to_string()),
+                ready: current
+                    .as_ref()
+                    .is_some_and(|n| n.account == account && !n.stopped.is_cancelled()),
+                error: self.last_error.lock().unwrap().clone(),
                 peers: store.peers().clone(),
             });
         }
         if matches!(
             request.method.as_str(),
-            "remote_revoke" | "remote_cancel_pairing"
-        ) || (request.method == "remote_enable" && request.params == serde_json::json!([false]))
-        {
+            "remote_revoke" | "remote_cancel_pairing" | "remote_enable"
+        ) {
             let account = self
                 .backend
                 .saved_user_id()
                 .ok_or("No local account is selected")?;
-            let current = self
-                .node
-                .lock()
-                .await
-                .clone()
-                .filter(|node| node.account == account);
-            if let Some(node) = &current {
-                *node.window.lock().await = None;
-            }
-            if request.method == "remote_cancel_pairing" {
-                if let Some(node) = &current {
-                    let _store = node.store.lock().unwrap();
-                    node.pairing_generation.fetch_add(1, Ordering::SeqCst);
-                }
-                return Ok(serde_json::Value::Null);
-            }
-            let mut disk;
-            let mut memory;
-            let store = if let Some(node) = &current {
-                memory = node.store.lock().unwrap();
-                &mut *memory
+            let enable = if request.method == "remote_enable" {
+                let (enabled,): (bool,) = serde_json::from_value(request.params.clone())
+                    .map_err(|_| "Invalid remote setting")?;
+                Some(enabled)
             } else {
-                disk = self.store(&account)?;
-                &mut disk
+                None
             };
-            if let Some(node) = &current {
+            // This short local lock orders settings writes against node install.
+            // No credential validation or network operation holds it.
+            let current = self.node.lock().await;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            let node = current.as_ref().filter(|n| n.account == account).cloned();
+            if (request.method != "remote_enable" || enable == Some(false))
+                && let Some(node) = &node
+            {
+                let mut window = node.window.lock().await;
                 node.pairing_generation.fetch_add(1, Ordering::SeqCst);
+                *window = None;
             }
-            if request.method == "remote_revoke" {
-                let (peer,): (String,) =
-                    serde_json::from_value(request.params).map_err(|_| "Invalid device")?;
-                let peer = peer.parse().map_err(|_| "Invalid device")?;
-                store.revoke(peer)?;
-                if let Some(node) = &current {
-                    let _ = node.revoked.send(peer);
+            if request.method != "remote_cancel_pairing" {
+                let mut disk;
+                let mut memory;
+                let store = if let Some(node) = &node {
+                    memory = node.store.lock().unwrap();
+                    &mut *memory
+                } else {
+                    disk = self.store(&account)?;
+                    &mut disk
+                };
+                if let Some(enabled) = enable {
+                    store.set_enabled(enabled)?;
+                    self.resident.store(enabled, Ordering::Release);
+                    *self.last_error.lock().unwrap() = None;
+                    if !enabled && let Some(node) = &node {
+                        let _ = node.revoked.send(node.endpoint.id());
+                    }
+                } else {
+                    let (peer,): (String,) =
+                        serde_json::from_value(request.params).map_err(|_| "Invalid device")?;
+                    let peer = peer.parse().map_err(|_| "Invalid device")?;
+                    store.revoke(peer)?;
+                    if let Some(node) = &node {
+                        let _ = node.revoked.send(peer);
+                    }
                 }
-            } else {
-                store.set_enabled(false)?;
-                self.resident.store(false, Ordering::Release);
-                if let Some(node) = &current {
-                    let _ = node.revoked.send(node.endpoint.id());
-                }
+            }
+            drop(current);
+            if enable == Some(true) {
+                self.restore().await;
+            }
+            // Publish best effort without making local disable/cancel wait on a service.
+            if let Some(node) = node {
+                tokio::spawn(async move {
+                    let _ = node.publish().await;
+                });
             }
             return Ok(serde_json::Value::Null);
         }
         let node = self.active().await?;
         match request.method.as_str() {
-            "remote_enable" => {
-                let (enabled,): (bool,) =
-                    serde_json::from_value(request.params).map_err(|_| "Invalid remote setting")?;
-                node.store.lock().unwrap().set_enabled(enabled)?;
-                self.resident.store(enabled, Ordering::Release);
-                if !enabled {
-                    *node.window.lock().await = None;
-                }
-                // Existing control observes this state immediately, including
-                // when discovery is unavailable. No cloud write is authority.
-                let _ = node.revoked.send(node.endpoint.id());
-                node.publish().await?;
-                Ok(serde_json::Value::Null)
-            }
             "remote_begin_pairing" => serde_json::to_value(node.begin_pairing().await?)
                 .map_err(|_| "Could not display pairing window".into()),
             "remote_discover" => {
@@ -433,6 +500,9 @@ impl Node {
         }
     }
     pub(super) async fn publish(&self) -> Result<(), String> {
+        // A stale readiness refresh must not overwrite a newly registered W.
+        // Local cancel/disable never wait on this network serialization gate.
+        let _registration = self.registration.lock().await;
         self.ensure_valid().await?;
         let key = self.store.lock().unwrap().key();
         let enabled = self.store.lock().unwrap().enabled();
@@ -461,14 +531,29 @@ impl Node {
         .await?;
         self.ensure_valid().await
     }
+    async fn current_pairing(&self) -> Option<PairingWindow> {
+        self.window
+            .lock()
+            .await
+            .as_ref()
+            .filter(|w| w.is_open(&w.id))
+            .and_then(|w| {
+                Some(PairingWindow {
+                    code: w.code()?,
+                    window: Uuid::from_bytes(w.id),
+                    expires_in: w.remaining().as_secs(),
+                })
+            })
+    }
     async fn begin_pairing(&self) -> Result<PairingWindow, String> {
+        let _starting = self.registration.lock().await;
         if !self.store.lock().unwrap().enabled() {
             return Err("Enable remote access on this computer first".into());
         }
-        let mut window = self.window.lock().await;
-        if window.as_ref().is_some_and(|w| w.is_open(&w.id)) {
-            return Err("Close the current pairing window before starting another".into());
+        if let Some(window) = self.current_pairing().await {
+            return Ok(window);
         }
+        let generation = self.pairing_generation.load(Ordering::SeqCst);
         let next = pairing::Window::new();
         let key = self.store.lock().unwrap().key();
         let address = self.endpoint.addr();
@@ -488,13 +573,19 @@ impl Node {
         )
         .await?;
         self.ensure_valid().await?;
+        let mut window = self.window.lock().await;
+        if self.pairing_generation.load(Ordering::SeqCst) != generation
+            || !self.store.lock().unwrap().enabled()
+        {
+            return Err("Pairing was cancelled locally".into());
+        }
         if registration.window.as_ref().map(|w| w.id) != Some(Uuid::from_bytes(next.id))
             || next.remaining().is_zero()
         {
             return Err("Pairing registration was not acknowledged. Start a new window.".into());
         }
         let result = PairingWindow {
-            code: next.code().unwrap(),
+            code: next.code().ok_or("Pairing window expired")?,
             window: Uuid::from_bytes(next.id),
             expires_in: next.remaining().as_secs(),
         };
@@ -563,10 +654,6 @@ impl Node {
             })
             .await?;
         self.ensure_valid().await?;
-        self.store
-            .lock()
-            .unwrap()
-            .reserve_attempt(peer, *window.as_bytes())?;
         let controller = self.endpoint.id();
         let proof =
             pairing::Controller::new(code, &self.context(&controller, &peer, window.as_bytes()))?;
@@ -593,12 +680,24 @@ impl Node {
             )
             .await
             .map_err(|e| e.to_string())?;
+            // Reserve immediately before the first code-derived byte. A failed
+            // dial does not burn a window, but a partial proof can never retry.
+            self.ensure_valid().await?;
+            {
+                let mut store = self.store.lock().unwrap();
+                if self.pairing_generation.load(Ordering::SeqCst) != generation {
+                    return Err("Pairing was cancelled locally".into());
+                }
+                store.reserve_attempt(peer, *window.as_bytes())?;
+            }
             wire::write(&mut tx, &proof.message(), wire::MAX_PREFACE)
                 .await
                 .map_err(|e| e.to_string())?;
-            let (message, host_tag): (Vec<u8>, Vec<u8>) = wire::read(&mut rx, wire::MAX_PREFACE)
-                .await
-                .map_err(|e| e.to_string())?;
+            let answer: Result<(Vec<u8>, Vec<u8>), wire::Refusal> =
+                wire::read(&mut rx, wire::MAX_PREFACE)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            let (message, host_tag) = answer.map_err(|e| e.message)?;
             let tag = proof.confirm(message, &host_tag)?;
             {
                 let _account = self.backend.account_gate.read().await;
@@ -612,9 +711,10 @@ impl Node {
             wire::write(&mut tx, &tag.as_slice(), wire::MAX_PREFACE)
                 .await
                 .map_err(|e| e.to_string())?;
-            let grant: [u8; 16] = wire::read(&mut rx, wire::MAX_PREFACE)
+            let grant: Result<[u8; 16], wire::Refusal> = wire::read(&mut rx, wire::MAX_PREFACE)
                 .await
                 .map_err(|e| e.to_string())?;
+            let grant = grant.map_err(|e| e.message)?;
             if grant != *window.as_bytes() {
                 return Err("Invalid pairing acknowledgement".into());
             }
@@ -639,7 +739,7 @@ impl Node {
                     .unwrap()
                     .peers()
                     .get(&peer.to_string())
-                    .is_some_and(|p| p.pending_confirmation.is_some())
+                    .is_some_and(|p| p.pending_confirmation == Some(*window.as_bytes()))
                 {
                     return self.reconcile(peer).await;
                 }
@@ -678,10 +778,10 @@ impl Node {
             )
             .await
             .map_err(|e| e.to_string())?;
-            let confirmed: Result<[u8; 16], String> = wire::read(&mut rx, wire::MAX_PREFACE)
+            let confirmed: Result<[u8; 16], wire::Refusal> = wire::read(&mut rx, wire::MAX_PREFACE)
                 .await
                 .map_err(|e| e.to_string())?;
-            if confirmed? != window {
+            if confirmed.map_err(|e| e.message)? != window {
                 return Err("Invalid grant acknowledgement".into());
             }
             let _account = self.backend.account_gate.read().await;
@@ -716,15 +816,17 @@ impl Node {
         {
             return Err("Pairing window is closed".into());
         }
-        let admitted = self
-            .session
-            .check_remote_admission(CheckRemoteAdmission {
+        let admitted = tokio::time::timeout(
+            Duration::from_secs(8),
+            self.session.check_remote_admission(CheckRemoteAdmission {
                 handle: admission,
                 controller: peer.to_string(),
                 execution: self.endpoint.id().to_string(),
                 window: Uuid::from_bytes(window),
-            })
-            .await?;
+            }),
+        )
+        .await
+        .map_err(|_| "Pairing admission check timed out; try again")??;
         self.ensure_valid().await?;
         if !admitted.valid {
             return Err("Pairing admission was rejected".into());
@@ -744,7 +846,7 @@ impl Node {
             pairing::Execution::new(code, &self.context(&peer, &execution, &window), message)?;
         wire::write(
             tx,
-            &(proof.message(), proof.confirmation().as_slice()),
+            &Ok::<_, wire::Refusal>((proof.message(), proof.confirmation().as_slice())),
             wire::MAX_PREFACE,
         )
         .await
@@ -778,7 +880,8 @@ impl Node {
                 },
             )?;
         }
-        wire::write(tx, &window, wire::MAX_PREFACE)
+        drop(pending_window);
+        wire::write(tx, &Ok::<_, wire::Refusal>(window), wire::MAX_PREFACE)
             .await
             .map_err(|e| e.to_string())?;
         Ok(())

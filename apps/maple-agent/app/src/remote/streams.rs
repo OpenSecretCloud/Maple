@@ -2,6 +2,7 @@
 //! carries ordered events only. No transfer owns the connection's dispatch loop.
 use super::wire::{self, Command, Method};
 use crate::host::protocol::Message;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use iroh::endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
@@ -66,12 +67,13 @@ impl Header {
             .map_err(|e| e.to_string())
     }
     pub async fn body(self, rx: &mut RecvStream) -> Result<Command, String> {
-        let params = tokio::time::timeout(
+        let params = wire::read_progress(
+            rx,
+            body_limit(self.method),
             transfer_timeout(self.method),
-            wire::read(rx, body_limit(self.method)),
+            false,
         )
         .await
-        .map_err(|_| "Remote request transfer timed out")?
         .map_err(|e| e.to_string())?;
         Ok(Command {
             id: self.id,
@@ -98,19 +100,66 @@ fn transfer_timeout(method: Method) -> Duration {
     }
 }
 
+// The local facade still returns bytes. Only the remote image reply uses base64.
+pub fn encode_result(
+    method: Method,
+    result: Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    let value = result?;
+    if method != Method::ReadImageAttachment {
+        return Ok(value);
+    }
+    let bytes: Vec<u8> = serde_json::from_value(value).map_err(|_| "Invalid image attachment")?;
+    Ok(serde_json::Value::String(STANDARD.encode(bytes)))
+}
+pub fn decode_result(method: Method, message: Message) -> Message {
+    match message {
+        Message::Response {
+            id,
+            result: Ok(value),
+        } if method == Method::ReadImageAttachment => {
+            let result = value
+                .as_str()
+                .ok_or("Invalid remote image attachment")
+                .and_then(|text| {
+                    STANDARD
+                        .decode(text)
+                        .map_err(|_| "Invalid remote image attachment")
+                })
+                .and_then(|bytes| {
+                    serde_json::to_value(bytes).map_err(|_| "Invalid remote image attachment")
+                })
+                .map_err(str::to_owned);
+            Message::Response { id, result }
+        }
+        other => other,
+    }
+}
+
 pub async fn reply(tx: &mut SendStream, message: &Message) -> Result<(), String> {
-    tokio::time::timeout(TRANSFER_TIMEOUT, async {
-        wire::write(tx, message, wire::MAX_FRAME)
-            .await
-            .map_err(|e| e.to_string())?;
-        tx.finish().map_err(|_| "Remote reply closed")?;
-        tx.stopped()
-            .await
-            .map_err(|_| "Remote reply disconnected")?;
-        Ok(())
-    })
-    .await
-    .map_err(|_| "Remote reply transfer timed out")?
+    let bytes = match wire::encode(message, wire::MAX_FRAME) {
+        Ok(bytes) => bytes,
+        Err(error) => match message {
+            Message::Response { id, .. } => wire::encode(
+                &Message::Response {
+                    id: *id,
+                    result: Err("Remote reply is too large to transfer".into()),
+                },
+                wire::MAX_FRAME,
+            )
+            .map_err(|e| e.to_string())?,
+            _ => return Err(error.to_string()),
+        },
+    };
+    wire::write_progress(tx, &bytes, TRANSFER_TIMEOUT)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.finish().map_err(|_| "Remote reply closed")?;
+    tokio::time::timeout(TRANSFER_TIMEOUT, tx.stopped())
+        .await
+        .map_err(|_| "Remote reply transfer timed out")?
+        .map_err(|_| "Remote reply disconnected")?;
+    Ok(())
 }
 
 pub async fn call(connection: &Connection, command: Command) -> Result<Message, String> {
@@ -134,18 +183,26 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
         .map_err(|_| "Remote connection closed")?;
     tx.set_priority(if header.method.urgent() { 10 } else { 0 })
         .map_err(|_| "Remote stream closed")?;
-    tokio::time::timeout(transfer_timeout(header.method), async {
-        wire::write(&mut tx, &header, wire::MAX_PREFACE).await?;
-        wire::write_encoded(&mut tx, &body).await
-    })
-    .await
-    .map_err(|_| "Remote request transfer timed out")?
-    .map_err(|e| e.to_string())?;
+    tokio::time::timeout(IO_TIMEOUT, wire::write(&mut tx, &header, wire::MAX_PREFACE))
+        .await
+        .map_err(|_| "Remote request header timed out")?
+        .map_err(|e| e.to_string())?;
+    wire::write_progress(&mut tx, &body, transfer_timeout(header.method))
+        .await
+        .map_err(|e| e.to_string())?;
     tx.finish().map_err(|_| "Remote request closed")?;
-    match wire::read::<Message>(&mut rx, wire::MAX_FRAME).await {
+    let response = wire::read_progress::<Message>(&mut rx, wire::MAX_FRAME, TRANSFER_TIMEOUT, true);
+    let response = if header.method.urgent() {
+        tokio::time::timeout(IO_TIMEOUT, response)
+            .await
+            .map_err(|_| "Remote control reply timed out")?
+    } else {
+        response.await
+    };
+    match response {
         Ok(message @ Message::Response { id: received, .. }) if received == id => Ok(message),
         Ok(message @ Message::Closed { .. }) => Ok(message),
-        Err(wire::Error::Disconnected) => Err("Remote reply disconnected".into()),
+        Err(error @ (wire::Error::Disconnected | wire::Error::TimedOut)) => Err(error.to_string()),
         _ => Ok(Message::Closed {
             reason: "Invalid remote reply; reconnect with compatible Maple versions".into(),
         }),

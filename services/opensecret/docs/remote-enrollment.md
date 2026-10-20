@@ -5,7 +5,8 @@ The service supplies account-private discovery and admission, not device grants.
 `POST /v1/remote/admissions/check` require JWT authorization and Transport V2.
 The Rust SDK provides the corresponding typed methods. Registration additionally
 proves possession of the endpoint Ed25519 key over a versioned fixed-schema
-message; client/service share `sdk/rust/src/remote_registration_v1.json`.
+message. Client and service have matching copies of `remote_registration_v1.json`
+with independent fixture tests; they are not a single shared source file.
 
 Device leases expire after 15 minutes; active daemons refresh every minute. A
 pairing window lasts at most five minutes and repeated registration of the same
@@ -17,8 +18,13 @@ daemon separately validates its own monotonic window and one-attempt budget.
 
 `remote_enrollment_records` is shared PostgreSQL state, not enclave memory.
 Writes serialize only the account's enrollment rows and cap devices/windows at
-64 and admissions at 128. Window tombstones are retained to avoid a repeated W
-extending its expiry after cleanup. Records contain no code, password verifier,
+64 and admissions at 128. The current endpoint's window tombstone is retained
+when it re-registers, so identical W cannot extend its saved expiry. On window
+registration, other endpoints' tombstones with authenticated expiry over 24 hours
+old are eligible for cleanup; compare-and-delete preserves a concurrent newer
+record. Cleanup does not trust the editable expiry hint. These caps therefore
+limit retained records, not lifetime device identities. Controller-side attempted
+window history is separate and is not pruned by this service cleanup. Records contain no code, password verifier,
 PAKE message or control grant. Encryption derives a dedicated key/domain from
 the enclave root; canonical AAD binds the expected authenticated account,
 project, deployment, record kind and record identity. Authorization uses encrypted
@@ -83,8 +89,9 @@ service recovers. There is no custom cache or relay fallback that weakens this.
 ## Evidence boundaries
 
 Unit tests cover binding and credentials; disposable-DB tests cover migrations,
-repeated windows, account/key substitution, valid foreign-row swaps and relay
-lease rejection. Two isolated Local daemons additionally exercise real Transport
+repeated windows, bounded tombstone cleanup, account/key substitution, valid
+foreign-row swaps and relay registration/key checks. They do not establish a
+live relay enforcing lease expiry. Two isolated Local daemons additionally exercise real Transport
 V2 registration and direct PAKE over public Iroh relays. That public-relay test
 does not validate a deployed Maple relay, its TLS/operator setup, or production
 enclave/KMS configuration. Those require the separate rollout gate.

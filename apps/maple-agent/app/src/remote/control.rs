@@ -29,12 +29,11 @@ pub(super) fn listen(node: Arc<Node>) {
                             let connection = incoming.await.map_err(|_| "Remote handshake failed")?;
                             let peer = connection.remote_id();
                             let (mut tx, mut rx) = connection.accept_bi().await.map_err(|_| "Remote handshake closed")?;
-                            let hello: wire::Hello = wire::read(&mut rx, wire::MAX_PREFACE).await.map_err(|e| e.to_string())?;
                             let outcome = async {
-                            hello.check_version().map_err(|e| e.to_string())?;
+                            let hello = wire::read_hello(&mut rx).await?;
                             node.ensure_valid().await?;
                             if hello.account != node.account || hello.project != node.project || hello.deployment != node.deployment || hello.channel != crate::profile::PROFILE {
-                                return Err("Remote account or deployment mismatch".to_string());
+                                return Err(wire::Refusal::terminal("Remote account or deployment mismatch"));
                             }
                             match hello.mode {
                                 wire::Mode::Pair { window, admission } => {
@@ -46,9 +45,9 @@ pub(super) fn listen(node: Arc<Node>) {
                                 wire::Mode::ConfirmGrant { window } => {
                                     let answer = {
                                         let store = node.store.lock().unwrap();
-                                        if store.permits(peer) && store.peers().get(&peer.to_string()).is_some_and(|p| p.grant == window) {
+                                        if store.peers().get(&peer.to_string()).is_some_and(|p| p.controls_this_computer) && store.peers().get(&peer.to_string()).is_some_and(|p| p.grant == window) {
                                             Ok(window)
-                                        } else { Err("No current grant matches this pairing".to_string()) }
+                                        } else { Err(wire::Refusal::terminal("No current grant matches this pairing")) }
                                     };
                                     wire::write(&mut tx, &answer, wire::MAX_PREFACE).await.map_err(|e| e.to_string())?;
                                     let _ = tx.finish();
@@ -56,9 +55,9 @@ pub(super) fn listen(node: Arc<Node>) {
                                     Ok(None)
                                 }
                                 wire::Mode::Control => {
-                                    if !node.store.lock().unwrap().permits(peer) { return Err("Remote control grant is missing or revoked".into()); }
+                                    if !node.store.lock().unwrap().permits(peer) { return Err(wire::Refusal::terminal("Remote control grant is missing or revoked")); }
                                     let slot = node.controllers.clone().try_acquire_owned().map_err(|_| "Remote connection limit reached")?;
-                                    wire::write(&mut tx, &Ok::<(), String>(()), wire::MAX_PREFACE).await.map_err(|e| e.to_string())?;
+                                    wire::write(&mut tx, &Ok::<(), wire::Refusal>(()), wire::MAX_PREFACE).await.map_err(|e| e.to_string())?;
                                     Ok(Some(slot))
                                 }
                             }
@@ -143,7 +142,9 @@ async fn serve(
                 let node = node.clone();
                 let capacity = capacity.clone();
                 calls.spawn(async move {
-                    let _ = serve_request(node, peer, tx, rx, capacity).await;
+                    if let Err(error) = serve_request(node, peer, tx, rx, capacity).await {
+                        log::debug!("Remote request stream ended: {error}");
+                    }
                 });
             }
         }
@@ -164,7 +165,7 @@ async fn serve_request(
 ) -> Result<(), String> {
     let header = match streams::Header::read(&mut rx).await {
         Ok(header) => header,
-        Err(reason) => return streams::reply(&mut tx, &Message::Closed { reason }).await,
+        Err(reason) => return Err(reason),
     };
     tx.set_priority(if header.method.urgent() { 10 } else { 0 })
         .map_err(|_| "Remote reply closed")?;
@@ -181,9 +182,20 @@ async fn serve_request(
             .await;
         }
     };
+    let id = header.id;
+    let method = header.method;
     let request = match header.body(&mut rx).await {
         Ok(request) => request,
-        Err(reason) => return streams::reply(&mut tx, &Message::Closed { reason }).await,
+        Err(reason) => {
+            return streams::reply(
+                &mut tx,
+                &Message::Response {
+                    id,
+                    result: Err(reason),
+                },
+            )
+            .await;
+        }
     };
     // Recheck after the potentially slow upload, before any backend effect.
     node.ensure_valid().await?;
@@ -213,6 +225,7 @@ async fn serve_request(
     )
     .await;
     if node.valid().await && node.store.lock().unwrap().permits(peer) {
+        let result = streams::encode_result(method, result);
         streams::reply(&mut tx, &Message::Response { id, result }).await?;
     }
     Ok(())
@@ -289,14 +302,14 @@ impl Manager {
         wire::write(&mut tx, &node.hello(wire::Mode::Control), wire::MAX_PREFACE)
             .await
             .map_err(|e| e.to_string())?;
-        let accepted: Result<(), String> = tokio::time::timeout(
+        let accepted: Result<(), wire::Refusal> = tokio::time::timeout(
             Duration::from_secs(10),
             wire::read(&mut rx, wire::MAX_PREFACE),
         )
         .await
         .map_err(|_| "Remote handshake timed out")?
-        .map_err(|e| e.to_string())?;
-        accepted.map_err(|error| format!("Remote access ended: {error}"))?;
+        .map_err(|e| format!("Remote access ended: {e}"))?;
+        accepted.map_err(wire::Refusal::into_error)?;
         node.ensure_valid().await?;
         tx.finish().map_err(|_| "Remote handshake closed")?;
         Ok(Link {
@@ -358,7 +371,7 @@ pub async fn bridge(
                     if change.is_err() || change.ok() == Some(link.peer) { return Ok(false); }
                 }
                 Some(completed) = calls.join_next(), if !calls.is_empty() => {
-                    let frame = completed.map_err(|_| "Remote request interrupted")??;
+                    let frame = completed.map_err(|_| "Remote request interrupted")?;
                     link.node.ensure_valid().await?;
                     let terminal = matches!(frame, Message::Closed { .. });
                     local_send(&mut local_tx, &frame).await?;
@@ -393,7 +406,15 @@ pub async fn bridge(
                     let connection = link.connection.clone();
                     calls.spawn(async move {
                         let _slot = slot;
-                        streams::call(&connection, wire::Command { id: request.id, method, send_id: request.send_id, params: request.params }).await
+                        let id = request.id;
+                        let send_id = request.send_id.clone();
+                        match streams::call(&connection, wire::Command { id, method, send_id: request.send_id, params: request.params }).await {
+                            Ok(frame) => streams::decode_result(method, frame),
+                            Err(error) => Message::Response { id, result: Err(match send_id {
+                                Some(id) => format!("Send outcome unknown ({id}). {error}. Checking the host receipt is safe; resending is not."),
+                                None => error,
+                            }) },
+                        }
                     });
                 }
             }

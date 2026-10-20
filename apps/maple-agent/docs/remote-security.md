@@ -58,9 +58,10 @@ Evidence assessed:
   constant-time confirmation verification and CSPRNG input. Maple accepts only
   fixed eight-byte ASCII codes, avoiding unbounded password input to the draft-06
   generator; context fields come from bounded authenticated identities.
-- Code buffers and returned session keys are zeroized where owned by Maple. The
-  dependency's internal ephemeral scalar/intermediate key is not explicitly
-  erased on drop. No claim is made of complete memory erasure or protection from
+- Maple zeroizes the `Code` byte buffer, explicitly handled returned session keys,
+  and the Settings code string when cleared. Ordinary input/IPC/serialization
+  copies and the dependency's internal ephemeral scalar/intermediate key are not
+  all explicitly erased. No claim is made of complete memory erasure or protection from
   a compromised local process. Codes, permits, PAKE messages and endpoint secrets
   are not diagnostic output or service database values.
 

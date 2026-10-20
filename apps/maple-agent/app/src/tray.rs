@@ -50,3 +50,28 @@ impl StatusIcon {
         let _ = self.0.set_visible(enabled);
     }
 }
+
+/// Creating an SNI item does not mean the desktop actually displays a tray.
+#[cfg(target_os = "linux")]
+pub async fn usable() -> bool {
+    let check = async {
+        let connection = zbus::Connection::session().await.ok()?;
+        let watcher = zbus::Proxy::new(
+            &connection,
+            "org.kde.StatusNotifierWatcher",
+            "/StatusNotifierWatcher",
+            "org.kde.StatusNotifierWatcher",
+        )
+        .await
+        .ok()?;
+        watcher
+            .get_property::<bool>("IsStatusNotifierHostRegistered")
+            .await
+            .ok()
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), check)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}

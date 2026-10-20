@@ -67,7 +67,7 @@ The full component checks below were rerun after this navigation change.
 
 The pre-review audit found that reserved request slots did not prevent a large
 transfer from blocking control messages on the original single ordered stream.
-Wire version 2 uses one bounded QUIC stream per request/reply and a separate
+The initial wire version 2 used one bounded QUIC stream per request/reply and a separate
 ordered event stream, retaining the existing authentication, receipts and recovery.
 
 The new transport tests use actual Iroh endpoints with the production flow-control
@@ -85,7 +85,51 @@ acknowledgement; the original receipt and exactly one proof-file write were
 verified. Revocation refused reconnect. All test-owned daemons were stopped, and
 the user's existing desktop builds remained untouched.
 
-## Automated checks
+## October 20 review follow-up
+
+The branch was rebased onto `339d306e`, including the merged Windows ACP
+streaming-test correction (#1174). The focused fixes keep the existing
+daemon/pairing architecture; the protocol is now version 3.
+
+Full Agent `just ci` passed again on macOS: all four lint configurations,
+workspace build/tests, 271 runtime tests / 2 ignored, 501 desktop tests /
+1 ignored and 92 headless tests / 1 ignored. The new regressions cover image
+readback, inactivity deadlines, handshake refusals, wire examples, uncertain
+draft retention, initialization cancellation and Stop with a lost acknowledgement.
+These local results do not establish the rebased head's hosted CI status.
+
+Fresh disposable Local profiles repeated the following through public Iroh relays,
+with direct IP transports disabled and the user's apps left running:
+
+- Reattaching the local view retrieved the same pairing code/window/deadline.
+  A wrong proof consumed its single attempt; another controller received a clear
+  closed-window refusal. A new window paired successfully. This check also found
+  a stale startup advertisement overwriting a new pairing window; registration
+  publication is now serialized without delaying local Cancel or Disable.
+- A 5,881,918-byte PNG (23,524,264 bytes in the old JSON-array representation)
+  returned intact, followed by another task request on the same connection.
+  The automated transport regression additionally covers a 10 MiB reply and an
+  oversized reply error followed by a successful control request.
+- GLM 5.3 Flash completed its Bash turn after the controller restarted with an
+  unread acknowledgement. The original receipt was recovered and the tool wrote
+  its proof file exactly once. Disable/re-enable preserved the existing grant;
+  revocation denied reconnect.
+- A temporary local forwarding proxy made startup unavailable, then recovered:
+  an already-enabled host retried automatically without another user action.
+  Gating initialization while issuing Disable proved that its local effect did
+  not wait on the service and that late completion could not install the endpoint.
+- The isolated debug macOS GUI opened and rendered, then its own host was stopped.
+  This does not establish the Linux/Windows tray UX or signed macOS permissions.
+
+The disposable PostgreSQL suite passed 22 AEAD/database, 2 OAuth and 8 callback
+tests, including stale window reclamation under forged expiry hints and a
+concurrent replacement that compare-and-delete must preserve. All-feature
+OpenSecret Clippy and unit tests passed (865 passed / 33 ignored). The guarded DB
+run used `PGGSSENCMODE=disable` only for its temporary loopback database after a
+macOS Kerberos-library teardown abort; no application authentication setting or
+test was disabled.
+
+## Initial October 19 automated checks
 
 - Full Agent `just ci`: all four Clippy configurations, workspace build/tests and
   headless tests. Runtime: 271 passed / 2 ignored; desktop app: 494 passed /
@@ -95,7 +139,7 @@ the user's existing desktop builds remained untouched.
 - OpenSecret all-feature Clippy and unit tests: 817 passed / 32 ignored.
   Disposable PostgreSQL checks explicitly ran 21 AEAD tamper tests, 2 OAuth and
   8 callback binding tests, including valid foreign-row/lookup-column swaps,
-  repeated-window expiry and relay key-lease rejection. Migration down/up passed.
+  repeated-window expiry and relay registration/key rejection. Migration down/up passed.
 - Rust SDK format, all-feature Clippy, 119 unit tests / 1 ignored, and documentation
   with warnings denied passed. Client/service registration fixture bytes match.
 - Root and Agent Nix flake checks/evaluation passed on the current platform.
@@ -122,8 +166,10 @@ These remain review/rollout work, rather than newly accepted design exceptions:
   unused networking must preserve any outgoing controller role.
 - User/project deletion cascades to enrollment records; destructive password
   reset does not yet remove them. Expired device/admission rows are removed on
-  that account's later writes, while its latest window tombstones are retained.
-  Reset cleanup and idle-record retention need resolution before hosted rollout.
+  that account's later writes. Registration now reclaims other endpoints' window
+  tombstones using authenticated expiry after 24 hours, preserving the current
+  endpoint's repeated-W guard. Reset cleanup and cleanup for accounts that never
+  write again remain hosted-rollout work.
 - Enrollment has row caps, leases and payload bounds, but no dedicated
   publish/list/admission request-rate enforcement yet. Row caps do not bound
   request traffic.

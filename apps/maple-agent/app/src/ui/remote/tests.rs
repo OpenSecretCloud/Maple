@@ -11,6 +11,8 @@ fn screen(cx: &mut TestAppContext) -> Entity<RemoteScreen> {
         backend,
         status: Some(Status {
             enabled: true,
+            ready: true,
+            error: None,
             endpoint: Some("local".into()),
             peers: Default::default(),
         }),

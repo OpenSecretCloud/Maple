@@ -5703,6 +5703,7 @@ dependencies = [
  "wayland-client",
  "webbrowser",
  "windows-sys 0.61.2",
+ "zbus",
  "zeroize",
 ]
 

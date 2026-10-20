@@ -6603,4 +6603,42 @@ mod state_tests {
              width before truncating (title {thinking_title:?}, card {card:?})"
         );
     }
+    #[gpui::test]
+    fn uncertain_send_keeps_images_and_does_not_overwrite_another_draft(cx: &mut TestAppContext) {
+        use crate::host::receipts::Outcome;
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            composer.update(cx, |input, cx| input.set_text("new draft", cx));
+            chat.composer = Some(composer.clone());
+            chat.unresolved_sends.insert(
+                "send-original".into(),
+                UnresolvedSend {
+                    session: "s1".into(),
+                    text: "original message".into(),
+                    from_composer: true,
+                    images: vec![DraftImage {
+                        id: 50,
+                        name: "image.png".into(),
+                        data_url: Some(Arc::from("data:image/png;base64,cGljdHVyZQ==")),
+                        thumbnail: None,
+                    }],
+                },
+            );
+            chat.apply_send_receipt("send-original", None, cx);
+            assert_eq!(chat.unresolved_sends["send-original"].images.len(), 1);
+            chat.apply_send_receipt("send-original", Some(Outcome::Missing), cx);
+            assert_eq!(composer.read(cx).text_ref(), "new draft");
+            assert!(chat.unresolved_sends.contains_key("send-original"));
+            composer.update(cx, |input, cx| input.clear(cx));
+            chat.selected_session = Some("another-task".into());
+            chat.apply_send_receipt("send-original", Some(Outcome::Missing), cx);
+            assert!(composer.read(cx).text_ref().is_empty());
+            chat.selected_session = Some("s1".into());
+            chat.apply_send_receipt("send-original", Some(Outcome::Missing), cx);
+            assert_eq!(composer.read(cx).text_ref(), "original message");
+            assert_eq!(chat.draft_images[0].name, "image.png");
+            assert!(chat.unresolved_sends.is_empty());
+        });
+    }
 }

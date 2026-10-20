@@ -158,6 +158,10 @@ pub trait DBConnection {
         record: crate::models::remote_enrollment::Record,
         now: i64,
     ) -> Result<crate::models::remote_enrollment::Record, DBError>;
+    fn delete_remote_enrollment_unchanged(
+        &self,
+        record: &crate::models::remote_enrollment::Record,
+    ) -> Result<(), DBError>;
     fn get_remote_enrollment(
         &self,
         user: Uuid,
@@ -789,6 +793,13 @@ impl DBConnection for PostgresConnection {
     ) -> Result<crate::models::remote_enrollment::Record, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
         record.put(conn, now)
+    }
+    fn delete_remote_enrollment_unchanged(
+        &self,
+        record: &crate::models::remote_enrollment::Record,
+    ) -> Result<(), DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        record.delete_unchanged(conn)
     }
     fn get_remote_enrollment(
         &self,

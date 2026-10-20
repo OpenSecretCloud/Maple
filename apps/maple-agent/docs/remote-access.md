@@ -20,7 +20,9 @@ field supports typing, selection and paste with or without the dash. Filling it
 does not submit a pairing attempt automatically. Both must
 be signed into the same Maple account and deployment/channel. Account login
 alone does not grant access. The code expires in five minutes and permits one
-attempt. A failed attempt requires a new, locally opened window.
+attempt. A failed attempt requires a new, locally opened window. Leaving Settings
+keeps the current window alive; returning shows the same code and remaining time,
+with Cancel available. Navigation never renews its deadline or attempt.
 
 Paired computers appear alongside local projects in the sidebar and project
 menus. Each group is **computer · folder**, with its tasks beneath it; a globe
@@ -49,7 +51,9 @@ account and application preference panes still use this computer. Native
 permission setup must be performed on the execution computer.
 
 Closing a window with remote access enabled keeps the application available
-(macOS Dock; Windows/Linux tray Open/Quit). Explicit Quit stops that computer's
+(macOS Dock; Windows/Linux tray Open/Quit). On a desktop without a usable tray,
+Close offers Keep open or Quit Maple, explaining that Quit stops remote access.
+Explicit Quit stops that computer's
 local daemon and drains its work. Closing a controller view does not cancel work
 on another computer. Revocation and disabling access take effect locally even
 when discovery is unavailable; re-enabling does not restore revoked grants.
@@ -62,9 +66,10 @@ These administer only the local computer. Never put a pairing code in argv or lo
 ## Transport and recovery
 
 Iroh 1.3.0 supplies authenticated QUIC, direct connectivity and relay fallback.
-The minimal preset disables public address lookup and router port mapping.
+Maple explicitly clears public address lookup and builds Iroh without its
+port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
-protocol keeps the `maple-agent/remote/1` ALPN family and requires wire version 2
+protocol keeps the `maple-agent/remote/1` ALPN family and requires wire version 3
 or newer, independent of application builds. Older peers receive an explicit
 version refusal. Bounded frames and an explicit task-operation allowlist apply.
 Account operations and whole-host administration cannot be forwarded.
@@ -77,11 +82,29 @@ ordered events. A bounded header admits each request before its attachment body
 is read. Stop and question answers have reserved capacity and higher native stream
 priority, so an incomplete upload or unread image reply cannot hold their dispatch
 loop. Streams still share the connection's bandwidth; this is not a latency
-guarantee on a saturated or unavailable network. Stalled transfers are bounded,
-and a failed connection recovers from an authoritative snapshot. Accepted mutations finish on the host;
-transport loss never causes an automatic prompt replay. A stable send identity
+guarantee on a saturated or unavailable network. Transfers use bounded frames and
+inactivity deadlines, allowing slow transfers that keep making progress. Image
+readback uses base64 on the remote wire.
+A request failure or oversized reply returns a request error, while authority loss
+or incompatible framing ends the connection. A failed connection recovers from an
+authoritative snapshot. Transport loss does not cancel an accepted mutation on
+the host or cause an automatic prompt replay; explicit host shutdown still stops
+its work. A stable send identity
 crosses both IPC and Iroh; only the execution daemon records its admission and
-result, account-bound in its receipt database.
+result, account-bound in its receipt database. An uncertain send keeps its original
+identity, text and draft images in the desktop view and queries the execution
+host's receipt after reconnecting. It never replays the command or overwrites a
+newer draft. This is in-memory recovery, not persistence across desktop crashes.
+
+A remote-enabled daemon retries transient startup failures with bounded backoff.
+Local settings show whether networking is ready and retain actionable configuration
+errors. Disable and revoke invalidate initialization already in flight; their local
+effect does not wait for discovery publication.
+
+After an abnormal exit, an older local daemon can still own this profile when an
+updated application starts. The startup error offers a user-confirmed
+Stop-and-reopen action; it stops the old host's tasks and remote access before
+starting the new build. There is no automatic takeover.
 
 The controller retries transient connection loss with bounded exponential delay
 while the view remains attached. Known revocation and incompatible/unknown wire

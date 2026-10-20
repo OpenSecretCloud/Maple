@@ -715,29 +715,119 @@ impl Render for MapleApp {
     }
 }
 
+#[derive(Clone)]
+struct DesktopLifecycle {
+    backend: Arc<AgentBackend>,
+    remote_enabled: Arc<std::sync::atomic::AtomicBool>,
+    can_background: bool,
+    closing: std::rc::Rc<std::cell::Cell<bool>>,
+}
+impl gpui::Global for DesktopLifecycle {}
+
+fn quit_app(cx: &mut App) {
+    let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
+        cx.quit();
+        return;
+    };
+    if !state
+        .remote_enabled
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        cx.quit();
+        return;
+    }
+    if state.closing.replace(true) {
+        return;
+    }
+    let api = state.backend.api_url().to_owned();
+    let stop = state
+        .backend
+        .spawn(async move { crate::host::request_stop(&api).await });
+    cx.spawn(async move |cx| {
+        match stop.await {
+            Ok(Ok(())) => cx.update(|cx| cx.quit()),
+            result => {
+                state.closing.set(false);
+                log::warn!("Could not stop Maple host on Quit: {result:?}");
+                cx.update(|cx| {
+                    for handle in cx.windows() {
+                        let _ = handle.update(cx, |_, window, cx| {
+                            let prompt = window.prompt(gpui::PromptLevel::Warning, "Maple could not stop its background host",
+                                Some("Remote access may still be running. Keep Maple open and try Quit again."), &["OK"], cx);
+                            cx.spawn(async move |_| { let _ = prompt.await; }).detach();
+                        });
+                    }
+                });
+            }
+        }
+    }).detach();
+}
+
+/// The native close button and our Linux title bar share this policy.
+pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
+    persist_window_state();
+    let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
+        cx.quit();
+        return;
+    };
+    if !state
+        .remote_enabled
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        quit_app(cx);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window;
+        cx.hide();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if state.closing.replace(true) {
+            return;
+        }
+        let check = state.backend.spawn(async move {
+            #[cfg(target_os = "linux")]
+            {
+                state.can_background && crate::tray::usable().await
+            }
+            #[cfg(target_os = "windows")]
+            {
+                state.can_background
+            }
+        });
+        window.spawn(cx, async move |cx| {
+            let usable = check.await.unwrap_or(false);
+            let prompt = cx.update(|window, cx| {
+                if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.closing.set(false); }
+                if usable { window.remove_window(); None } else {
+                    Some(window.prompt(gpui::PromptLevel::Warning, "Keep Maple open for remote access?",
+                        Some("This desktop has no available tray to reopen Maple. Quitting stops remote access and running tasks on this computer."),
+                        &["Keep open", "Quit Maple"], cx))
+                }
+            }).ok().flatten();
+            if let Some(prompt) = prompt && prompt.await == Ok(1) {
+                let _ = cx.update(|_, cx| quit_app(cx));
+            }
+        }).detach();
+    }
+}
+
 fn install_close_behavior(
     window: &mut Window,
     cx: &mut App,
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
     can_background: bool,
 ) {
-    window.on_window_should_close(cx, move |_, cx| {
-        persist_window_state();
-        if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
-            #[cfg(target_os = "macos")]
-            {
-                let _ = can_background;
-                cx.hide();
-                false
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                can_background
-            }
-        } else {
-            cx.quit();
-            true
-        }
+    if cx.has_global::<DesktopLifecycle>() {
+        let state = cx.global_mut::<DesktopLifecycle>();
+        state.remote_enabled = remote_enabled;
+        state.can_background = can_background;
+    }
+    window.on_window_should_close(cx, |window, cx| {
+        close_window(window, cx);
+        false
     });
 }
 
@@ -823,10 +913,59 @@ fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
     }
 }
 
-struct StartupError(String);
+struct StartupError {
+    message: String,
+    stopping: bool,
+}
+impl StartupError {
+    fn new(message: String) -> Self {
+        Self {
+            message,
+            stopping: false,
+        }
+    }
+    fn stop_old_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stopping {
+            return;
+        }
+        let answer = window.prompt(gpui::PromptLevel::Warning, "Stop the existing Maple host?",
+            Some("This stops running tasks and remote access for this profile. Maple will reopen with this build."),
+            &["Cancel", "Stop and reopen"], cx);
+        self.stopping = true;
+        cx.spawn(async move |this, cx| {
+            let result = if answer.await == Ok(1) {
+                Some(
+                    cx.background_executor()
+                        .spawn(async move {
+                            crate::host::stop(&crate::configured_api_url())?;
+                            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+                            std::process::Command::new(exe)
+                                .spawn()
+                                .map_err(|e| e.to_string())?;
+                            Ok::<(), String>(())
+                        })
+                        .await,
+                )
+            } else {
+                None
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.stopping = false;
+                match result {
+                    Some(Ok(())) => cx.quit(),
+                    Some(Err(error)) => this.message = format!("Could not restart Maple: {error}"),
+                    None => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+}
 
 impl Render for StartupError {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
@@ -836,7 +975,23 @@ impl Render for StartupError {
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
             .child(div().text_lg().child("Maple could not start"))
-            .child(self.0.clone())
+            .child(self.message.clone())
+            .when(
+                self.message.contains("Incompatible Maple host or profile"),
+                |view| {
+                    view.child(
+                        ui::widgets::secondary_button("stop-incompatible-host")
+                            .child(if self.stopping {
+                                "Stopping…"
+                            } else {
+                                "Stop existing host and reopen"
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
+                            ),
+                    )
+                },
+            )
             .child(
                 div()
                     .id("close-startup-error")
@@ -854,7 +1009,7 @@ impl Render for StartupError {
 fn show_startup_error(error: String) {
     gpui_platform::application().run(move |cx| {
         cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
-        cx.on_action(|_: &QuitApp, cx| cx.quit());
+        cx.on_action(|_: &QuitApp, cx| quit_app(cx));
         ui::menus::install(cx);
         let bounds = Bounds::centered(None, size(px(560.), px(260.)), cx);
         let result = cx.open_window(
@@ -872,7 +1027,7 @@ fn show_startup_error(error: String) {
                     cx.quit();
                     true
                 });
-                cx.new(|_| StartupError(error))
+                cx.new(|_| StartupError::new(error))
             },
         );
         if let Err(error) = result {
@@ -929,7 +1084,7 @@ pub fn run() {
                 log::warn!("failed to register bundled fonts: {error}");
             }
             ui::spell::preload();
-            cx.on_action(|_: &QuitApp, cx| cx.quit());
+            cx.on_action(|_: &QuitApp, cx| quit_app(cx));
             #[cfg(target_os = "macos")]
             {
                 cx.on_action(|_: &Hide, cx| cx.hide());
@@ -1001,6 +1156,12 @@ pub fn run() {
                 WindowBounds::Windowed(bounds)
             };
             let remote_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            cx.set_global(DesktopLifecycle {
+                backend: backend.clone(),
+                remote_enabled: remote_enabled.clone(),
+                can_background: false,
+                closing: Default::default(),
+            });
             let quit_remote_enabled = remote_enabled.clone();
             let quit_backend = backend.clone();
             cx.on_app_quit(move |_cx| {
@@ -1011,9 +1172,7 @@ pub fn run() {
                     if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
                         let api = backend.api_url().to_owned();
                         let _ = backend
-                            .spawn(async move {
-                                tokio::task::spawn_blocking(move || crate::host::stop(&api)).await
-                            })
+                            .spawn(async move { crate::host::request_stop(&api).await })
                             .await;
                     } else {
                         let _ = backend.detach().await;
@@ -1169,8 +1328,7 @@ pub fn run() {
                     while let Some(action) = events.recv().await {
                         match action {
                             crate::tray::Action::Quit => {
-                                cx.update(|cx| cx.quit());
-                                break;
+                                cx.update(quit_app);
                             }
                             crate::tray::Action::Open => {
                                 cx.update(|cx| {
