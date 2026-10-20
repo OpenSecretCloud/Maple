@@ -26,6 +26,7 @@ pub(super) enum ChatRegion {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SidebarTarget {
+    Computer(super::computers::Navigate),
     NewTask,
     Projects,
     Task(String),
@@ -535,6 +536,7 @@ impl ChatScreen {
                     let open = sidebar.switcher_menu_open();
                     sidebar.set_switcher_menu_open(!open, cx);
                 }),
+                Some(SidebarTarget::Computer(request)) => cx.emit(request),
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 None => {}

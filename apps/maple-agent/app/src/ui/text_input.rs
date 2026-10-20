@@ -4,6 +4,7 @@
 //! text and grows with its content (Shift+Enter inserts a newline).
 
 mod bounds;
+mod code;
 pub mod vim;
 pub(crate) mod vim_actions;
 
@@ -136,6 +137,8 @@ pub struct TextInput {
     popup: Popup<TextInput, gpui::Point<Pixels>>,
     /// Render '*' in place of content characters (password fields).
     mask: bool,
+    /// Eight ASCII code characters, drawn as slots around a four/four separator.
+    segmented_code: bool,
     /// Clear the content once the Enter hook has consumed it (composer behavior).
     /// Explicit tab order for this input within its surface. Inputs without
     /// distinct indices collapse onto the same tab-stop path, which makes
@@ -269,6 +272,7 @@ impl TextInput {
             is_selecting: false,
             popup: Popup::new(|this| &mut this.popup, cx),
             mask: false,
+            segmented_code: false,
             tab_index: None,
             on_enter: None,
             on_paste_image: None,
@@ -289,6 +293,13 @@ impl TextInput {
             focus_out_subscription: None,
             focus_in_menu: false,
         }
+    }
+
+    /// One native text field with code slots, retaining ordinary editing and
+    /// accessibility. Pairing submission remains an explicit form action.
+    pub fn pairing_code(mut self) -> Self {
+        self.segmented_code = true;
+        self
     }
 
     /// Mark this input as the chat composer and choose its initial modal
@@ -519,6 +530,16 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let normalized;
+        let text = if self.segmented_code {
+            let Some(value) = code::normalize(text, 0) else {
+                return;
+            };
+            normalized = value;
+            normalized.as_str()
+        } else {
+            text
+        };
         if self.vim.is_some() {
             self.finish_vim_lifecycle(LifecycleEvent::ExternalDraftReplacement, cx);
             self.forget_edits();
@@ -749,6 +770,16 @@ impl TextInput {
         new_text: &str,
         cx: &mut Context<Self>,
     ) {
+        let normalized;
+        let new_text = if self.segmented_code {
+            let Some(value) = code::normalize(new_text, self.content.len() - range.len()) else {
+                return;
+            };
+            normalized = value;
+            normalized.as_str()
+        } else {
+            new_text
+        };
         // An IME composition was already recorded when it started; a
         // single typed or deleted character continues the run the last
         // one started; anything else is its own undo step.
@@ -1936,6 +1967,11 @@ impl TextInput {
     }
 
     fn index_for_mouse_position(&self, position: gpui::Point<Pixels>) -> usize {
+        if self.segmented_code {
+            return self.last_bounds.map_or(0, |bounds| {
+                code::index_at(position.x - bounds.left(), self.content.len())
+            });
+        }
         if self.content.is_empty() {
             return 0;
         }
@@ -2133,6 +2169,17 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        let normalized;
+        let new_text = if self.segmented_code {
+            let Some(value) = code::normalize(new_text, self.content.len() - range.len()) else {
+                return;
+            };
+            normalized = value;
+            normalized.as_str()
+        } else {
+            new_text
+        };
+
         if self
             .vim_mode()
             .is_some_and(|mode| mode != VimMode::Disabled)
@@ -2207,6 +2254,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        if self.segmented_code {
+            return Some(code::range_bounds(bounds, range_utf16));
+        }
         let layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
         let caret_affinity = if range.is_empty() && range.start == self.cursor_offset() {
@@ -2236,6 +2286,9 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let bounds = self.last_bounds?;
+        if self.segmented_code {
+            return Some(code::index_at(point.x - bounds.left(), self.content.len()));
+        }
         let layout = self.last_layout.as_ref()?;
         if !self.layout_is_current(layout) {
             // Layout is from a previous frame; report no hit instead of
@@ -3089,7 +3142,11 @@ impl Render for TextInput {
             })
             .w_full()
             .when(self.multiline && self.fill_height, |el| el.h_full())
-            .child(TextElement { input: cx.entity() });
+            .child(if self.segmented_code {
+                code::render(self, window, cx).into_any_element()
+            } else {
+                TextElement { input: cx.entity() }.into_any_element()
+            });
         // The right-click menu sits beside the field's key context, not in
         // it: while the menu has focus, keys it does not bind must not edit
         // the text or reach the field's Vim.

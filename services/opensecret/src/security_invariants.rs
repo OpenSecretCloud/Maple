@@ -114,6 +114,7 @@ const DESTRUCTIVE_RESET_CASCADE_ENCRYPTED_TABLES: &[(&str, &str)] = &[
 const DESTRUCTIVE_RESET_UPDATED_ENCRYPTED_TABLES: &[&str] = &["users"];
 
 const ENCRYPTED_TABLES_NOT_USER_PRIVATE_STORAGE: &[&str] = &[
+    "remote_enrollment_records",
     "account_deletion_requests",
     "org_project_secrets",
     "password_reset_requests",
@@ -1439,8 +1440,9 @@ fn collect_schema_tables_with_encrypted_columns(schema_source: &str) -> BTreeSet
             continue;
         }
 
-        let is_encrypted_column =
-            trimmed.contains("_enc ->") || trimmed.contains("encrypted_code ->");
+        let is_encrypted_column = trimmed.contains("_enc ->")
+            || trimmed.contains("encrypted_code ->")
+            || trimmed.contains("ciphertext ->");
         if is_encrypted_column {
             let table_name = current_table.as_ref().unwrap_or_else(|| {
                 panic!("encrypted column `{trimmed}` should appear inside a table declaration")

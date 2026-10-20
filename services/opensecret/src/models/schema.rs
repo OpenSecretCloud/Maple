@@ -410,6 +410,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    remote_enrollment_records (user_id, kind, record_id) {
+        user_id -> Uuid,
+        project_id -> Int4,
+        kind -> Text,
+        record_id -> Text,
+        nonce -> Uuid,
+        expires_at -> Int8,
+        ciphertext -> Bytea,
+    }
+}
+
+diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::ResponseStatus;
 
@@ -623,6 +635,7 @@ diesel::joinable!(project_settings -> org_projects (project_id));
 diesel::joinable!(reasoning_items -> assistant_messages (assistant_message_id));
 diesel::joinable!(reasoning_items -> conversations (conversation_id));
 diesel::joinable!(reasoning_items -> responses (response_id));
+diesel::joinable!(remote_enrollment_records -> org_projects (project_id));
 diesel::joinable!(responses -> conversations (conversation_id));
 diesel::joinable!(tool_calls -> conversations (conversation_id));
 diesel::joinable!(tool_calls -> responses (response_id));
@@ -667,6 +680,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     project_settings,
     push_devices,
     reasoning_items,
+    remote_enrollment_records,
     responses,
     token_usage,
     tool_calls,

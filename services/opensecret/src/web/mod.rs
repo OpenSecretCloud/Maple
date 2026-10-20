@@ -10,6 +10,7 @@ pub mod openai_auth;
 pub mod platform;
 pub mod protected_routes;
 pub mod provider_error;
+pub(crate) mod remote;
 pub mod responses;
 pub(crate) mod system_one;
 pub(crate) mod transcription;

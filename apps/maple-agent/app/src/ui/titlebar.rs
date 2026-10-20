@@ -161,8 +161,8 @@ impl Render for TitleBar {
                             window.zoom_window();
                         })
                     }))
-                    .child(control("title-close", "✕", |_window, cx| {
-                        cx.quit();
+                    .child(control("title-close", "✕", |window, cx| {
+                        crate::desktop::close_window(window, cx);
                     })),
             )
             .into_any_element()

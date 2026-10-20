@@ -15,6 +15,8 @@ pub struct Hello {
     pub profile: String,
     pub build: String,
     pub mode: ConnectionMode,
+    #[serde(default)]
+    pub remote_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +45,9 @@ pub struct Request {
 
 #[derive(Serialize, Deserialize)]
 pub enum Message {
+    Closed {
+        reason: String,
+    },
     Response {
         id: u64,
         result: Result<serde_json::Value, String>,

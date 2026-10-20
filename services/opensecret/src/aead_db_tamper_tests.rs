@@ -2365,3 +2365,291 @@ fn copy_victim_seed_wrap_ciphertext_to_attacker_for_kind(
         ))
         .expect("tampered attacker seed wrap should update");
 }
+
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_remote_enrollment_rejects_cross_account_row_swaps_and_replayed_windows() {
+    use crate::models::schema::remote_enrollment_records as records;
+    use crate::web::remote::{admit_inner, read_record, register_inner, types::*};
+    use ed25519_dalek::{Signer, SigningKey};
+    let state =
+        build_local_test_app_state(std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").unwrap()).await;
+    let project = first_active_project(&state);
+    let alice = state
+        .db
+        .create_user(NewUser::new(None, None, project.id))
+        .unwrap();
+    let bob = state
+        .db
+        .create_user(NewUser::new(None, None, project.id))
+        .unwrap();
+    let a_key = SigningKey::from_bytes(&[8; 32]);
+    let b_key = SigningKey::from_bytes(&[9; 32]);
+    let init = |user: &User, key: &SigningKey, window| {
+        let registration = RemoteRegistration {
+            account: user.uuid,
+            project: project.client_id,
+            deployment: "local".into(),
+            channel: "unpackaged".into(),
+            endpoint: hex::encode(key.verifying_key().to_bytes()),
+            name: "Synthetic computer".into(),
+            addresses: RemoteAddresses::default(),
+            accepting_connections: true,
+            window,
+        };
+        let signature = hex::encode(key.sign(&registration.proof_message().unwrap()).to_bytes());
+        RegisterRemoteDevice {
+            registration,
+            signature,
+        }
+    };
+    let window = Uuid::new_v4();
+    let first = register_inner(
+        &state,
+        &alice,
+        init(
+            &alice,
+            &b_key,
+            Some(RemoteWindowInit {
+                id: window,
+                remaining_seconds: 1,
+            }),
+        ),
+    )
+    .unwrap();
+    let repeated = register_inner(
+        &state,
+        &alice,
+        init(
+            &alice,
+            &b_key,
+            Some(RemoteWindowInit {
+                id: window,
+                remaining_seconds: 300,
+            }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        first.window.as_ref().unwrap().expires_at,
+        repeated.window.as_ref().unwrap().expires_at
+    );
+    // Expired plaintext cleanup hints must not revive an identical W.
+    {
+        let conn = &mut state.db.get_pool().get().unwrap();
+        diesel::update(
+            records::table
+                .filter(records::user_id.eq(alice.uuid))
+                .filter(records::kind.eq("window")),
+        )
+        .set(records::expires_at.eq(0_i64))
+        .execute(conn)
+        .unwrap();
+    }
+    let repeated = register_inner(
+        &state,
+        &alice,
+        init(
+            &alice,
+            &b_key,
+            Some(RemoteWindowInit {
+                id: window,
+                remaining_seconds: 300,
+            }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        first.window.as_ref().unwrap().expires_at,
+        repeated.window.as_ref().unwrap().expires_at
+    );
+    let fresh = Uuid::new_v4();
+    let b = register_inner(
+        &state,
+        &alice,
+        init(
+            &alice,
+            &b_key,
+            Some(RemoteWindowInit {
+                id: fresh,
+                remaining_seconds: 300,
+            }),
+        ),
+    )
+    .unwrap();
+    let a = register_inner(&state, &alice, init(&alice, &a_key, None)).unwrap();
+    let request = || RemoteAdmissionRequest {
+        controller: a.endpoint.clone(),
+        execution: b.endpoint.clone(),
+        window: fresh,
+    };
+    assert!(crate::web::remote::relay::registered(&state, &a.endpoint));
+    assert!(admit_inner(&state, &alice, request()).is_ok());
+    assert!(admit_inner(&state, &bob, request()).is_err());
+    let mut forged = init(&alice, &a_key, None);
+    forged.registration.account = bob.uuid;
+    assert!(register_inner(&state, &bob, forged).is_err());
+    // The DB attacker copies a valid row AND rewrites its owner/project lookup
+    // columns. Only authenticated Bob supplies the AAD identity on the read.
+    let mut copied = state
+        .db
+        .get_remote_enrollment(alice.uuid, "device", &b.endpoint)
+        .unwrap()
+        .unwrap();
+    copied.user_id = bob.uuid;
+    copied.project_id = bob.project_id;
+    state
+        .db
+        .put_remote_enrollment(copied, Utc::now().timestamp())
+        .unwrap();
+    assert!(read_record::<RemoteDevice>(&state, &bob, "device", &b.endpoint).is_err());
+    // Same-owner, different device-key substitution also fails.
+    let mut swapped = state
+        .db
+        .get_remote_enrollment(alice.uuid, "device", &b.endpoint)
+        .unwrap()
+        .unwrap();
+    swapped.record_id = a.endpoint.clone();
+    state
+        .db
+        .put_remote_enrollment(swapped, Utc::now().timestamp())
+        .unwrap();
+    assert!(read_record::<RemoteDevice>(&state, &alice, "device", &a.endpoint).is_err());
+    assert!(!crate::web::remote::relay::registered(&state, &a.endpoint));
+    // A valid admission ciphertext cannot become another account's permit.
+    let admission_row = state
+        .db
+        .list_remote_enrollment(alice.uuid, "admission")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let mut copied = admission_row.clone();
+    copied.user_id = bob.uuid;
+    state
+        .db
+        .put_remote_enrollment(copied, Utc::now().timestamp())
+        .unwrap();
+    assert!(
+        read_record::<serde_json::Value>(&state, &bob, "admission", &admission_row.record_id)
+            .is_err()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_remote_windows_reclaim_authenticated_expiry_without_deleting_newer_records() {
+    use crate::models::remote_enrollment::Record;
+    use crate::remote_enrollment::Binding;
+    use crate::web::remote::{register_inner, types::*};
+    use ed25519_dalek::{Signer, SigningKey};
+    let state =
+        build_local_test_app_state(std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").unwrap()).await;
+    let project = first_active_project(&state);
+    let user = state
+        .db
+        .create_user(NewUser::new(None, None, project.id))
+        .unwrap();
+    let now = Utc::now().timestamp();
+    for number in 0..64 {
+        let endpoint = hex::encode(
+            SigningKey::from_bytes(&[number; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        let window = RemoteWindow {
+            id: Uuid::new_v4(),
+            expires_at: now - 172800,
+        };
+        let ciphertext = Binding {
+            account: user.uuid,
+            project: project.id,
+            deployment: "local",
+            kind: "window",
+            id: &endpoint,
+        }
+        .seal(&state.enclave_key, &window)
+        .unwrap();
+        state
+            .db
+            .put_remote_enrollment(
+                Record {
+                    user_id: user.uuid,
+                    project_id: project.id,
+                    kind: "window".into(),
+                    record_id: endpoint,
+                    nonce: window.id,
+                    expires_at: i64::MAX,
+                    ciphertext,
+                },
+                now,
+            )
+            .unwrap();
+    }
+    let old = state
+        .db
+        .list_remote_enrollment(user.uuid, "window")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let newer = RemoteWindow {
+        id: Uuid::new_v4(),
+        expires_at: now + 300,
+    };
+    let mut replaced = old.clone();
+    replaced.nonce = newer.id;
+    replaced.ciphertext = Binding {
+        account: user.uuid,
+        project: project.id,
+        deployment: "local",
+        kind: "window",
+        id: &old.record_id,
+    }
+    .seal(&state.enclave_key, &newer)
+    .unwrap();
+    state.db.put_remote_enrollment(replaced, now).unwrap();
+    state.db.delete_remote_enrollment_unchanged(&old).unwrap();
+    assert_eq!(
+        state
+            .db
+            .get_remote_enrollment(user.uuid, "window", &old.record_id)
+            .unwrap()
+            .unwrap()
+            .nonce,
+        newer.id
+    );
+    let key = SigningKey::from_bytes(&[99; 32]);
+    let registration = RemoteRegistration {
+        account: user.uuid,
+        project: project.client_id,
+        deployment: "local".into(),
+        channel: "unpackaged".into(),
+        endpoint: hex::encode(key.verifying_key().to_bytes()),
+        name: "New computer".into(),
+        addresses: RemoteAddresses::default(),
+        accepting_connections: true,
+        window: Some(RemoteWindowInit {
+            id: Uuid::new_v4(),
+            remaining_seconds: 300,
+        }),
+    };
+    let signature = hex::encode(key.sign(&registration.proof_message().unwrap()).to_bytes());
+    register_inner(
+        &state,
+        &user,
+        RegisterRemoteDevice {
+            registration,
+            signature,
+        },
+    )
+    .unwrap();
+    let remaining = state
+        .db
+        .list_remote_enrollment(user.uuid, "window")
+        .unwrap();
+    assert_eq!(
+        remaining.len(),
+        2,
+        "the live replacement and new window must survive"
+    );
+    assert!(remaining.iter().any(|r| r.nonce == newer.id));
+}

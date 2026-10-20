@@ -20,16 +20,26 @@ After the last intentional desktop Quit or ACP detach, a two-second grace period
 allows a replacement to attach, then the host cancels and drains its work and exits.
 An unexpected desktop connection loss instead reserves thirty seconds for recovery,
 including when another client briefly connects and leaves during that interval.
-Attached clients keep the host alive. `maple-agent host stop`
+Attached clients keep the host alive. With incoming remote access enabled, the
+host stays available without attached clients; closing the desktop window
+backgrounds it through the Dock/tray. Explicit desktop Quit requests that local
+host stop. A missing owner needs no stop; if ownership remains but Stop fails,
+a visible confirmation offers Keep open or Quit anyway, including with no main
+window open. Quit anyway exits the desktop without claiming the host stopped.
+See [remote access](remote-access.md) for the no-tray fallback and controller role.
+`maple-agent host stop`
 explicitly stops this profile and all its tasks, even with clients attached.
-There is no login item, permanent service, remote listener or remote keepalive.
+There is no login item or permanently installed service. Remote listeners are
+opt-in, and a never-used remote profile does not initialize networking.
 
 One OS user, build channel and canonical config/data roots identify the storage
 owner. Startup and lifetime file locks prevent two owners. Backend URL, billing
 URL, client identity, attestation environment, executable source version and
 compiled features must match before a client joins. A mismatched client reports
 an error; it does not terminate or replace the owner. Desktop shows a startup
-error window instead of panicking. Explicit `maple-agent host stop` can stop the
+error window instead of panicking, with a user-confirmed Stop-and-reopen action
+for an incompatible owner. It warns that existing tasks and remote access stop.
+Explicit `maple-agent host stop` can stop the
 owner of the same storage namespace even when its build or backend settings
 differ; this exception does not allow other commands. Hosts predating that stop
 exception must be stopped using their matching build/configuration. Quit the old

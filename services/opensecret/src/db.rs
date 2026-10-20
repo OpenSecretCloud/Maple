@@ -143,10 +143,36 @@ pub enum DBError {
     AppDataMigrationError(#[from] AppDataMigrationError),
     #[error("Credential state changed during update")]
     StaleCredentialState,
+    #[error("Remote enrollment capacity reached")]
+    RemoteEnrollmentCapacity,
 }
 
 #[allow(dead_code)]
 pub trait DBConnection {
+    fn remote_relay_candidates(
+        &self,
+        endpoint: &str,
+    ) -> Result<Vec<crate::models::remote_enrollment::Record>, DBError>;
+    fn put_remote_enrollment(
+        &self,
+        record: crate::models::remote_enrollment::Record,
+        now: i64,
+    ) -> Result<crate::models::remote_enrollment::Record, DBError>;
+    fn delete_remote_enrollment_unchanged(
+        &self,
+        record: &crate::models::remote_enrollment::Record,
+    ) -> Result<(), DBError>;
+    fn get_remote_enrollment(
+        &self,
+        user: Uuid,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<crate::models::remote_enrollment::Record>, DBError>;
+    fn list_remote_enrollment(
+        &self,
+        user: Uuid,
+        kind: &str,
+    ) -> Result<Vec<crate::models::remote_enrollment::Record>, DBError>;
     fn create_user(&self, new_user: NewUser) -> Result<User, DBError>;
     fn get_user_by_uuid(&self, uuid: Uuid) -> Result<User, DBError>;
     fn get_user_by_email(&self, email: String, project_id: i32) -> Result<User, DBError>;
@@ -753,6 +779,45 @@ pub(crate) struct PostgresConnection {
 }
 
 impl DBConnection for PostgresConnection {
+    fn remote_relay_candidates(
+        &self,
+        endpoint: &str,
+    ) -> Result<Vec<crate::models::remote_enrollment::Record>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        crate::models::remote_enrollment::Record::relay_candidates(conn, endpoint)
+    }
+    fn put_remote_enrollment(
+        &self,
+        record: crate::models::remote_enrollment::Record,
+        now: i64,
+    ) -> Result<crate::models::remote_enrollment::Record, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        record.put(conn, now)
+    }
+    fn delete_remote_enrollment_unchanged(
+        &self,
+        record: &crate::models::remote_enrollment::Record,
+    ) -> Result<(), DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        record.delete_unchanged(conn)
+    }
+    fn get_remote_enrollment(
+        &self,
+        user: Uuid,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<crate::models::remote_enrollment::Record>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        crate::models::remote_enrollment::Record::get(conn, user, kind, id)
+    }
+    fn list_remote_enrollment(
+        &self,
+        user: Uuid,
+        kind: &str,
+    ) -> Result<Vec<crate::models::remote_enrollment::Record>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        crate::models::remote_enrollment::Record::list(conn, user, kind)
+    }
     fn create_user(&self, new_user: NewUser) -> Result<User, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
         let result = new_user.insert(conn).map_err(DBError::from);

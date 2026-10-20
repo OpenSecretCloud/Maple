@@ -25,6 +25,8 @@ desktop = [
     "dep:notify",
     "dep:spellbook",
     "dep:wayland-client",
+    "dep:tray-icon",
+    "dep:zbus",
 ]
 # `maple-agent acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
@@ -69,9 +71,14 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 # Hidden password prompt for `maple-agent login`.
 rpassword = "7"
+hostname = "0.4"
 maple-proxy = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json"] }
 percent-encoding = "2"
+url = "2.5"
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }
+pake-cpace = { git = "https://github.com/1Password/cpace", rev = "7e2e42c7d359969f4356292c2bd2cf3ff6eeeecc" }
+zeroize = "1"
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 
@@ -79,6 +86,10 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 # `ui::decorations`. gpui cannot answer that question.
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = { version = "0.31", optional = true }
+zbus = { version = "=5.19.0", optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+tray-icon = { version = "=0.26.1", default-features = false, features = ["ksni"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

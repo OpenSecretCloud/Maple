@@ -1,7 +1,7 @@
 //! One on-demand process owns a profile's backend. Frontends attach over
 //! OS-private IPC; closing a frontend never tears down another client's runtime.
 
-mod ipc;
+pub(crate) mod ipc;
 pub mod protocol;
 pub(crate) mod receipts;
 #[cfg(test)]
@@ -74,6 +74,13 @@ impl RemoteClient {
         Ok(Self::attach(endpoint, connection, welcome))
     }
 
+    pub async fn connect_remote(api_url: &str, peer: String) -> Result<Self, String> {
+        let mut endpoint = ipc::Endpoint::new(api_url)?;
+        endpoint.remote_host = Some(peer);
+        let (connection, welcome) = connect(&endpoint, ConnectionMode::Client, true).await?;
+        Ok(Self::attach(endpoint, connection, welcome))
+    }
+
     fn attach(endpoint: ipc::Endpoint, connection: ipc::Connection, welcome: Welcome) -> Self {
         let state = Arc::new(ClientState {
             pending: Mutex::new(Some(HashMap::new())),
@@ -119,6 +126,16 @@ impl RemoteClient {
         method: &str,
         params: impl Serialize,
     ) -> Result<R, String> {
+        let send_id = (method == "send_message").then(|| uuid::Uuid::new_v4().to_string());
+        self.call_identified(method, params, send_id).await
+    }
+
+    pub async fn call_identified<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+        send_id: Option<String>,
+    ) -> Result<R, String> {
         let params = serde_json::to_value(params)
             .map_err(|_| "Could not encode host request".to_string())?;
         let generation = self.state.generation.load(Ordering::Relaxed);
@@ -143,7 +160,6 @@ impl RemoteClient {
             state: &self.state,
             id,
         };
-        let send_id = (method == "send_message").then(|| uuid::Uuid::new_v4().to_string());
         let sent = self
             .requests
             .send(Request {
@@ -157,6 +173,11 @@ impl RemoteClient {
             self.state.disconnect();
         }
         let result = match (sent, reply.await) {
+            (Ok(()), Ok(Err(error)))
+                if error.starts_with("Send outcome unknown") && send_id.is_some() =>
+            {
+                recover_send(&self.endpoint, send_id.as_deref().unwrap()).await?
+            }
             (Ok(()), Ok(result)) => result?,
             (_, _) => match send_id {
                 Some(id) => recover_send(&self.endpoint, &id).await?,
@@ -190,11 +211,27 @@ async fn maintain_connection(
                 .send(AgentServiceEvent::HostReconnecting)
                 .await
                 .map_err(|_| ())?;
+            let mut delay = Duration::from_millis(250);
             loop {
+                if requests.is_closed() || events.is_closed() {
+                    return Err(());
+                }
                 // No startup arbitration or spawn here: explicit host stop and
                 // crashes must never be undone by a frontend reconnect loop.
-                if let Ok((next, welcome)) = connect(&endpoint, ConnectionMode::Client, false).await
+                let connected = connect(&endpoint, ConnectionMode::Client, false).await;
+                if endpoint.remote_host.is_some()
+                    && connected
+                        .as_ref()
+                        .err()
+                        .is_some_and(|error| error.starts_with("Remote access ended:"))
                 {
+                    let reason = connected.err().unwrap();
+                    let _ = events
+                        .send(AgentServiceEvent::RemoteAccessEnded(reason))
+                        .await;
+                    return Err(());
+                }
+                if let Ok((next, welcome)) = connected {
                     *state.user_id.write().unwrap() = welcome.user_id.clone();
                     events
                         .send(AgentServiceEvent::AccountChanged(welcome.user_id))
@@ -209,11 +246,19 @@ async fn maintain_connection(
                         .map_err(|_| ())?;
                     return Ok::<_, ()>(next);
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(5));
             }
         };
-        match tokio::time::timeout(RECONNECT_TIMEOUT, recovery).await {
-            Ok(Ok(next)) => connection = next,
+        let recovered = if endpoint.remote_host.is_some() {
+            recovery.await
+        } else {
+            tokio::time::timeout(RECONNECT_TIMEOUT, recovery)
+                .await
+                .unwrap_or(Err(()))
+        };
+        match recovered {
+            Ok(next) => connection = next,
             _ => {
                 state.disconnect();
                 let _ = events.send(AgentServiceEvent::HostDisconnected).await;
@@ -275,6 +320,10 @@ async fn client_connection(
                 }
             }
             message = incoming.recv() => match message {
+                Some(Message::Closed { reason }) => {
+                    let _ = events.send(AgentServiceEvent::RemoteAccessEnded(reason)).await;
+                    return true;
+                }
                 Some(Message::Response { id, result }) => {
                     if let Some(sender) = state.pending.lock().unwrap().as_mut().and_then(|pending| pending.remove(&id)) {
                         let _ = sender.send(result);
@@ -292,10 +341,20 @@ async fn client_connection(
     }
 }
 
+#[cfg(test)]
 async fn handshake(
+    stream: ipc::Connection,
+    profile: &str,
+    mode: ConnectionMode,
+) -> Result<(ipc::Connection, Welcome), String> {
+    handshake_scoped(stream, profile, mode, None).await
+}
+
+async fn handshake_scoped(
     mut stream: ipc::Connection,
     profile: &str,
     mode: ConnectionMode,
+    remote_host: Option<String>,
 ) -> Result<(ipc::Connection, Welcome), String> {
     protocol::write(
         &mut stream,
@@ -304,6 +363,7 @@ async fn handshake(
             profile: profile.into(),
             build: protocol::BUILD.into(),
             mode,
+            remote_host,
         },
     )
     .await?;
@@ -326,9 +386,17 @@ async fn connect(
     start: bool,
 ) -> Result<(ipc::Connection, Welcome), String> {
     if let Ok(stream) = endpoint.connect().await {
-        return tokio::time::timeout(START_TIMEOUT, handshake(stream, &endpoint.profile, mode))
-            .await
-            .map_err(|_| "Maple host did not answer".to_string())?;
+        return tokio::time::timeout(
+            START_TIMEOUT,
+            handshake_scoped(
+                stream,
+                &endpoint.profile,
+                mode,
+                endpoint.remote_host.clone(),
+            ),
+        )
+        .await
+        .map_err(|_| "Maple host did not answer".to_string())?;
     }
     if !start {
         return Err("No Maple host is running for this profile".into());
@@ -345,18 +413,33 @@ async fn connect(
         }
     }
     if let Ok(stream) = endpoint.connect().await {
-        return tokio::time::timeout_at(deadline, handshake(stream, &endpoint.profile, mode))
-            .await
-            .map_err(|_| "Maple host did not answer".to_string())?;
+        return tokio::time::timeout_at(
+            deadline,
+            handshake_scoped(
+                stream,
+                &endpoint.profile,
+                mode,
+                endpoint.remote_host.clone(),
+            ),
+        )
+        .await
+        .map_err(|_| "Maple host did not answer".to_string())?;
     }
     spawn_host()?;
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
         if let Ok(stream) = endpoint.connect().await {
-            let result =
-                tokio::time::timeout_at(deadline, handshake(stream, &endpoint.profile, mode))
-                    .await
-                    .map_err(|_| "Maple host did not answer".to_string())?;
+            let result = tokio::time::timeout_at(
+                deadline,
+                handshake_scoped(
+                    stream,
+                    &endpoint.profile,
+                    mode,
+                    endpoint.remote_host.clone(),
+                ),
+            )
+            .await
+            .map_err(|_| "Maple host did not answer".to_string())?;
             drop(startup);
             return result;
         }
@@ -446,6 +529,7 @@ async fn serve(endpoint: ipc::Endpoint, backend: Arc<LocalBackend>) -> Result<()
     let receipts = Arc::new(receipts::Receipts::open(
         &backend::local::host_data_root().join("send-receipts.db"),
     )?);
+    receipts.recover_after_restart()?;
     serve_with_receipts(endpoint, backend, receipts).await
 }
 
@@ -461,9 +545,19 @@ async fn serve_with_receipts(
         .take_events()
         .await
         .ok_or("Host event source already taken")?;
+    let remote =
+        crate::remote::manager::Manager::new(backend.clone(), events.clone(), receipts.clone());
+    let resume = remote.clone();
+    tokio::spawn(async move {
+        resume.restore().await;
+    });
     let sink = events.clone();
+    let account_remote = remote.clone();
     let pump = tokio::spawn(async move {
         while let Some(event) = source.recv().await {
+            if matches!(event, AgentServiceEvent::AccountChanged(_)) {
+                account_remote.shutdown().await;
+            }
             let _ = sink.send(Arc::new(event));
         }
     });
@@ -476,7 +570,10 @@ async fn serve_with_receipts(
         tokio::select! {
             _ = stop_rx.recv() => break,
             _ = &mut shutdown => break,
-            _ = tokio::time::sleep_until(idle), if clients.is_empty() => break,
+            _ = tokio::time::sleep_until(idle), if clients.is_empty() => {
+                if remote.stays_running() { idle = tokio::time::Instant::now() + Duration::from_secs(1); }
+                else { break; }
+            },
             result = clients.join_next(), if !clients.is_empty() => {
                 if matches!(result, Some(Ok(Ok(false))) | Some(Err(_))) {
                     recovery_until = tokio::time::Instant::now() + DISCONNECT_GRACE;
@@ -489,8 +586,9 @@ async fn serve_with_receipts(
                 let connection = match incoming { Ok(connection) => connection, Err(error) => { log::warn!("Host rejected a connection: {error}"); continue; } };
                 if clients.len() >= MAX_CLIENTS { drop(connection); continue; }
                 let backend = backend.clone(); let endpoint = endpoint.clone(); let events = events.clone(); let stop = stop_tx.clone(); let receipts = receipts.clone();
+                let remote = remote.clone();
                 clients.spawn(async move {
-                    serve_client(connection, endpoint, backend, events, stop, receipts).await
+                    serve_client(connection, endpoint, backend, events, stop, receipts, remote).await
                 });
             }
         }
@@ -498,6 +596,7 @@ async fn serve_with_receipts(
     // Stop accepting first, then stop/drain the runtime while clients can still
     // receive its final updates. Only this owner shuts down shared children.
     drop(listener);
+    remote.shutdown().await;
     backend.shutdown_host().await;
     clients.abort_all();
     while clients.join_next().await.is_some() {}
@@ -512,13 +611,22 @@ async fn serve_client(
     events: broadcast::Sender<Arc<AgentServiceEvent>>,
     stop: mpsc::Sender<()>,
     receipts: Arc<receipts::Receipts>,
+    remote: Arc<crate::remote::manager::Manager>,
 ) -> Result<bool, String> {
     let mut subscription = events.subscribe();
-    let mode =
-        accept_handshake(&mut connection, &endpoint.profile, backend.saved_user_id()).await?;
+    let (mode, link) = accept_scoped_handshake(
+        &mut connection,
+        &endpoint.profile,
+        backend.saved_user_id(),
+        Some(&remote),
+        Some(&stop),
+    )
+    .await?;
+    if let Some(link) = link {
+        return crate::remote::control::bridge(connection, link).await;
+    }
     match mode {
         ConnectionMode::Stop => {
-            let _ = stop.send(()).await;
             return std::future::pending().await;
         }
         ConnectionMode::Acp => {
@@ -556,12 +664,22 @@ async fn serve_client(
                     return Ok(true);
                 }
                 let backend = backend.clone(); let responses = responses.clone(); let events = events.clone(); let receipts = receipts.clone();
+                let remote = remote.clone();
                 calls.spawn(async move {
                     let id = request.id;
                     let before = backend.saved_user_id();
-                    let result = dispatch_with_receipt(&backend, request, receipts).await;
+                    let result = if request.method.starts_with("remote_") {
+                        remote.dispatch(request).await
+                    } else { dispatch_with_receipt(&backend, request, receipts).await };
                     let after = backend.saved_user_id();
-                    if before != after { let _ = events.send(Arc::new(AgentServiceEvent::AccountChanged(after))); }
+                    if before != after {
+                        remote.shutdown().await;
+                        if after.is_some() {
+                            let resume = remote.clone();
+                            tokio::spawn(async move { resume.restore().await; });
+                        }
+                        let _ = events.send(Arc::new(AgentServiceEvent::AccountChanged(after)));
+                    }
                     let _ = responses.send(Message::Response { id, result }).await;
                 });
             }
@@ -587,11 +705,24 @@ async fn serve_client(
     Ok(result.unwrap_or(false))
 }
 
+#[cfg(test)]
 async fn accept_handshake(
     connection: &mut ipc::Connection,
     profile: &str,
     user_id: Option<String>,
 ) -> Result<ConnectionMode, String> {
+    accept_scoped_handshake(connection, profile, user_id, None, None)
+        .await
+        .map(|(mode, _)| mode)
+}
+
+async fn accept_scoped_handshake(
+    connection: &mut ipc::Connection,
+    profile: &str,
+    user_id: Option<String>,
+    remote: Option<&Arc<crate::remote::manager::Manager>>,
+    stop: Option<&mpsc::Sender<()>>,
+) -> Result<(ConnectionMode, Option<crate::remote::control::Link>), String> {
     let hello = tokio::time::timeout(START_TIMEOUT, protocol::read::<Hello>(connection))
         .await
         .map_err(|_| "Host handshake timed out".to_string())??;
@@ -606,6 +737,10 @@ async fn accept_handshake(
         Some(
             "Incompatible Maple host or profile. Close the existing host or run `maple-agent host stop` for this profile, then reopen Maple.",
         )
+    } else if hello.remote_host.is_some()
+        && (hello.mode != ConnectionMode::Client || remote.is_none())
+    {
+        Some("Remote selection is available only to a desktop client")
     } else if hello.mode == ConnectionMode::Acp && user_id.is_none() {
         Some(
             "Maple ACP requires sign-in. Sign in through Maple Desktop or `maple-agent login` first.",
@@ -617,7 +752,24 @@ async fn accept_handshake(
         protocol::write(connection, &Err::<Welcome, _>(error)).await?;
         return Err(error.into());
     }
-    protocol::write(
+    let link = match hello.remote_host {
+        Some(peer) => match remote
+            .expect("validated remote manager")
+            .connect(&peer)
+            .await
+        {
+            Ok(link) => Some(link),
+            Err(error) => {
+                protocol::write(connection, &Err::<Welcome, _>(&error)).await?;
+                return Err(error);
+            }
+        },
+        None => None,
+    };
+    // Always commit an authorized Stop, including when the caller leaves before
+    // its acknowledgement. Attempt the small reply first so shutdown cannot
+    // abort this task before an attached caller receives it.
+    let welcome = protocol::write(
         connection,
         &Ok::<_, String>(Welcome {
             version: protocol::VERSION,
@@ -626,8 +778,45 @@ async fn accept_handshake(
             user_id,
         }),
     )
-    .await?;
-    Ok(hello.mode)
+    .await;
+    if hello.mode == ConnectionMode::Stop
+        && let Some(stop) = stop
+    {
+        stop.send(())
+            .await
+            .map_err(|_| "Maple host is already stopping")?;
+    }
+    welcome?;
+    Ok((hello.mode, link))
+}
+
+#[cfg(feature = "desktop")]
+pub async fn request_stop(api_url: &str) -> Result<(), String> {
+    let endpoint = ipc::Endpoint::new(api_url)?;
+    request_stop_endpoint(&endpoint).await
+}
+
+#[cfg(feature = "desktop")]
+async fn request_stop_endpoint(endpoint: &ipc::Endpoint) -> Result<(), String> {
+    match connect(endpoint, ConnectionMode::Stop, false).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // A missing/inaccessible endpoint alone does not prove the host is
+            // gone. The same ownership lock protects startup and the full drain.
+            let endpoint = endpoint.clone();
+            let absent = tokio::task::spawn_blocking(move || {
+                let ownership = endpoint.lock("host.lock")?;
+                match ownership.try_lock() {
+                    Ok(()) => Ok(true),
+                    Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+                    Err(error) => Err(error.to_string()),
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            if absent { Ok(()) } else { Err(error) }
+        }
+    }
 }
 
 pub fn stop(api_url: &str) -> Result<(), String> {
@@ -694,10 +883,45 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+pub(crate) async fn dispatch_remote_with_receipt(
+    backend: &LocalBackend,
+    request: Request,
+    receipts: Arc<receipts::Receipts>,
+    session: &maple_agent::maple_api::MapleApiSession,
+    account: &str,
+) -> Result<serde_json::Value, String> {
+    let _guard = backend.account_gate.read().await;
+    if !session.remote_session_active().await || backend.saved_user_id().as_deref() != Some(account)
+    {
+        return Err("The remote account changed".into());
+    }
+    if request.method == "send_outcome" {
+        let id = request.params.as_str().ok_or("Invalid send identity")?;
+        receipts.authorize(id, account)?;
+    } else if request
+        .params
+        .pointer("/0")
+        .and_then(serde_json::Value::as_str)
+        != Some(account)
+    {
+        return Err("Remote request account mismatch".into());
+    }
+    dispatch_receipt(backend, request, receipts, true).await
+}
+
 async fn dispatch_with_receipt(
     backend: &LocalBackend,
     request: Request,
     receipts: Arc<receipts::Receipts>,
+) -> Result<serde_json::Value, String> {
+    dispatch_receipt(backend, request, receipts, false).await
+}
+
+async fn dispatch_receipt(
+    backend: &LocalBackend,
+    request: Request,
+    receipts: Arc<receipts::Receipts>,
+    remote_guarded: bool,
 ) -> Result<serde_json::Value, String> {
     if request.method == "send_outcome" {
         let id: String =
@@ -711,7 +935,11 @@ async fn dispatch_with_receipt(
         .map_err(|e| e.to_string())?;
     }
     if request.method != "send_message" {
-        return backend::dispatch(backend, request).await;
+        return if remote_guarded {
+            backend::dispatch_inner(backend, request).await
+        } else {
+            backend::dispatch(backend, request).await
+        };
     }
     let id = request
         .send_id
@@ -732,7 +960,11 @@ async fn dispatch_with_receipt(
         }
         None => {}
     }
-    let result = backend::dispatch(backend, request).await;
+    let result = if remote_guarded {
+        backend::dispatch_inner(backend, request).await
+    } else {
+        backend::dispatch(backend, request).await
+    };
     let saved = result.clone();
     tokio::task::spawn_blocking(move || receipts.finish(&id, &saved))
         .await
@@ -766,10 +998,11 @@ async fn recover_send(endpoint: &ipc::Endpoint, id: &str) -> Result<serde_json::
                                 "The host did not admit this message. It is safe to send again."
                                     .into(),
                             ),
-                            receipts::Outcome::Pending => break,
+                            receipts::Outcome::Pending | receipts::Outcome::Interrupted => break,
                         }
                     }
                     Message::Event(_) => {}
+                    Message::Closed { reason } => return Err(reason),
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -778,7 +1011,14 @@ async fn recover_send(endpoint: &ipc::Endpoint, id: &str) -> Result<serde_json::
             "Send outcome unknown ({id}). Reload this task before sending again."
         ))
     };
-    match tokio::time::timeout(Duration::from_secs(5), recovery).await {
+    // Remote receipt lookup includes enrollment/dial/handshake. Keep local
+    // recovery quick without squeezing the entire remote setup into five seconds.
+    let budget = if endpoint.remote_host.is_some() {
+        Duration::from_secs(40)
+    } else {
+        Duration::from_secs(5)
+    };
+    match tokio::time::timeout(budget, recovery).await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(error)) if error.starts_with("The host did not admit") => Err(error),
         _ => Err(format!(
@@ -806,6 +1046,7 @@ mod tests {
                     profile: "same-storage-profile".into(),
                     build: protocol::BUILD.into(),
                     mode,
+                    remote_host: None,
                 };
                 match mismatch {
                     "profile" => hello.profile = "different-backend".into(),

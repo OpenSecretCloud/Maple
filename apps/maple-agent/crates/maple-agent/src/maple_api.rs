@@ -405,6 +405,48 @@ impl MapleApiSession {
         Ok(response.map_err(map_sdk_error)?.token)
     }
 
+    /// Whether this exact signed-in session has not been invalidated locally.
+    pub async fn remote_session_active(&self) -> bool {
+        self.inner.read().await.active
+    }
+
+    pub async fn register_remote_device(
+        &self,
+        request: maple_sdk::remote::RegisterRemoteDevice,
+    ) -> Result<maple_sdk::remote::RemoteDevice, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.register_remote_device(request).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_remote_error)
+    }
+
+    pub async fn list_remote_devices(&self) -> Result<maple_sdk::remote::RemoteDeviceList, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.list_remote_devices().await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_remote_error)
+    }
+
+    pub async fn request_remote_admission(
+        &self,
+        request: maple_sdk::remote::RemoteAdmissionRequest,
+    ) -> Result<maple_sdk::remote::RemoteAdmission, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.request_remote_admission(request).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_remote_error)
+    }
+
+    pub async fn check_remote_admission(
+        &self,
+        request: maple_sdk::remote::CheckRemoteAdmission,
+    ) -> Result<maple_sdk::remote::RemoteAdmissionCheck, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.check_remote_admission(request).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_remote_error)
+    }
+
     /// The account profile behind this session.
     pub async fn account(&self) -> Result<MapleAccount, MapleAccountError> {
         let snapshot = self.client_snapshot().await?;
@@ -808,6 +850,22 @@ pub const AUTH_WRONG_ACCOUNT_MESSAGE: &str =
 /// error or timeout where the credentials may still be valid.
 pub fn is_auth_rejection(message: &str) -> bool {
     message == AUTH_REJECTED_MESSAGE || message == AUTH_WRONG_ACCOUNT_MESSAGE
+}
+
+fn map_remote_error(error: maple_sdk::Error) -> String {
+    match error {
+        maple_sdk::Error::Authentication(_)
+        | maple_sdk::Error::Api {
+            status: 401 | 403, ..
+        } => AUTH_REJECTED_MESSAGE.to_owned(),
+        maple_sdk::Error::Api { status: 429, .. } => {
+            "Remote enrollment limit reached. Try again later.".into()
+        }
+        maple_sdk::Error::Api { status: 400, .. } => {
+            "Remote enrollment request was rejected. Refresh devices and try again.".into()
+        }
+        _ => "Remote enrollment service is unavailable. Try again when connected.".into(),
+    }
 }
 
 fn map_sdk_error(error: maple_sdk::Error) -> String {

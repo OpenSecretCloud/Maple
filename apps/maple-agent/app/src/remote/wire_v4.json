@@ -1,0 +1,187 @@
+{
+  "hello": {
+    "version": 4,
+    "minimum_version": 4,
+    "account": "account",
+    "project": "project",
+    "deployment": "local",
+    "channel": "unpackaged",
+    "mode": {
+      "kind": "control"
+    }
+  },
+  "pair": {
+    "version": 4,
+    "minimum_version": 4,
+    "account": "account",
+    "project": "project",
+    "deployment": "local",
+    "channel": "unpackaged",
+    "mode": {
+      "kind": "pair",
+      "window": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "admission": "opaque-admission"
+    }
+  },
+  "header": {
+    "id": 7,
+    "method": "send_message",
+    "send_id": "original-send"
+  },
+  "command": {
+    "id": 8,
+    "method": "send_outcome",
+    "send_id": null,
+    "params": "original-send"
+  },
+  "refusal": {
+    "Err": {
+      "terminal": false,
+      "message": "Pairing window is closed"
+    }
+  },
+  "image": {
+    "Response": {
+      "id": 9,
+      "result": {
+        "Ok": "AP8="
+      }
+    }
+  },
+  "failure": {
+    "Response": {
+      "id": 10,
+      "result": {
+        "Err": "Remote reply is too large to transfer"
+      }
+    }
+  },
+  "events": [
+    {
+      "Event": {
+        "SessionUpdated": {
+          "session_id": "task",
+          "run_id": "run",
+          "session": {
+            "id": "task",
+            "title": "Fixture task",
+            "projectRoot": "/project",
+            "createdMs": 1,
+            "updatedMs": 2,
+            "messageCount": 1,
+            "model": "fixture-model",
+            "webEnabled": false,
+            "state": "active",
+            "acp": false
+          }
+        }
+      }
+    },
+    {
+      "Event": {
+        "Run": {
+          "session_id": "task",
+          "run_id": "run",
+          "event": {
+            "TimelineItem": {
+              "revision": 3,
+              "id": "reply",
+              "itemType": "message",
+              "role": "assistant",
+              "text": "hello",
+              "createdMs": 2,
+              "merge": "append"
+            }
+          }
+        }
+      }
+    },
+    {
+      "Event": {
+        "Run": {
+          "session_id": "task",
+          "run_id": "run",
+          "event": {
+            "Finished": "Completed"
+          }
+        }
+      }
+    },
+    {
+      "Event": {
+        "QuestionResolved": {
+          "request_id": "question"
+        }
+      }
+    }
+  ],
+  "send": {
+    "id": 11,
+    "method": "send_message",
+    "send_id": "d0c0caaa-90f4-46eb-b78a-747130b56187",
+    "params": [
+      "account",
+      {
+        "sessionId": "task",
+        "text": "Inspect this",
+        "model": "fixture-model",
+        "contextLimit": 32000,
+        "visionCapable": true,
+        "steer": true,
+        "queueId": null,
+        "attachments": [
+          {
+            "name": "pixel.png",
+            "dataUrl": "data:image/png;base64,AP8="
+          }
+        ]
+      }
+    ]
+  },
+  "sessions": {
+    "Response": {
+      "id": 12,
+      "result": {
+        "Ok": [
+          {
+            "id": "task",
+            "title": "Fixture task",
+            "projectRoot": "/project",
+            "createdMs": 1,
+            "updatedMs": 2,
+            "messageCount": 1,
+            "model": "fixture-model",
+            "webEnabled": false,
+            "state": "active",
+            "acp": false
+          }
+        ]
+      }
+    }
+  },
+  "receipt": {
+    "Response": {
+      "id": 13,
+      "result": {
+        "Ok": "Interrupted"
+      }
+    }
+  }
+}

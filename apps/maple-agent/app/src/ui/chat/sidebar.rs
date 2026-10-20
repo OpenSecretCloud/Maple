@@ -10,6 +10,19 @@
 //! Clicks that need the window (new task, settings, collapse) call the
 //! screen directly from plain closures, which run outside any update.
 
+#[path = "sidebar_computers.rs"]
+mod computers;
+use super::computers::{Computer, Destination, Navigate};
+use computers::{OtherTask, ProjectHeading};
+
+/// Browsing belongs to the desktop window; conversations belong to computers.
+/// Carry this small view state when swapping the per-computer chat screens.
+pub(crate) struct BrowseState {
+    search: String,
+    archived_expanded: bool,
+    scroll: gpui::ListOffset,
+}
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -34,6 +47,8 @@ use crate::ui::widgets;
 /// What the sidebar asks the screen to do.
 #[derive(Clone, Debug)]
 pub(super) enum SidebarEvent {
+    Navigate(Navigate),
+    PreferencesChanged,
     /// Show a task.
     Select(String),
     /// A session changed on the backend (a rename); the screen owns the
@@ -50,7 +65,10 @@ pub(super) enum SidebarEvent {
     /// Remove a project; the screen confirms first.
     RemoveRoot(String),
     /// Trust or untrust a project.
-    SetTrust { path: String, trusted: bool },
+    SetTrust {
+        path: String,
+        trusted: bool,
+    },
     /// Open the folder picker for a new project.
     ChooseProject,
     /// Something to tell the user.
@@ -144,6 +162,9 @@ enum SidebarPopup {
 /// rows on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarEntry {
+    ComputerProject(usize),
+    OtherTask(usize),
+    Computer(usize),
     NewTask,
     /// The project switcher row above the sections.
     ProjectsHeader,
@@ -289,6 +310,10 @@ pub(super) struct SwitcherRoot {
 }
 
 pub(super) struct Sidebar {
+    computers: Arc<Vec<Computer>>,
+    computer_projects: Vec<ProjectHeading>,
+    other_tasks: Vec<OtherTask>,
+    computer_archived_count: usize,
     backend: Arc<AgentBackend>,
     user_id: String,
     chat: WeakEntity<ChatScreen>,
@@ -345,6 +370,26 @@ pub(super) struct Sidebar {
 impl EventEmitter<SidebarEvent> for Sidebar {}
 
 impl Sidebar {
+    pub(crate) fn browse_state(&self, cx: &gpui::App) -> BrowseState {
+        BrowseState {
+            search: self.search_input.read(cx).text(),
+            archived_expanded: self.archived_expanded,
+            scroll: self.list.logical_scroll_top(),
+        }
+    }
+
+    pub(crate) fn restore_browse_state(&mut self, state: BrowseState, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |input, cx| input.set_text(&state.search, cx));
+        self.filter = state.search.trim().to_lowercase();
+        self.archived_expanded = state.archived_expanded;
+        // A project filter belongs to the previous execution computer.
+        self.project_filter = None;
+        self.rebuild_sections();
+        self.list.scroll_to(state.scroll);
+        cx.notify();
+    }
+
     pub(super) fn new(
         backend: Arc<AgentBackend>,
         user_id: String,
@@ -352,6 +397,13 @@ impl Sidebar {
         settings: &crate::settings::AppSettings,
         cx: &mut Context<Self>,
     ) -> Self {
+        let remote_settings = backend.remote_host().map(|host| {
+            settings
+                .remote_sidebars
+                .get(host)
+                .cloned()
+                .unwrap_or_default()
+        });
         let application_vim_enabled = settings.application_vim_enabled;
         let search_chat = chat.clone();
         let search_input = cx.new(move |cx| {
@@ -369,6 +421,10 @@ impl Sidebar {
         })
         .detach();
         Self {
+            computers: Arc::new(Vec::new()),
+            computer_projects: Vec::new(),
+            other_tasks: Vec::new(),
+            computer_archived_count: 0,
             backend,
             user_id,
             chat,
@@ -401,8 +457,11 @@ impl Sidebar {
             rename: None,
             rename_input: None,
             rename_focus_pending: false,
-            pinned_tasks: settings.pinned_tasks.clone(),
-            project_names: settings.project_names.clone(),
+            pinned_tasks: remote_settings
+                .as_ref()
+                .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
+            project_names: remote_settings
+                .map_or_else(|| settings.project_names.clone(), |s| s.project_names),
             vim_selected: None,
             vim_by_row: Vec::new(),
             vim_order: Vec::new(),
@@ -515,7 +574,7 @@ impl Sidebar {
             .retain(|candidate| !ids.contains(candidate));
         if self.pinned_tasks.len() != before {
             let pinned = self.pinned_tasks.clone();
-            persist_settings(move |settings| settings.pinned_tasks = pinned);
+            self.persist_pins(pinned);
         }
         self.rebuild_sections();
         cx.notify();
@@ -538,19 +597,38 @@ impl Sidebar {
             .get(root)
             .filter(|name| !name.trim().is_empty())
             .cloned()
-            .unwrap_or_else(|| root_display_name(root))
+            .unwrap_or_else(|| {
+                if self.backend.remote_host().is_some() {
+                    remote_root_display_name(root)
+                } else {
+                    root_display_name(root)
+                }
+            })
+    }
+
+    pub(super) fn pinned_tasks(&self) -> &[String] {
+        &self.pinned_tasks
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
-    /// row it sits on and its id. Stepping walks the flat sidebar list
+    /// row it sits on and its computer-scoped destination. Stepping walks the flat sidebar list
     /// and stops at its ends.
-    pub(super) fn step_target(&self, delta: isize) -> Option<(usize, String)> {
-        let rows: Vec<(usize, usize)> = self
+    pub(super) fn step_target(&self, delta: isize) -> Option<(usize, Navigate)> {
+        let rows: Vec<(usize, Navigate)> = self
             .entries
             .iter()
             .enumerate()
             .filter_map(|(row, entry)| match entry {
-                SidebarEntry::Task(task) if !task.archived => Some((row, task.session)),
+                SidebarEntry::Task(task) if !task.archived => Some((
+                    row,
+                    Navigate {
+                        computer: self.backend.remote_host().map(str::to_owned),
+                        destination: Destination::Task(self.sessions.get(task.session)?.id.clone()),
+                    },
+                )),
+                SidebarEntry::OtherTask(index) if !self.other_tasks.get(*index)?.archived => {
+                    Some((row, self.other_tasks.get(*index)?.request.clone()))
+                }
                 _ => None,
             })
             .collect();
@@ -559,10 +637,9 @@ impl Sidebar {
         }
         let selected = self.selected.as_deref();
         let current = selected.and_then(|id| {
-            rows.iter().position(|(_, session)| {
-                self.sessions
-                    .get(*session)
-                    .is_some_and(|summary| summary.id == id)
+            rows.iter().position(|(_, request)| {
+                request.computer.as_deref() == self.backend.remote_host()
+                    && matches!(&request.destination, Destination::Task(task) if task == id)
             })
         });
         let target = match current {
@@ -576,9 +653,7 @@ impl Sidebar {
             None if delta > 0 => 0,
             None => rows.len() - 1,
         };
-        let (row, session) = rows[target];
-        let id = self.sessions.get(session)?.id.clone();
-        Some((row, id))
+        Some(rows[target].clone())
     }
 
     pub(super) fn reveal_row(&self, row: usize) {
@@ -910,6 +985,9 @@ impl Sidebar {
                 SidebarEmpty::NoMatches
             }));
         }
+        if self.computers.len() > 1 {
+            entries = self.computer_entries();
+        }
         let old = std::mem::replace(&mut self.entries, entries);
         if self.application_vim_enabled {
             self.rebuild_vim_targets();
@@ -1050,7 +1128,23 @@ impl Sidebar {
         self.rebuild_sections();
         cx.notify();
         let pinned = self.pinned_tasks.clone();
-        persist_settings(move |settings| settings.pinned_tasks = pinned);
+        self.persist_pins(pinned);
+        cx.emit(SidebarEvent::PreferencesChanged);
+    }
+
+    fn persist_pins(&self, pins: Vec<String>) {
+        let computer = self.backend.remote_host().map(str::to_owned);
+        persist_settings(move |settings| {
+            if let Some(key) = computer {
+                settings
+                    .remote_sidebars
+                    .entry(key)
+                    .or_default()
+                    .pinned_tasks = pins;
+            } else {
+                settings.pinned_tasks = pins;
+            }
+        });
     }
 
     /// Whether a collapsible section shows its rows.
@@ -1115,6 +1209,9 @@ impl Sidebar {
     /// Whether `name` is the display name of `root`, without building the
     /// name the way `root_name` does.
     fn root_name_matches(&self, root: &str, name: &str) -> bool {
+        if self.backend.remote_host().is_some() {
+            return self.root_name(root) == name;
+        }
         match self
             .project_names
             .get(root)
@@ -1243,7 +1340,19 @@ impl Sidebar {
                 }
                 self.rebuild_sections();
                 let names = self.project_names.clone();
-                persist_settings(move |settings| settings.project_names = names);
+                let computer = self.backend.remote_host().map(str::to_owned);
+                persist_settings(move |settings| {
+                    if let Some(key) = computer {
+                        settings
+                            .remote_sidebars
+                            .entry(key)
+                            .or_default()
+                            .project_names = names;
+                    } else {
+                        settings.project_names = names;
+                    }
+                });
+                cx.emit(SidebarEvent::PreferencesChanged);
             }
         }
     }
@@ -1525,6 +1634,9 @@ impl Sidebar {
             .entries
             .iter()
             .map(|entry| match *entry {
+                entry @ (SidebarEntry::ComputerProject(_)
+                | SidebarEntry::OtherTask(_)
+                | SidebarEntry::Computer(_)) => self.computer_target(entry),
                 SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
                 SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
                 SidebarEntry::SectionLabel(_) | SidebarEntry::Empty(_) => None,
@@ -1683,6 +1795,11 @@ impl Sidebar {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
         let entry = match self.entries.get(ix).copied() {
+            Some(
+                entry @ (SidebarEntry::ComputerProject(_)
+                | SidebarEntry::OtherTask(_)
+                | SidebarEntry::Computer(_)),
+            ) => self.render_computer_entry(entry, self.vim_selects_row(ix), cx),
             Some(SidebarEntry::NewTask) => div()
                 .id("new-task")
                 .role(gpui::Role::Button)
@@ -1804,7 +1921,11 @@ impl Sidebar {
             }
             Some(SidebarEntry::ArchivedHeader) => {
                 let expanded = self.archived_expanded;
-                let count = self.archived_rows.len();
+                let count = if self.computers.len() > 1 {
+                    self.computer_archived_count
+                } else {
+                    self.archived_rows.len()
+                };
                 div()
                     .id("archived-toggle")
                     .role(gpui::Role::Button)
@@ -1971,6 +2092,9 @@ impl Sidebar {
     /// The menu the project switcher opens: every project, each with an
     /// overflow menu of its own, plus a way back to all projects.
     fn switcher_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
+        if self.computers.len() > 1 {
+            return self.computer_switcher_menu(window, cx);
+        }
         let mut menu = Menu::new("switcher-menu", px(260.))
             .label("Projects")
             .max_height(px(360.))
@@ -2191,18 +2315,20 @@ impl Sidebar {
                         .flex()
                         .flex_col()
                         .child(div().line_clamp(1).text_ellipsis().child(row.title.clone()))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(gpui::rgb(if is_selected {
-                                    theme::text_secondary()
-                                } else {
-                                    theme::text_muted()
-                                }))
-                                .line_clamp(1)
-                                .text_ellipsis()
-                                .child(row.project_name.clone()),
-                        ),
+                        .when(self.computers.len() <= 1, |column| {
+                            column.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(if is_selected {
+                                        theme::text_secondary()
+                                    } else {
+                                        theme::text_muted()
+                                    }))
+                                    .line_clamp(1)
+                                    .text_ellipsis()
+                                    .child(row.project_name.clone()),
+                            )
+                        }),
                 )
             })
             .when_some(activity, |row_element, activity| {
@@ -2573,9 +2699,39 @@ pub(super) fn root_display_name(root: &str) -> String {
         .unwrap_or_else(|| root.to_string())
 }
 
+/// Interpret Windows paths on a Unix controller without changing the path sent
+/// back to the owner, or treating a backslash in a Unix filename as a separator.
+fn remote_root_display_name(root: &str) -> String {
+    let windows = root.starts_with(r"\\")
+        || (root.as_bytes().get(1) == Some(&b':') && root.as_bytes().get(2) == Some(&b'\\'));
+    if windows {
+        root.trim_end_matches(['\\', '/'])
+            .rsplit(['\\', '/'])
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(root)
+            .to_string()
+    } else {
+        root_display_name(root)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::root_display_name;
+    use super::{remote_root_display_name, root_display_name};
+
+    #[test]
+    fn remote_project_labels_use_the_owners_path_syntax() {
+        assert_eq!(remote_root_display_name(r"C:\Users\Alex\Maple"), "Maple");
+        assert_eq!(
+            remote_root_display_name(r"\\office\projects\Maple\"),
+            "Maple"
+        );
+        assert_eq!(remote_root_display_name("/home/alex/Maple"), "Maple");
+        if cfg!(unix) {
+            assert_eq!(remote_root_display_name(r"/home/alex/a\b"), r"a\b");
+        }
+    }
 
     #[test]
     fn the_default_workspace_is_labeled_maple_workspace() {
