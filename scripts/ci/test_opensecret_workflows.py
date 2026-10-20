@@ -691,8 +691,11 @@ class EifRootfsDiagnosticTests(unittest.TestCase):
         self.assertEqual(store, self.ca_store)
         self.assertEqual(bundle, self.ca_bundle)
         candidate, output = self.candidate()
+        user_drv = Path("/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz.drv")
         with mock.patch.object(rootfs_diagnostic, "eif_derivation",
-                               return_value=(output, self.archive)), mock.patch.object(
+                               return_value=(output, self.archive, user_drv)), mock.patch.object(
+                                   rootfs_diagnostic, "realize_user_ramdisk"
+                               ), mock.patch.object(
                                    rootfs_diagnostic, "fingerprints", return_value={"F" * 64}
                                ), mock.patch.object(
                                    rootfs_diagnostic, "verify_aaa_tls_policy",
@@ -704,13 +707,36 @@ class EifRootfsDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["kind"], "PR_DIAGNOSTIC_UNAPPROVED")
         self.assertEqual(report["ca_store_path"], self.ca_store)
         self.assertEqual(report["ca_bundle_sha256"], hashlib.sha256(self.ca_bundle).hexdigest())
+        self.assertEqual(report["ca_store_comparison"], "matched")
         self.assertEqual(report["ca_certificate_count"], 1)
         self.assertEqual(report["comodo_aaa_tls_policy"], "retained_rejected_for_openssl_tls")
 
+    def test_archived_ca_remains_inspectable_when_cached_store_input_is_absent(self):
+        candidate, output = self.candidate()
+        ca_file = self.root / self.ca_store.lstrip("/") / "etc/ssl/certs/ca-bundle.crt"
+        ca_file.unlink()
+        user_drv = Path("/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz.drv")
+        with mock.patch.object(rootfs_diagnostic, "eif_derivation",
+                               return_value=(output, self.archive, user_drv)), mock.patch.object(
+                                   rootfs_diagnostic, "realize_user_ramdisk"
+                               ), mock.patch.object(
+                                   rootfs_diagnostic, "fingerprints", return_value={"F" * 64}
+                               ), mock.patch.object(
+                                   rootfs_diagnostic, "verify_aaa_tls_policy", return_value="absent"
+                               ):
+            report = rootfs_diagnostic.verify_candidate(
+                "dev", candidate, "d" * 40, "openssl", store_root=self.root
+            )
+        self.assertEqual(report["ca_store_comparison"], "not_materialized")
+        self.assertEqual(report["ca_bundle_sha256"], hashlib.sha256(self.ca_bundle).hexdigest())
+
     def test_affected_root_and_candidate_byte_drift_fail_closed(self):
         candidate, output = self.candidate()
+        user_drv = Path("/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz.drv")
         with mock.patch.object(rootfs_diagnostic, "eif_derivation",
-                               return_value=(output, self.archive)), mock.patch.object(
+                               return_value=(output, self.archive, user_drv)), mock.patch.object(
+                                   rootfs_diagnostic, "realize_user_ramdisk"
+                               ), mock.patch.object(
                                    rootfs_diagnostic, "fingerprints",
                                    return_value={rootfs_diagnostic.EMSIGN_G3}
                                ), mock.patch.object(
@@ -725,14 +751,18 @@ class EifRootfsDiagnosticTests(unittest.TestCase):
         ca_file = self.root / self.ca_store.lstrip("/") / "etc/ssl/certs/ca-bundle.crt"
         ca_file.write_bytes(b"different Nix CA bundle")
         with mock.patch.object(rootfs_diagnostic, "eif_derivation",
-                               return_value=(output, self.archive)):
+                               return_value=(output, self.archive, user_drv)), mock.patch.object(
+                                   rootfs_diagnostic, "realize_user_ramdisk"
+                               ):
             with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "archived CA bundle differs"):
                 rootfs_diagnostic.verify_candidate(
                     "dev", candidate, "d" * 40, "openssl", store_root=self.root
                 )
         (candidate / "image.eif").write_bytes(b"different candidate")
         with mock.patch.object(rootfs_diagnostic, "eif_derivation",
-                               return_value=(output, self.archive)):
+                               return_value=(output, self.archive, user_drv)), mock.patch.object(
+                                   rootfs_diagnostic, "realize_user_ramdisk"
+                               ):
             with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "differs from derivation"):
                 rootfs_diagnostic.verify_candidate(
                     "dev", candidate, "d" * 40, "openssl", store_root=self.root
@@ -803,17 +833,63 @@ class EifRootfsDiagnosticTests(unittest.TestCase):
         eif = "/nix/store/" + "c" * 32 + "-opensecret-eif-dev"
         system = "/nix/store/" + "d" * 32 + "-bootstrap-initramfs.cpio.gz"
         user = "/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz"
+        user_drv_name = "f" * 32 + "-user-initramfs.cpio.gz.drv"
+        user_drv = Path("/nix/store") / user_drv_name
         derivation = {"derivations": {"candidate.drv": {"env": {
             "out": eif, "ramdisksArgs": f"--ramdisk {system} --ramdisk {user} ",
-        }}}}
+        }, "inputs": {"drvs": {user_drv_name: {"outputs": ["out"]}}}}}}
         with mock.patch.object(rootfs_diagnostic.subprocess, "run") as run:
             run.return_value.stdout = json.dumps(derivation)
-            self.assertEqual(rootfs_diagnostic.eif_derivation("dev"), (Path(eif), Path(user)))
+            self.assertEqual(rootfs_diagnostic.eif_derivation("dev"), (Path(eif), Path(user), user_drv))
             self.assertEqual(run.call_args.kwargs["cwd"], rootfs_diagnostic.COMPONENT)
+            derivation["derivations"]["candidate.drv"]["inputs"]["drvs"] = {
+                str(user_drv): {"outputs": ["out"]}
+            }
+            run.return_value.stdout = json.dumps(derivation)
+            self.assertEqual(rootfs_diagnostic.eif_derivation("dev"), (Path(eif), Path(user), user_drv))
             derivation["derivations"]["candidate.drv"]["env"]["ramdisksArgs"] += f"--ramdisk {user}"
             run.return_value.stdout = json.dumps(derivation)
             with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "ramdisk inputs"):
                 rootfs_diagnostic.eif_derivation("dev")
+
+    def test_explicit_realization_binds_direct_drv_to_selected_archive(self):
+        user_drv = Path("/nix/store/" + "f" * 32 + "-user-initramfs.cpio.gz.drv")
+        selected = Path("/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz")
+        derivation = {"derivations": {user_drv.name: {
+            "env": {"out": str(selected)}, "outputs": {"out": {"path": selected.name}},
+        }}}
+        with mock.patch.object(rootfs_diagnostic.subprocess, "run") as run, mock.patch.object(
+            rootfs_diagnostic, "regular_file", return_value=True
+        ):
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, json.dumps(derivation), ""),
+                subprocess.CompletedProcess([], 0, str(selected) + "\n", ""),
+            ]
+            rootfs_diagnostic.realize_user_ramdisk(selected, user_drv)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0], [
+                "nix", "build", "--no-link", "--no-update-lock-file", "--print-out-paths",
+                f"{user_drv}^out",
+            ])
+            derivation["derivations"][user_drv.name]["env"]["out"] = "/nix/store/other"
+            run.side_effect = [subprocess.CompletedProcess([], 0, json.dumps(derivation), "")]
+            with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "does not produce"):
+                rootfs_diagnostic.realize_user_ramdisk(selected, user_drv)
+            self.assertEqual(run.call_count, 3)
+
+    def test_explicit_realization_rejects_wrong_reported_output(self):
+        user_drv = Path("/nix/store/" + "f" * 32 + "-user-initramfs.cpio.gz.drv")
+        selected = Path("/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz")
+        derivation = {"derivations": {user_drv.name: {
+            "env": {"out": str(selected)}, "outputs": {"out": {"path": selected.name}},
+        }}}
+        with mock.patch.object(rootfs_diagnostic.subprocess, "run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, json.dumps(derivation), ""),
+                subprocess.CompletedProcess([], 0, "/nix/store/wrong\n", ""),
+            ]
+            with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "different user ramdisk"):
+                rootfs_diagnostic.realize_user_ramdisk(selected, user_drv)
 
 
 class ApprovalPublishCommandTests(unittest.TestCase):

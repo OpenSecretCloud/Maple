@@ -36,6 +36,7 @@ from test_enclave_ca_bundle import (  # noqa: E402
 
 STORE_PATH = r"/nix/store/[0-9a-z]{32}"
 USER_RAMDISK = re.compile(rf"^{STORE_PATH}-user-initramfs\.cpio\.gz$")
+USER_RAMDISK_DRV = re.compile(r"^[0-9a-z]{32}-user-initramfs\.cpio\.gz\.drv$")
 EIF_OUTPUT = re.compile(rf"^{STORE_PATH}-opensecret-eif-(dev|prod)$")
 ENTRYPOINT_STORE = re.compile(
     rf"^rootfs{STORE_PATH}-entrypoint/bin/entrypoint$"
@@ -188,7 +189,7 @@ def inspect_archive(archive: Path) -> tuple[str, bytes]:
     return ca_store_path, ca_bundle
 
 
-def eif_derivation(mode: str) -> tuple[Path, Path]:
+def eif_derivation(mode: str) -> tuple[Path, Path, Path]:
     result = subprocess.run(
         ["nix", "derivation", "show", "--no-update-lock-file", f".?submodules=1#eif-{mode}"],
         cwd=COMPONENT,
@@ -209,7 +210,45 @@ def eif_derivation(mode: str) -> tuple[Path, Path]:
     parts = shlex.split(args)
     require(len(parts) == 4 and parts[0] == parts[2] == "--ramdisk", "unexpected EIF ramdisk inputs")
     require(bool(USER_RAMDISK.fullmatch(parts[3])), "EIF user ramdisk input is unexpected")
-    return Path(out), Path(parts[3])
+    inputs = derivation.get("inputs", {})
+    require(isinstance(inputs, dict), "EIF derivation has malformed inputs")
+    input_drvs = inputs.get("drvs", {})
+    require(isinstance(input_drvs, dict), "EIF derivation lacks direct input derivations")
+    user_drvs = []
+    for key, value in input_drvs.items():
+        name = key.removeprefix("/nix/store/")
+        if USER_RAMDISK_DRV.fullmatch(name):
+            require(key in (name, f"/nix/store/{name}") and isinstance(value, dict),
+                    "EIF user ramdisk input derivation is malformed")
+            user_drvs.append((name, value))
+    require(len(user_drvs) == 1, "EIF derivation lacks one direct user ramdisk derivation")
+    user_drv_name, user_drv_input = user_drvs[0]
+    require(user_drv_input.get("outputs") == ["out"],
+            "EIF user ramdisk derivation has unexpected outputs")
+    return Path(out), Path(parts[3]), Path("/nix/store") / user_drv_name
+
+
+def realize_user_ramdisk(user_archive: Path, user_drv: Path) -> None:
+    """Materialize a direct EIF input even when its final EIF was substituted."""
+    result = subprocess.run(
+        ["nix", "derivation", "show", "--no-update-lock-file", str(user_drv)],
+        cwd=COMPONENT, check=True, capture_output=True, text=True,
+    )
+    derivations = json.loads(result.stdout).get("derivations")
+    require(isinstance(derivations, dict) and len(derivations) == 1,
+            "ambiguous user ramdisk derivation")
+    key, derivation = next(iter(derivations.items()))
+    require(key in (user_drv.name, str(user_drv)), "Nix returned another user ramdisk derivation")
+    require(derivation.get("env", {}).get("out") == str(user_archive)
+            and derivation.get("outputs", {}).get("out", {}).get("path") == user_archive.name,
+            "direct EIF input derivation does not produce the selected user ramdisk")
+    realized = subprocess.run(
+        ["nix", "build", "--no-link", "--no-update-lock-file", "--print-out-paths",
+         f"{user_drv}^out"],
+        cwd=COMPONENT, check=True, stdout=subprocess.PIPE, text=True,
+    )
+    require(realized.stdout == f"{user_archive}\n", "Nix realized a different user ramdisk")
+    require(regular_file(user_archive), "EIF user ramdisk is missing after explicit realization")
 
 
 def verify_aaa_tls_policy(openssl: str, bundle: Path, full_fingerprints: set[str]) -> str:
@@ -253,10 +292,10 @@ def verify_candidate(mode: str, candidate: Path, source_sha: str, openssl: str,
     require(candidate.is_dir() and not candidate.is_symlink(), "candidate directory missing or symlinked")
     expected = ("image.eif", "pcr.json", "SHA256SUMS", "handoff.json")
     require(all(regular_file(candidate / name) for name in expected), "candidate has missing or nonregular files")
-    eif_output, user_archive = eif_derivation(mode)
+    eif_output, user_archive, user_drv = eif_derivation(mode)
     require(regular_file(eif_output / "image.eif") and regular_file(eif_output / "pcr.json"),
             "EIF derivation output is missing or nonregular")
-    require(regular_file(user_archive), "EIF user ramdisk input is missing or nonregular")
+    realize_user_ramdisk(user_archive, user_drv)
     eif_sha = sha256_file(candidate / "image.eif")
     pcr_sha = sha256_file(candidate / "pcr.json")
     require(eif_sha == sha256_file(eif_output / "image.eif"), "candidate EIF differs from derivation output")
@@ -278,9 +317,12 @@ def verify_candidate(mode: str, candidate: Path, source_sha: str, openssl: str,
             "candidate handoff does not match its bytes and PR merge ref")
     ca_store_path, ca_bundle = inspect_archive(user_archive)
     ca_file = store_root / ca_store_path.lstrip("/") / "etc/ssl/certs/ca-bundle.crt"
-    require(regular_file(ca_file), "effective CA bundle missing from Nix store")
     ca_sha = hashlib.sha256(ca_bundle).hexdigest()
-    require(ca_sha == sha256_file(ca_file), "archived CA bundle differs from its Nix store input")
+    ca_store_comparison = "not_materialized"
+    if ca_file.exists() or ca_file.is_symlink():
+        require(regular_file(ca_file), "effective CA bundle in Nix store is nonregular")
+        require(ca_sha == sha256_file(ca_file), "archived CA bundle differs from its Nix store input")
+        ca_store_comparison = "matched"
     with tempfile.TemporaryDirectory(prefix="opensecret-eif-ca-") as tmp:
         extracted = Path(tmp) / "ca-bundle.crt"
         extracted.write_bytes(ca_bundle)
@@ -300,6 +342,7 @@ def verify_candidate(mode: str, candidate: Path, source_sha: str, openssl: str,
         "user_ramdisk_sha256": sha256_file(user_archive),
         "ca_store_path": ca_store_path,
         "ca_bundle_sha256": ca_sha,
+        "ca_store_comparison": ca_store_comparison,
         "ca_certificate_count": len(trusted),
         "comodo_aaa_tls_policy": aaa_tls_policy,
     }
@@ -311,7 +354,7 @@ def append_summary(path: Path, report: dict) -> None:
         summary.write("PR diagnostic only: the source SHA is the PR merge ref. No artifact is uploaded or approved.\n\n")
         summary.write("| Field | Value |\n| --- | --- |\n")
         for key in ("source_sha", "eif_sha256", "pcr0", "pcr1", "pcr2", "user_ramdisk_sha256",
-                    "ca_bundle_sha256", "ca_certificate_count",
+                    "ca_bundle_sha256", "ca_store_comparison", "ca_certificate_count",
                     "comodo_aaa_tls_policy"):
             summary.write(f"| {key} | `{report[key]}` |\n")
 

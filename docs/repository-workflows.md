@@ -46,12 +46,13 @@ A new run cancels earlier runs for that same unsigned preview; unrelated PRs
 and signed, master and manual queues keep their existing behavior.
 The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
 same-repository PRs changing measured inputs without editing PCR approvals.
-Each diagnostic build checks the exact user ramdisk selected by its EIF
-derivation: the entrypoint's effective CA bundle is present in that archive,
-matches its Nix store input, and omits the affected emSign roots. It records
-whether retained Comodo AAA is excluded from ordinary TLS PEMs and explicitly
-rejected by OpenSSL for server trust. It records the bundle and EIF hashes with
-the PCRs in the job summary; it does not upload
+Each diagnostic build explicitly realizes the user ramdisk selected by its EIF
+derivation, even when Nix substitutes a cached final EIF. The entrypoint's CA
+bundle must be present in that archive and omit the affected emSign roots. If
+the source CA store path is also present, its bytes must match the archive.
+The check records whether retained Comodo AAA is excluded from ordinary TLS
+PEMs and explicitly rejected by OpenSSL for server trust. It records the
+archived bundle and EIF hashes with the PCRs in the job summary; it does not upload
 an artifact. The workflow compares measurements
 on PRs editing approved PCR JSON, relevant master changes, and manual runs.
 Preserve ordinary backend PRs without fresh approvals and meaningful master
