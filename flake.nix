@@ -617,8 +617,13 @@
           (flake-utils.lib.mkApp {
             drv = pkgs.writeShellApplication {
               inherit name;
-              runtimeInputs = [ pkgs.nix ];
               text = ''
+                # Reuse the Nix that invoked this app. Adding pkgs.nix here would
+                # silently replace a patched host Nix with the nixpkgs-locked version.
+                if ! command -v nix >/dev/null 2>&1; then
+                  echo "error: nix must be available on PATH" >&2
+                  exit 127
+                fi
                 exec nix develop --no-update-lock-file ".#${shell}" -c ${script} "$@"
               '';
             };
