@@ -10,7 +10,7 @@ use crate::model_config::{
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v3";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v4";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -208,11 +208,30 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-// Provider multipliers make the healthy split 5% shared Tinfoil and 95%
-// dedicated Maple: 70 * 20 : 100 * 133 : 100 * 133. The existing 100 account
-// buckets round the equal Maple shares to 47 and 48. Sticky routes and health
-// gates retain their normal precedence over this initial allocation.
+// While i02 is reserved for a different deployment, split fresh stock DeepSeek
+// account buckets evenly between shared Tinfoil and i01: 70 * 100 : 100 * 70.
+// Existing eligible sticky routes and health gates retain their precedence.
 const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
+    ModelRouteSpec {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        weight: 100,
+        enabled: true,
+    },
+    ModelRouteSpec {
+        provider: ProviderId::Maple(MapleInstanceId::I01),
+        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        weight: 70,
+        enabled: true,
+    },
+];
+
+// A test-only route table proves that Router V2 still supports two independent
+// Maple replicas of the same public model after i02 leaves the production route.
+#[cfg(test)]
+const DUAL_INSTANCE_TEST_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Tinfoil,
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -235,6 +254,18 @@ const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
         enabled: true,
     },
 ];
+
+#[cfg(test)]
+const DUAL_INSTANCE_TEST_MODELS: &[CompletionModelSpec] = &[completion_model(
+    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    DUAL_INSTANCE_TEST_ROUTES,
+)];
+
+#[cfg(test)]
+pub(crate) static DUAL_INSTANCE_TEST_REGISTRY: ProviderRegistry = ProviderRegistry {
+    providers: PROVIDERS,
+    completion_models: DUAL_INSTANCE_TEST_MODELS,
+};
 
 const LLAMA3_3_70B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
@@ -439,12 +470,6 @@ mod tests {
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),
                 (
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    ProviderId::Maple(MapleInstanceId::I02),
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID
-                ),
-                (
                     "llama3-3-70b",
                     ProviderId::Tinfoil,
                     "llama3-3-70b",
@@ -472,22 +497,18 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_has_shared_and_dedicated_routes_under_one_public_identity() {
+    fn stock_deepseek_has_shared_and_i01_routes_under_one_public_identity() {
         let model = PROVIDER_REGISTRY
             .completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID)
             .expect("canonical DeepSeek model");
-        assert_eq!(model.routes.len(), 3);
+        assert_eq!(model.routes.len(), 2);
         assert_eq!(
             model
                 .routes
                 .iter()
                 .map(|route| route.provider)
                 .collect::<Vec<_>>(),
-            [
-                ProviderId::Tinfoil,
-                ProviderId::Maple(MapleInstanceId::I01),
-                ProviderId::Maple(MapleInstanceId::I02)
-            ]
+            [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)]
         );
         assert_eq!(
             model
@@ -495,7 +516,7 @@ mod tests {
                 .iter()
                 .map(|route| route.weight)
                 .collect::<Vec<_>>(),
-            [20, 133, 133]
+            [100, 70]
         );
         for route in model.routes {
             assert_eq!(route.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
