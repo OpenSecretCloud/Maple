@@ -123,7 +123,8 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
 
     def test_eif_workflow_and_build_helpers_select_only_eif_checks(self):
         for path in (".github/workflows/opensecret-eif.yml", "scripts/ci/build_opensecret_eif.sh",
-                     "scripts/ci/check_opensecret_eif.sh"):
+                     "scripts/ci/check_opensecret_eif.sh", "scripts/ci/verify_opensecret_eif_rootfs.py",
+                     "scripts/ci/fixtures/eif/comodo-aaa-services-root.pem"):
             self.assert_routes([path], "eif")
             self.assertEqual(research_routes(path), frozenset())
             self.assertFalse(affects_agent(path))

@@ -47,6 +47,26 @@
           libtpmsGcc15FixOverlay
         ];
         pkgs = import nixpkgs { inherit system overlays; };
+        # Keep the build framework and enclave kernel pinned while refreshing
+        # the root store used by the EIF. NSS 3.131.1 removes the emSign ECC
+        # Root CA - G3 trust anchor after the eMudhra intermediate compromise.
+        enclaveCACert = pkgs.cacert.overrideAttrs (old: {
+          version = "3.131.1";
+          src = pkgs.fetchurl {
+            urls = [
+              "https://hg-edge.mozilla.org/projects/nss/raw-file/NSS_3_131_1_RTM/lib/ckfw/builtins/certdata.txt"
+              "https://raw.githubusercontent.com/nss-dev/nss/refs/tags/NSS_3_131_1_RTM/lib/ckfw/builtins/certdata.txt"
+            ];
+            hash = "sha256-PsK00kDcEsdH6vRQBh24SvdXxIO72jAvninOtdcL5RA=";
+          };
+          meta = old.meta // {
+            identifiers = old.meta.identifiers // {
+              cpeParts = pkgs.lib.meta.cpeFullVersionWithVendor "mozilla" "3.131.1" // {
+                product = "nss";
+              };
+            };
+          };
+        });
         nitroRustPkgs = import nixpkgs {
           inherit system;
           overlays = [ nitro-rust-overlay.overlays.default ];
@@ -203,7 +223,7 @@
 
               # Set up CA certificates
               mkdir -p /etc/ssl/certs
-              ln -sf ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-bundle.crt
+              ln -sf ${enclaveCACert}/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-bundle.crt
               export SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
               export AWS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt
 
@@ -259,7 +279,7 @@
             pkgs.jq
             pkgs.iproute2
             pkgs.coreutils
-            pkgs.cacert
+            enclaveCACert
             pkgs.curl
             nitro-bins
             continuum-proxy
@@ -517,7 +537,7 @@
             pkgs.zlib
             pkgs.postgresql
           ];
-          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          SSL_CERT_FILE = "${enclaveCACert}/etc/ssl/certs/ca-bundle.crt";
           LIBPQ_LIB_DIR = "${pkgs.postgresql.lib}/lib";
         };
 
@@ -551,6 +571,18 @@
         };
 
         checks = {
+          enclave-ca-trust = pkgs.runCommand "opensecret-enclave-ca-trust" {
+            nativeBuildInputs = [ pkgs.openssl pkgs.python3 ];
+          } ''
+            python3 ${./scripts/test_enclave_ca_bundle.py} \
+              ${pkgs.openssl}/bin/openssl \
+              ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
+              ${pkgs.cacert}/etc/ssl/certs/ca-no-trust-rules-bundle.crt \
+              ${pkgs.cacert.unbundled}/etc/ssl/certs/Comodo_AAA_Services_root:1.crt \
+              ${enclaveCACert}/etc/ssl/certs/ca-bundle.crt \
+              ${enclaveCACert}/etc/ssl/certs/ca-no-trust-rules-bundle.crt
+            touch "$out"
+          '';
           entrypoint-entropy-preflight = entrypointEntropyPreflight;
           entrypoint-maple-inference-credential = pkgs.runCommand
             "opensecret-entrypoint-maple-inference-credential"
