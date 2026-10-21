@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
 import { openValidatedCheckoutUrl } from "@/billing/billingApi";
+import { billingReturnOrigin } from "@/billing/returnOrigin";
 import {
   formatUsdFromCents,
   isZapriteUpgradeTerminal,
@@ -33,7 +34,7 @@ function zapriteSuccessUrl(): string {
     return "https://trymaple.ai/payment-success?source=zaprite";
   }
   if (isTauri()) {
-    return "https://trymaple.ai/pricing?success=true";
+    return `${billingReturnOrigin()}/pricing?success=true`;
   }
   return `${window.location.origin}/pricing?success=true`;
 }
