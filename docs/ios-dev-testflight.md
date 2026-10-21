@@ -24,7 +24,7 @@ Development and production accounts remain in their respective existing
 services; this app does not require another authentication or billing deployment.
 All `VITE_*` values are public configuration and must never contain secrets.
 
-The stable Research development website is `https://app-dev.trymaple.ai`.
+The stable Research development website is `https://app-dev.maple.ai`.
 Hosted native sign-in uses the separate Auth application at
 `https://auth-dev.maple.ai`. Both sites are protected by Cloudflare Access;
 browser validation requires an authorized Access session.

@@ -26,6 +26,7 @@ import { TeamSeatDialog } from "@/components/TeamSeatDialog";
 import { ZapriteUpgradeDialog } from "@/components/ZapriteUpgradeDialog";
 import { zapritePaidPlanButtonText, zapriteUpgradeTarget } from "@/billing/zapriteUpgrade";
 import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
+import { billingReturnOrigin } from "@/billing/returnOrigin";
 import { cn } from "@/utils/utils";
 import packageJson from "../../package.json";
 import { ApplePricingPage } from "@/components/billing/ApplePricingPage";
@@ -518,20 +519,20 @@ function LegacyPricingPage() {
             );
           }
         } else if (isTauri()) {
-          // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
+          const baseUrl = billingReturnOrigin();
           if (useBitcoin) {
             await billingService.createZapriteCheckoutSession(
               email,
               productId,
-              `https://trymaple.ai/pricing?success=true`,
+              `${baseUrl}/pricing?success=true`,
               quantity
             );
           } else {
             await billingService.createCheckoutSession(
               email,
               productId,
-              `https://trymaple.ai/pricing?success=true`,
-              `https://trymaple.ai/pricing?canceled=true`,
+              `${baseUrl}/pricing?success=true`,
+              `${baseUrl}/pricing?canceled=true`,
               quantity
             );
           }

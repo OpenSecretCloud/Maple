@@ -67,6 +67,63 @@ class ResearchDevProfileTests(unittest.TestCase):
         self.assertIn("build-profile.json", artifact["path"])
         self.assertIn("maple-research-dev-macos.tar.gz", artifact["path"])
 
+    def test_pr_dev_opt_in_event_selection_and_concurrency(self):
+        workflow = json.loads(subprocess.check_output([
+            "yq", "-o=json", ".", str(profile_module.ROOT / ".github/workflows/desktop-pr-build.yml")
+        ], text=True))
+        self.assertEqual(workflow["on"]["pull_request"]["types"], ["opened", "synchronize", "reopened", "labeled"])
+        jobs = workflow["jobs"]
+        for name, job in jobs.items():
+            self.assertEqual(job["name"], name + "${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}")
+        dev = "build-research-dev-macos"
+        native = {"build-macos", "build-linux", "build-windows", dev}
+        label = "ci:research-dev-macos"
+
+        def selected(action, added_label="", labels=(), result="success", changed="false", cancelled=False):
+            # Evaluate the actual job expressions with the same boolean semantics.
+            context = {
+                "github.event.action": action,
+                "github.event.label.name": added_label,
+                "github.event.pull_request.labels.*.name": list(labels),
+                "needs.changes.result": result,
+                **{f"needs.changes.outputs.{platform}": changed for platform in ("macos", "linux", "windows")},
+            }
+            selected_jobs = set()
+            for name in native | {"changes"}:
+                expression = jobs[name]["if"].strip().removeprefix("${{").removesuffix("}}").strip()
+                expression = expression.replace("&&", " and ").replace("||", " or ")
+                expression = expression.replace("!cancelled()", str(not cancelled)).replace("always()", "True")
+                for key, value in context.items():
+                    expression = expression.replace(key, repr(value))
+                if eval(" ".join(expression.split()), {"__builtins__": {}},
+                        {"contains": lambda items, value: value in items}):
+                    selected_jobs.add(name)
+            return selected_jobs
+
+        for action in ("opened", "synchronize", "reopened"):
+            with self.subTest(action=action):
+                self.assertEqual(selected(action), {"changes"})
+                self.assertEqual(selected(action, labels=[label]), {"changes", dev})
+                self.assertEqual(selected(action, changed="true"), {"changes"} | native)
+                self.assertEqual(selected(action, result="failure"), {"changes"} | native)
+                self.assertEqual(selected(action, changed="true", cancelled=True), {"changes"})
+        self.assertEqual(selected("labeled", label, [label], "skipped"), {dev})
+        self.assertEqual(selected("labeled", "unrelated", [label], "skipped", "true"), set())
+        self.assertEqual(selected("labeled", label, [label], "skipped", cancelled=True), set())
+
+        # Metadata runs cannot cancel source runs or runs for other labels.
+        self.assertEqual(workflow["concurrency"]["group"],
+                         "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+                         "${{ github.event.action == 'labeled' && format('-label-{0}', github.event.label.name) || '' }}")
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
+        self.assertEqual(jobs[dev]["concurrency"], {
+            "group": "research-dev-macos-pr-${{ github.event.pull_request.number }}",
+            "cancel-in-progress": True,
+        })
+        checkout = next(step for step in jobs[dev]["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
+        self.assertFalse(checkout["with"]["persist-credentials"])
+
     def test_runtime_audit_rejects_host_dependencies_and_search_paths(self):
         system_loads = "maple:\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n"
         bundle_rpath = "Load command 0\n cmd LC_RPATH\n path @executable_path/../Frameworks (offset 12)\n"

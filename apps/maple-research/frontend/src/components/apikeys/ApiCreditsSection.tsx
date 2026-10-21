@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
+import { billingReturnOrigin } from "@/billing/returnOrigin";
 import { useOpenSecret } from "@mapleai/sdk";
 import { isMobile, isTauri } from "@/utils/platform";
 import {
@@ -130,9 +131,10 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
         cancelUrl =
           method === "stripe" ? `https://trymaple.ai/payment-canceled?source=stripe` : undefined;
       } else if (isTauri()) {
-        // For Tauri desktop, use trymaple.ai since tauri://localhost won't work in external browser
-        successUrl = `https://trymaple.ai/?credits_success=true`;
-        cancelUrl = method === "stripe" ? `https://trymaple.ai/` : undefined;
+        // Desktop returns use the website for the configured billing environment.
+        const baseUrl = billingReturnOrigin();
+        successUrl = `${baseUrl}/?credits_success=true`;
+        cancelUrl = method === "stripe" ? `${baseUrl}/` : undefined;
       } else {
         // For web, use regular URLs with query params
         const baseUrl = window.location.origin;

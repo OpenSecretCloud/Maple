@@ -6,18 +6,24 @@ permissions:
 on:
   pull_request:
     # Run unprivileged validation for stacked PRs as well as master targets.
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
-  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  # Label events cannot cancel useful source-validation runs or other labels.
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}${{ github.event.action == 'labeled' && format('-label-{0}', github.event.label.name) || '' }}
   cancel-in-progress: true
 
 jobs:
+  # Keep metadata-only check names separate from source-validation results.
   changes:
+    name: changes${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
+    if: github.event.action != 'labeled'
     uses: ./.github/workflows/app-change-detection.yml
 
   build-macos:
+    name: build-macos${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false') }}
+    if: ${{ always() && !cancelled() && github.event.action != 'labeled' && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false') }}
     runs-on: blacksmith-6vcpu-macos-26
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -60,12 +66,25 @@ jobs:
           retention-days: 5
 
   build-research-dev-macos:
+    name: build-research-dev-macos${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false') }}
+    if: >-
+      ${{ always() && !cancelled() && (
+        (github.event.action == 'labeled' && github.event.label.name == 'ci:research-dev-macos') ||
+        (github.event.action != 'labeled' && (
+          needs.changes.result != 'success' || needs.changes.outputs.macos != 'false' ||
+          contains(github.event.pull_request.labels.*.name, 'ci:research-dev-macos')
+        ))
+      ) }}
+    # A fresh source or opt-in run replaces an older Dev candidate for this PR.
+    concurrency:
+      group: research-dev-macos-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: blacksmith-6vcpu-macos-26
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Select pinned Xcode
@@ -98,8 +117,9 @@ jobs:
           retention-days: 5
 
   build-linux:
+    name: build-linux${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.linux != 'false') }}
+    if: ${{ always() && !cancelled() && github.event.action != 'labeled' && (needs.changes.result != 'success' || needs.changes.outputs.linux != 'false') }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -157,8 +177,9 @@ jobs:
           retention-days: 5
 
   build-windows:
+    name: build-windows${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false') }}
+    if: ${{ always() && !cancelled() && github.event.action != 'labeled' && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false') }}
     runs-on: blacksmith-8vcpu-windows-2025
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -235,6 +256,7 @@ jobs:
           retention-days: 5
 
   verify-windows-artifacts:
+    name: verify-windows-artifacts${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
     needs:
       - build-windows
     runs-on: ubuntu-latest

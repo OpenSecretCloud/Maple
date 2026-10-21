@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as sdk from "@mapleai/sdk";
 import * as platform from "@/utils/platform";
+import * as billing from "@/billing/billingService";
 import { ApiCreditsSection } from "./ApiCreditsSection";
 
 function textContent(node: ReactTestInstance): string {
@@ -29,6 +30,7 @@ describe("API credits platform policy", () => {
     const mobileSpy = spyOn(platform, "isMobile").mockReturnValue(
       platformName === "ios" || platformName === "android"
     );
+    const nativeSpy = spyOn(platform, "isTauri").mockReturnValue(platformName !== "web");
     const authSpy = spyOn(sdk, "useOpenSecret").mockReturnValue({
       auth: {
         user: {
@@ -41,6 +43,7 @@ describe("API credits platform policy", () => {
       () => iosSpy.mockRestore(),
       () => androidSpy.mockRestore(),
       () => mobileSpy.mockRestore(),
+      () => nativeSpy.mockRestore(),
       () => authSpy.mockRestore()
     );
     const client = new QueryClient({
@@ -86,4 +89,45 @@ describe("API credits platform policy", () => {
     }
     expect(renderer!.root.findAllByType("button")).toHaveLength(7);
   });
+
+  for (const [api, origin] of [
+    ["https://billing-dev.opensecret.cloud", "https://app-dev.maple.ai"],
+    ["https://billing.opensecret.cloud", "https://app.maple.ai"]
+  ]) {
+    test(`desktop credit checkout preserves its query and cancel path on ${origin}`, async () => {
+      const previousApi = process.env.VITE_MAPLE_BILLING_API_URL;
+      process.env.VITE_MAPLE_BILLING_API_URL = api;
+      cleanup.push(() => {
+        if (previousApi === undefined) delete process.env.VITE_MAPLE_BILLING_API_URL;
+        else process.env.VITE_MAPLE_BILLING_API_URL = previousApi;
+      });
+      let payload: Parameters<billing.BillingService["purchaseApiCredits"]>[0] | undefined;
+      const service = spyOn(billing, "getBillingService").mockReturnValue({
+        purchaseApiCredits: async (
+          request: Parameters<billing.BillingService["purchaseApiCredits"]>[0]
+        ) => {
+          payload = request;
+          // Stop before the platform opener: no checkout or native process is created.
+          throw new Error("Fixture stopped after recording checkout request");
+        }
+      } as unknown as billing.BillingService);
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      cleanup.push(
+        () => service.mockRestore(),
+        () => errors.mockRestore()
+      );
+      await mount("desktop");
+      const button = renderer!.root
+        .findAllByType("button")
+        .find((node) => textContent(node).includes("Pay with Card"))!;
+      await act(async () => {
+        await button.props.onClick();
+      });
+      expect(payload).toMatchObject({
+        credits: 20000,
+        success_url: `${origin}/?credits_success=true`,
+        cancel_url: `${origin}/`
+      });
+    });
+  }
 });
