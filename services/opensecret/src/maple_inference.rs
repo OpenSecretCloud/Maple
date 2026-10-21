@@ -15,7 +15,7 @@ pub(crate) struct MapleEndpoint {
     pub(crate) instance: MapleInstanceId,
     pub(crate) host: &'static str,
     pub(crate) base_url: &'static str,
-    current_release: &'static ReleasePin,
+    current_release: Option<&'static ReleasePin>,
     staged_releases: &'static [ReleasePin],
 }
 
@@ -23,14 +23,16 @@ const I01_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I01,
     host: "i01.tfinf.maple.ai",
     base_url: "https://i01.tfinf.maple.ai",
-    current_release: &I01_CURRENT_RELEASE,
+    current_release: Some(&I01_CURRENT_RELEASE),
     staged_releases: &[],
 };
 const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I02,
     host: "i02.tfinf.maple.ai",
     base_url: "https://i02.tfinf.maple.ai",
-    current_release: &I02_CURRENT_RELEASE,
+    // The stock release must never authorize the uncensored model. Populate
+    // this only after the derivative's measured release has been reviewed.
+    current_release: None,
     staged_releases: &[],
 };
 
@@ -126,22 +128,22 @@ const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
     ],
 };
 
-const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
-    repo: "MaplePrivacyLabs/inference-deepseek",
-    tag: "v0.1.1",
-    digest: "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
-    registers: &[
-        "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
-        "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
-        "4dac875226df9a0a2dcc8e2c535ebf4ed26398dd3581ab62eba5580a5d155a8c62b66c8f073884c6b3b9a03b34e7bf94",
-    ],
-};
-pub(crate) fn direct_policy(instance: MapleInstanceId) -> Result<DirectPolicy, tinfoil::Error> {
-    DirectPolicy::new(approved_releases(endpoint(instance)))
+/// An unconfigured guest has no verifier or network initialization. This is
+/// distinct from a malformed configured policy, which remains a startup error.
+pub(crate) fn direct_policy(
+    instance: MapleInstanceId,
+) -> Result<Option<DirectPolicy>, tinfoil::Error> {
+    let approved = approved_releases(endpoint(instance));
+    if approved.is_empty() {
+        return Ok(None);
+    }
+    DirectPolicy::new(approved).map(Some)
 }
 
 fn approved_releases(endpoint: &MapleEndpoint) -> Vec<ApprovedRelease> {
-    std::iter::once(endpoint.current_release)
+    endpoint
+        .current_release
+        .into_iter()
         .chain(endpoint.staged_releases.iter())
         .map(|pin| ApprovedRelease {
             release: PinnedRelease {
@@ -311,8 +313,10 @@ mod tests {
             let policy = direct_policy(instance)
                 .expect("compiled current/staged pins must form a valid policy");
             let serialized = format!("{policy:?}");
-            for pin in
-                std::iter::once(endpoint.current_release).chain(endpoint.staged_releases.iter())
+            for pin in endpoint
+                .current_release
+                .into_iter()
+                .chain(endpoint.staged_releases.iter())
             {
                 assert!(serialized.contains(pin.repo));
                 assert!(serialized.contains(pin.tag));
@@ -337,14 +341,14 @@ mod tests {
         const I02_TEST_STAGE: ReleasePin = ReleasePin {
             repo: "MaplePrivacyLabs/inference-deepseek",
             tag: "test-i02-only-stage",
-            digest: I02_CURRENT_RELEASE.digest,
-            registers: I02_CURRENT_RELEASE.registers,
+            digest: I01_CURRENT_RELEASE.digest,
+            registers: I01_CURRENT_RELEASE.registers,
         };
         const STAGED_I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
             instance: MapleInstanceId::I02,
             host: "i02.tfinf.maple.ai",
             base_url: "https://i02.tfinf.maple.ai",
-            current_release: &I02_CURRENT_RELEASE,
+            current_release: None,
             staged_releases: &[I02_TEST_STAGE],
         };
 
@@ -352,14 +356,23 @@ mod tests {
         let current_i02_approved = approved_releases(endpoint(MapleInstanceId::I02));
         let staged_i02_approved = approved_releases(&STAGED_I02_ENDPOINT);
         assert_eq!(i01_approved.len(), 1);
-        assert_eq!(current_i02_approved.len(), 1);
-        assert_eq!(staged_i02_approved.len(), 2);
-        assert_eq!(staged_i02_approved[1].release.tag, I02_TEST_STAGE.tag);
+        assert!(current_i02_approved.is_empty());
+        assert_eq!(staged_i02_approved.len(), 1);
+        assert_eq!(staged_i02_approved[0].release.tag, I02_TEST_STAGE.tag);
         assert!(i01_approved
             .iter()
             .all(|approved| approved.release.tag != I02_TEST_STAGE.tag));
         DirectPolicy::new(i01_approved).expect("i01 current policy remains valid");
         DirectPolicy::new(staged_i02_approved).expect("i02 staged policy remains valid");
+    }
+
+    #[test]
+    fn uncensored_guest_has_no_approved_stock_release_or_network_policy() {
+        let i02 = endpoint(MapleInstanceId::I02);
+        assert!(i02.current_release.is_none());
+        assert!(i02.staged_releases.is_empty());
+        assert!(direct_policy(MapleInstanceId::I02).unwrap().is_none());
+        assert!(direct_policy(MapleInstanceId::I01).unwrap().is_some());
     }
 
     #[test]

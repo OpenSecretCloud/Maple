@@ -817,8 +817,11 @@ impl ProviderClient {
         if let Some(api_key) = api_key.filter(|key| !key.trim().is_empty()) {
             for instance in MapleInstanceId::ALL {
                 let endpoint = crate::maple_inference::endpoint(instance);
-                let policy = crate::maple_inference::direct_policy(instance)
-                    .map_err(|_| ProviderClientError::MaplePolicy)?;
+                let Some(policy) = crate::maple_inference::direct_policy(instance)
+                    .map_err(|_| ProviderClientError::MaplePolicy)?
+                else {
+                    continue;
+                };
                 let transport = Arc::new(SecureTinfoilTransport::new(
                     api_key.clone(),
                     AttestationTarget::MapleDirect {
@@ -1312,7 +1315,11 @@ mod tests {
         AttestationTarget::MapleDirect {
             instance,
             host: crate::maple_inference::endpoint(instance).host,
-            policy: crate::maple_inference::direct_policy(instance).unwrap(),
+            // Synthetic transport fixtures cover both guests without approving a live
+            // i02 release. Production initialization skips its unconfigured policy.
+            policy: crate::maple_inference::direct_policy(MapleInstanceId::I01)
+                .unwrap()
+                .unwrap(),
         }
     }
 
@@ -1541,7 +1548,9 @@ mod tests {
                 first.2,
                 format!(
                     "{:?}",
-                    crate::maple_inference::direct_policy(instance).unwrap()
+                    crate::maple_inference::direct_policy(MapleInstanceId::I01)
+                        .unwrap()
+                        .unwrap()
                 )
             );
             assert_eq!(first.3, "dedicated-test-key");

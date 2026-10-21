@@ -2384,6 +2384,15 @@ mod tests {
 
     #[test]
     fn test_resolve_responses_models_enforces_plan_gates() {
+        let uncensored = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
+        assert_eq!(
+            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
+            uncensored
+        );
+        assert!(matches!(
+            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
         assert_eq!(
             resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Paid).unwrap(),
             "kimi-k3"
@@ -5908,6 +5917,7 @@ async fn create_response_stream(
         );
     }
     body.model = resolved_model;
+    crate::web::openai::ensure_model_feature_access(&state, user.uuid, &body.model).await?;
     // Validate the caller's effort against the tier's own model before any
     // write. An explicit model rejects an unsupported level; an alias is moved
     // to the nearest level its resolved model accepts when the turn is built.
