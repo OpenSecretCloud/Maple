@@ -15,7 +15,7 @@ pub(crate) struct MapleEndpoint {
     pub(crate) instance: MapleInstanceId,
     pub(crate) host: &'static str,
     pub(crate) base_url: &'static str,
-    current_release: &'static ReleasePin,
+    current_release: Option<&'static ReleasePin>,
     staged_releases: &'static [ReleasePin],
 }
 
@@ -23,14 +23,14 @@ const I01_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I01,
     host: "i01.tfinf.maple.ai",
     base_url: "https://i01.tfinf.maple.ai",
-    current_release: &CURRENT_RELEASE,
+    current_release: Some(&I01_CURRENT_RELEASE),
     staged_releases: &[],
 };
 const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I02,
     host: "i02.tfinf.maple.ai",
     base_url: "https://i02.tfinf.maple.ai",
-    current_release: &CURRENT_RELEASE,
+    current_release: Some(&I02_CURRENT_RELEASE),
     staged_releases: &[],
 };
 
@@ -111,11 +111,11 @@ struct ReleasePin {
     registers: &'static [&'static str],
 }
 
-// Independently qualified own-node release; these identify the published code
-// artifact and full multiplatform launch measurement, not a cached live quote.
-// Keep the current release accepted while an explicitly reviewed staged release
-// is deployed. Remove retired entries after the rollout completes.
-const CURRENT_RELEASE: ReleasePin = ReleasePin {
+// Keep each guest's release pins independent, even while both run the same
+// artifact. A staged i02 update must never broaden i01's attestation policy.
+// These identify the published artifact and full multiplatform measurement,
+// not a cached live quote. Remove retired entries after rollout completes.
+const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-deepseek",
     tag: "v0.1.1",
     digest: "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
@@ -125,9 +125,36 @@ const CURRENT_RELEASE: ReleasePin = ReleasePin {
         "4dac875226df9a0a2dcc8e2c535ebf4ed26398dd3581ab62eba5580a5d155a8c62b66c8f073884c6b3b9a03b34e7bf94",
     ],
 };
-pub(crate) fn direct_policy(instance: MapleInstanceId) -> Result<DirectPolicy, tinfoil::Error> {
-    let endpoint = endpoint(instance);
-    let approved = std::iter::once(endpoint.current_release)
+
+// Qualified independently through the official CLI and the pinned Rust SDK.
+// Stock i02 measurements are deliberately absent from this model's policy.
+const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
+    repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
+    tag: "v0.1.0-rc.1+b300",
+    digest: "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4",
+    registers: &[
+        "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
+        "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
+        "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
+    ],
+};
+
+/// An unconfigured guest has no verifier or network initialization. This is
+/// distinct from a malformed configured policy, which remains a startup error.
+pub(crate) fn direct_policy(
+    instance: MapleInstanceId,
+) -> Result<Option<DirectPolicy>, tinfoil::Error> {
+    let approved = approved_releases(endpoint(instance));
+    if approved.is_empty() {
+        return Ok(None);
+    }
+    DirectPolicy::new(approved).map(Some)
+}
+
+fn approved_releases(endpoint: &MapleEndpoint) -> Vec<ApprovedRelease> {
+    endpoint
+        .current_release
+        .into_iter()
         .chain(endpoint.staged_releases.iter())
         .map(|pin| ApprovedRelease {
             release: PinnedRelease {
@@ -144,8 +171,7 @@ pub(crate) fn direct_policy(instance: MapleInstanceId) -> Result<DirectPolicy, t
                     .collect(),
             },
         })
-        .collect();
-    DirectPolicy::new(approved)
+        .collect()
 }
 
 #[cfg(test)]
@@ -298,8 +324,10 @@ mod tests {
             let policy = direct_policy(instance)
                 .expect("compiled current/staged pins must form a valid policy");
             let serialized = format!("{policy:?}");
-            for pin in
-                std::iter::once(endpoint.current_release).chain(endpoint.staged_releases.iter())
+            for pin in endpoint
+                .current_release
+                .into_iter()
+                .chain(endpoint.staged_releases.iter())
             {
                 assert!(serialized.contains(pin.repo));
                 assert!(serialized.contains(pin.tag));
@@ -319,17 +347,83 @@ mod tests {
     }
 
     #[test]
+    fn staging_i02_release_does_not_approve_it_for_i01() {
+        // Synthetic release identity is local to this test; no endpoint uses it.
+        const I02_TEST_STAGE: ReleasePin = ReleasePin {
+            repo: I02_CURRENT_RELEASE.repo,
+            tag: "test-i02-only-stage",
+            digest: I02_CURRENT_RELEASE.digest,
+            registers: I02_CURRENT_RELEASE.registers,
+        };
+        const STAGED_I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
+            instance: MapleInstanceId::I02,
+            host: "i02.tfinf.maple.ai",
+            base_url: "https://i02.tfinf.maple.ai",
+            current_release: Some(&I02_CURRENT_RELEASE),
+            staged_releases: &[I02_TEST_STAGE],
+        };
+
+        let i01_approved = approved_releases(endpoint(MapleInstanceId::I01));
+        let current_i02_approved = approved_releases(endpoint(MapleInstanceId::I02));
+        let staged_i02_approved = approved_releases(&STAGED_I02_ENDPOINT);
+        assert_eq!(i01_approved.len(), 1);
+        assert_eq!(current_i02_approved.len(), 1);
+        assert_eq!(staged_i02_approved.len(), 2);
+        assert_eq!(staged_i02_approved[1].release.tag, I02_TEST_STAGE.tag);
+        assert!(i01_approved
+            .iter()
+            .all(|approved| approved.release.tag != I02_TEST_STAGE.tag));
+        DirectPolicy::new(i01_approved).expect("i01 current policy remains valid");
+        DirectPolicy::new(staged_i02_approved).expect("i02 staged policy remains valid");
+    }
+
+    #[test]
+    fn uncensored_guest_approves_only_its_qualified_release() {
+        let approved = approved_releases(endpoint(MapleInstanceId::I02));
+        assert_eq!(approved.len(), 1);
+        let release = &approved[0];
+        assert_eq!(
+            release.release.repo,
+            "MaplePrivacyLabs/inference-deepseek-uncensored"
+        );
+        assert_eq!(release.release.tag, "v0.1.0-rc.1+b300");
+        assert_eq!(
+            release.release.digest,
+            "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4"
+        );
+        assert_eq!(
+            release.measurement.type_,
+            PredicateType::SnpTdxMultiPlatformV1
+        );
+        assert_eq!(release.measurement.registers, [
+            "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
+            "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
+            "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
+        ]);
+        assert!(approved.iter().all(|release| {
+            release.release.repo != I01_CURRENT_RELEASE.repo
+                && release.release.digest != I01_CURRENT_RELEASE.digest
+                && release.measurement.registers[0] != I01_CURRENT_RELEASE.registers[0]
+        }));
+        assert!(direct_policy(MapleInstanceId::I02).unwrap().is_some());
+        assert!(direct_policy(MapleInstanceId::I01).unwrap().is_some());
+    }
+
+    #[test]
     fn retired_release_is_not_approved_on_either_guest() {
         for instance in MapleInstanceId::ALL {
-            let policy = direct_policy(instance).unwrap();
-            let serialized = format!("{policy:?}");
-            for retired_pin in [
-                "v0.1.0",
-                "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00",
-                "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
-                "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
-            ] {
-                assert!(!serialized.contains(retired_pin));
+            for approved in approved_releases(endpoint(instance)) {
+                assert_ne!(approved.release.tag, "v0.1.0");
+                assert_ne!(
+                    approved.release.digest,
+                    "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00"
+                );
+                for retired_register in [
+                    "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
+                    "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
+                ] {
+                    assert!(!approved.measurement.registers.iter().any(|register| register == retired_register));
+                }
             }
         }
     }

@@ -438,6 +438,7 @@ pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
+pub const DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID: &str = "deepseek-v4-1-flash-1017-uncensored";
 
 const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
     quick: QUICK_MODEL_ID,
@@ -1034,6 +1035,32 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         Some("552B"),
         Some("16B"),
     )),
+    // Dealign's pinned 1017 derivative retains the base architecture, tokenizer,
+    // recommended sampling and reasoning protocol. Model card and revision:
+    // https://huggingface.co/dealignai/DeepSeek-V4.1-Flash-1017-UNCENSORED-FP8/tree/c19ca5ca4eaeb79d29fdf08aea8327da95b1116a
+    ModelConfigEntry::new(
+        DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+        "DeepSeek V4.1 Flash Uncensored",
+        "DeepSeek Uncensored",
+        "Dealign's uncensored DeepSeek 1017 reasoning and tool-use model.",
+        ModelAccessTier::Pro,
+        ModelCapabilities::chat(true, true),
+        &["New"],
+        true,
+        true,
+        false,
+        66,
+        1_048_576,
+        DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
+    )
+    .with_reasoning(DEEPSEEK_V4_1_FLASH_REASONING)
+    .with_catalog_provider("maple", DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID)
+    .with_catalog_metadata(ModelCatalogMetadata::new(
+        &["text", "image"],
+        &["text"],
+        Some("552B"),
+        Some("16B"),
+    )),
     ModelConfigEntry::new(
         "llama3-3-70b",
         "Llama 3.3 70B",
@@ -1161,12 +1188,16 @@ pub(crate) fn alias_reasoning(alias: &str, plan: ModelPlan) -> Option<ModelReaso
     Some(reasoning)
 }
 
-/// Provider rollout and readiness affect route eligibility, not the public
-/// catalog: shared Tinfoil serves the same DeepSeek model when Maple is disabled.
-pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
+/// Uncensored discovery requires the same account flag as execution. Provider
+/// readiness remains a routing concern, independent of account authorization.
+pub(crate) fn model_feature_visible(model: &str, uncensored_enabled: bool) -> bool {
+    model != DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID || uncensored_enabled
+}
+
+pub(crate) fn model_catalog_response(plan: ModelPlan, uncensored_enabled: bool) -> Value {
     let data = MODEL_CONFIGS
         .iter()
-        .filter(|entry| entry.listed)
+        .filter(|entry| entry.listed && model_feature_visible(entry.id, uncensored_enabled))
         .map(|entry| entry.catalog_json())
         .collect::<Vec<_>>();
     let aliases = MODEL_ALIAS_ENTRIES
@@ -1199,10 +1230,12 @@ pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
 
 /// The OpenAI-compatible catalog has the same provider-independent model
 /// identity and listing behavior as Research.
-pub fn openai_models_response() -> Value {
+pub fn openai_models_response(uncensored_enabled: bool) -> Value {
     let mut data = MODEL_CONFIGS
         .iter()
-        .filter(|entry| entry.api_listed && entry.enabled)
+        .filter(|entry| {
+            entry.api_listed && entry.enabled && model_feature_visible(entry.id, uncensored_enabled)
+        })
         .map(|entry| entry.openai_model_json())
         .collect::<Vec<_>>();
 
@@ -1254,6 +1287,38 @@ pub fn openai_models_response() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncensored_catalog_is_account_gated_without_changing_stock_or_defaults() {
+        let id = DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let off = model_catalog_response(plan, false);
+            let mut on = model_catalog_response(plan, true);
+            assert!(!has_model(&off, id));
+            let derivative = catalog_model(&on, id);
+            assert_eq!(derivative["provider"], "maple");
+            assert_eq!(derivative["provider_id"], id);
+            assert_eq!(derivative["context_window"], 1_048_576);
+            assert_eq!(derivative["access"], "pro");
+            on["data"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|model| model["id"] != id);
+            assert_eq!(on, off);
+        }
+        let off = openai_models_response(false);
+        let mut on = openai_models_response(true);
+        assert!(!has_model(&off, id));
+        assert!(has_model(&on, id));
+        on["data"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|model| model["id"] != id);
+        assert_eq!(on, off);
+        assert_eq!(resolve_public_model_id(id), Some(id));
+        assert!(!ModelPlan::Free.allows_model(id));
+        assert!(ModelPlan::Paid.allows_model(id));
+    }
 
     fn has_model(response: &Value, model_id: &str) -> bool {
         response["data"]
@@ -1312,6 +1377,13 @@ mod tests {
             ("glm-5-3-flash", 1.0, 0.95, None, None),
             ("kimi-k3", 1.0, 0.95, Some(1.0), None),
             ("deepseek-v4-1-flash", 1.0, 1.0, None, None),
+            (
+                DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+                1.0,
+                1.0,
+                None,
+                None,
+            ),
             ("llama3-3-70b", 0.6, 0.9, None, None),
         ];
         assert_eq!(expected.len(), MODEL_CONFIGS.len());
@@ -1542,7 +1614,7 @@ mod tests {
     fn test_catalog_alias_metadata_matches_resolved_models() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
             let targets = ModelAliasTargets::for_plan(plan);
-            let catalog = model_catalog_response(plan);
+            let catalog = model_catalog_response(plan, false);
             for alias in catalog["aliases"].as_array().expect("aliases") {
                 let selector = alias["id"].as_str().expect("alias ID");
                 let target = targets.resolve(selector);
@@ -1609,7 +1681,7 @@ mod tests {
 
     #[test]
     fn test_catalog_alias_metadata_tracks_paid_targets() {
-        let catalog = model_catalog_response(ModelPlan::Paid);
+        let catalog = model_catalog_response(ModelPlan::Paid, false);
         let aliases = catalog["aliases"].as_array().expect("aliases");
         let quick = aliases
             .iter()
@@ -1659,7 +1731,7 @@ mod tests {
 
     #[test]
     fn test_catalog_hides_api_only_models_and_includes_aliases() {
-        let response = model_catalog_response(ModelPlan::Free);
+        let response = model_catalog_response(ModelPlan::Free, false);
         let data = response["data"].as_array().expect("catalog data");
         assert!(data.iter().any(|model| model["id"] == QUICK_MODEL_ID));
         assert!(!data
@@ -1679,7 +1751,7 @@ mod tests {
             (ModelPlan::Free, QUICK_MODEL_ID, "free"),
             (ModelPlan::Paid, GLM_5_3_FLASH_MODEL_ID, "pro"),
         ] {
-            let catalog = model_catalog_response(plan);
+            let catalog = model_catalog_response(plan, false);
             let aliases = catalog["aliases"].as_array().expect("aliases");
             let quick = aliases
                 .iter()
@@ -1699,7 +1771,7 @@ mod tests {
 
     #[test]
     fn test_openai_models_includes_api_only_models() {
-        let response = openai_models_response();
+        let response = openai_models_response(false);
         let data = response["data"].as_array().expect("models data");
 
         assert!(data
@@ -1712,7 +1784,7 @@ mod tests {
 
     #[test]
     fn test_catalog_advertises_voxtral_as_default_speech_model() {
-        let response = model_catalog_response(ModelPlan::Free);
+        let response = model_catalog_response(ModelPlan::Free, false);
 
         assert_eq!(response["audio"]["speech"]["available"], true);
         assert_eq!(response["audio"]["speech"]["model"], "voxtral-tts");
@@ -1721,8 +1793,8 @@ mod tests {
 
     #[test]
     fn test_catalog_removes_deprecated_kimi_k2_6() {
-        let catalog = model_catalog_response(ModelPlan::Free);
-        let openai_models = openai_models_response();
+        let catalog = model_catalog_response(ModelPlan::Free, false);
+        let openai_models = openai_models_response(false);
 
         assert!(!has_model(&catalog, "kimi-k2-6"));
         assert!(!has_model(&openai_models, "kimi-k2-6"));
@@ -1731,7 +1803,7 @@ mod tests {
 
     #[test]
     fn test_catalog_adds_glm_5_3_directly_through_continuum_without_changing_aliases() {
-        let catalog = model_catalog_response(ModelPlan::Paid);
+        let catalog = model_catalog_response(ModelPlan::Paid, false);
         let glm = catalog_model(&catalog, GLM_5_3_MODEL_ID);
 
         assert_eq!(glm["provider"], "continuum");
@@ -1755,7 +1827,7 @@ mod tests {
 
     #[test]
     fn test_catalog_adds_glm_5_3_flash_through_tinfoil_with_image_and_shared_1m_context() {
-        let catalog = model_catalog_response(ModelPlan::Paid);
+        let catalog = model_catalog_response(ModelPlan::Paid, false);
         let glm = catalog_model(&catalog, GLM_5_3_FLASH_MODEL_ID);
 
         assert_eq!(glm["provider"], "tinfoil");
@@ -1774,7 +1846,7 @@ mod tests {
 
     #[test]
     fn test_catalog_adds_deepseek_v4_1_flash_through_tinfoil_with_image_and_1m_context() {
-        let catalog = model_catalog_response(ModelPlan::Paid);
+        let catalog = model_catalog_response(ModelPlan::Paid, false);
         let deepseek = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
 
         assert_eq!(deepseek["provider"], "tinfoil");
@@ -1793,8 +1865,8 @@ mod tests {
 
     #[test]
     fn test_new_tinfoil_models_are_generally_listed() {
-        let catalog = model_catalog_response(ModelPlan::Free);
-        let openai_models = openai_models_response();
+        let catalog = model_catalog_response(ModelPlan::Free, false);
+        let openai_models = openai_models_response(false);
 
         for model in [
             "kimi-k3",
@@ -1812,22 +1884,23 @@ mod tests {
         let expected = vec![DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string()];
 
         assert_eq!(
-            model_ids_with_badge(&model_catalog_response(ModelPlan::Free), "New"),
+            model_ids_with_badge(&model_catalog_response(ModelPlan::Free, false), "New"),
             expected
         );
         assert_eq!(
-            model_ids_with_badge(&openai_models_response(), "New"),
+            model_ids_with_badge(&openai_models_response(false), "New"),
             expected
         );
         assert!(
-            model_ids_with_badge(&model_catalog_response(ModelPlan::Free), "Reasoning").is_empty()
+            model_ids_with_badge(&model_catalog_response(ModelPlan::Free, false), "Reasoning")
+                .is_empty()
         );
-        assert!(model_ids_with_badge(&openai_models_response(), "Reasoning").is_empty());
+        assert!(model_ids_with_badge(&openai_models_response(false), "Reasoning").is_empty());
     }
 
     #[test]
     fn test_enriched_catalog_has_verified_new_model_metadata() {
-        let catalog = model_catalog_response(ModelPlan::Free);
+        let catalog = model_catalog_response(ModelPlan::Free, false);
         let kimi = catalog_model(&catalog, "kimi-k3");
         assert_eq!(kimi["access"], "pro");
         assert_eq!(kimi["provider_id"], "kimi-k3");
@@ -1857,7 +1930,7 @@ mod tests {
         assert_eq!(deepseek_v41["capabilities"]["tool_use"], true);
         assert_eq!(deepseek_v41["tasks"], json!(["generate", "vision"]));
 
-        let minimal = openai_models_response();
+        let minimal = openai_models_response(false);
         let minimal_kimi = catalog_model(&minimal, "kimi-k3");
         assert!(minimal_kimi.get("input_modalities").is_none());
         assert!(minimal_kimi.get("parameter_size").is_none());
@@ -1873,7 +1946,7 @@ mod tests {
             Option<&'static [&'static str]>,
             Option<&'static str>,
         );
-        let expected: [Expected; 8] = [
+        let expected: [Expected; 9] = [
             (
                 "gpt-oss-120b",
                 true,
@@ -1917,10 +1990,17 @@ mod tests {
                 Some(&["max", "xhigh", "high", "low"]),
                 Some("high"),
             ),
+            (
+                DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+                false,
+                true,
+                Some(&["max", "xhigh", "high", "low"]),
+                Some("high"),
+            ),
             ("llama3-3-70b", false, false, None, None),
         ];
         assert_eq!(expected.len(), MODEL_CONFIGS.len());
-        let models = openai_models_response();
+        let models = openai_models_response(true);
 
         for (model, mandatory, default_enabled, supported, default_effort) in expected {
             let entry = model_entry(model).expect("catalog model");
@@ -1968,8 +2048,8 @@ mod tests {
 
     #[test]
     fn test_reasoning_controls_match_between_catalog_and_models_endpoints() {
-        let catalog = model_catalog_response(ModelPlan::Paid);
-        let models = openai_models_response();
+        let catalog = model_catalog_response(ModelPlan::Paid, false);
+        let models = openai_models_response(false);
         for model in catalog["data"].as_array().expect("catalog data") {
             let listed = models["data"]
                 .as_array()
@@ -2069,7 +2149,7 @@ mod tests {
         assert_eq!(alias_reasoning(GLM_5_3_MODEL_ID, ModelPlan::Paid), None);
 
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
-            let catalog = model_catalog_response(plan);
+            let catalog = model_catalog_response(plan, false);
             for alias in catalog["aliases"].as_array().expect("aliases") {
                 let selector = alias["id"].as_str().expect("alias ID");
                 let reasoning = alias_reasoning(selector, plan).expect("alias reasoning");
@@ -2093,9 +2173,9 @@ mod tests {
     #[test]
     fn deepseek_catalog_lists_only_the_canonical_public_model() {
         for catalog in [
-            model_catalog_response(ModelPlan::Free),
-            model_catalog_response(ModelPlan::Paid),
-            openai_models_response(),
+            model_catalog_response(ModelPlan::Free, false),
+            model_catalog_response(ModelPlan::Paid, false),
+            openai_models_response(false),
         ] {
             assert!(has_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID));
             assert!(!has_model(&catalog, "deepseek-v4-1-flash-1017"));
@@ -2130,7 +2210,7 @@ mod tests {
         );
         assert!(!ModelPlan::Free.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
         assert!(ModelPlan::Paid.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
-        let catalog = model_catalog_response(ModelPlan::Paid);
+        let catalog = model_catalog_response(ModelPlan::Paid, false);
         let deepseek = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(deepseek["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(deepseek["display_name"], "DeepSeek V4.1 Flash");

@@ -5,12 +5,12 @@
 //! completion model.
 
 use crate::model_config::{
-    DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
-    QUICK_MODEL_ID,
+    DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+    GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v4";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v5";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -228,6 +228,16 @@ const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
+// A distinct checkpoint has a distinct identity at every boundary. Stock
+// DeepSeek providers are not fallbacks for the uncensored model.
+const DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Maple(MapleInstanceId::I02),
+    provider_model_id: DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+    response_model_id: DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+    weight: 100,
+    enabled: true,
+}];
+
 // A test-only route table proves that Router V2 still supports two independent
 // Maple replicas of the same public model after i02 leaves the production route.
 #[cfg(test)]
@@ -290,6 +300,10 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
     completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_ROUTES),
+    completion_model(
+        DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_UNCENSORED_ROUTES,
+    ),
     completion_model("llama3-3-70b", LLAMA3_3_70B_ROUTES),
     completion_model("gpt-oss-safeguard-120b", GPT_OSS_SAFEGUARD_120B_ROUTES),
 ];
@@ -306,6 +320,32 @@ mod tests {
         enabled_api_completion_model_ids, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn uncensored_model_is_distinct_and_has_only_i02_without_stock_fallback() {
+        let derivative = PROVIDER_REGISTRY
+            .completion_model(DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID)
+            .unwrap();
+        assert_eq!(derivative.routes.len(), 1);
+        let route = derivative.routes[0];
+        assert_eq!(route.provider, ProviderId::Maple(MapleInstanceId::I02));
+        assert_eq!(
+            route.provider_model_id,
+            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID
+        );
+        assert_eq!(
+            route.response_model_id,
+            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID
+        );
+        for route in PROVIDER_REGISTRY
+            .completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID)
+            .unwrap()
+            .routes
+        {
+            assert_ne!(route.provider, ProviderId::Maple(MapleInstanceId::I02));
+            assert_eq!(route.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        }
+    }
 
     #[test]
     fn internal_instance_identity_is_distinct_from_logical_provider_family() {
@@ -383,6 +423,7 @@ mod tests {
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
                 "llama3-3-70b",
                 "gpt-oss-safeguard-120b",
             ]
@@ -468,6 +509,12 @@ mod tests {
                     ProviderId::Maple(MapleInstanceId::I01),
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID
+                ),
+                (
+                    DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+                    ProviderId::Maple(MapleInstanceId::I02),
+                    DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID
                 ),
                 (
                     "llama3-3-70b",
