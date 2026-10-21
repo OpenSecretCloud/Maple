@@ -48,6 +48,14 @@ apps/maple-research/frontend/src-tauri/target/research-dev/maple-research-dev-ma
 The unprivileged Desktop App PR Build workflow runs this same script as a
 separate macOS job and uploads `maple-research-dev-macos-pr` for review. That
 artifact is a local-install rehearsal package, not a signed release or deployment.
+The Dev job checks out the exact PR head; tie the downloaded package and its
+profile hashes to that source run and checkout log when recording test evidence.
+
+Frontend-only changes normally skip desktop packages. A maintainer can add
+`ci:research-dev-macos` to a PR to request just this Dev package immediately and
+on later source updates while the label remains. Adding other labels does not
+build packages or interrupt source-validation runs. Normal native-change jobs
+continue to use the existing platform selectors.
 
 The different bundle ID separates the WebView's stored credentials and Tauri's
 app config/data directories from the production app. Dev does not run the old
