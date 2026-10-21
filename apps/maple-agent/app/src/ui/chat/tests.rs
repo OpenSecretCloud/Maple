@@ -2890,7 +2890,21 @@ mod state_tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("{what} did not happen");
+        let state = chat.update(cx, |this, _| {
+            format!(
+                "draft={}, project={:?}, defaults_loaded={}, queued_saves={}, save_pending={}, \
+                 defaults_generation={}, selection_generation={}, notice={:?}",
+                this.draft,
+                this.project_root,
+                this.draft_mcp_defaults.is_some(),
+                this.project_mcp_saves.len(),
+                this.project_mcp_save_pending,
+                this.draft_mcp_generation,
+                this.selection_generation,
+                this.notice,
+            )
+        });
+        panic!("{what} did not happen: {state}");
     }
 
     /// A backend whose configuration and data live under a temporary XDG
