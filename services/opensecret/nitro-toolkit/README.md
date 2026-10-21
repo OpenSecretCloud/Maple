@@ -95,6 +95,60 @@ and CloudWatch forwarding without contacting IMDS, AWS, or a VSOCK device. An
 image build and offline test do not prove runtime behavior on a Nitro parent;
 any later environment rollout needs its own review and validation.
 
+#### Dev credential requester handoff artifact
+
+The manual `Dev credential requester image artifact` workflow on Maple `master`
+builds the Linux ARM64 requester, runs its six offline contract and CA-trust
+tests, scans the finished image, and retains a Docker loadable archive for a
+separate Dev rollout. It records the source commit, helper source tree, pinned
+base image, image ID, and archive checksum in `manifest.json`. GitHub attests
+both the archive and manifest. The workflow does not install the helper.
+
+Select the completed workflow run's exact source SHA, run ID, and attempt, then
+verify the downloaded files before a Dev handoff:
+
+```sh
+set -euo pipefail
+SOURCE_SHA=FULL_40_CHARACTER_RUN_HEAD_SHA
+RUN_ID=WORKFLOW_RUN_ID
+RUN_ATTEMPT=WORKFLOW_RUN_ATTEMPT
+HANDOFF_DIR=dev-credential-requester-handoff
+ARTIFACT="dev-credential-requester-linux-arm64-${SOURCE_SHA}-${RUN_ID}-${RUN_ATTEMPT}"
+gh run download "$RUN_ID" --repo MaplePrivacyLabs/Maple \
+  --name "$ARTIFACT" --dir "$HANDOFF_DIR"
+for file in credential-requester-linux-arm64.tar manifest.json; do
+  gh attestation verify "$HANDOFF_DIR/$file" --repo MaplePrivacyLabs/Maple \
+    --signer-workflow MaplePrivacyLabs/Maple/.github/workflows/dev-credential-requester-image.yml \
+    --source-ref refs/heads/master --source-digest "$SOURCE_SHA" \
+    --deny-self-hosted-runners
+done
+(cd "$HANDOFF_DIR" && shasum -a 256 -c SHA256SUMS)
+jq -e --arg sha "$SOURCE_SHA" --arg run "$RUN_ID" --arg attempt "$RUN_ATTEMPT" \
+  '.source_commit == $sha and .run_id == $run and .run_attempt == $attempt
+   and .environment == "dev" and .architecture == "linux/arm64"' \
+  "$HANDOFF_DIR/manifest.json"
+test "$(shasum -a 256 "$HANDOFF_DIR/credential-requester-linux-arm64.tar" | cut -d' ' -f1)" = \
+  "$(jq -r .archive_sha256 "$HANDOFF_DIR/manifest.json")"
+```
+
+On the authorized Dev parent, compare the image ID and source label after
+loading the verified archive, before starting a container:
+
+```sh
+set -euo pipefail
+docker load --input "$HANDOFF_DIR/credential-requester-linux-arm64.tar"
+image_tag="$(jq -r .image_tag "$HANDOFF_DIR/manifest.json")"
+test "$(docker image inspect --format '{{.Id}}' "$image_tag")" = \
+  "$(jq -r .image_id "$HANDOFF_DIR/manifest.json")"
+test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_tag")" = \
+  "$SOURCE_SHA"
+```
+
+The workflow artifact expires after seven days. Keep a verified archive and
+manifest in the controlled Dev maintenance record if a later rollback needs
+them. Parent installation and service validation follow the separately
+authorized Nitro deployment runbook.
+
 ### Traffic Forwarder
 
 A Python utility for forwarding network traffic between Nitro Enclaves and external services.
