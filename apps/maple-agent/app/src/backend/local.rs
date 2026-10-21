@@ -2051,6 +2051,32 @@ impl LocalBackend {
     }
 
     pub async fn list_integrations(&self, user_id: &str) -> Result<Vec<AgentIntegration>, String> {
+        #[cfg(test)]
+        if self.ui_fixture {
+            // UI state tests still use real account-local MCP persistence, but
+            // must not probe the runner's installed CLIs or OS permissions.
+            // In particular, Claude's version and auth probes can each take
+            // three seconds. Host and runtime tests use the real catalog.
+            return Ok([
+                ("codex", "Codex"),
+                ("claude", "Claude Code"),
+                ("cua-driver", "Cua"),
+            ]
+            .into_iter()
+            .map(|(id, name)| AgentIntegration {
+                id: id.into(),
+                name: name.into(),
+                description: String::new(),
+                availability: maple_agent::agent::AgentIntegrationAvailability::NotDetected,
+                backend: None,
+                version: None,
+                permissions: None,
+                setup_available: false,
+                enabled_for_new_tasks: false,
+                detail: None,
+            })
+            .collect());
+        }
         self.service
             .handle_for_user(user_id)
             .await?
