@@ -756,6 +756,7 @@ impl ChatScreen {
     ) {
         match event.clone() {
             SidebarEvent::Navigate(request) => cx.emit(request),
+            SidebarEvent::RenameProject(request) => cx.emit(request),
             SidebarEvent::PreferencesChanged => {
                 self.refresh_project_caption(cx);
                 cx.emit(NavigationChanged);

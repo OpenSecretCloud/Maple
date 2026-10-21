@@ -25,6 +25,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.computers = computers;
+        self.rebuild_computer_switcher_roots();
         self.rebuild_entries();
         self.list.remeasure_items(0..self.entries.len());
         cx.notify();
@@ -63,9 +64,13 @@ impl Sidebar {
                 {
                     continue;
                 }
+                let project_name = self.project_name(&ProjectTarget {
+                    computer: computer.key.clone(),
+                    path: project.path.clone(),
+                });
                 let matches_group = self.filter.is_empty()
                     || computer.label.to_lowercase().contains(&self.filter)
-                    || project.label.to_lowercase().contains(&self.filter);
+                    || project_name.to_lowercase().contains(&self.filter);
                 let mut tasks = computer
                     .sessions
                     .iter()
@@ -98,7 +103,7 @@ impl Sidebar {
                         destination: Destination::Project(project.path.clone()),
                     },
                     id: format!("computer-{computer_index}-folder-{heading}").into(),
-                    label: format!("{} · {}", computer.label, project.label).into(),
+                    label: format!("{} · {}", computer.label, project_name).into(),
                     remote: computer.key.is_some(),
                 });
                 entries.push(SidebarEntry::ComputerProject(heading));
@@ -316,55 +321,36 @@ impl Sidebar {
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(computer.label.clone()),
             );
-            for (project_index, project) in computer.projects.iter().enumerate() {
-                // Keep the normal project rename/trust/removal controls for
-                // this computer; foreign project rows navigate to their owner.
-                if computer.key.as_deref() == self.backend.remote_host()
-                    && let Some(root) = self
-                        .switcher_roots
-                        .iter()
-                        .find(|root| root.root == project.path)
-                {
-                    let pick = root.root.clone();
-                    let group = root.row_group.clone();
-                    let mut item = MenuItem::new(
-                        root.row_id.clone(),
-                        root.name.clone(),
-                        move |this: &mut Self, _, cx| {
-                            this.set_project_filter(Some(pick.clone()), cx);
-                        },
-                    )
-                    .current(self.project_filter.as_deref() == Some(root.root.as_str()))
-                    .style(move |row| row.group(group))
-                    .trailing(self.project_menu_trigger(root, window, cx));
-                    if let Some(field) = self.project_rename_field(&root.root) {
-                        item = item.content(field);
-                    }
-                    menu = menu.item(item);
-                    continue;
+            for root in &self.computer_switcher_roots[index] {
+                let target = root.target.clone();
+                let own = target.computer.as_deref() == self.backend.remote_host();
+                let group = root.row_group.clone();
+                let mut item = MenuItem::new(
+                    root.row_id.clone(),
+                    root.name.clone(),
+                    move |this: &mut Self, _, cx| {
+                        if own {
+                            this.set_project_filter(Some(target.path.clone()), cx);
+                        } else {
+                            cx.emit(SidebarEvent::Navigate(Navigate {
+                                computer: target.computer.clone(),
+                                destination: Destination::Project(target.path.clone()),
+                            }));
+                        }
+                    },
+                )
+                .icon(if root.target.computer.is_some() {
+                    "globe"
+                } else {
+                    "folder"
+                })
+                .current(own && self.project_filter.as_deref() == Some(root.root.as_str()))
+                .style(move |row| row.group(group))
+                .trailing(self.project_menu_trigger(root, window, cx));
+                if let Some(field) = self.project_rename_field(&root.target) {
+                    item = item.content(field);
                 }
-                let request = Navigate {
-                    computer: computer.key.clone(),
-                    destination: Destination::Project(project.path.clone()),
-                };
-                menu = menu.item(
-                    MenuItem::new(
-                        SharedString::from(format!(
-                            "switcher-computer-{index}-project-{project_index}"
-                        )),
-                        project.label.clone(),
-                        move |_: &mut Self, _, cx| cx.emit(SidebarEvent::Navigate(request.clone())),
-                    )
-                    .icon(if computer.key.is_some() {
-                        "globe"
-                    } else {
-                        "folder"
-                    })
-                    .current(
-                        computer.key.as_deref() == self.backend.remote_host()
-                            && self.project_filter.as_deref() == Some(project.path.as_str()),
-                    ),
-                );
+                menu = menu.item(item);
             }
             let request = Navigate {
                 computer: computer.key.clone(),

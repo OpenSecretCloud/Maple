@@ -5,6 +5,7 @@ mod state_tests {
 
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
+    use crate::ui::chat::computers::ProjectTarget;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
     use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
@@ -5233,6 +5234,278 @@ mod state_tests {
         assert_eq!(input.update(cx, |input, _| input.text()), "");
     }
 
+    fn identical_path_project_catalog() -> Arc<Vec<computers::Computer>> {
+        Arc::new(
+            [
+                (None, "This computer", "Local project"),
+                (Some("east"), "East computer", "East project"),
+                (Some("west"), "West computer", "West project"),
+            ]
+            .into_iter()
+            .map(|(computer, label, name)| computers::Computer {
+                key: computer.map(str::to_string),
+                label: label.into(),
+                projects: vec![computers::Project {
+                    path: "/shared".into(),
+                    label: name.into(),
+                }],
+                sessions: vec![summary_at("same-id", "Existing task", "/shared")],
+                running: HashSet::new(),
+                unread: HashSet::new(),
+                pinned: Vec::new(),
+                loading: false,
+                error: None,
+            })
+            .collect(),
+        )
+    }
+
+    #[gpui::test]
+    fn inactive_project_rename_controls_are_scoped_and_do_not_navigate(cx: &mut TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = true;
+            this.project_root = Some("/shared".into());
+            this.sessions = vec![summary_at("same-id", "Existing task", "/shared")];
+            this.apply_recent_roots(vec![named_root("/shared", "Local project", 1)], cx);
+            this.set_computers(identical_path_project_catalog(), cx);
+            this.composer
+                .clone()
+                .unwrap()
+                .update(cx, |input, cx| input.set_text("Keep my draft", cx));
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let generation = chat.update(cx, |this, _| this.selection_generation);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                observed.borrow_mut().push(event.clone());
+            })
+        });
+        sidebar.update(cx, |sidebar, cx| {
+            for computer in [Some("east"), Some("west")] {
+                let target = ProjectTarget {
+                    computer: computer.map(str::to_string),
+                    path: "/shared".into(),
+                };
+                assert_eq!(
+                    sidebar.project_menu_labels_for_test(&target),
+                    vec!["Rename project"]
+                );
+            }
+            let local = ProjectTarget {
+                computer: None,
+                path: "/shared".into(),
+            };
+            let own_menu = sidebar.project_menu_labels_for_test(&local);
+            assert!(own_menu.contains(&"Rename project"));
+            assert!(own_menu.contains(&"Open folder"));
+            assert!(own_menu.contains(&"Remove project"));
+            sidebar.set_switcher_menu_open(true, cx);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let local = cx
+            .debug_bounds("switcher-/shared")
+            .expect("local project row");
+        let east = cx
+            .debug_bounds("switcher-computer-east-/shared")
+            .expect("east project row");
+        let west = cx
+            .debug_bounds("switcher-computer-west-/shared")
+            .expect("west project row");
+        assert_ne!(local.center(), east.center());
+        assert_ne!(east.center(), west.center());
+        for selector in [
+            "menu-project-/shared",
+            "menu-project-computer-east-/shared",
+            "menu-project-computer-west-/shared",
+        ] {
+            assert!(
+                cx.debug_bounds(selector).is_some(),
+                "distinct overflow control: {selector}"
+            );
+        }
+        press(cx, "menu-project-computer-east-/shared");
+        assert!(
+            cx.debug_bounds("rename-project-computer-east-/shared")
+                .is_some()
+        );
+        assert!(
+            cx.debug_bounds("open-project-computer-east-/shared")
+                .is_none()
+        );
+        assert!(cx.debug_bounds("remove-project-/shared").is_none());
+        press(cx, "rename-project-computer-east-/shared");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
+            Some(RenameTarget::Project(ProjectTarget {
+                computer: Some("east".into()),
+                path: "/shared".into(),
+            }))
+        );
+        cx.simulate_keystrokes("secondary-a");
+        cx.simulate_input("East renamed inline");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let events = events.borrow();
+        let renames = events
+            .iter()
+            .filter_map(|event| match event {
+                SidebarEvent::RenameProject(request) => Some(request),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(renames.len(), 1);
+        assert_eq!(
+            renames[0].target,
+            ProjectTarget {
+                computer: Some("east".into()),
+                path: "/shared".into()
+            }
+        );
+        assert_eq!(renames[0].name, "East renamed inline");
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            SidebarEvent::Navigate(_)
+                | SidebarEvent::Select(_)
+                | SidebarEvent::RemoveRoot(_)
+                | SidebarEvent::SetTrust { .. }
+                | SidebarEvent::ChooseProject
+        )));
+        chat.update(cx, |this, cx| {
+            assert!(this.draft);
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.project_root.as_deref(), Some("/shared"));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep my draft"));
+            assert!(this.timeline.is_empty());
+            assert_eq!(this.sidebar.read(cx).root_name("/shared"), "Local project");
+            assert_eq!(
+                this.sidebar.read(cx).project_name_for_test(&ProjectTarget {
+                    computer: Some("east".into()),
+                    path: "/shared".into()
+                }),
+                "East renamed inline"
+            );
+            assert_eq!(
+                this.sidebar.read(cx).project_name_for_test(&ProjectTarget {
+                    computer: Some("west".into()),
+                    path: "/shared".into()
+                }),
+                "West project"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn inactive_project_rename_previews_and_failures_are_isolated_by_computer(
+        cx: &mut TestAppContext,
+    ) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.selected_session = Some("same-id".into());
+            this.project_root = Some("/shared".into());
+            this.sessions = vec![summary_at("same-id", "Existing task", "/shared")];
+            this.apply_recent_roots(vec![named_root("/shared", "Local project", 1)], cx);
+            this.replace_timeline(vec![user_item("existing-message", "Keep the conversation")]);
+            this.set_computers(identical_path_project_catalog(), cx);
+            this.composer
+                .clone()
+                .unwrap()
+                .update(cx, |input, cx| input.set_text("Keep my reply", cx));
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let generation = chat.update(cx, |this, _| this.selection_generation);
+        let east = ProjectTarget {
+            computer: Some("east".into()),
+            path: "/shared".into(),
+        };
+        let west = ProjectTarget {
+            computer: Some("west".into()),
+            path: "/shared".into(),
+        };
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                observed.borrow_mut().push(event.clone());
+            })
+        });
+        sidebar.update(cx, |sidebar, cx| {
+            for (target, name) in [(&east, "East preview"), (&west, "West preview")] {
+                sidebar.begin_rename(RenameTarget::Project(target.clone()), cx);
+                sidebar
+                    .inputs()
+                    .last()
+                    .unwrap()
+                    .clone()
+                    .update(cx, |input, cx| input.set_text(name, cx));
+                sidebar.commit_rename(cx);
+            }
+            assert_eq!(sidebar.project_name_for_test(&east), "East preview");
+            assert_eq!(sidebar.project_name_for_test(&west), "West preview");
+            assert_eq!(sidebar.root_name("/shared"), "Local project");
+            sidebar.begin_rename(RenameTarget::Project(east.clone()), cx);
+            assert!(
+                sidebar.rename_target().is_none(),
+                "a pending target cannot be renamed twice"
+            );
+        });
+        chat.update(cx, |this, cx| {
+            let mut catalog = this.computers.as_ref().clone();
+            catalog[2].projects[0].label = "West confirmed by owner".into();
+            this.set_computers(Arc::new(catalog), cx);
+            assert_eq!(
+                this.sidebar.read(cx).project_name_for_test(&west),
+                "West preview"
+            );
+            this.finish_project_rename(east.clone(), Err("East is unavailable".into()), cx);
+            assert_eq!(
+                this.sidebar.read(cx).project_name_for_test(&east),
+                "East project"
+            );
+            assert_eq!(
+                this.sidebar.read(cx).project_name_for_test(&west),
+                "West preview",
+                "failure only removes its own overlay"
+            );
+            this.finish_project_rename(west.clone(), Ok(()), cx);
+            assert_eq!(
+                this.sidebar.read(cx).project_name_for_test(&west),
+                "West confirmed by owner"
+            );
+            assert_eq!(this.sidebar.read(cx).root_name("/shared"), "Local project");
+            assert_eq!(this.selected_session.as_deref(), Some("same-id"));
+            assert_eq!(this.project_root.as_deref(), Some("/shared"));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep my reply"));
+            assert_eq!(this.timeline[0].id, "existing-message");
+        });
+        cx.run_until_parked();
+        let events = events.borrow();
+        let renames = events
+            .iter()
+            .filter_map(|event| match event {
+                SidebarEvent::RenameProject(request) => Some(request),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(renames.len(), 2);
+        assert_eq!(renames[0].target, east);
+        assert_eq!(renames[1].target, west);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SidebarEvent::Navigate(_) | SidebarEvent::Select(_)))
+        );
+        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
+    }
+
     /// A project's rename field sits in the switcher. Escape ends the
     /// rename and Enter commits it; either way the switcher stays open and
     /// has the keyboard again.
@@ -5250,7 +5523,13 @@ mod state_tests {
         for commit in [false, true] {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_switcher_menu_open(true, cx);
-                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                sidebar.begin_rename(
+                    RenameTarget::Project(ProjectTarget {
+                        computer: None,
+                        path: root.clone(),
+                    }),
+                    cx,
+                );
             });
             cx.run_until_parked();
             if commit {
@@ -5308,13 +5587,25 @@ mod state_tests {
         });
         chat.update(cx, |this, cx| {
             this.sidebar.update(cx, |sidebar, cx| {
-                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                sidebar.begin_rename(
+                    RenameTarget::Project(ProjectTarget {
+                        computer: None,
+                        path: root.clone(),
+                    }),
+                    cx,
+                );
                 let input = sidebar.inputs().last().unwrap().clone();
                 input.update(cx, |input, cx| input.set_text("Optimistic owner name", cx));
                 sidebar.commit_rename(cx);
                 assert!(sidebar.project_rename_pending(&root));
                 assert_eq!(sidebar.root_name(&root), "Optimistic owner name");
-                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                sidebar.begin_rename(
+                    RenameTarget::Project(ProjectTarget {
+                        computer: None,
+                        path: root.clone(),
+                    }),
+                    cx,
+                );
                 assert!(
                     sidebar.rename_target().is_none(),
                     "cannot start a second rename while pending"
@@ -5391,7 +5682,13 @@ mod state_tests {
         chat.update(cx, |this, cx| {
             let invalid_name = "x".repeat(129);
             this.sidebar.update(cx, |sidebar, cx| {
-                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                sidebar.begin_rename(
+                    RenameTarget::Project(ProjectTarget {
+                        computer: None,
+                        path: root.clone(),
+                    }),
+                    cx,
+                );
                 let input = sidebar.inputs().last().unwrap().clone();
                 input.update(cx, |input, cx| input.set_text(&invalid_name, cx));
                 sidebar.commit_rename(cx);

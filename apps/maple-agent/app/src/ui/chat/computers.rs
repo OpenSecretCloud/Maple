@@ -19,6 +19,19 @@ pub(crate) struct Navigate {
     pub computer: Option<String>,
     pub destination: Destination,
 }
+/// A folder belongs to its execution computer, even while another is selected.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ProjectTarget {
+    pub computer: Option<String>,
+    pub path: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectRenameRequest {
+    pub target: ProjectTarget,
+    pub name: String,
+}
+
 pub(crate) struct NavigationChanged;
 
 #[derive(Clone)]
@@ -55,9 +68,35 @@ impl Computer {
 }
 
 impl EventEmitter<Navigate> for ChatScreen {}
+impl EventEmitter<ProjectRenameRequest> for ChatScreen {}
 impl EventEmitter<NavigationChanged> for ChatScreen {}
 
 impl ChatScreen {
+    pub(crate) fn project_names_available(&self) -> bool {
+        self.navigation_ready && !self.host_recovery.unavailable && !self.host_recovery.ended
+    }
+
+    pub(crate) fn apply_project_names(
+        &mut self,
+        roots: Vec<RecentProjectRoot>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_recent_roots(roots, cx);
+        cx.emit(NavigationChanged);
+        cx.notify();
+    }
+
+    pub(crate) fn finish_project_rename(
+        &mut self,
+        target: ProjectTarget,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.finish_project_rename(target, result, cx)
+        });
+    }
+
     pub(crate) fn sidebar_browse_state(&self, cx: &gpui::App) -> sidebar::BrowseState {
         self.sidebar.read(cx).browse_state(cx)
     }

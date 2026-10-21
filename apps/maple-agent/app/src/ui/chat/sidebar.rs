@@ -12,7 +12,7 @@
 
 #[path = "sidebar_computers.rs"]
 mod computers;
-use super::computers::{Computer, Destination, Navigate};
+use super::computers::{Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget};
 use computers::{OtherTask, ProjectHeading};
 
 /// Browsing belongs to the desktop window; conversations belong to computers.
@@ -50,6 +50,7 @@ use crate::ui::widgets;
 #[derive(Clone, Debug)]
 pub(super) enum SidebarEvent {
     Navigate(Navigate),
+    RenameProject(ProjectRenameRequest),
     PreferencesChanged,
     ProjectsChanged(Vec<RecentProjectRoot>),
     /// Show a task.
@@ -89,7 +90,7 @@ pub(super) enum SessionActivity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum RenameTarget {
     Task(String),
-    Project(String),
+    Project(ProjectTarget),
 }
 
 /// Strings and element ids one sidebar task row shows, built when the
@@ -305,6 +306,7 @@ struct SidebarMenuItem {
 /// and the element ids its row and menus use. Built when the sections
 /// rebuild, never per frame.
 pub(super) struct SwitcherRoot {
+    target: ProjectTarget,
     root: String,
     name: SharedString,
     row_id: SharedString,
@@ -345,12 +347,13 @@ pub(super) struct Sidebar {
     settled_expanded: bool,
     archived_expanded: bool,
     switcher_roots: Vec<SwitcherRoot>,
+    computer_switcher_roots: Vec<Vec<SwitcherRoot>>,
     scope_label: SharedString,
     project_filter: Option<String>,
     // Menus.
     popup: Popup<Sidebar, SidebarPopup>,
-    /// A project's overflow menu, open inside the switcher. Keyed by root.
-    project_popup: Popup<Sidebar, String>,
+    /// A project's overflow menu, keyed by execution computer and path.
+    project_popup: Popup<Sidebar, ProjectTarget>,
     /// Trust status of the project whose menu is open, once it loads.
     menu_trust: Option<AgentProjectTrustStatus>,
     // Search and rename.
@@ -365,7 +368,7 @@ pub(super) struct Sidebar {
     /// A late list can omit a newly restored project without erasing its revision.
     /// This cache is scoped to this account/computer view, never UI settings.
     project_metadata: HashMap<String, RecentProjectRoot>,
-    pending_project_names: HashMap<String, String>,
+    pending_project_names: HashMap<ProjectTarget, String>,
     // Application Vim's view of the rows.
     vim_selected: Option<SidebarTarget>,
     vim_by_row: Vec<Option<SidebarTarget>>,
@@ -376,7 +379,94 @@ pub(super) struct Sidebar {
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
 
+impl ProjectTarget {
+    fn element_id(&self, prefix: &str) -> SharedString {
+        match &self.computer {
+            Some(computer) => format!("{prefix}-computer-{computer}-{}", self.path).into(),
+            None => format!("{prefix}-{}", self.path).into(),
+        }
+    }
+}
+
+impl SwitcherRoot {
+    fn new(target: ProjectTarget, name: SharedString) -> Self {
+        Self {
+            root: target.path.clone(),
+            row_id: target.element_id("switcher"),
+            row_group: target.element_id("switcher-project-row"),
+            menu_id: target.element_id("menu-project"),
+            target,
+            name,
+        }
+    }
+}
+
 impl Sidebar {
+    fn project_target(&self, path: &str) -> ProjectTarget {
+        ProjectTarget {
+            computer: self.backend.remote_host().map(str::to_owned),
+            path: path.to_owned(),
+        }
+    }
+
+    fn project_name(&self, target: &ProjectTarget) -> String {
+        if target.computer.as_deref() == self.backend.remote_host() {
+            return self.root_name(&target.path);
+        }
+        self.pending_project_names
+            .get(target)
+            .cloned()
+            .or_else(|| {
+                self.computers
+                    .iter()
+                    .find(|computer| computer.key == target.computer)
+                    .and_then(|computer| {
+                        computer
+                            .projects
+                            .iter()
+                            .find(|project| project.path == target.path)
+                    })
+                    .map(|project| project.label.to_string())
+            })
+            .unwrap_or_else(|| remote_root_display_name(&target.path))
+    }
+
+    fn rebuild_computer_switcher_roots(&mut self) {
+        self.computer_switcher_roots = self
+            .computers
+            .iter()
+            .map(|computer| {
+                computer
+                    .projects
+                    .iter()
+                    .map(|project| {
+                        let target = ProjectTarget {
+                            computer: computer.key.clone(),
+                            path: project.path.clone(),
+                        };
+                        let name = self.project_name(&target).into();
+                        SwitcherRoot::new(target, name)
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+
+    pub(super) fn finish_project_rename(
+        &mut self,
+        target: ProjectTarget,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_project_names.remove(&target);
+        if let Err(message) = result {
+            cx.emit(SidebarEvent::Notice(message.into()));
+        }
+        self.rebuild_sections();
+        cx.emit(SidebarEvent::PreferencesChanged);
+        cx.notify();
+    }
+
     pub(crate) fn browse_state(&self, cx: &gpui::App) -> BrowseState {
         BrowseState {
             search: self.search_input.read(cx).text(),
@@ -454,6 +544,7 @@ impl Sidebar {
             settled_expanded: true,
             archived_expanded: false,
             switcher_roots: Vec::new(),
+            computer_switcher_roots: Vec::new(),
             scope_label: "All projects".into(),
             project_filter: None,
             popup: Popup::new(|this| &mut this.popup, cx),
@@ -627,7 +718,7 @@ impl Sidebar {
     /// Display name for a project root: the saved name, else the folder name.
     pub(super) fn root_name(&self, root: &str) -> String {
         self.pending_project_names
-            .get(root)
+            .get(&self.project_target(root))
             .cloned()
             .or_else(|| {
                 self.project_metadata
@@ -745,8 +836,23 @@ impl Sidebar {
     }
 
     #[cfg(test)]
+    pub(super) fn project_name_for_test(&self, target: &ProjectTarget) -> String {
+        self.project_name(target)
+    }
+
+    #[cfg(test)]
+    pub(super) fn project_menu_labels_for_test(&self, target: &ProjectTarget) -> Vec<&'static str> {
+        self.project_menu_items(target)
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(super) fn project_menu(&self) -> Option<&str> {
-        self.project_popup.open_key().map(String::as_str)
+        self.project_popup
+            .open_key()
+            .map(|target| target.path.as_str())
     }
 
     #[cfg(test)]
@@ -798,7 +904,8 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn project_rename_pending(&self, root: &str) -> bool {
-        self.pending_project_names.contains_key(root)
+        self.pending_project_names
+            .contains_key(&self.project_target(root))
     }
 
     #[cfg(test)]
@@ -953,14 +1060,9 @@ impl Sidebar {
             .map(String::as_str)
             .chain(fresh_roots.iter().copied())
             .filter(|root| seen_roots.contains(root) || recent_roots.contains(root))
-            .map(|root| SwitcherRoot {
-                name: self.root_name(root).into(),
-                root: root.to_string(),
-                row_id: SharedString::from(format!("switcher-{root}")),
-                row_group: SharedString::from(format!("switcher-project-row-{root}")),
-                menu_id: SharedString::from(format!("menu-project-{root}")),
-            })
+            .map(|root| SwitcherRoot::new(self.project_target(root), self.root_name(root).into()))
             .collect();
+        self.rebuild_computer_switcher_roots();
         self.rebuild_entries();
     }
 
@@ -1278,7 +1380,7 @@ impl Sidebar {
                 .find(|session| &session.id == id)
                 .map(|session| session.title.clone())
                 .unwrap_or_default(),
-            RenameTarget::Project(root) => self.root_name(root),
+            RenameTarget::Project(target) => self.project_name(target),
         };
         let chat = self.chat.clone();
         let sidebar = cx.entity().downgrade();
@@ -1382,7 +1484,14 @@ impl Sidebar {
                 cx.notify();
                 let backend = self.backend.clone();
                 let user_id = self.user_id.clone();
-                let path = root.clone();
+                if root.computer.as_deref() != self.backend.remote_host() {
+                    cx.emit(SidebarEvent::RenameProject(ProjectRenameRequest {
+                        target: root,
+                        name,
+                    }));
+                    return;
+                }
+                let path = root.path.clone();
                 self.call(
                     async move { backend.rename_project_root(&user_id, path, name).await },
                     cx,
@@ -1432,20 +1541,24 @@ impl Sidebar {
 
     /// Open or close a project's overflow menu. Its trust row appears once
     /// the project's trust status loads.
-    fn toggle_project_menu(&mut self, root: &str, cx: &mut Context<Self>) {
-        if !self.project_popup.toggle(root.to_string(), cx) {
+    fn toggle_project_menu(&mut self, root: &ProjectTarget, cx: &mut Context<Self>) {
+        if !self.project_popup.toggle(root.clone(), cx) {
             return;
         }
         self.menu_trust = None;
+        if root.computer.as_deref() != self.backend.remote_host() {
+            return;
+        }
+        let target = root.clone();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        let path = root.to_string();
+        let path = root.path.clone();
         self.call(
             async move { backend.project_trust(&user_id, path).await },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
                 if let Ok(status) = result
-                    && this.project_popup.is_open(&status.path)
+                    && this.project_popup.is_open(&target)
                 {
                     this.menu_trust = Some(status);
                     cx.notify();
@@ -1607,30 +1720,34 @@ impl Sidebar {
     }
 
     /// The overflow menu of one switcher project row.
-    fn project_menu_items(&self, root: &str) -> Vec<SidebarMenuItem> {
-        let rename_root = root.to_string();
-        let open_root = root.to_string();
-        let remove_root = root.to_string();
-        let mut items = vec![
-            SidebarMenuItem {
-                id: SharedString::from(format!("rename-project-{root}")),
-                icon: "pencil",
-                label: "Rename project",
-                on_click: Box::new(move |this, cx| {
-                    this.begin_rename(RenameTarget::Project(rename_root.clone()), cx)
-                }),
-            },
-            SidebarMenuItem {
-                id: SharedString::from(format!("open-project-{root}")),
-                icon: "folder-open",
-                label: "Open folder",
-                on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
-            },
-        ];
+    fn project_menu_items(&self, target: &ProjectTarget) -> Vec<SidebarMenuItem> {
+        let rename_target = target.clone();
+        let root = &target.path;
+        let mut items = vec![SidebarMenuItem {
+            id: target.element_id("rename-project"),
+            icon: "pencil",
+            label: "Rename project",
+            on_click: Box::new(move |this, cx| {
+                this.begin_rename(RenameTarget::Project(rename_target.clone()), cx)
+            }),
+        }];
+        // Other actions are still scoped to the active ChatScreen. Never offer
+        // them against a foreign folder or reveal its path on this computer.
+        if target.computer.as_deref() != self.backend.remote_host() {
+            return items;
+        }
+        let open_root = root.clone();
+        let remove_root = root.clone();
+        items.push(SidebarMenuItem {
+            id: target.element_id("open-project"),
+            icon: "folder-open",
+            label: "Open folder",
+            on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
+        });
         if let Some(status) = self
             .menu_trust
             .as_ref()
-            .filter(|status| status.available && status.path == root)
+            .filter(|status| status.available && &status.path == root)
         {
             let trusted = status.decision == Some(true);
             let path = status.path.clone();
@@ -2170,7 +2287,7 @@ impl Sidebar {
             // The row's overflow button shows while the row is hovered.
             .style(move |row| row.group(group))
             .trailing(self.project_menu_trigger(root, window, cx));
-            if let Some(field) = self.project_rename_field(&root.root) {
+            if let Some(field) = self.project_rename_field(&root.target) {
                 item = item.content(field);
             }
             menu = menu.item(item);
@@ -2195,28 +2312,25 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let open = self.project_popup.is_open(&root.root);
+        let open = self.project_popup.is_open(&root.target);
         let menu = open.then(|| {
-            let menu = Menu::new(
-                SharedString::from(format!("project-menu-{}", root.root)),
-                px(180.),
-            )
-            .label("Project options")
-            .level(2)
-            .application_vim(self.application_vim_enabled)
-            .items(
-                self.project_menu_items(&root.root)
-                    .into_iter()
-                    .map(menu_item),
-            );
+            let menu = Menu::new(root.target.element_id("project-menu"), px(180.))
+                .label("Project options")
+                .level(2)
+                .application_vim(self.application_vim_enabled)
+                .items(
+                    self.project_menu_items(&root.target)
+                        .into_iter()
+                        .map(menu_item),
+                );
             self.project_popup
                 .render(menu, Placement::BelowEnd, window, cx)
         });
-        let toggle = root.root.clone();
+        let toggle = root.target.clone();
         div()
             .relative()
             .child(self.project_popup.trigger(
-                root.root.clone(),
+                root.target.clone(),
                 row_menu_button(
                     root.menu_id.clone(),
                     &root.row_group,
@@ -2270,7 +2384,7 @@ impl Sidebar {
     }
 
     /// The rename field for the project being edited, if it is this one.
-    fn project_rename_field(&self, root: &str) -> Option<gpui::Stateful<Div>> {
+    fn project_rename_field(&self, root: &ProjectTarget) -> Option<gpui::Stateful<Div>> {
         match self.rename.as_ref() {
             Some(RenameTarget::Project(target)) if target == root => self.rename_field(),
             _ => None,

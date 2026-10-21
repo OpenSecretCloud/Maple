@@ -32,9 +32,11 @@ selects its execution computer. Select a **This computer** project to return to
 local work. Local-only installations retain the existing sidebar layout.
 
 Project display names belong to the execution computer and the signed-in account.
-**Rename Project** from either its desktop or a paired controller updates that
-one name; every connected desktop receives the change, including computers whose
-projects are visible only in the sidebar. Renaming back to the owner's folder
+**Rename project** in the sidebar project switcher updates that one name from
+either its desktop or a paired controller. Every computer's folders have this
+action, so renaming does not switch the current conversation or draft. Every
+connected desktop receives the change, including computers whose projects are
+visible only in the sidebar. Renaming back to the owner's folder
 label, or **Maple Workspace** for its actual default workspace, clears the custom
 name.
 Renaming never changes the folder path, session working directories, or trust.
