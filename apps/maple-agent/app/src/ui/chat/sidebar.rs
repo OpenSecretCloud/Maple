@@ -2491,31 +2491,34 @@ impl Sidebar {
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
             }))
-            .when_some(rename_field, |row, field| row.child(field))
-            .when(!renaming, |el| {
-                el.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().line_clamp(1).text_ellipsis().child(row.title.clone()))
-                        .when(self.computers.len() <= 1, |column| {
-                            column.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(gpui::rgb(if is_selected {
-                                        theme::text_secondary()
-                                    } else {
-                                        theme::text_muted()
-                                    }))
-                                    .line_clamp(1)
-                                    .text_ellipsis()
-                                    .child(row.project_name.clone()),
-                            )
-                        }),
-                )
-            })
+            // The rename field takes the title's line; the project line
+            // stays under it.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .map(|column| match rename_field {
+                        Some(field) => column.child(field),
+                        None => column
+                            .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
+                    })
+                    .when(self.computers.len() <= 1, |column| {
+                        column.child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(if is_selected {
+                                    theme::text_secondary()
+                                } else {
+                                    theme::text_muted()
+                                }))
+                                .line_clamp(1)
+                                .text_ellipsis()
+                                .child(row.project_name.clone()),
+                        )
+                    }),
+            )
             .when_some(activity, |row_element, activity| {
                 row_element.child(activity_indicator(&row.spinner_id, activity))
             })
