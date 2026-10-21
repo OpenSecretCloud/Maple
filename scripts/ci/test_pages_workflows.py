@@ -245,7 +245,7 @@ class PagesWorkflowTests(unittest.TestCase):
                     {"ref": "${{ github.sha }}", "persist-credentials": False},
                 )
                 actions = [step["uses"].split("@")[0] for step in job["steps"] if "uses" in step]
-                self.assertEqual(actions, ["actions/checkout", "DeterminateSystems/nix-installer-action"])
+                self.assertEqual(actions, ["actions/checkout", "DeterminateSystems/determinate-nix-action"])
                 installs = [step for step in job["steps"] if "bun install" in step.get("run", "")]
                 self.assertEqual(len(installs), 1)
                 self.assertEqual(installs[0]["working-directory"], "services/updates")
@@ -355,7 +355,7 @@ class PagesWorkflowTests(unittest.TestCase):
                     with self.subTest(workflow=name, action=step["uses"]):
                         self.assertRegex(step["uses"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
                         self.assertNotIn("actions/cache@", step["uses"])
-                        if step["uses"].startswith("DeterminateSystems/nix-installer-action@"):
+                        if step["uses"].startswith("DeterminateSystems/determinate-nix-action@"):
                             self.assertEqual(step["with"]["github-token"], "")
 
 

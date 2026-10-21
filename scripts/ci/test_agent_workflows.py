@@ -54,7 +54,7 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                     self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
                 if action.startswith("actions/checkout@"):
                     self.assertIs(step["with"]["persist-credentials"], False)
-                if action.startswith("DeterminateSystems/nix-installer-action@"):
+                if action.startswith("DeterminateSystems/determinate-nix-action@"):
                     self.assertEqual(step["with"]["github-token"], "")
 
     def test_agent_cache_and_artifacts_do_not_share_research_publication(self):
@@ -216,7 +216,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 if action.startswith("actions/checkout@"):
                     self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
                     self.assertIs(step["with"]["persist-credentials"], False)
-                if action.startswith("DeterminateSystems/nix-installer-action@"):
+                if action.startswith("DeterminateSystems/determinate-nix-action@"):
                     self.assertEqual(step["with"]["github-token"], "")
                 if action.startswith("Swatinem/rust-cache@"):
                     cache = step["with"]

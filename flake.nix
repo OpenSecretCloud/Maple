@@ -706,6 +706,7 @@
             nativeBuildInputs = with pkgs; [ actionlint python3 yq-go ];
             src = ./.github/workflows;
             tests = ./scripts/ci/test_codeql_workflow.py;
+            nixTests = ./scripts/ci/test_nix_workflows.py;
             signingTests = ./scripts/ci/test_signing_workflows.py;
           } ''
             cd "$src"
@@ -724,6 +725,8 @@
             cp -R . "$TMPDIR/repo/.github/workflows/"
             cp "$tests" "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
             python3 "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
+            cp "$nixTests" "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
+            python3 "$TMPDIR/repo/scripts/ci/test_nix_workflows.py"
             cp "$signingTests" "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
             python3 "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
             touch "$out"

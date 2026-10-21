@@ -240,7 +240,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             with self.subTest(workflow=name, target=target):
                 steps = workflow(name)["jobs"][target]["steps"]
                 actions = [step["uses"].split("@")[0] for step in steps if "uses" in step]
-                self.assertEqual(actions, ["actions/checkout", "DeterminateSystems/nix-installer-action"])
+                self.assertEqual(actions, ["actions/checkout", "DeterminateSystems/determinate-nix-action"])
                 self.assertEqual(steps[0]["with"],
                                  {"ref": "${{ github.sha }}", "persist-credentials": False})
                 installs = [step for step in steps if "bun install" in step.get("run", "")]
@@ -290,7 +290,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
                         self.assertNotIn("cache", step["uses"].lower())
                         if step["uses"].startswith("actions/checkout@"):
                             self.assertIs(step["with"]["persist-credentials"], False)
-                        if step["uses"].startswith("DeterminateSystems/nix-installer-action@"):
+                        if step["uses"].startswith("DeterminateSystems/determinate-nix-action@"):
                             self.assertEqual(step["with"]["github-token"], "")
 
 
