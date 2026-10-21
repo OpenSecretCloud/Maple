@@ -52,7 +52,9 @@ use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
-use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
+use self::sidebar::{
+    Sidebar, SidebarEvent, remote_root_display_name, root_display_name, session_summary_eq,
+};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_question_card,
     render_waiting_indicator,
@@ -1799,7 +1801,13 @@ impl ChatScreen {
     pub fn project_label(&self) -> String {
         self.project_root
             .as_deref()
-            .map(root_display_name)
+            .map(|root| {
+                if self.backend.remote_host().is_some() {
+                    remote_root_display_name(root)
+                } else {
+                    root_display_name(root)
+                }
+            })
             .unwrap_or_else(|| "Choose folder".to_string())
     }
 

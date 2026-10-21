@@ -2701,7 +2701,10 @@ pub(super) fn root_display_name(root: &str) -> String {
 
 /// Interpret Windows paths on a Unix controller without changing the path sent
 /// back to the owner, or treating a backslash in a Unix filename as a separator.
-fn remote_root_display_name(root: &str) -> String {
+pub(super) fn remote_root_display_name(root: &str) -> String {
+    if maple_agent::agent::looks_like_default_maple_workspace(root) {
+        return maple_agent::agent::MAPLE_WORKSPACE_DISPLAY_NAME.to_string();
+    }
     let windows = root.starts_with(r"\\")
         || (root.as_bytes().get(1) == Some(&b':') && root.as_bytes().get(2) == Some(&b'\\'));
     if windows {
@@ -2731,6 +2734,26 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(remote_root_display_name(r"/home/alex/a\b"), r"a\b");
         }
+    }
+
+    #[test]
+    fn remote_default_workspace_is_labeled_maple_workspace() {
+        assert_eq!(
+            remote_root_display_name("/Users/mark/Documents/Maple"),
+            "Maple Workspace"
+        );
+        assert_eq!(
+            remote_root_display_name("/home/alex/Documents/Maple/"),
+            "Maple Workspace"
+        );
+        assert_eq!(
+            remote_root_display_name(r"C:\Users\Alex\Documents\Maple"),
+            "Maple Workspace"
+        );
+        assert_eq!(
+            remote_root_display_name("/Users/mark/Documents/maple-privacy-labs/Maple"),
+            "Maple"
+        );
     }
 
     #[test]

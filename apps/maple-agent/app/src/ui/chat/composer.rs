@@ -32,12 +32,17 @@ fn header_project_paths(recent_roots: &[String]) -> Vec<String> {
         .collect();
     if let Some(workspace) = recent_roots
         .iter()
-        .find(|path| maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path)))
+        .find(|path| is_maple_workspace_root(path))
         && !paths.iter().any(|path| path == workspace)
     {
         paths.push(workspace.clone());
     }
     paths
+}
+
+fn is_maple_workspace_root(path: &str) -> bool {
+    maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path))
+        || maple_agent::agent::looks_like_default_maple_workspace(path)
 }
 
 impl ChatScreen {
@@ -164,12 +169,11 @@ impl ChatScreen {
         }
         for path in header_project_paths(&self.recent_roots) {
             let pick = path.clone();
-            let label =
-                if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&path)) {
-                    self.sidebar.read(cx).root_name(&path)
-                } else {
-                    path.clone()
-                };
+            let label = if is_maple_workspace_root(&path) {
+                self.sidebar.read(cx).root_name(&path)
+            } else {
+                path.clone()
+            };
             menu = menu.item(
                 MenuItem::new(
                     SharedString::from(format!("root-{path}")),
@@ -1278,5 +1282,16 @@ mod tests {
         let shown = header_project_paths(&roots);
         assert!(shown.iter().any(|path| path == &workspace));
         assert!(shown.len() > 6);
+    }
+
+    #[test]
+    fn the_header_menu_keeps_a_remote_maple_workspace_past_the_recent_cap() {
+        let workspace = "/Users/mark/Documents/Maple".to_string();
+        let mut roots: Vec<String> = (0..8)
+            .map(|index| format!("/tmp/maple-project-{index}"))
+            .collect();
+        roots.push(workspace.clone());
+        let shown = header_project_paths(&roots);
+        assert!(shown.iter().any(|path| path == &workspace));
     }
 }

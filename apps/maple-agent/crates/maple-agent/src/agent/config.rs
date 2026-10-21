@@ -377,6 +377,34 @@ pub fn is_default_maple_workspace(path: &Path) -> bool {
     default_maple_workspace_path().is_some_and(|workspace| workspace == path)
 }
 
+/// Whether `path` looks like `<documents>/Maple` on any OS, including a
+/// remote owner's path.
+///
+/// Local menus still use [`is_default_maple_workspace`] against this
+/// process's documents directory. A controller showing another computer's
+/// projects cannot make that comparison, so it uses this shape check: last
+/// component `Maple`, parent `Documents`. A Maple repo under another folder
+/// is left as `Maple`.
+pub fn looks_like_default_maple_workspace(path: &str) -> bool {
+    let mut parts = remote_path_tail_components(path);
+    matches!(
+        (parts.next(), parts.next()),
+        (Some(MAPLE_WORKSPACE_DIRECTORY_NAME), Some("Documents"))
+    )
+}
+
+/// Walk a project root from the leaf using the owner's path syntax.
+/// Windows drive and UNC paths keep backslashes as separators even when
+/// the controller is Unix; Unix paths keep a backslash in a filename.
+fn remote_path_tail_components(path: &str) -> impl Iterator<Item = &str> {
+    let windows = path.starts_with(r"\\")
+        || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'\\'));
+    let separators: &[char] = if windows { &['\\', '/'] } else { &['/'] };
+    path.trim_end_matches(separators)
+        .rsplit(separators)
+        .filter(|component| !component.is_empty())
+}
+
 /// Project the desktop opens when it has no usable saved root.
 ///
 /// A saved folder that still exists and was not removed wins. Otherwise the
@@ -829,4 +857,41 @@ pub(super) fn unix_ms() -> u128 {
 
 pub(super) fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAPLE_WORKSPACE_DIRECTORY_NAME, looks_like_default_maple_workspace};
+
+    #[test]
+    fn remote_documents_maple_looks_like_the_default_workspace() {
+        assert!(looks_like_default_maple_workspace(
+            "/Users/mark/Documents/Maple"
+        ));
+        assert!(looks_like_default_maple_workspace(
+            "/home/alex/Documents/Maple/"
+        ));
+        assert!(looks_like_default_maple_workspace(
+            r"C:\Users\Alex\Documents\Maple"
+        ));
+        assert!(looks_like_default_maple_workspace(
+            r"C:\Users\Alex\Documents\Maple\"
+        ));
+        assert_eq!(MAPLE_WORKSPACE_DIRECTORY_NAME, "Maple");
+    }
+
+    #[test]
+    fn other_maple_folders_do_not_look_like_the_default_workspace() {
+        assert!(!looks_like_default_maple_workspace("/home/alex/Maple"));
+        assert!(!looks_like_default_maple_workspace(
+            "/Users/mark/Documents/maple-privacy-labs/Maple"
+        ));
+        assert!(!looks_like_default_maple_workspace(
+            r"C:\Users\Alex\src\Maple"
+        ));
+        assert!(!looks_like_default_maple_workspace(
+            r"\\office\projects\Maple\"
+        ));
+        assert!(!looks_like_default_maple_workspace(""));
+    }
 }

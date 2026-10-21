@@ -44,8 +44,8 @@ use config::*;
 pub use config::{
     MAPLE_WORKSPACE_DIRECTORY_NAME, MAPLE_WORKSPACE_DISPLAY_NAME, account_local_data_dir,
     account_tool_summaries_db_path, default_maple_workspace_path, ensure_default_maple_workspace,
-    include_default_maple_workspace, is_default_maple_workspace, maple_workspace_directory,
-    startup_project_root,
+    include_default_maple_workspace, is_default_maple_workspace,
+    looks_like_default_maple_workspace, maple_workspace_directory, startup_project_root,
 };
 pub use integrations::begin_integration_setup;
 pub use provider::CatalogEntry;
