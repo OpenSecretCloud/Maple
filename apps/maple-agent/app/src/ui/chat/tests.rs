@@ -5506,6 +5506,94 @@ mod state_tests {
         assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
     }
 
+    /// A task's rename ends when its field loses focus or the pointer
+    /// presses anywhere outside it, and keeps what was typed, as Enter
+    /// does: a click anywhere else never leaves the row stuck in its
+    /// field. Escape still discards it.
+    #[gpui::test]
+    fn test_a_task_rename_commits_when_the_user_leaves_it(cx: &mut TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                observed.borrow_mut().push(event.clone());
+            })
+        });
+        let leave = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| sidebar.focus_search(window, cx))
+            });
+            cx.run_until_parked();
+        };
+
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape");
+        leave(cx);
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()));
+        assert!(events.borrow().is_empty(), "Escape discards the rename");
+
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_input(" renamed");
+        leave(cx);
+        assert!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()),
+            "focus leaving ends the rename"
+        );
+        // The commit reaches the backend, whose answer (a renamed record,
+        // or a notice in this test, which has no such task) comes back.
+        wait_until(&chat, cx, "the rename reached the backend", |_| {
+            !events.borrow().is_empty()
+        });
+
+        // A press where nothing takes focus (the list's empty space below
+        // the rows) ends it too.
+        events.borrow_mut().clear();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let below_rows = cx
+            .debug_bounds("projects-header")
+            .expect("the projects header")
+            .center()
+            + gpui::point(gpui::px(0.), gpui::px(160.));
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_input(" again");
+        cx.simulate_mouse_down(
+            below_rows,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            below_rows,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()),
+            "a press outside the field ends the rename"
+        );
+        wait_until(&chat, cx, "the second rename reached the backend", |_| {
+            !events.borrow().is_empty()
+        });
+    }
+
     /// A project's rename field sits in the switcher. Escape ends the
     /// rename and Enter commits it; either way the switcher stays open and
     /// has the keyboard again.

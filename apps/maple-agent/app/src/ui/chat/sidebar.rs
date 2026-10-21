@@ -28,8 +28,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString, Task,
-    WeakEntity, Window, div, prelude::*, px,
+    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
+    Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
     AgentProjectTrustStatus, AgentSessionSummary, AgentTaskState, RecentProjectRoot,
@@ -362,6 +362,9 @@ pub(super) struct Sidebar {
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
     rename_focus_pending: bool,
+    /// Commits a task's rename when its field loses focus, the way a
+    /// click anywhere else ends one in a native list.
+    rename_focus_out: Option<Subscription>,
     // Persisted in the app settings.
     pinned_tasks: Vec<String>,
     /// Latest owner metadata seen per path, independent of current membership.
@@ -555,6 +558,7 @@ impl Sidebar {
             rename: None,
             rename_input: None,
             rename_focus_pending: false,
+            rename_focus_out: None,
             pinned_tasks: remote_settings
                 .as_ref()
                 .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
@@ -1439,6 +1443,7 @@ impl Sidebar {
     /// switcher's focus, which a project's field had.
     fn end_rename(&mut self, target: &RenameTarget, cx: &mut Context<Self>) {
         self.rename_input = None;
+        self.rename_focus_out = None;
         self.remeasure(target);
         if matches!(target, RenameTarget::Project(_)) {
             self.popup.refocus(cx);
@@ -2376,9 +2381,21 @@ impl Sidebar {
     /// The rename field for the task being edited, if it is this one.
     /// Renders per visible row per frame, so it compares borrowed ids
     /// instead of building a `RenameTarget` to match against.
-    fn task_rename_field(&self, session_id: &str) -> Option<gpui::Stateful<Div>> {
+    /// A press anywhere outside it commits the rename, even where nothing
+    /// takes focus (another row, the list's empty space).
+    fn task_rename_field(
+        &self,
+        session_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<Div>> {
         match self.rename.as_ref() {
-            Some(RenameTarget::Task(target)) if target == session_id => self.rename_field(),
+            Some(RenameTarget::Task(target)) if target == session_id => {
+                self.rename_field().map(|field| {
+                    field.on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                        this.commit_rename(cx);
+                    }))
+                })
+            }
             _ => None,
         }
     }
@@ -2432,7 +2449,7 @@ impl Sidebar {
         let rung = TaskRung::of(task);
         let step = rung.step();
         let pin_id = row.pin_id.clone();
-        let rename_field = self.task_rename_field(&row.id);
+        let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
         div()
             .relative()
@@ -2643,6 +2660,17 @@ impl Render for Sidebar {
             if let Some(input) = self.rename_input.clone() {
                 let handle = input.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
+                // A project's field ends with the switcher around it; a
+                // task's field ends where focus goes next. Deferred, so the
+                // commit never drops this subscription inside its own call.
+                if matches!(self.rename, Some(RenameTarget::Task(_))) {
+                    self.rename_focus_out =
+                        Some(
+                            cx.on_focus_out(&handle, window, |_this, _event, window, cx| {
+                                cx.defer_in(window, |this, _window, cx| this.commit_rename(cx));
+                            }),
+                        );
+                }
             }
         }
         let entity = cx.entity().downgrade();
