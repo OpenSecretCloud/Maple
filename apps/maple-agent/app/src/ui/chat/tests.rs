@@ -12,6 +12,7 @@ mod state_tests {
     use gpui::TestAppContext;
     use maple_agent::agent::{
         AgentMcpServer, AgentMcpTransport, AgentSessionIntegrationKind, AgentTaskState,
+        RecentProjectRoot,
     };
 
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
@@ -30,6 +31,20 @@ mod state_tests {
             updated_ms: 0,
             message_count: 1,
             model: None,
+        }
+    }
+
+    fn recent_root(path: &str) -> RecentProjectRoot {
+        named_root(path, &root_display_name(path), 0)
+    }
+
+    fn named_root(path: &str, name: &str, name_revision: u64) -> RecentProjectRoot {
+        RecentProjectRoot {
+            path: path.to_string(),
+            name: name.to_string(),
+            last_used_ms: 0,
+            is_default_workspace: false,
+            name_revision,
         }
     }
 
@@ -84,7 +99,7 @@ mod state_tests {
                 crate::backend::RecoverySnapshot {
                     bootstrap: crate::backend::LocalBootstrap {
                         project_root: Some("/other/machine".into()),
-                        recent_roots: vec!["/other/machine".into()],
+                        recent_roots: vec![recent_root("/other/machine")],
                         latest: None,
                         sessions: Vec::new(),
                         questions: Vec::new(),
@@ -154,7 +169,7 @@ mod state_tests {
         let chat = screen(cx);
         chat.update(cx, |this, cx| {
             this.sessions = vec![summary("same-id", "Local task")];
-            this.recent_roots = vec!["/tmp/proj".into()];
+            this.recent_roots = vec![recent_root("/tmp/proj")];
             this.sync_sidebar(cx);
             let local = this.computer_snapshot("This computer".into(), cx);
             let remote = Computer {
@@ -274,6 +289,257 @@ mod state_tests {
                     .any(|e| matches!(e, SidebarEntry::Task(_)))
             );
         });
+    }
+
+    #[gpui::test]
+    fn project_name_events_refresh_visible_and_background_catalogs(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.project_root = Some("/tmp/proj".into());
+            this.sessions = vec![summary("s1", "Unchanged task")];
+            this.replace_timeline(vec![user_item("message", "Unchanged transcript")]);
+            for (background, before, after, revision) in [
+                (false, "Original label", "Visible owner label", 1),
+                (true, "Visible owner label", "Background owner label", 2),
+            ] {
+                this.navigation_only = background;
+                this.visible = !background;
+                this.apply_recent_roots(vec![named_root("/tmp/proj", before, revision - 1)], cx);
+                let selected = this.selected_session.clone();
+                let generation = this.selection_generation;
+                assert!(this.apply_service_event(
+                    AgentServiceEvent::ProjectsChanged {
+                        user_id: "user".into(),
+                        roots: vec![named_root("/tmp/proj", after, revision)],
+                    },
+                    cx,
+                ));
+                assert_eq!(this.project_label(cx), after);
+                assert_eq!(this.project_label.as_ref(), after);
+                assert_eq!(this.sidebar.read(cx).rows()[0].project_name.as_ref(), after);
+                let catalog = this.computer_snapshot("Owner computer".into(), cx);
+                assert_eq!(catalog.projects[0].path, "/tmp/proj");
+                assert_eq!(catalog.projects[0].label.as_ref(), after);
+                this.set_sidebar_filter(before, cx);
+                assert!(
+                    this.sidebar_active(cx).is_empty(),
+                    "old label no longer matches"
+                );
+                this.set_sidebar_filter(&after.to_uppercase(), cx);
+                assert_eq!(this.sidebar_active(cx), vec![0], "new label is searchable");
+                this.set_sidebar_filter("", cx);
+                assert_eq!(this.selected_session, selected);
+                assert_eq!(this.selection_generation, generation);
+                assert_eq!(this.timeline[0].id, "message");
+                assert_eq!(this.sessions[0].title, "Unchanged task");
+                assert!(!this.apply_service_event(
+                    AgentServiceEvent::ProjectsChanged {
+                        user_id: "another-account".into(),
+                        roots: vec![named_root("/tmp/proj", "Wrong account", 999)],
+                    },
+                    cx,
+                ));
+                assert_eq!(this.project_label(cx), after);
+                assert_eq!(this.recent_roots[0].name_revision, revision);
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn project_name_revisions_survive_stale_events_snapshots_and_explicit_reset(
+        cx: &mut TestAppContext,
+    ) {
+        use maple_agent::agent::AgentRuntimeStatus;
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.navigation_only = true;
+            this.visible = false;
+            this.selected_session = None;
+            this.project_root = Some("/tmp/proj".into());
+            this.sessions = vec![summary("s1", "Existing task")];
+            this.apply_recent_roots(vec![named_root("/tmp/proj", "Latest owner name", 8)], cx);
+            for old_name in ["Older alias", "proj"] {
+                assert!(!this.apply_service_event(
+                    AgentServiceEvent::ProjectsChanged {
+                        user_id: "user".into(),
+                        roots: vec![named_root("/tmp/proj", old_name, 7)],
+                    },
+                    cx,
+                ));
+                assert_eq!(this.project_label(cx), "Latest owner name");
+            }
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: Some("/tmp/proj".into()),
+                        recent_roots: vec![named_root("/tmp/proj", "Stale snapshot", 6)],
+                        latest: None,
+                        sessions: vec![summary("s1", "Existing task")],
+                        questions: Vec::new(),
+                    },
+                    status: AgentRuntimeStatus {
+                        running: true,
+                        project_root: Some("/tmp/proj".into()),
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+            assert_eq!(this.project_label(cx), "Latest owner name");
+            assert_eq!(this.recent_roots[0].name_revision, 8);
+            // Resetting to the folder name is a newer owner action, not an
+            // absent label that an old rename or pre-reset snapshot can restore.
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: vec![named_root("/tmp/proj", "proj", 9)],
+                },
+                cx,
+            ));
+            this.apply_recent_roots(vec![named_root("/tmp/proj", "Latest owner name", 8)], cx);
+            assert_eq!(this.project_label(cx), "proj");
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "proj"
+            );
+            assert_eq!(this.recent_roots[0].name_revision, 9);
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: vec![named_root("/tmp/proj", "Newer rename", 10)],
+                },
+                cx,
+            ));
+            assert_eq!(this.project_label(cx), "Newer rename");
+            // A list requested before this project was registered/restored may
+            // omit it altogether. That is not permission to forget its newer
+            // name revision while an existing task/header still references it.
+            this.apply_recent_roots(vec![recent_root("/another/project")], cx);
+            assert!(
+                this.recent_roots
+                    .iter()
+                    .all(|root| root.path != "/tmp/proj")
+            );
+            assert_eq!(this.project_label(cx), "Newer rename");
+            assert_eq!(this.project_label.as_ref(), "Newer rename");
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Newer rename"
+            );
+            // An even older snapshot can then reintroduce the path. Preserve
+            // the owner-issued high-water revision independently of membership.
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: Some("/tmp/proj".into()),
+                        recent_roots: vec![named_root("/tmp/proj", "Before restoration", 8)],
+                        latest: None,
+                        sessions: vec![summary("s1", "Existing task")],
+                        questions: Vec::new(),
+                    },
+                    status: AgentRuntimeStatus {
+                        running: true,
+                        project_root: Some("/tmp/proj".into()),
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+            assert_eq!(this.project_label(cx), "Newer rename");
+            assert_eq!(this.project_label.as_ref(), "Newer rename");
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Newer rename"
+            );
+            assert_eq!(this.recent_roots[0].name, "Newer rename");
+            assert_eq!(this.recent_roots[0].name_revision, 10);
+        });
+    }
+
+    #[gpui::test]
+    fn renamed_computer_project_keeps_picker_identity_and_updates_cross_computer_search(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::computers::{Computer, Navigate};
+        use super::super::sidebar::SidebarEntry;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.project_root = Some("/tmp/proj".into());
+            this.sessions = vec![summary("s1", "Local task")];
+            this.apply_recent_roots(vec![named_root("/tmp/proj", "Local name", 1)], cx);
+            let local = this.computer_snapshot("This computer".into(), cx);
+            let mut remote = Computer::pending("peer".into(), "Office Mac".into(), None);
+            remote.loading = false;
+            remote.projects = vec![computers::Project {
+                path: "/tmp/proj".into(),
+                label: "Old remote label".into(),
+            }];
+            remote.sessions = vec![summary("s1", "Remote task")];
+            this.set_computers(Arc::new(vec![local, remote]), cx);
+        });
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let seen = requests.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &Navigate, _| {
+                seen.borrow_mut().push(request.clone());
+            })
+        });
+        chat.update(cx, |this, cx| {
+            let mut catalog = this.computers.as_ref().clone();
+            catalog[1].projects[0].label = "Renamed remote project".into();
+            this.set_computers(Arc::new(catalog), cx);
+            assert_eq!(
+                this.project_label(cx),
+                "Local name",
+                "same path on another computer is separate"
+            );
+            assert_eq!(
+                this.computers[1].projects[0].label.as_ref(),
+                "Renamed remote project"
+            );
+            this.set_sidebar_filter("old remote label", cx);
+            assert!(
+                !this
+                    .sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|entry| matches!(entry, SidebarEntry::OtherTask(_)))
+            );
+            this.set_sidebar_filter("renamed remote project", cx);
+            assert!(
+                this.sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|entry| matches!(entry, SidebarEntry::OtherTask(_)))
+            );
+            assert!(
+                !this
+                    .sidebar
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .any(|entry| matches!(entry, SidebarEntry::Task(_)))
+            );
+            this.set_sidebar_filter("", cx);
+        });
+        press(cx, "root-picker");
+        press(cx, "computer-1-project-0");
+        assert_eq!(
+            requests.borrow().last(),
+            Some(&Navigate {
+                computer: Some("peer".into()),
+                destination: Destination::Project("/tmp/proj".into()),
+            })
+        );
     }
 
     #[gpui::test]
@@ -2961,6 +3227,32 @@ mod state_tests {
         backend
     }
 
+    fn await_backend_result<T: Send + 'static>(
+        backend: &Arc<crate::backend::AgentBackend>,
+        request: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+    ) -> T {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        backend.spawn(async move {
+            let _ = sender.send(request.await);
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("backend task finished")
+            .expect("backend operation succeeded")
+    }
+
+    fn register_test_project(
+        backend: &Arc<crate::backend::AgentBackend>,
+        root: &str,
+    ) -> Vec<RecentProjectRoot> {
+        let owner = backend.clone();
+        let root = root.to_string();
+        await_backend_result(backend, async move {
+            owner.select_project_root("user", root).await
+        })
+        .roots
+    }
+
     fn mcp_project(tag: &str) -> String {
         let root = std::env::temp_dir().join(format!(
             "maple-agent-test-mcp-project-{tag}-{}",
@@ -3520,7 +3812,7 @@ mod state_tests {
         let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
             this.selected_session = None;
             this.project_root = Some(alpha.clone());
-            this.recent_roots = vec![alpha.clone(), beta.clone()];
+            this.recent_roots = vec![recent_root(&alpha), recent_root(&beta)];
             this.draft = true;
             this.session_setup_pending = true;
             this.first_send_waiting_for_mcp = true;
@@ -4070,7 +4362,7 @@ mod state_tests {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.recent_roots = vec!["/z".to_string()];
+            this.recent_roots = vec![recent_root("/z")];
             this.sessions = vec![
                 summary_at("s1", "One", "/m"),
                 summary_at("s2", "Two", "/a"),
@@ -4664,7 +4956,7 @@ mod state_tests {
     fn test_application_vim_drives_the_switcher_menu(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary_at("s1", "One", "/a")];
-            this.recent_roots = vec!["/b".to_string()];
+            this.recent_roots = vec![recent_root("/b")];
             this.sync_sidebar(cx);
             this.set_application_vim_enabled(true, cx);
         });
@@ -4843,7 +5135,7 @@ mod state_tests {
     #[gpui::test]
     fn test_the_project_menu_closes_on_an_outside_press(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| {
-            this.recent_roots = vec![absolute_fixture_root("one")];
+            this.recent_roots = vec![recent_root(&absolute_fixture_root("one"))];
             this.sync_sidebar(cx);
         });
         press(cx, "root-picker");
@@ -4946,15 +5238,19 @@ mod state_tests {
     /// has the keyboard again.
     #[gpui::test]
     fn test_a_project_rename_ends_inside_the_switcher(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |this, cx| {
-            this.sessions = vec![summary("s1", "One")];
-            this.sync_sidebar(cx);
+        let backend = backend_with_mcp_servers(cx, "rename-keyboard", Vec::new());
+        let root = mcp_project("rename-keyboard");
+        let roots = register_test_project(&backend, &root);
+        let (chat, cx) = chat_window_in(cx, backend.clone(), |this, cx| {
+            this.project_root = Some(root.clone());
+            this.sessions = vec![summary_at("s1", "One", &root)];
+            this.apply_recent_roots(roots, cx);
         });
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
         for commit in [false, true] {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_switcher_menu_open(true, cx);
-                sidebar.begin_rename(RenameTarget::Project("/tmp/proj".to_string()), cx);
+                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
             });
             cx.run_until_parked();
             if commit {
@@ -4969,15 +5265,192 @@ mod state_tests {
             cx.simulate_keystrokes("down");
             assert_eq!(
                 sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-                Some("switcher-/tmp/proj".into()),
+                Some(format!("switcher-{root}").into()),
                 "the switcher has the keyboard, commit: {commit}"
             );
             cx.simulate_keystrokes("escape");
             assert_eq!(open_menu(&chat, cx), "");
         }
+        wait_until(&chat, cx, "project name committed", |this| {
+            this.recent_roots.iter().any(|project| {
+                project.path == root && project.name == "Nice" && project.name_revision > 0
+            })
+        });
         assert_eq!(
-            sidebar.update(cx, |sidebar, _| sidebar.root_name("/tmp/proj")),
+            sidebar.update(cx, |sidebar, _| sidebar.root_name(&root)),
             "Nice"
+        );
+        let owner = backend.clone();
+        let roots =
+            await_backend_result(
+                &backend,
+                async move { owner.recent_project_roots("user").await },
+            );
+        assert_eq!(
+            roots
+                .iter()
+                .find(|project| project.path == root)
+                .unwrap()
+                .name,
+            "Nice"
+        );
+    }
+
+    #[gpui::test]
+    fn project_rename_preview_survives_refresh_until_the_owner_commits(cx: &mut TestAppContext) {
+        let backend = backend_with_mcp_servers(cx, "rename-preview", Vec::new());
+        let root = mcp_project("rename-preview");
+        let roots = register_test_project(&backend, &root);
+        let (chat, cx) = chat_window_in(cx, backend.clone(), |this, cx| {
+            this.project_root = Some(root.clone());
+            this.sessions = vec![summary_at("s1", "One", &root)];
+            this.apply_recent_roots(roots.clone(), cx);
+        });
+        chat.update(cx, |this, cx| {
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                let input = sidebar.inputs().last().unwrap().clone();
+                input.update(cx, |input, cx| input.set_text("Optimistic owner name", cx));
+                sidebar.commit_rename(cx);
+                assert!(sidebar.project_rename_pending(&root));
+                assert_eq!(sidebar.root_name(&root), "Optimistic owner name");
+                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                assert!(
+                    sidebar.rename_target().is_none(),
+                    "cannot start a second rename while pending"
+                );
+            });
+            // A refresh or unrelated task update must not flash the old name
+            // while its owner is still acknowledging the rename.
+            this.sync_sidebar(cx);
+            this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: roots.clone(),
+                },
+                cx,
+            );
+            assert_eq!(
+                this.sidebar.read(cx).root_name(&root),
+                "Optimistic owner name"
+            );
+            this.refresh_project_caption(cx);
+            assert_eq!(this.project_label.as_ref(), "Optimistic owner name");
+            assert_eq!(
+                this.computer_snapshot("This computer".into(), cx)
+                    .projects
+                    .iter()
+                    .find(|project| project.path == root)
+                    .unwrap()
+                    .label
+                    .as_ref(),
+                "Optimistic owner name"
+            );
+        });
+        wait_until(&chat, cx, "optimistic name confirmed by owner", |this| {
+            this.recent_roots.iter().any(|project| {
+                project.path == root
+                    && project.name == "Optimistic owner name"
+                    && project.name_revision > 0
+            })
+        });
+        chat.update(cx, |this, cx| {
+            assert!(!this.sidebar.read(cx).project_rename_pending(&root));
+            assert_eq!(
+                this.sidebar.read(cx).root_name(&root),
+                "Optimistic owner name"
+            );
+            assert_eq!(this.project_label.as_ref(), "Optimistic owner name");
+        });
+        let owner = backend.clone();
+        let persisted =
+            await_backend_result(
+                &backend,
+                async move { owner.recent_project_roots("user").await },
+            );
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|project| project.path == root)
+                .unwrap()
+                .name,
+            "Optimistic owner name"
+        );
+    }
+
+    #[gpui::test]
+    fn failed_project_rename_reverts_to_the_latest_pushed_owner_name(cx: &mut TestAppContext) {
+        let backend = backend_with_mcp_servers(cx, "rename-rejected", Vec::new());
+        let root = mcp_project("rename-rejected");
+        let roots = register_test_project(&backend, &root);
+        let (chat, cx) = chat_window_in(cx, backend.clone(), |this, cx| {
+            this.project_root = Some(root.clone());
+            this.sessions = vec![summary_at("s1", "One", &root)];
+            this.apply_recent_roots(roots, cx);
+        });
+        chat.update(cx, |this, cx| {
+            let invalid_name = "x".repeat(129);
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.begin_rename(RenameTarget::Project(root.clone()), cx);
+                let input = sidebar.inputs().last().unwrap().clone();
+                input.update(cx, |input, cx| input.set_text(&invalid_name, cx));
+                sidebar.commit_rename(cx);
+                assert!(sidebar.project_rename_pending(&root));
+                assert_eq!(sidebar.root_name(&root), invalid_name);
+            });
+            // Let a different controller's successful rename reach the owner,
+            // then deliver its push before pumping this UI's failed response.
+            let owner = backend.clone();
+            let path = root.clone();
+            let current = await_backend_result(&backend, async move {
+                owner
+                    .rename_project_root("user", path, "Concurrent owner name".into())
+                    .await
+            });
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: current,
+                },
+                cx
+            ));
+            this.sync_sidebar(cx);
+            assert_eq!(
+                this.sidebar.read(cx).root_name(&root),
+                invalid_name,
+                "pending preview survives the push"
+            );
+        });
+        wait_until(&chat, cx, "invalid rename rejected", |this| {
+            this.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("128"))
+        });
+        chat.update(cx, |this, cx| {
+            assert!(!this.sidebar.read(cx).project_rename_pending(&root));
+            assert_eq!(
+                this.sidebar.read(cx).root_name(&root),
+                "Concurrent owner name"
+            );
+            assert_eq!(this.project_label.as_ref(), "Concurrent owner name");
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Concurrent owner name"
+            );
+        });
+        let owner = backend.clone();
+        let persisted =
+            await_backend_result(
+                &backend,
+                async move { owner.recent_project_roots("user").await },
+            );
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|project| project.path == root)
+                .unwrap()
+                .name,
+            "Concurrent owner name"
         );
     }
 
@@ -6409,7 +6882,10 @@ mod state_tests {
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
-            chat.recent_roots = vec![absolute_fixture_root("one"), absolute_fixture_root("two")];
+            chat.recent_roots = vec![
+                recent_root(&absolute_fixture_root("one")),
+                recent_root(&absolute_fixture_root("two")),
+            ];
             chat.booting = false;
             chat
         });

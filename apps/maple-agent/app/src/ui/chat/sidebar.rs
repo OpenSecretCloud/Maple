@@ -31,7 +31,9 @@ use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString, Task,
     WeakEntity, Window, div, prelude::*, px,
 };
-use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary, AgentTaskState};
+use maple_agent::agent::{
+    AgentProjectTrustStatus, AgentSessionSummary, AgentTaskState, RecentProjectRoot,
+};
 
 use super::commands::ChatCommand;
 use super::navigation::SidebarTarget;
@@ -49,6 +51,7 @@ use crate::ui::widgets;
 pub(super) enum SidebarEvent {
     Navigate(Navigate),
     PreferencesChanged,
+    ProjectsChanged(Vec<RecentProjectRoot>),
     /// Show a task.
     Select(String),
     /// A session changed on the backend (a rename); the screen owns the
@@ -358,7 +361,11 @@ pub(super) struct Sidebar {
     rename_focus_pending: bool,
     // Persisted in the app settings.
     pinned_tasks: Vec<String>,
-    project_names: HashMap<String, String>,
+    /// Latest owner metadata seen per path, independent of current membership.
+    /// A late list can omit a newly restored project without erasing its revision.
+    /// This cache is scoped to this account/computer view, never UI settings.
+    project_metadata: HashMap<String, RecentProjectRoot>,
+    pending_project_names: HashMap<String, String>,
     // Application Vim's view of the rows.
     vim_selected: Option<SidebarTarget>,
     vim_by_row: Vec<Option<SidebarTarget>>,
@@ -460,8 +467,8 @@ impl Sidebar {
             pinned_tasks: remote_settings
                 .as_ref()
                 .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
-            project_names: remote_settings
-                .map_or_else(|| settings.project_names.clone(), |s| s.project_names),
+            project_metadata: HashMap::new(),
+            pending_project_names: HashMap::new(),
             vim_selected: None,
             vim_by_row: Vec::new(),
             vim_order: Vec::new(),
@@ -524,13 +531,39 @@ impl Sidebar {
         cx.notify();
     }
 
-    pub(super) fn set_recent_roots(&mut self, roots: Vec<String>, cx: &mut Context<Self>) {
-        if self.recent_roots == roots {
+    pub(super) fn set_recent_roots(
+        &mut self,
+        mut roots: Vec<RecentProjectRoot>,
+        cx: &mut Context<Self>,
+    ) {
+        self.preserve_newer_project_names(&mut roots);
+        let paths = roots
+            .iter()
+            .map(|root| root.path.clone())
+            .collect::<Vec<_>>();
+        if self.recent_roots == paths
+            && roots
+                .iter()
+                .all(|root| self.project_metadata.get(&root.path) == Some(root))
+        {
             return;
         }
-        self.recent_roots = roots;
+        self.recent_roots = paths;
+        self.project_metadata
+            .extend(roots.into_iter().map(|root| (root.path.clone(), root)));
         self.rebuild_sections();
         cx.notify();
+    }
+
+    pub(super) fn preserve_newer_project_names(&self, roots: &mut [RecentProjectRoot]) {
+        for root in roots {
+            if let Some(current) = self.project_metadata.get(&root.path)
+                && current.name_revision > root.name_revision
+            {
+                root.name.clone_from(&current.name);
+                root.name_revision = current.name_revision;
+            }
+        }
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -593,10 +626,14 @@ impl Sidebar {
 
     /// Display name for a project root: the saved name, else the folder name.
     pub(super) fn root_name(&self, root: &str) -> String {
-        self.project_names
+        self.pending_project_names
             .get(root)
-            .filter(|name| !name.trim().is_empty())
             .cloned()
+            .or_else(|| {
+                self.project_metadata
+                    .get(root)
+                    .map(|root| root.name.clone())
+            })
             .unwrap_or_else(|| {
                 if self.backend.remote_host().is_some() {
                     remote_root_display_name(root)
@@ -719,8 +756,16 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn set_project_name_for_test(&mut self, root: &str, name: &str) {
-        self.project_names
-            .insert(root.to_string(), name.to_string());
+        self.project_metadata.insert(
+            root.to_string(),
+            RecentProjectRoot {
+                path: root.to_string(),
+                name: name.to_string(),
+                last_used_ms: 0,
+                is_default_workspace: false,
+                name_revision: 1,
+            },
+        );
         self.rebuild_sections();
     }
 
@@ -741,13 +786,19 @@ impl Sidebar {
     #[cfg(test)]
     pub(super) fn reset_persisted_for_test(&mut self) {
         self.pinned_tasks.clear();
-        self.project_names.clear();
+        self.project_metadata.clear();
+        self.pending_project_names.clear();
         self.rebuild_sections();
     }
 
     #[cfg(test)]
     pub(super) fn rename_target(&self) -> Option<RenameTarget> {
         self.rename.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn project_rename_pending(&self, root: &str) -> bool {
+        self.pending_project_names.contains_key(root)
     }
 
     #[cfg(test)]
@@ -1206,32 +1257,20 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Whether `name` is the display name of `root`, without building the
-    /// name the way `root_name` does.
+    /// Whether a cached row still has the current owner name or pending preview.
     fn root_name_matches(&self, root: &str, name: &str) -> bool {
-        if self.backend.remote_host().is_some() {
-            return self.root_name(root) == name;
-        }
-        match self
-            .project_names
-            .get(root)
-            .filter(|name| !name.trim().is_empty())
-        {
-            Some(stored) => stored == name,
-            None if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(root)) => {
-                name == maple_agent::agent::MAPLE_WORKSPACE_DISPLAY_NAME
-            }
-            None => match std::path::Path::new(root).file_name() {
-                Some(file) => file.to_string_lossy().as_ref() == name,
-                None => root == name,
-            },
-        }
+        self.root_name(root) == name
     }
 
     // ---- Rename ------------------------------------------------------------
 
     /// Start an inline rename of a task or project in the sidebar.
     pub(super) fn begin_rename(&mut self, target: RenameTarget, cx: &mut Context<Self>) {
+        if let RenameTarget::Project(root) = &target
+            && self.pending_project_names.contains_key(root)
+        {
+            return;
+        }
         let current = match &target {
             RenameTarget::Task(id) => self
                 .sessions
@@ -1333,26 +1372,34 @@ impl Sidebar {
                 );
             }
             RenameTarget::Project(root) => {
-                if name == root_display_name(&root) {
-                    self.project_names.remove(&root);
-                } else {
-                    self.project_names.insert(root.clone(), name);
+                if self.pending_project_names.contains_key(&root) {
+                    return;
                 }
+                self.pending_project_names
+                    .insert(root.clone(), name.clone());
                 self.rebuild_sections();
-                let names = self.project_names.clone();
-                let computer = self.backend.remote_host().map(str::to_owned);
-                persist_settings(move |settings| {
-                    if let Some(key) = computer {
-                        settings
-                            .remote_sidebars
-                            .entry(key)
-                            .or_default()
-                            .project_names = names;
-                    } else {
-                        settings.project_names = names;
-                    }
-                });
                 cx.emit(SidebarEvent::PreferencesChanged);
+                cx.notify();
+                let backend = self.backend.clone();
+                let user_id = self.user_id.clone();
+                let path = root.clone();
+                self.call(
+                    async move { backend.rename_project_root(&user_id, path, name).await },
+                    cx,
+                    move |this, result, cx| {
+                        this.pending_project_names.remove(&root);
+                        match result {
+                            Ok(roots) => {
+                                this.set_recent_roots(roots.clone(), cx);
+                                cx.emit(SidebarEvent::ProjectsChanged(roots));
+                            }
+                            Err(message) => cx.emit(SidebarEvent::Notice(message.into())),
+                        }
+                        this.rebuild_sections();
+                        cx.emit(SidebarEvent::PreferencesChanged);
+                        cx.notify();
+                    },
+                );
             }
         }
     }

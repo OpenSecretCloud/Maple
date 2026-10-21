@@ -13,8 +13,6 @@ pub struct RemoteSidebarSettings {
     pub display_name: String,
     #[serde(default)]
     pub pinned_tasks: Vec<String>,
-    #[serde(default)]
-    pub project_names: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -44,7 +42,8 @@ pub struct AppSettings {
     /// Sidebar task ids the user pinned, in pin order.
     #[serde(default)]
     pub pinned_tasks: Vec<String>,
-    /// Display names for project roots, keyed by absolute path.
+    /// Legacy owner-side names, read only for the daemon's one-time migration.
+    /// New shared names live in account-scoped device-local daemon metadata.
     #[serde(default)]
     pub project_names: std::collections::HashMap<String, String>,
     /// Local presentation preferences for each paired endpoint. A remote
@@ -281,6 +280,31 @@ pub fn load_settings() -> AppSettings {
     })
 }
 
+/// Read only the owner's legacy map. An unreadable file must not permanently
+/// record an empty migration; remote sidebar nicknames are deliberately ignored.
+pub fn load_project_names_for_migration()
+-> Result<std::collections::HashMap<String, String>, String> {
+    read_legacy_project_names(&settings_file())
+}
+
+fn read_legacy_project_names(
+    path: &std::path::Path,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    #[derive(serde::Deserialize)]
+    struct LegacyNames {
+        #[serde(default)]
+        project_names: std::collections::HashMap<String, String>,
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(_) => return Err("Could not read saved project names for migration".into()),
+    };
+    serde_json::from_slice::<LegacyNames>(&bytes)
+        .map(|legacy| legacy.project_names)
+        .map_err(|_| "Saved project names are invalid; migration has not been completed".into())
+}
+
 /// Serializes tests that swap `XDG_CONFIG_HOME` process-wide: while a swap
 /// is live, no other test may resolve or write the settings file. Shared
 /// with the chat screen's persisted-defaults test.
@@ -371,6 +395,47 @@ pub fn update_settings_and_wait(update: impl FnOnce(&mut AppSettings) + Send + '
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_project_migration_reads_owner_names_and_preserves_read_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert!(read_legacy_project_names(&path).unwrap().is_empty());
+        std::fs::write(
+            &path,
+            br#"{
+            "project_names": {"/work/one": "Owner name"},
+            "remote_sidebars": {"endpoint": {"project_names": {"/work/one": "Controller alias"}}}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_legacy_project_names(&path).unwrap(),
+            std::collections::HashMap::from([("/work/one".into(), "Owner name".into())])
+        );
+        std::fs::write(&path, b"{invalid").unwrap();
+        assert!(read_legacy_project_names(&path).is_err());
+        assert!(read_legacy_project_names(dir.path()).is_err());
+    }
+
+    #[test]
+    fn retiring_remote_project_aliases_preserves_personal_pins() {
+        let settings: RemoteSidebarSettings = serde_json::from_str(
+            r#"{
+            "display_name":"Lab", "pinned_tasks":["task-1"],
+            "project_names":{"/work/one":"Old alias"}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.pinned_tasks, ["task-1"]);
+        assert_eq!(settings.display_name, "Lab");
+        assert!(
+            serde_json::to_value(settings)
+                .unwrap()
+                .get("project_names")
+                .is_none()
+        );
+    }
 
     /// A settings file written while the app still saved a permission mode
     /// and a shortcut for the approval card loads as it is; the next save

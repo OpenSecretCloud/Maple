@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
-use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
+use maple_agent::agent::{AgentSlashCommand, RecentProjectRoot, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
@@ -24,18 +24,16 @@ use crate::ui::widgets;
 
 /// Recent projects for the header menu. The default Maple workspace stays
 /// listed even when it sits past the recent cap.
-fn header_project_paths(recent_roots: &[String]) -> Vec<String> {
+fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
     let mut paths: Vec<String> = recent_roots
         .iter()
         .take(ROOT_MENU_RECENTS)
-        .cloned()
+        .map(|root| root.path.clone())
         .collect();
-    if let Some(workspace) = recent_roots
-        .iter()
-        .find(|path| maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path)))
-        && !paths.iter().any(|path| path == workspace)
+    if let Some(workspace) = recent_roots.iter().find(|root| root.is_default_workspace)
+        && !paths.iter().any(|path| path == &workspace.path)
     {
-        paths.push(workspace.clone());
+        paths.push(workspace.path.clone());
     }
     paths
 }
@@ -162,25 +160,28 @@ impl ChatScreen {
         if self.computers.len() > 1 && self.root_input.is_none() {
             return self.computers_project_menu();
         }
-        for path in header_project_paths(&self.recent_roots) {
+        let projects = header_project_paths(&self.recent_roots)
+            .into_iter()
+            .map(|path| {
+                let label = self.sidebar.read(cx).root_name(&path);
+                (path, label)
+            })
+            .collect::<Vec<_>>();
+        for (path, label) in &projects {
             let pick = path.clone();
-            let label =
-                if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&path)) {
-                    self.sidebar.read(cx).root_name(&path)
-                } else {
-                    path.clone()
-                };
-            menu = menu.item(
-                MenuItem::new(
-                    SharedString::from(format!("root-{path}")),
-                    label,
-                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.select_project_root(pick.clone(), cx);
-                    },
-                )
-                .truncate_start()
-                .current(self.project_root.as_deref() == Some(path.as_str())),
-            );
+            let mut item = MenuItem::new(
+                SharedString::from(format!("root-{path}")),
+                label.clone(),
+                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.select_project_root(pick.clone(), cx);
+                },
+            )
+            .truncate_start()
+            .current(self.project_root.as_deref() == Some(path.as_str()));
+            if projects.iter().filter(|(_, name)| name == label).count() > 1 {
+                item = item.note(path.clone());
+            }
+            menu = menu.item(item);
         }
         menu = menu.item(
             MenuItem::new(
@@ -1263,20 +1264,40 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::header_project_paths;
+    use super::{RecentProjectRoot, header_project_paths};
 
     #[test]
-    fn the_header_menu_keeps_the_maple_workspace_past_the_recent_cap() {
-        let Some(workspace) = maple_agent::agent::default_maple_workspace_path() else {
-            return;
-        };
-        let workspace = workspace.to_string_lossy().to_string();
-        let mut roots: Vec<String> = (0..8)
-            .map(|index| format!("/tmp/maple-project-{index}"))
-            .collect();
-        roots.push(workspace.clone());
-        let shown = header_project_paths(&roots);
-        assert!(shown.iter().any(|path| path == &workspace));
-        assert!(shown.len() > 6);
+    fn the_header_keeps_the_owners_default_workspace_past_the_recent_cap() {
+        // The owner can redirect Documents. Neither its name nor path shape
+        // tells a controller which project is the built-in workspace.
+        for path in ["/mnt/personal/Maple", r"D:\Documents Redirected\Maple"] {
+            let mut roots: Vec<RecentProjectRoot> = (0..8)
+                .map(|index| RecentProjectRoot {
+                    path: format!("/tmp/project-{index}"),
+                    name: format!("Project {index}"),
+                    last_used_ms: 0,
+                    is_default_workspace: false,
+                    name_revision: 0,
+                })
+                .collect();
+            roots.push(RecentProjectRoot {
+                path: path.into(),
+                name: "My workspace".into(),
+                last_used_ms: 0,
+                is_default_workspace: true,
+                name_revision: 4,
+            });
+            roots.push(RecentProjectRoot {
+                path: "/archive/Documents/Maple".into(),
+                name: "Maple".into(),
+                last_used_ms: 0,
+                is_default_workspace: false,
+                name_revision: 0,
+            });
+            let shown = header_project_paths(&roots);
+            assert!(shown.iter().any(|root| root == path));
+            assert!(!shown.iter().any(|root| root == "/archive/Documents/Maple"));
+            assert!(shown.len() > 6);
+        }
     }
 }

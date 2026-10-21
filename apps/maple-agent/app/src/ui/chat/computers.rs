@@ -71,10 +71,10 @@ impl ChatScreen {
             .update(cx, |sidebar, cx| sidebar.restore_browse_state(state, cx));
     }
 
-    /// Task updates are pushed. The runtime has no project-list event yet, so
-    /// refresh just the small folder list periodically to pick up empty projects
-    /// selected by another desktop. Reuse the app's status timer, not one timer
-    /// per computer, and never reload a conversation here.
+    /// Name updates are pushed. Refresh the small folder list periodically for
+    /// project additions/removals and external filesystem changes. Reuse the
+    /// app's status timer, not one timer per computer, and never reload a
+    /// conversation here.
     pub(crate) fn refresh_navigation_if_due(&mut self, cx: &mut Context<Self>) {
         let now = std::time::Instant::now();
         if now < self.next_navigation_refresh || self.host_recovery.ended {
@@ -126,7 +126,11 @@ impl ChatScreen {
     }
 
     pub(crate) fn computer_snapshot(&self, label: SharedString, cx: &gpui::App) -> Computer {
-        let mut roots = self.recent_roots.clone();
+        let mut roots: Vec<String> = self
+            .recent_roots
+            .iter()
+            .map(|root| root.path.clone())
+            .collect();
         for session in &self.sessions {
             if !roots.contains(&session.project_root) {
                 roots.push(session.project_root.clone());
@@ -160,7 +164,7 @@ impl ChatScreen {
 
     pub(crate) fn set_computers(&mut self, computers: Arc<Vec<Computer>>, cx: &mut Context<Self>) {
         self.computers = computers.clone();
-        self.refresh_project_caption();
+        self.refresh_project_caption(cx);
         if self.visible {
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_computers(computers, cx));
@@ -168,19 +172,8 @@ impl ChatScreen {
         }
     }
 
-    pub(super) fn refresh_project_caption(&mut self) {
-        let computer = self
-            .computers
-            .iter()
-            .find(|c| c.key.as_deref() == self.backend.remote_host());
-        let project = computer
-            .and_then(|c| {
-                c.projects
-                    .iter()
-                    .find(|p| Some(p.path.as_str()) == self.project_root.as_deref())
-            })
-            .map(|p| p.label.to_string())
-            .unwrap_or_else(|| self.project_label());
+    pub(super) fn refresh_project_caption(&mut self, cx: &gpui::App) {
+        let project = self.project_label(cx);
         self.project_label = match self.backend.remote_host() {
             Some(host) => {
                 let name = self
@@ -280,22 +273,30 @@ impl ChatScreen {
                         Destination::Project(project.path.clone())
                     },
                 };
-                menu = menu.item(
-                    MenuItem::new(
-                        SharedString::from(format!("computer-{index}-project-{project_index}")),
-                        project.label.clone(),
-                        move |_: &mut Self, _, cx| cx.emit(request.clone()),
-                    )
-                    .icon(if computer.key.is_some() {
-                        "globe"
-                    } else {
-                        "folder"
-                    })
-                    .current(
-                        computer.key.as_deref() == self.backend.remote_host()
-                            && self.project_root.as_deref() == Some(project.path.as_str()),
-                    ),
+                let mut item = MenuItem::new(
+                    SharedString::from(format!("computer-{index}-project-{project_index}")),
+                    project.label.clone(),
+                    move |_: &mut Self, _, cx| cx.emit(request.clone()),
+                )
+                .icon(if computer.key.is_some() {
+                    "globe"
+                } else {
+                    "folder"
+                })
+                .current(
+                    computer.key.as_deref() == self.backend.remote_host()
+                        && self.project_root.as_deref() == Some(project.path.as_str()),
                 );
+                if computer
+                    .projects
+                    .iter()
+                    .filter(|peer| peer.label == project.label)
+                    .count()
+                    > 1
+                {
+                    item = item.note(project.path.clone());
+                }
+                menu = menu.item(item);
             }
             let request = Navigate {
                 computer: computer.key.clone(),

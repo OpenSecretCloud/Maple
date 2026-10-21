@@ -132,6 +132,9 @@ async fn serve(
             {
                 return Ok::<(), String>(());
             }
+            if matches!(&*event, AgentServiceEvent::ProjectsChanged { user_id, .. } if user_id != &event_node.account) {
+                continue;
+            }
             if remote_event(&event) {
                 send(&mut tx, &Message::Event(Box::new((*event).clone()))).await?;
             }
@@ -253,6 +256,7 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
     // Exhaustive on purpose: new local events need an explicit remote decision.
     match event {
         AgentServiceEvent::RuntimeStatus(_)
+        | AgentServiceEvent::ProjectsChanged { .. }
         | AgentServiceEvent::Question { .. }
         | AgentServiceEvent::QuestionResolved { .. }
         | AgentServiceEvent::ThinkingChanged { .. }

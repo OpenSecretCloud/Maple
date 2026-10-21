@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 
@@ -110,6 +110,7 @@ pub enum Method {
     TaskBootstrap,
     RecentProjectRoots,
     SelectProjectRoot,
+    RenameProjectRoot,
     ListSessions,
     LocalBootstrap,
     RecoverySnapshot,
@@ -346,6 +347,9 @@ mod tests {
             "stop",
             "remote_enable",
             "remote_set_name",
+            "migrate_project_names",
+            "save_settings",
+            "update_settings",
             "remote_pair",
             "transcribe_audio",
             "synthesize_speech",
@@ -358,6 +362,7 @@ mod tests {
             "cancel_run",
             "answer_question",
             "set_thinking_level",
+            "rename_project_root",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
         }
@@ -403,6 +408,32 @@ mod tests {
         hello.version = VERSION;
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
     }
+    #[tokio::test]
+    async fn project_metadata_wire_upgrade_refuses_version_four_before_decoding() {
+        // The previous shipped shape used path strings in bootstrap and had no
+        // rename command/event. Do not let a mixed pair fail during navigation.
+        let previous = serde_json::json!({
+            "version": 4,
+            "minimum_version": 4,
+            "account": "account",
+            "project": "project",
+            "deployment": "local",
+            "channel": "unpackaged",
+            "mode": { "kind": "control" }
+        });
+        let (mut tx, mut rx) = tokio::io::duplex(4096);
+        write(&mut tx, &previous, MAX_PREFACE).await.unwrap();
+        let refusal = match read_hello(&mut rx).await {
+            Err(refusal) => refusal,
+            Ok(_) => panic!("version 4 must update before project metadata is sent"),
+        };
+        assert!(refusal.terminal);
+        assert!(refusal.message.contains("Update both computers"));
+        let response = serde_json::to_value(Err::<(), _>(refusal)).unwrap();
+        let decoded: Result<(), Refusal> = serde_json::from_value(response).unwrap();
+        assert!(decoded.unwrap_err().terminal);
+    }
+
     #[tokio::test]
     async fn future_and_malformed_hello_receive_explicit_terminal_refusals() {
         for message in [
@@ -457,7 +488,7 @@ mod tests {
     #[test]
     fn shipped_wire_examples_are_stable() {
         let examples: serde_json::Value =
-            serde_json::from_str(include_str!("wire_v4.json")).unwrap();
+            serde_json::from_str(include_str!("wire_v5.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
             let decoded: T = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
@@ -467,10 +498,16 @@ mod tests {
         check::<super::super::streams::Header>(&examples["header"]);
         check::<Command>(&examples["command"]);
         check::<Result<(), Refusal>>(&examples["refusal"]);
-        for key in ["image", "failure", "sessions", "receipt"] {
+        for key in ["image", "failure", "sessions", "receipt", "projects"] {
             check::<crate::host::protocol::Message>(&examples[key]);
         }
         check::<Command>(&examples["send"]);
+        check::<Command>(&examples["rename_project"]);
+        check::<Vec<maple_agent::agent::RecentProjectRoot>>(
+            &examples["projects"]["Response"]["result"]["Ok"],
+        );
+        check::<crate::backend::LocalBootstrap>(&examples["bootstrap"]);
+        check::<crate::backend::RecoverySnapshot>(&examples["recovery"]);
         check::<(String, maple_agent::agent::AgentSendMessageRequest)>(&examples["send"]["params"]);
         check::<Vec<maple_agent::agent::AgentSessionSummary>>(
             &examples["sessions"]["Response"]["result"]["Ok"],
