@@ -37,6 +37,7 @@ mod dialogs;
 mod images;
 mod navigation;
 mod queue;
+mod sending;
 mod sidebar;
 mod speech;
 mod summaries;
@@ -397,6 +398,9 @@ pub struct ChatScreen {
     /// The send that is creating the task, run once the task lands. A
     /// selection change meanwhile drops it.
     pending_first_send: Option<FirstSend>,
+    /// UI-only previews. They never enter persisted history or drive retries.
+    first_send_preview: Option<sending::SendPreview>,
+    sending_previews: HashMap<String, sending::SendPreview>,
     /// The integration rows a new task would start with, once the draft's
     /// chip has loaded them. `None` until then: the create request then
     /// names no servers and the task takes the defaults, rather than an
@@ -453,6 +457,9 @@ pub struct ChatScreen {
     /// Last explicit pick / saved default. New tasks restore this.
     default_model: Option<String>,
     thinking: Option<AgentThinkingState>,
+    /// Cached per task and model inside this account/computer's screen.
+    thinking_cache: thinking::ThinkingCache,
+    thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
     /// The task on screen has a persisted model after its first message.
@@ -1104,6 +1111,8 @@ impl ChatScreen {
             first_send_waiting_for_mcp: false,
             draft: false,
             pending_first_send: None,
+            first_send_preview: None,
+            sending_previews: HashMap::new(),
             draft_mcp_defaults: None,
             draft_mcp_changes: Vec::new(),
             draft_mcp_generation: 0,
@@ -1128,6 +1137,8 @@ impl ChatScreen {
             selected_model: None,
             default_model: None,
             thinking: None,
+            thinking_cache: thinking::ThinkingCache::default(),
+            thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
             model_locked: false,
@@ -1931,6 +1942,9 @@ impl ChatScreen {
             cx.notify();
             return;
         };
+        self.first_send_preview = matches!(action, FirstSend::Message { .. }).then(|| {
+            sending::SendPreview::new(None, &action.text(), &self.draft_images).status_only()
+        });
         self.pending_first_send = Some(action);
         cx.notify();
         if self.draft
@@ -1976,6 +1990,7 @@ impl ChatScreen {
     /// on screen; a message for a draft the user left does not replace
     /// what they typed since, Up recalls it instead.
     fn give_back_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) -> bool {
+        self.first_send_preview = None;
         let text = action.text();
         self.remember_prompt(&text);
         self.fill_empty_composer(&text, cx)
@@ -1987,6 +2002,7 @@ impl ChatScreen {
     /// opened never shows it and the late create has nothing to put back
     /// (its task is deleted when it lands).
     fn withdraw_first_send(&mut self, cx: &mut Context<Self>) {
+        self.first_send_preview = None;
         if self.first_send_waiting_for_mcp {
             self.first_send_waiting_for_mcp = false;
             self.session_setup_pending = false;
@@ -2014,6 +2030,7 @@ impl ChatScreen {
     /// created, so what it holds now goes out, edits included; only an
     /// emptied composer falls back to the message as typed.
     fn run_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        self.first_send_preview = None;
         self.notice = None;
         let text = self
             .composer_text(cx)
@@ -2518,6 +2535,9 @@ impl ChatScreen {
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
+        if let Some(session) = self.selected_session.clone() {
+            self.reconcile_send_snapshot(&session, &timeline);
+        }
         let old_navigation_order = self
             .application_vim_enabled
             .then(|| self.navigable_timeline_ids());
@@ -4231,6 +4251,7 @@ impl ChatScreen {
                 let working_dir = self.project_root.clone();
                 let command = name.to_string();
                 let arguments = args.to_string();
+                let invocation = text.to_string();
                 self.notice = Some("Loading skill…".into());
                 cx.notify();
                 self.call(
@@ -4243,7 +4264,7 @@ impl ChatScreen {
                     move |this, result, cx| match result {
                         Ok(Some(prompt)) => {
                             this.notice = None;
-                            this.send_to_session(&session_id, prompt, false, None, cx);
+                            this.send_resolved_skill(&session_id, &invocation, prompt, cx);
                         }
                         Ok(None) => {
                             this.notice = Some("That skill is no longer installed".into());
@@ -4260,6 +4281,29 @@ impl ChatScreen {
         }
     }
 
+    /// Skill expansion can finish after another message starts admission. Its
+    /// invocation has already left the composer, so retain it explicitly when
+    /// dispatch is refused, without replaying it or replacing a newer draft.
+    fn send_resolved_skill(
+        &mut self,
+        session_id: &str,
+        invocation: &str,
+        prompt: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.send_to_session(session_id, prompt, false, None, cx) {
+            return;
+        }
+        self.remember_prompt(invocation);
+        let restored = self.is_selected(session_id) && self.fill_empty_composer(invocation, cx);
+        self.notice = Some(if restored {
+            "Skill not sent while the previous send is settling. The command is restored; send it again when ready."
+        } else {
+            "Skill not sent while the previous send is settling. The command is retained; press Up in an empty composer to recall it."
+        }.into());
+        cx.notify();
+    }
+
     /// Dispatch a message. While a run is active the runtime queues it
     /// behind the run, or with `steer` injects it into the run. `queue_id`
     /// names an already queued chip to send in place of new text.
@@ -4270,7 +4314,17 @@ impl ChatScreen {
         steer: bool,
         queue_id: Option<String>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        if self
+            .sending_previews
+            .values()
+            .any(|send| send.session.as_deref() == Some(session_id) && send.admitting())
+        {
+            // One admission at a time. Text typed after the click stays in
+            // the composer rather than racing the first run's admission.
+            cx.notify();
+            return false;
+        }
         if self
             .unresolved_sends
             .values()
@@ -4280,7 +4334,7 @@ impl ChatScreen {
                 Some("Checking the previous send before another message can be sent.".into());
             self.check_unresolved_sends(cx);
             cx.notify();
-            return;
+            return false;
         }
         let send_id = uuid::Uuid::new_v4().to_string();
         let outgoing_id = send_id.clone();
@@ -4340,35 +4394,40 @@ impl ChatScreen {
         if !run_active {
             self.awaiting_first_token = true;
         }
-        cx.notify();
-        self.call(
-            async move { backend.send_message_identified(&user_id, request, outgoing_id).await },
-            cx,
-            move |this, result, cx| match result {
-                Ok(run_id) => {
-                    // A short run can finish before the send returns; its
-                    // Finished event already retired it.
-                    if !this.finished_runs.contains(&run_id) {
-                        this.active_runs.insert(session_id.clone(), run_id);
-                        this.sync_sidebar(cx);
-                    }
-                }
-                Err(message) => {
-                    let uncertain = message.starts_with("Send outcome unknown");
-                    this.unresolved_sends.insert(send_id.clone(), UnresolvedSend {
-                        outcome: None, session: session_id, text, images: drafts, from_composer,
-                    });
-                    this.awaiting_first_token = false;
-                    if uncertain {
-                        this.notice = Some("Delivery is uncertain. Your message and images are retained while Maple checks the host; nothing will be resent.".into());
-                        this.check_unresolved_sends(cx);
-                    } else {
-                        this.push_local_error("Send failed", &message, cx);
-                        this.apply_send_receipt(&send_id, Some(crate::host::receipts::Outcome::Finished(Err(message))), cx);
-                    }
-                }
+        let preview = sending::SendPreview::new(Some(session_id.clone()), &text, &drafts)
+            .capture_timeline(&self.timeline);
+        self.sending_previews.insert(
+            send_id.clone(),
+            if run_active || request.queue_id.is_some() {
+                preview.status_only()
+            } else {
+                preview
             },
         );
+        cx.notify();
+        self.call(
+            async move {
+                backend
+                    .send_message_identified(&user_id, request, outgoing_id)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.finish_send(
+                    send_id,
+                    UnresolvedSend {
+                        outcome: None,
+                        session: session_id,
+                        text,
+                        images: drafts,
+                        from_composer,
+                    },
+                    result,
+                    cx,
+                );
+            },
+        );
+        true
     }
 
     fn check_unresolved_sends(&mut self, cx: &mut Context<Self>) {
@@ -5293,10 +5352,7 @@ impl ChatScreen {
                 }
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
-                if self.selected_session.as_deref() == Some(&session_id) {
-                    self.thinking_generation += 1;
-                    self.thinking = Some(state);
-                }
+                self.apply_thinking_changed(&session_id, state, cx);
             }
             AgentServiceEvent::RemoteAccessEnded(_)
             | AgentServiceEvent::HostDisconnected
@@ -5330,8 +5386,11 @@ impl ChatScreen {
                 return self.upsert_session(session, cx);
             }
             AgentServiceEvent::TimelineItem {
-                session_id, item, ..
+                session_id,
+                run_id,
+                item,
             } => {
+                self.observe_send_projection(&session_id, run_id.as_deref(), &item);
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
                     self.apply_incoming_item(&session_id, item, cx);
                 } else {
@@ -5438,6 +5497,11 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> bool {
         use maple_agent::agent::AgentRunEvent;
+        if let AgentRunEvent::TimelineItem(item) | AgentRunEvent::QueuePromoted { item, .. } =
+            &event
+        {
+            self.observe_send_projection(session_id, Some(run_id), item);
+        }
         match event {
             AgentRunEvent::SessionUpdated(session) => {
                 return self.upsert_session(session, cx);
@@ -5518,6 +5582,7 @@ impl ChatScreen {
                 }
             }
             AgentRunEvent::Finished(terminal) => {
+                self.finish_send_preview(session_id, run_id);
                 if self.finished_runs.len() >= FINISHED_RUNS_KEPT {
                     self.finished_runs.pop_front();
                 }
@@ -5683,7 +5748,7 @@ impl Render for ChatScreen {
             .trust_prompt
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
-        let empty = self.timeline.is_empty();
+        let empty = self.shows_empty_state();
         let collapsed = self.sidebar_collapsed;
         let loading_overlay = self.render_loading_overlay();
         let main = if empty {
@@ -5697,17 +5762,21 @@ impl Render for ChatScreen {
                 .min_w_0()
                 .child(self.render_header(window, cx))
                 .child(self.render_transcript(window, cx))
-                .when(self.awaiting_first_token && self.is_run_active(), |main| {
-                    // Same gutter as transcript text so the dots line up
-                    main.child(
-                        div()
-                            .w_full()
-                            .max_w(CONTENT_WIDTH)
-                            .mx_auto()
-                            .px_6()
-                            .child(render_waiting_indicator()),
-                    )
-                })
+                .children(self.render_send_preview())
+                .when(
+                    self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback(),
+                    |main| {
+                        // Same gutter as transcript text so the dots line up
+                        main.child(
+                            div()
+                                .w_full()
+                                .max_w(CONTENT_WIDTH)
+                                .mx_auto()
+                                .px_6()
+                                .child(render_waiting_indicator()),
+                        )
+                    },
+                )
                 .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
                     let step = self.question_step;

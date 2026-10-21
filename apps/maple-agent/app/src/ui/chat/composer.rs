@@ -747,11 +747,13 @@ impl ChatScreen {
         // The first send's create keeps the composer's text on show and
         // the composer waiting, like the runtime boot does.
         let pending_create = self.selected_session.is_none() && self.session_setup_pending;
-        let disabled = self.booting || pending_create;
+        let disabled = self.booting || pending_create || self.send_pending();
         let status_label = if self.booting {
             "Starting Maple…"
-        } else {
+        } else if pending_create {
             "Creating the task…"
+        } else {
+            "Sending…"
         };
         let has_text = self.composer_has_text;
         let has_images = !self.draft_images.is_empty();
@@ -902,6 +904,8 @@ impl ChatScreen {
                             .min_w_0()
                             .when(expanded, |cell| cell.h_full())
                             .text_color(gpui::rgb(theme::text_primary()))
+                            // The first send remains visibly editable until
+                            // task creation settles; keep its real focus path.
                             .children(composer),
                     )
                     .child(
@@ -959,23 +963,27 @@ impl ChatScreen {
                         cx,
                         |this, _| this.model_menu(),
                     ))
-                    .when_some(self.thinking.as_ref(), |row, thinking| {
-                        row.child(self.with_menu(
+                    .child(
+                        self.with_menu(
                             ChatPopup::Thinking,
-                            chip(
+                            widgets::icon_button(
                                 "thinking-picker",
-                                None,
-                                format!("Thinking: {}", thinking.current.as_str()),
-                                false,
-                                self.popup.is_open(&ChatPopup::Thinking),
-                                false,
-                            ),
+                                "brain",
+                                "Thinking",
+                                px(16.),
+                                theme::text_secondary(),
+                            )
+                            .size_8()
+                            .debug_selector(|| "thinking-picker".to_string())
+                            .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
+                                button.bg(gpui::rgb(theme::bg_sidebar_pill()))
+                            }),
                             Placement::AboveStart,
                             window,
                             cx,
                             |this, _| this.thinking_menu(),
-                        ))
-                    })
+                        ),
+                    )
                     .child(self.with_menu(
                         ChatPopup::Integrations,
                         chip(
