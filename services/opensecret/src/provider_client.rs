@@ -1315,9 +1315,7 @@ mod tests {
         AttestationTarget::MapleDirect {
             instance,
             host: crate::maple_inference::endpoint(instance).host,
-            // Synthetic transport fixtures cover both guests without approving a live
-            // i02 release. Production initialization skips its unconfigured policy.
-            policy: crate::maple_inference::direct_policy(MapleInstanceId::I01)
+            policy: crate::maple_inference::direct_policy(instance)
                 .unwrap()
                 .unwrap(),
         }
@@ -1548,7 +1546,7 @@ mod tests {
                 first.2,
                 format!(
                     "{:?}",
-                    crate::maple_inference::direct_policy(MapleInstanceId::I01)
+                    crate::maple_inference::direct_policy(instance)
                         .unwrap()
                         .unwrap()
                 )

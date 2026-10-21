@@ -30,9 +30,7 @@ const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I02,
     host: "i02.tfinf.maple.ai",
     base_url: "https://i02.tfinf.maple.ai",
-    // The stock release must never authorize the uncensored model. Populate
-    // this only after the derivative's measured release has been reviewed.
-    current_release: None,
+    current_release: Some(&I02_CURRENT_RELEASE),
     staged_releases: &[],
 };
 
@@ -125,6 +123,19 @@ const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
         "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
         "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
         "4dac875226df9a0a2dcc8e2c535ebf4ed26398dd3581ab62eba5580a5d155a8c62b66c8f073884c6b3b9a03b34e7bf94",
+    ],
+};
+
+// Qualified independently through the official CLI and the pinned Rust SDK.
+// Stock i02 measurements are deliberately absent from this model's policy.
+const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
+    repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
+    tag: "v0.1.0-rc.1+b300",
+    digest: "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4",
+    registers: &[
+        "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
+        "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
+        "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
     ],
 };
 
@@ -339,16 +350,16 @@ mod tests {
     fn staging_i02_release_does_not_approve_it_for_i01() {
         // Synthetic release identity is local to this test; no endpoint uses it.
         const I02_TEST_STAGE: ReleasePin = ReleasePin {
-            repo: "MaplePrivacyLabs/inference-deepseek",
+            repo: I02_CURRENT_RELEASE.repo,
             tag: "test-i02-only-stage",
-            digest: I01_CURRENT_RELEASE.digest,
-            registers: I01_CURRENT_RELEASE.registers,
+            digest: I02_CURRENT_RELEASE.digest,
+            registers: I02_CURRENT_RELEASE.registers,
         };
         const STAGED_I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
             instance: MapleInstanceId::I02,
             host: "i02.tfinf.maple.ai",
             base_url: "https://i02.tfinf.maple.ai",
-            current_release: None,
+            current_release: Some(&I02_CURRENT_RELEASE),
             staged_releases: &[I02_TEST_STAGE],
         };
 
@@ -356,9 +367,9 @@ mod tests {
         let current_i02_approved = approved_releases(endpoint(MapleInstanceId::I02));
         let staged_i02_approved = approved_releases(&STAGED_I02_ENDPOINT);
         assert_eq!(i01_approved.len(), 1);
-        assert!(current_i02_approved.is_empty());
-        assert_eq!(staged_i02_approved.len(), 1);
-        assert_eq!(staged_i02_approved[0].release.tag, I02_TEST_STAGE.tag);
+        assert_eq!(current_i02_approved.len(), 1);
+        assert_eq!(staged_i02_approved.len(), 2);
+        assert_eq!(staged_i02_approved[1].release.tag, I02_TEST_STAGE.tag);
         assert!(i01_approved
             .iter()
             .all(|approved| approved.release.tag != I02_TEST_STAGE.tag));
@@ -367,26 +378,52 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_guest_has_no_approved_stock_release_or_network_policy() {
-        let i02 = endpoint(MapleInstanceId::I02);
-        assert!(i02.current_release.is_none());
-        assert!(i02.staged_releases.is_empty());
-        assert!(direct_policy(MapleInstanceId::I02).unwrap().is_none());
+    fn uncensored_guest_approves_only_its_qualified_release() {
+        let approved = approved_releases(endpoint(MapleInstanceId::I02));
+        assert_eq!(approved.len(), 1);
+        let release = &approved[0];
+        assert_eq!(
+            release.release.repo,
+            "MaplePrivacyLabs/inference-deepseek-uncensored"
+        );
+        assert_eq!(release.release.tag, "v0.1.0-rc.1+b300");
+        assert_eq!(
+            release.release.digest,
+            "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4"
+        );
+        assert_eq!(
+            release.measurement.type_,
+            PredicateType::SnpTdxMultiPlatformV1
+        );
+        assert_eq!(release.measurement.registers, [
+            "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
+            "7e57f9877b4533e7dcb8dd7419dfaf422f3c7cef6fd337a4eaf27ae90a751ff04945ef0d4fb6c3753285cb1f09ce048e",
+            "a47f4e2707c76f799513b5ca277982d1988891bf486867ad1de56ef028e29a8e54f37c4bbf9fa70cab6ca9f1683acef7",
+        ]);
+        assert!(approved.iter().all(|release| {
+            release.release.repo != I01_CURRENT_RELEASE.repo
+                && release.release.digest != I01_CURRENT_RELEASE.digest
+                && release.measurement.registers[0] != I01_CURRENT_RELEASE.registers[0]
+        }));
+        assert!(direct_policy(MapleInstanceId::I02).unwrap().is_some());
         assert!(direct_policy(MapleInstanceId::I01).unwrap().is_some());
     }
 
     #[test]
     fn retired_release_is_not_approved_on_either_guest() {
         for instance in MapleInstanceId::ALL {
-            let policy = direct_policy(instance).unwrap();
-            let serialized = format!("{policy:?}");
-            for retired_pin in [
-                "v0.1.0",
-                "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00",
-                "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
-                "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
-            ] {
-                assert!(!serialized.contains(retired_pin));
+            for approved in approved_releases(endpoint(instance)) {
+                assert_ne!(approved.release.tag, "v0.1.0");
+                assert_ne!(
+                    approved.release.digest,
+                    "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00"
+                );
+                for retired_register in [
+                    "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
+                    "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
+                ] {
+                    assert!(!approved.measurement.registers.iter().any(|register| register == retired_register));
+                }
             }
         }
     }
