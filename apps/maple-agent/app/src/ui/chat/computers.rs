@@ -6,8 +6,12 @@ use super::*;
 pub(crate) enum Destination {
     Overview,
     Project(String),
+    /// The project selector was opened from New Task. Carry that intent across
+    /// computers (and a deferred connection), whose ChatScreens are independent.
+    DraftProject(String),
     Task(String),
     NewProject,
+    DraftNewProject,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -199,6 +203,17 @@ impl ChatScreen {
             self.pending_navigation = Some((self.selection_generation, destination));
             return;
         }
+        // Opening a remote computer's projects is not a request to open its
+        // newest task. Establish the draft before runtime refreshes can
+        // auto-select a session. Explicit task clicks still win.
+        let needs_draft = matches!(
+            destination,
+            Destination::DraftProject(_) | Destination::DraftNewProject
+        ) || (self.navigation_only
+            && !matches!(destination, Destination::Task(_)));
+        if needs_draft && !self.prepare_draft_navigation(cx) {
+            return;
+        }
         if self.navigation_only {
             self.navigation_only = false;
             self.booting = true;
@@ -210,12 +225,21 @@ impl ChatScreen {
                 .sidebar
                 .update(cx, |s, cx| s.set_project_filter(None, cx)),
             Destination::Task(id) => self.select_session(&id, cx),
-            Destination::Project(path) => {
+            Destination::Project(path) | Destination::DraftProject(path) => {
                 self.select_project_root(path, cx);
             }
-            Destination::NewProject => self.choose_root_dialog(cx),
+            Destination::NewProject | Destination::DraftNewProject => self.choose_root_dialog(cx),
         }
         cx.notify();
+    }
+
+    fn prepare_draft_navigation(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.draft {
+            self.new_session(cx);
+        }
+        // New Task refuses to leave a first send or project selection in
+        // flight. Do not proceed to a different project if it was refused.
+        self.draft && !self.session_setup_pending && !self.root_selecting
     }
 
     pub(super) fn finish_navigation_bootstrap(&mut self, cx: &mut Context<Self>) {
@@ -250,7 +274,11 @@ impl ChatScreen {
             for (project_index, project) in computer.projects.iter().enumerate() {
                 let request = Navigate {
                     computer: computer.key.clone(),
-                    destination: Destination::Project(project.path.clone()),
+                    destination: if self.draft {
+                        Destination::DraftProject(project.path.clone())
+                    } else {
+                        Destination::Project(project.path.clone())
+                    },
                 };
                 menu = menu.item(
                     MenuItem::new(
@@ -271,7 +299,11 @@ impl ChatScreen {
             }
             let request = Navigate {
                 computer: computer.key.clone(),
-                destination: Destination::NewProject,
+                destination: if self.draft {
+                    Destination::DraftNewProject
+                } else {
+                    Destination::NewProject
+                },
             };
             menu = menu.item(
                 MenuItem::new(

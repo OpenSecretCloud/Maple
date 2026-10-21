@@ -6703,4 +6703,637 @@ mod state_tests {
             }
         });
     }
+    mod remote_draft_navigation_tests {
+        use super::*;
+
+        /// This also exercises Settings' first "Open projects" after pairing.
+        #[gpui::test]
+        fn opening_a_computer_catalog_does_not_open_its_latest_task(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.selected_session = None;
+                this.project_root = Some(absolute_fixture_root("remote"));
+                this.navigation_only = true;
+                this.navigation_ready = false;
+                this.host_recovery.events = Some(Vec::new());
+                this.navigate(Destination::Overview, cx);
+                assert!(this.pending_navigation.is_some());
+                this.host_recovery.events = None;
+                this.finish_navigation_bootstrap(cx);
+
+                assert!(!this.navigation_only);
+                assert!(this.draft);
+                this.apply_session_list(
+                    vec![summary_at(
+                        "existing",
+                        "Existing remote task",
+                        this.project_root.as_deref().unwrap(),
+                    )],
+                    this.selection_generation,
+                    cx,
+                );
+                assert!(this.selected_session.is_none());
+                assert!(this.loading_session.is_none());
+                assert!(this.timeline.is_empty());
+                assert_eq!(
+                    this.sessions.len(),
+                    1,
+                    "the sidebar still receives the task"
+                );
+            });
+        }
+
+        /// A New Task selector click carries its meaning to a previously
+        /// visited computer, even if that computer showed an existing task.
+        #[gpui::test]
+        fn draft_project_navigation_supersedes_a_cached_task(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_ready = true;
+                this.project_root = Some(absolute_fixture_root("old"));
+                this.navigate(
+                    Destination::DraftProject(absolute_fixture_root("target")),
+                    cx,
+                );
+                assert!(this.draft);
+                assert!(this.selected_session.is_none());
+                assert!(this.timeline.is_empty());
+
+                // Runtime lists can land before and after project registration.
+                this.apply_session_list(
+                    vec![summary_at(
+                        "old-task",
+                        "Old task",
+                        &absolute_fixture_root("old"),
+                    )],
+                    this.selection_generation,
+                    cx,
+                );
+                assert!(this.loading_session.is_none());
+                let generation = this.selection_generation;
+                this.root_selecting = false;
+                this.land_project_selection(absolute_fixture_root("target"), generation, cx);
+                this.apply_session_list(
+                    vec![summary_at(
+                        "target-task",
+                        "Target task",
+                        &absolute_fixture_root("target"),
+                    )],
+                    this.selection_generation,
+                    cx,
+                );
+                assert!(this.draft);
+                assert!(this.selected_session.is_none());
+                assert!(this.loading_session.is_none());
+                assert_eq!(
+                    this.project_root.as_deref(),
+                    Some(absolute_fixture_root("target").as_str())
+                );
+            });
+        }
+
+        #[gpui::test]
+        fn draft_project_intent_survives_a_pending_catalog(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_only = true;
+                this.navigation_ready = false;
+                this.selected_session = None;
+                this.host_recovery.events = Some(Vec::new());
+                let destination = Destination::DraftProject(absolute_fixture_root("target"));
+                this.navigate(destination.clone(), cx);
+                assert_eq!(
+                    this.pending_navigation.as_ref().map(|(_, target)| target),
+                    Some(&destination)
+                );
+                this.host_recovery.events = None;
+                this.finish_navigation_bootstrap(cx);
+                assert!(this.pending_navigation.is_none());
+                assert!(this.draft);
+                assert!(this.root_selecting);
+                assert!(this.selected_session.is_none());
+            });
+        }
+
+        /// Explicit sidebar task selection still loads the requested task.
+        #[gpui::test]
+        fn opening_a_catalog_task_still_selects_that_task(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.navigation_only = true;
+                this.navigation_ready = true;
+                this.selected_session = None;
+                this.navigate(Destination::Task("chosen".into()), cx);
+                assert!(!this.navigation_only);
+                assert!(!this.draft);
+                assert_eq!(this.loading_session.as_deref(), Some("chosen"));
+            });
+        }
+
+        /// Exercise the actual menu actions. Both remote targets and the
+        /// new-folder action carry draft intent; ordinary browsing stays ordinary.
+        #[gpui::test]
+        fn project_menu_carries_draft_intent_between_computers(cx: &mut TestAppContext) {
+            use crate::ui::chat::computers::Project;
+            let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.selected_session = None;
+                this.draft = true;
+                let computers = [None, Some("remote-one"), Some("remote-two")]
+                    .into_iter()
+                    .map(|key| Computer {
+                        key: key.map(str::to_owned),
+                        label: key.unwrap_or("Local").into(),
+                        projects: vec![Project {
+                            path: absolute_fixture_root("project"),
+                            label: "Project".into(),
+                        }],
+                        sessions: Vec::new(),
+                        running: HashSet::new(),
+                        unread: HashSet::new(),
+                        pinned: Vec::new(),
+                        loading: false,
+                        error: None,
+                    })
+                    .collect();
+                this.set_computers(Arc::new(computers), cx);
+            });
+            cx.update(|_, cx| {
+                let requests = requests.clone();
+                cx.subscribe(&chat, move |_, request: &Navigate, _| {
+                    requests.borrow_mut().push(request.clone());
+                })
+                .detach();
+            });
+            for (row, computer, destination) in [
+                (
+                    "computer-1-project-0",
+                    "remote-one",
+                    Destination::DraftProject(absolute_fixture_root("project")),
+                ),
+                (
+                    "computer-2-project-0",
+                    "remote-two",
+                    Destination::DraftProject(absolute_fixture_root("project")),
+                ),
+                (
+                    "computer-2-new-project",
+                    "remote-two",
+                    Destination::DraftNewProject,
+                ),
+            ] {
+                press(cx, "root-picker");
+                press(cx, row);
+                assert_eq!(
+                    requests.borrow_mut().pop(),
+                    Some(Navigate {
+                        computer: Some(computer.into()),
+                        destination
+                    })
+                );
+            }
+            chat.update(cx, |this, _| {
+                this.draft = false;
+                this.selected_session = Some("existing".into());
+            });
+            press(cx, "root-picker");
+            press(cx, "computer-1-project-0");
+            assert_eq!(
+                requests.borrow_mut().pop(),
+                Some(Navigate {
+                    computer: Some("remote-one".into()),
+                    destination: Destination::Project(absolute_fixture_root("project")),
+                })
+            );
+        }
+    }
+
+    mod send_feedback_tests {
+        use super::*;
+
+        #[gpui::test]
+        fn first_send_immediately_leaves_the_hero_without_inventing_history(
+            cx: &mut TestAppContext,
+        ) {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.selected_session = None;
+                this.project_root = Some(absolute_fixture_root("draft"));
+                this.new_session(cx);
+            });
+            chat.update(cx, |this, cx| {
+                let composer = this.composer.clone().unwrap();
+                composer.update(cx, |input, cx| input.set_text("first message", cx));
+                assert!(this.shows_empty_state());
+                this.send_inner(cx);
+                assert!(
+                    !this.shows_empty_state(),
+                    "the click leaves the hero immediately"
+                );
+                assert!(this.send_pending());
+                assert!(this.timeline.is_empty(), "only the host writes history");
+                assert!(
+                    this.active_runs.is_empty(),
+                    "a preview is not an admitted run"
+                );
+                assert_eq!(this.composer_text(cx).as_deref(), Some("first message"));
+                this.fail_new_session("creation failed".into(), cx);
+                assert!(this.shows_empty_state());
+                assert!(!this.send_pending());
+                assert_eq!(this.composer_text(cx).as_deref(), Some("first message"));
+            });
+        }
+
+        #[gpui::test]
+        fn existing_send_feedback_is_immediate_and_blocks_only_duplicate_admission(
+            cx: &mut TestAppContext,
+        ) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.selected_session = Some("s1".into());
+                this.replace_timeline(vec![user_item("old", "earlier")]);
+            });
+            chat.update(cx, |this, cx| {
+                let composer = this.composer.clone().unwrap();
+                composer.update(cx, |input, cx| input.set_text("next message", cx));
+                this.send_inner(cx);
+                assert!(this.send_pending());
+                assert_eq!(this.sending_previews.len(), 1);
+                assert!(this.composer_text(cx).unwrap().is_empty());
+                assert_eq!(this.timeline.len(), 1);
+                composer.update(cx, |input, cx| input.set_text("a newer draft", cx));
+                this.send_inner(cx);
+                assert_eq!(this.sending_previews.len(), 1, "no duplicate request");
+                assert_eq!(this.composer_text(cx).as_deref(), Some("a newer draft"));
+                this.selected_session = Some("other".into());
+                assert!(!this.send_pending(), "feedback is scoped to its task");
+            });
+        }
+
+        fn pending(this: &mut ChatScreen, id: &str) {
+            this.sending_previews.insert(
+                id.into(),
+                sending::SendPreview::new(Some("s1".into()), "new message", &[])
+                    .capture_timeline(&this.timeline),
+            );
+        }
+
+        #[gpui::test]
+        fn resolved_skill_waiting_for_admission_preserves_the_command_and_newer_draft(
+            cx: &mut TestAppContext,
+        ) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.selected_session = Some("s1".into());
+                this.replace_timeline(vec![user_item("old", "earlier")]);
+                pending(this, "first-send");
+            });
+            chat.update(cx, |this, cx| {
+                let composer = this.composer.clone().unwrap();
+                // Resolving a skill is asynchronous, and its invocation has
+                // already been cleared by the time its prompt arrives here.
+                for (selected, draft, expected) in [
+                    ("s1", "", "/review changes"),
+                    ("s1", "a newer draft", "a newer draft"),
+                    ("other", "", ""),
+                ] {
+                    this.selected_session = Some(selected.into());
+                    composer.update(cx, |input, cx| input.set_text(draft, cx));
+                    this.send_resolved_skill(
+                        "s1",
+                        "/review changes",
+                        "expanded review instructions".into(),
+                        cx,
+                    );
+                    assert_eq!(this.composer_text(cx).as_deref(), Some(expected));
+                    assert_eq!(
+                        this.prompt_history.last().map(String::as_str),
+                        Some("/review changes")
+                    );
+                    assert_eq!(
+                        this.sending_previews.len(),
+                        1,
+                        "no second admission or retry"
+                    );
+                    assert!(this.sending_previews.contains_key("first-send"));
+                    assert_eq!(this.timeline.len(), 1, "no invented history");
+                    assert!(
+                        this.notice
+                            .as_deref()
+                            .unwrap()
+                            .starts_with("Skill not sent")
+                    );
+                }
+            });
+        }
+
+        #[gpui::test]
+        fn acknowledgement_waits_for_its_run_projection(cx: &mut TestAppContext) {
+            use maple_agent::agent::AgentRunEvent;
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.replace_timeline(vec![user_item("old", "previous")]);
+                pending(this, "send");
+                this.acknowledge_send_preview("send", "our-run");
+                assert!(
+                    !this.send_pending(),
+                    "admission no longer blocks next draft"
+                );
+                assert!(this.sending_previews["send"].body_visible());
+                this.handle_run_event(
+                    "s1",
+                    "other-run",
+                    AgentRunEvent::TimelineItem(user_item("other", "another controller")),
+                    cx,
+                );
+                assert!(
+                    this.sending_previews["send"].body_visible(),
+                    "unrelated run cannot retire our body"
+                );
+                this.handle_run_event(
+                    "s1",
+                    "our-run",
+                    AgentRunEvent::TimelineItem(user_item("old", "previous")),
+                    cx,
+                );
+                assert!(
+                    this.sending_previews["send"].body_visible(),
+                    "replayed old row is not our projection"
+                );
+                this.handle_run_event(
+                    "s1",
+                    "our-run",
+                    AgentRunEvent::TimelineItem(user_item("sent", "new message")),
+                    cx,
+                );
+                assert!(this.sending_previews.is_empty());
+                assert_eq!(
+                    this.timeline
+                        .iter()
+                        .filter(|item| item.id == "sent")
+                        .count(),
+                    1
+                );
+            });
+        }
+
+        #[gpui::test]
+        fn projection_before_acknowledgement_yields_to_the_canonical_body(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                pending(this, "send");
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "s1".into(),
+                        run_id: Some("run".into()),
+                        item: user_item("sent", "new message"),
+                    },
+                    cx,
+                );
+                assert!(
+                    this.send_pending(),
+                    "event does not pretend to acknowledge admission"
+                );
+                assert!(
+                    !this.sending_previews["send"].body_visible(),
+                    "one visible user bubble"
+                );
+                this.acknowledge_send_preview("send", "run");
+                assert!(this.sending_previews.is_empty());
+                assert_eq!(this.timeline.len(), 1);
+            });
+        }
+
+        #[gpui::test]
+        fn snapshots_and_terminal_events_retire_presentation_without_replaying(
+            cx: &mut TestAppContext,
+        ) {
+            use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.replace_timeline(vec![user_item("old", "previous")]);
+                pending(this, "send");
+                this.acknowledge_send_preview("send", "run");
+                this.replace_timeline(vec![user_item("old", "previous")]);
+                assert!(this.sending_previews["send"].body_visible());
+                this.replace_timeline(vec![
+                    user_item("old", "previous"),
+                    user_item("new", "new message"),
+                ]);
+                assert!(this.sending_previews.is_empty());
+
+                pending(this, "failed-run");
+                this.acknowledge_send_preview("failed-run", "terminal");
+                this.handle_run_event(
+                    "s1",
+                    "terminal",
+                    AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                    cx,
+                );
+                assert!(
+                    this.sending_previews.is_empty(),
+                    "terminal without user row cannot strand feedback"
+                );
+                pending(this, "fast-run");
+                this.handle_run_event(
+                    "s1",
+                    "fast",
+                    AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                    cx,
+                );
+                this.acknowledge_send_preview("fast-run", "fast");
+                assert!(
+                    this.sending_previews.is_empty(),
+                    "terminal may beat admission reply"
+                );
+            });
+        }
+
+        #[gpui::test]
+        fn queued_or_steering_admission_needs_no_new_user_row(cx: &mut TestAppContext) {
+            let chat = screen(cx);
+            chat.update(cx, |this, _| {
+                this.sending_previews.insert(
+                    "queued".into(),
+                    sending::SendPreview::new(Some("s1".into()), "queue me", &[]).status_only(),
+                );
+                assert!(this.send_pending());
+                assert!(!this.sending_previews["queued"].body_visible());
+                this.acknowledge_send_preview("queued", "existing-run");
+                assert!(!this.send_pending());
+                assert!(!this.has_send_feedback());
+            });
+        }
+
+        #[gpui::test]
+        fn late_failure_keeps_the_new_draft_and_belongs_to_its_original_task(
+            cx: &mut TestAppContext,
+        ) {
+            let (chat, cx) = chat_window(cx, |_, _| {});
+            chat.update(cx, |this, cx| {
+                pending(this, "send");
+                this.selected_session = Some("other".into());
+                this.replace_timeline(vec![user_item("other-message", "another task")]);
+                this.awaiting_first_token = true;
+                this.composer
+                    .clone()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_text("newer draft", cx));
+                this.draft_images = vec![DraftImage {
+                    id: 2,
+                    name: "new.png".into(),
+                    data_url: None,
+                    thumbnail: None,
+                }];
+                this.finish_send(
+                    "send".into(),
+                    UnresolvedSend {
+                        outcome: None,
+                        session: "s1".into(),
+                        text: "original".into(),
+                        images: vec![DraftImage {
+                            id: 1,
+                            name: "original.png".into(),
+                            data_url: None,
+                            thumbnail: None,
+                        }],
+                        from_composer: true,
+                    },
+                    Err("failed".into()),
+                    cx,
+                );
+                assert!(this.sending_previews.is_empty());
+                assert_eq!(this.timeline.len(), 1, "no failure row in another task");
+                assert!(
+                    this.awaiting_first_token,
+                    "another task's waiting state stays intact"
+                );
+                assert_eq!(this.composer_text(cx).as_deref(), Some("newer draft"));
+                assert_eq!(this.draft_images[0].name, "new.png");
+                assert_eq!(this.unresolved_sends["send"].text, "original");
+                assert_eq!(this.unresolved_sends["send"].images[0].name, "original.png");
+                // Returning to an empty original task recovers the retained draft.
+                this.selected_session = Some("s1".into());
+                this.composer
+                    .clone()
+                    .unwrap()
+                    .update(cx, |input, cx| input.clear(cx));
+                this.draft_images.clear();
+                this.apply_send_receipt(
+                    "send",
+                    Some(crate::host::receipts::Outcome::Finished(Err(
+                        "failed".into()
+                    ))),
+                    cx,
+                );
+                assert_eq!(this.composer_text(cx).as_deref(), Some("original"));
+                assert_eq!(this.draft_images[0].name, "original.png");
+            });
+        }
+
+        #[gpui::test]
+        fn send_button_preserves_first_draft_when_task_creation_fails(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.selected_session = None;
+                this.project_root = Some(absolute_fixture_root("draft"));
+                this.new_session(cx);
+            });
+            chat.update(cx, |this, cx| {
+                this.composer
+                    .clone()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_text("first message", cx));
+                cx.notify();
+            });
+            press(cx, "send-message");
+            // The isolated backend deliberately has no running agent. Wait
+            // for that exact outcome rather than racing its fast callback.
+            wait_until(&chat, cx, "first create rejection", |this| {
+                this.notice.as_deref() == Some("Agent runtime is not running")
+            });
+            chat.update(cx, |this, cx| {
+                assert!(this.pending_first_send.is_none());
+                assert!(!this.send_pending());
+                assert!(this.shows_empty_state());
+                assert_eq!(
+                    this.composer_text(cx).as_deref(),
+                    Some("first message"),
+                    "button must not double-clear or lose the deferred first message"
+                );
+                assert!(
+                    this.prompt_history
+                        .iter()
+                        .any(|prompt| prompt == "first message")
+                );
+            });
+        }
+
+        #[gpui::test]
+        fn thinking_icon_frame_is_stable_across_loading_and_model_change(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.thinking = None;
+                this.thinking_loading = true;
+            });
+            let initial = cx.debug_bounds("thinking-picker").expect("loading icon");
+            chat.update(cx, |this, cx| {
+                this.thinking_loading = false;
+                this.thinking = Some(AgentThinkingState {
+                    levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
+                    current: ThinkingLevel::High,
+                });
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("thinking-picker"), Some(initial));
+            chat.update(cx, |this, cx| {
+                this.selected_model = Some("different-model".into());
+                this.thinking = None;
+                this.thinking_loading = true;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let changed = cx
+                .debug_bounds("thinking-picker")
+                .expect("icon after model change");
+            assert_eq!(changed.size, initial.size);
+            assert_eq!(changed.origin.y, initial.origin.y);
+        }
+
+        #[gpui::test]
+        fn pending_first_send_renders_at_the_conversation_position(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.selected_session = None;
+                this.draft = true;
+                this.session_setup_pending = true;
+                this.pending_first_send = Some(FirstSend::Message {
+                    text: "hello".into(),
+                    steer: false,
+                });
+                this.first_send_preview =
+                    Some(sending::SendPreview::new(None, "hello", &[]).status_only());
+                let composer = cx.new(|cx| TextInput::new("Message", cx));
+                composer.update(cx, |input, cx| input.set_text("hello", cx));
+                this.composer = Some(composer);
+            });
+            cx.run_until_parked();
+            assert!(
+                cx.debug_bounds("pending-send-body").is_none(),
+                "the visible editable draft is not duplicated"
+            );
+            let input_focus = chat.update(cx, |this, cx| {
+                this.composer.as_ref().unwrap().read(cx).focus_handle(cx)
+            });
+            cx.update(|window, app| window.focus(&input_focus, app));
+            cx.simulate_keystrokes("end x");
+            assert_eq!(
+                chat.update(cx, |this, cx| this.composer_text(cx)),
+                Some("hellox".into()),
+                "focused composer remains mounted while creating"
+            );
+            let preview = cx.debug_bounds("pending-send").expect("immediate preview");
+            let composer = cx.debug_bounds("composer-box").expect("composer");
+            assert!(preview.bottom() <= composer.top());
+            assert!(
+                composer.top() > px(500.),
+                "composer stays at bottom, not hero center"
+            );
+        }
+    }
 }

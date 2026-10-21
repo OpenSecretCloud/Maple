@@ -17,6 +17,7 @@ assets!(
     "icons/archive-restore.svg",
     "icons/archive.svg",
     "icons/arrow-up.svg",
+    "icons/brain.svg",
     "icons/check.svg",
     "icons/chevron-down.svg",
     "icons/chevron-right.svg",
