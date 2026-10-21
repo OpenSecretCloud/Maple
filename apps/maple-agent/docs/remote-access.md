@@ -124,16 +124,25 @@ OpenSecret. No offline history replica or migration of workspaces is provided.
 
 ## Configuration and release boundary
 
-`MAPLE_REMOTE_RELAYS` accepts an explicit comma-separated HTTPS relay list. An
-empty list fails closed with a configuration error, with no public fallback.
-The initial change does not invent or deploy a Maple relay hostname; the approved
-Dev relay must be configured before a packaged remote trial. The ordinary
-application remains usable with remote access off.
+Packaged Dev and Prod builds use Iroh's standard n0 public relays for the initial
+testing rollout. No Maple-operated relay or relay callback credential is required
+for that trial. OpenSecret must still be deployed with remote enrollment support
+and its database migration in the matching environment. Remote access remains
+off on a fresh profile; the default does not start networking by itself. Public
+relays do not enable public discovery or replace Maple account admission, pairing
+or local grants.
+
+`MAPLE_REMOTE_RELAYS` overrides that default with an explicit comma-separated HTTPS
+relay list. As with other environment settings, unset or blank means use the
+profile default. An invalid nonempty override fails with a configuration error
+rather than falling back to public relays. Maple-operated relays can be selected
+with this override when available.
 
 Unpackaged validation builds additionally accept `MAPLE_REMOTE_RELAYS=public-test`
 and `MAPLE_REMOTE_RELAY_ONLY=1`. The latter removes IP transports, proving a real
 relay path even for two processes on one machine. `MAPLE_REMOTE_RELAYS=none` is
-available for direct-only development. Never ship public-test as a release default.
+available for direct-only development. These shortcuts remain unpackaged-only;
+an unpackaged build without explicit relay configuration still reports an error.
 The execution and controller profiles need separate XDG config/data roots and
 proxy ports when testing on one machine. Do not reuse installed production state.
 

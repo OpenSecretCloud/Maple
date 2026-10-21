@@ -233,9 +233,11 @@ it does not permit another code attempt or grant control.
 ## Remaining trial/release evidence
 
 Public relay validation does not exercise the prepared Maple relay admission
-callback in a deployed relay. The callback has unit/disposable-DB coverage; actual
-Maple Dev relay/TLS/credential configuration, DNS and enclave deployment are
-separate authorized rollout work. No service or production release was deployed.
+callback in a deployed relay. The callback has unit/disposable-DB coverage.
+Packaged Dev/Prod now default to public relays for the initial testing rollout;
+Maple relay/TLS/credential configuration and DNS are deferred, not prerequisites
+for that trial. The matching enclave deployment and migration are still required.
+The validation recorded here did not deploy a service or production release.
 
 Windows/Linux interactive status-tray behavior still needs platform testing;
 builds and automated tests are covered by the baseline CI above. Two physical machines behind independent networks,

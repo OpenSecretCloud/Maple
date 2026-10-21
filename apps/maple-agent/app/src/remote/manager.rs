@@ -993,16 +993,29 @@ async fn register(
 }
 
 fn configuration() -> Result<(RelayMode, bool), String> {
-    // Public relays are explicit developer validation only. Packaged builds
-    // require Maple relay configuration; no automatic public fallback.
     let configured = crate::env::env_string("MAPLE_REMOTE_RELAYS").unwrap_or_default();
-    if configured == "public-test" && crate::profile::PROFILE == "unpackaged" {
-        return Ok((
-            RelayMode::Default,
-            crate::env::env_string("MAPLE_REMOTE_RELAY_ONLY").as_deref() == Some("1"),
-        ));
+    relay_configuration(
+        crate::profile::PROFILE,
+        &configured,
+        crate::env::env_string("MAPLE_REMOTE_RELAY_ONLY").as_deref() == Some("1"),
+    )
+}
+
+fn relay_configuration(
+    profile: &str,
+    configured: &str,
+    relay_only: bool,
+) -> Result<(RelayMode, bool), String> {
+    // Packaged testing uses n0's public relays until Maple-operated relays are
+    // ready. An explicit override never falls back to the public relay map.
+    // This selects relays only; network::builder still disables public lookup.
+    if configured.is_empty() && matches!(profile, "dev" | "prod") {
+        return Ok((RelayMode::Default, false));
     }
-    if configured == "none" && crate::profile::PROFILE == "unpackaged" {
+    if configured == "public-test" && profile == "unpackaged" {
+        return Ok((RelayMode::Default, relay_only));
+    }
+    if configured == "none" && profile == "unpackaged" {
         return Ok((RelayMode::Disabled, false));
     }
     let relays: Vec<RelayUrl> = configured
@@ -1052,4 +1065,69 @@ fn validate_devices(devices: &[RemoteDevice]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packaged_profiles_default_to_public_relays_with_normal_path_selection() {
+        for profile in ["dev", "prod"] {
+            for forced in [false, true] {
+                let (relays, relay_only) = relay_configuration(profile, "", forced).unwrap();
+                assert!(matches!(relays, RelayMode::Default));
+                assert!(!relay_only);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_relays_override_packaged_defaults_and_development_modes() {
+        let urls = ["https://relay-one.example/", "https://relay-two.example/"];
+        for profile in ["dev", "prod", "unpackaged"] {
+            let (relays, relay_only) = relay_configuration(profile, &urls.join(","), true).unwrap();
+            let RelayMode::Custom(map) = relays else {
+                panic!("explicit relay configuration was not retained");
+            };
+            assert_eq!(map.len(), urls.len());
+            for url in urls {
+                assert!(map.contains(&url.parse().unwrap()));
+            }
+            assert!(!relay_only);
+        }
+    }
+
+    #[test]
+    fn invalid_overrides_never_fall_back_to_public_relays() {
+        for profile in ["dev", "prod", "unpackaged"] {
+            for configured in [",,,", "not a URL", "https://relay.example/,not a URL"] {
+                assert!(relay_configuration(profile, configured, false).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn development_shortcuts_are_not_available_in_packaged_profiles() {
+        for profile in ["dev", "prod"] {
+            for configured in ["public-test", "none"] {
+                assert!(relay_configuration(profile, configured, true).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn unpackaged_networking_still_requires_explicit_configuration() {
+        assert!(relay_configuration("unpackaged", "", false).is_err());
+        assert!(relay_configuration("unknown", "", false).is_err());
+        for forced in [false, true] {
+            let (relays, relay_only) =
+                relay_configuration("unpackaged", "public-test", forced).unwrap();
+            assert!(matches!(relays, RelayMode::Default));
+            assert_eq!(relay_only, forced);
+            let (relays, relay_only) = relay_configuration("unpackaged", "none", forced).unwrap();
+            assert!(matches!(relays, RelayMode::Disabled));
+            assert!(!relay_only);
+        }
+    }
 }
