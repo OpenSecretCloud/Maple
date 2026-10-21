@@ -5594,6 +5594,42 @@ mod state_tests {
         });
     }
 
+    /// A task's rename opens with the old name selected, so typing replaces
+    /// it, and the row drops its hover actions while it is a text field.
+    #[gpui::test]
+    fn test_a_task_rename_opens_selected_without_hover_actions(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let rename_button = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds("rename-session-s1")
+        };
+        assert!(
+            rename_button(cx).is_some(),
+            "a listed row has its hover actions"
+        );
+
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        assert!(rename_button(cx).is_none(), "a row being renamed has none");
+        cx.simulate_input("Fresh");
+        let field = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
+        assert_eq!(
+            field.map(|field| field.read_with(cx, |field, _| field.text())),
+            Some("Fresh".to_string()),
+            "typing replaces the selected old name"
+        );
+
+        chat.update(cx, |this, cx| this.cancel_rename(cx));
+        assert!(rename_button(cx).is_some(), "the actions come back after");
+    }
+
     /// A project's rename field sits in the switcher. Escape ends the
     /// rename and Enter commits it; either way the switcher stays open and
     /// has the keyboard again.

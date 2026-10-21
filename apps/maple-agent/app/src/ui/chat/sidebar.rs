@@ -1398,6 +1398,9 @@ impl Sidebar {
                 .with_tab_index(0)
                 .application_vim(application_vim_enabled);
             input.set_text(&current, cx);
+            // The old name opens selected: typing replaces it, an arrow
+            // key keeps it.
+            input.select_all_text(cx);
             input
                 .on_application_escape(move |window, cx| {
                     if in_switcher {
@@ -2476,10 +2479,14 @@ impl Sidebar {
                     .font_weight(gpui::FontWeight::MEDIUM)
             })
             .text_color(gpui::rgb(theme::text_primary()))
-            .hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
+            // A row being renamed is a text field: no hover highlight and
+            // no hover actions over it, so the edit is plain to see.
+            .when(!renaming, |el| {
+                el.hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
@@ -2534,45 +2541,47 @@ impl Sidebar {
                         .child(icon("pin", px(13.), theme::accent())),
                 )
             })
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .when(is_pinned, |overlay| overlay.right(px(26.)))
-                    .when(!is_pinned, |overlay| {
-                        overlay.right_0().rounded_r(theme::RADIUS_MD)
-                    })
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
-                    .pl_2()
-                    .pr_6()
-                    .group_hover(row.group.clone(), |style| {
-                        style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    })
-                    .child(self.task_menu_trigger(row, task, window, cx))
-                    .child(row_action(
-                        row.rename_id.clone(),
-                        &row.group,
-                        "pencil",
-                        "Rename",
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
-                        }),
-                    ))
-                    .child(row_action(
-                        row.step_id.clone(),
-                        &row.group,
-                        step.icon,
-                        step.row_label,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.move_task(&step_id, rung.next(), cx);
-                        }),
-                    )),
-            )
+            .when(!renaming, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .when(is_pinned, |overlay| overlay.right(px(26.)))
+                        .when(!is_pinned, |overlay| {
+                            overlay.right_0().rounded_r(theme::RADIUS_MD)
+                        })
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .pl_2()
+                        .pr_6()
+                        .group_hover(row.group.clone(), |style| {
+                            style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        })
+                        .child(self.task_menu_trigger(row, task, window, cx))
+                        .child(row_action(
+                            row.rename_id.clone(),
+                            &row.group,
+                            "pencil",
+                            "Rename",
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
+                            }),
+                        ))
+                        .child(row_action(
+                            row.step_id.clone(),
+                            &row.group,
+                            step.icon,
+                            step.row_label,
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.move_task(&step_id, rung.next(), cx);
+                            }),
+                        )),
+                )
+            })
     }
 
     /// The collapse button in the top row.
