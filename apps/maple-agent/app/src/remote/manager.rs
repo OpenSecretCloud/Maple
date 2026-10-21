@@ -1006,12 +1006,18 @@ fn relay_configuration(
     configured: &str,
     relay_only: bool,
 ) -> Result<(RelayMode, bool), String> {
-    // Packaged testing uses n0's public relays until Maple-operated relays are
-    // ready. An explicit override never falls back to the public relay map.
+    // Each packaged profile uses its own Maple relay fleet. Explicit overrides
+    // replace the fleet; neither errors nor outages select public relays.
     // This selects relays only; network::builder still disables public lookup.
-    if configured.is_empty() && matches!(profile, "dev" | "prod") {
-        return Ok((RelayMode::Default, false));
-    }
+    let configured = if configured.is_empty() {
+        match profile {
+            "dev" => "https://relay-dev.maple.ai/",
+            "prod" => "https://relay-use1.maple.ai/,https://relay-usw2.maple.ai/",
+            _ => configured,
+        }
+    } else {
+        configured
+    };
     if configured == "public-test" && profile == "unpackaged" {
         return Ok((RelayMode::Default, relay_only));
     }
@@ -1026,7 +1032,10 @@ fn relay_configuration(
     if relays.is_empty() {
         return Err("Maple remote relay service is not configured for this build".into());
     }
-    Ok((RelayMode::Custom(RelayMap::from_iter(relays)), false))
+    Ok((
+        RelayMode::Custom(RelayMap::from_iter(relays)),
+        profile == "unpackaged" && relay_only,
+    ))
 }
 
 fn validate_devices(devices: &[RemoteDevice]) -> Result<(), String> {
@@ -1072,11 +1081,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packaged_profiles_default_to_public_relays_with_normal_path_selection() {
-        for profile in ["dev", "prod"] {
+    fn packaged_profiles_default_to_their_maple_relay_fleet_with_normal_path_selection() {
+        let fleets: &[(&str, &[&str])] = &[
+            ("dev", &["https://relay-dev.maple.ai/"]),
+            (
+                "prod",
+                &[
+                    "https://relay-use1.maple.ai/",
+                    "https://relay-usw2.maple.ai/",
+                ],
+            ),
+        ];
+        for (profile, urls) in fleets {
             for forced in [false, true] {
                 let (relays, relay_only) = relay_configuration(profile, "", forced).unwrap();
-                assert!(matches!(relays, RelayMode::Default));
+                let RelayMode::Custom(map) = relays else {
+                    panic!("packaged profile did not select its Maple relay fleet");
+                };
+                assert_eq!(map.len(), urls.len());
+                for url in *urls {
+                    assert!(map.contains(&url.parse().unwrap()));
+                }
                 assert!(!relay_only);
             }
         }
@@ -1086,20 +1111,23 @@ mod tests {
     fn explicit_relays_override_packaged_defaults_and_development_modes() {
         let urls = ["https://relay-one.example/", "https://relay-two.example/"];
         for profile in ["dev", "prod", "unpackaged"] {
-            let (relays, relay_only) = relay_configuration(profile, &urls.join(","), true).unwrap();
-            let RelayMode::Custom(map) = relays else {
-                panic!("explicit relay configuration was not retained");
-            };
-            assert_eq!(map.len(), urls.len());
-            for url in urls {
-                assert!(map.contains(&url.parse().unwrap()));
+            for forced in [false, true] {
+                let (relays, relay_only) =
+                    relay_configuration(profile, &urls.join(","), forced).unwrap();
+                let RelayMode::Custom(map) = relays else {
+                    panic!("explicit relay configuration was not retained");
+                };
+                assert_eq!(map.len(), urls.len());
+                for url in urls {
+                    assert!(map.contains(&url.parse().unwrap()));
+                }
+                assert_eq!(relay_only, profile == "unpackaged" && forced);
             }
-            assert!(!relay_only);
         }
     }
 
     #[test]
-    fn invalid_overrides_never_fall_back_to_public_relays() {
+    fn invalid_overrides_never_fall_back_to_default_relays() {
         for profile in ["dev", "prod", "unpackaged"] {
             for configured in [",,,", "not a URL", "https://relay.example/,not a URL"] {
                 assert!(relay_configuration(profile, configured, false).is_err());

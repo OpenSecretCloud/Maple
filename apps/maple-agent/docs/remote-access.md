@@ -124,25 +124,36 @@ OpenSecret. No offline history replica or migration of workspaces is provided.
 
 ## Configuration and release boundary
 
-Packaged Dev and Prod builds use Iroh's standard n0 public relays for the initial
-testing rollout. No Maple-operated relay or relay callback credential is required
-for that trial. OpenSecret must still be deployed with remote enrollment support
-and its database migration in the matching environment. Remote access remains
-off on a fresh profile; the default does not start networking by itself. Public
-relays do not enable public discovery or replace Maple account admission, pairing
-or local grants.
+Packaged builds default to Maple-operated relays for their environment:
+
+| Profile | Relay URLs |
+| --- | --- |
+| Dev | `https://relay-dev.maple.ai/` |
+| Prod | `https://relay-use1.maple.ai/`, `https://relay-usw2.maple.ai/` |
+
+Iroh retains normal direct/relay path selection. There is no automatic fallback
+to public relays or to the other environment's fleet. OpenSecret must be deployed
+with remote enrollment support and its database migration in the matching
+environment; each relay also needs its matching admission callback and service
+credential. That credential stays between the relay and OpenSecret, never in
+the client. Remote access remains off on a fresh profile; these defaults do not
+start networking by themselves. Relay selection does not enable public discovery
+or replace Maple account admission, pairing or local grants.
 
 `MAPLE_REMOTE_RELAYS` overrides that default with an explicit comma-separated HTTPS
 relay list. As with other environment settings, unset or blank means use the
 profile default. An invalid nonempty override fails with a configuration error
-rather than falling back to public relays. Maple-operated relays can be selected
-with this override when available.
+rather than falling back to the profile default or public relays.
+The default relay map is not a peer-relay allowlist: Iroh can also contact a
+relay advertised in an authenticated peer's address hints.
 
-Unpackaged validation builds additionally accept `MAPLE_REMOTE_RELAYS=public-test`
-and `MAPLE_REMOTE_RELAY_ONLY=1`. The latter removes IP transports, proving a real
-relay path even for two processes on one machine. `MAPLE_REMOTE_RELAYS=none` is
-available for direct-only development. These shortcuts remain unpackaged-only;
-an unpackaged build without explicit relay configuration still reports an error.
+Unpackaged validation builds additionally accept `MAPLE_REMOTE_RELAYS=public-test`.
+Set `MAPLE_REMOTE_RELAY_ONLY=1` with either `public-test` or an explicit relay URL
+list to remove IP transports and force relay traffic, even between two processes
+on one machine. Packaged Dev and Prod ignore this validation flag and keep normal
+path selection. `MAPLE_REMOTE_RELAYS=none` is available for direct-only development
+and ignores the relay-only flag. These shortcuts remain unpackaged-only; an
+unpackaged build without explicit relay configuration still reports an error.
 The execution and controller profiles need separate XDG config/data roots and
 proxy ports when testing on one machine. Do not reuse installed production state.
 
