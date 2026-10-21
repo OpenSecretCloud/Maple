@@ -113,6 +113,7 @@ operations! {
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
     recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
     select_project_root(user_id: (&str), path: (String)) -> AgentProjectRootRegistration;
+    rename_project_root(user_id: (&str), path: (String), name: (String)) -> Vec<RecentProjectRoot>;
     list_sessions(user_id: (&str), project_root: (Option<String>)) -> Vec<AgentSessionSummary>;
     local_bootstrap(user_id: (&str)) -> LocalBootstrap;
     recovery_snapshot(user_id: (&str), session_id: (Option<String>)) -> RecoverySnapshot;

@@ -505,6 +505,7 @@ impl ChatScreen {
         let fallback = self
             .recent_roots
             .iter()
+            .map(|root| &root.path)
             .chain(
                 self.sessions
                     .iter()
@@ -535,7 +536,8 @@ impl ChatScreen {
             move |this, result, cx| {
                 match result {
                     Ok(()) => {
-                        this.recent_roots.retain(|candidate| candidate != &removed);
+                        this.recent_roots
+                            .retain(|candidate| candidate.path != removed);
                         for session in &mut this.sessions {
                             if session.project_root == removed {
                                 session.state = AgentTaskState::Archived;

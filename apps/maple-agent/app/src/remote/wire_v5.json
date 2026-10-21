@@ -1,7 +1,7 @@
 {
   "hello": {
-    "version": 4,
-    "minimum_version": 4,
+    "version": 5,
+    "minimum_version": 5,
     "account": "account",
     "project": "project",
     "deployment": "local",
@@ -11,8 +11,8 @@
     }
   },
   "pair": {
-    "version": 4,
-    "minimum_version": 4,
+    "version": 5,
+    "minimum_version": 5,
     "account": "account",
     "project": "project",
     "deployment": "local",
@@ -130,6 +130,29 @@
           "request_id": "question"
         }
       }
+    },
+    {
+      "Event": {
+        "ProjectsChanged": {
+          "user_id": "account",
+          "roots": [
+            {
+              "path": "/project",
+              "name": "Shared project",
+              "lastUsedMs": 2,
+              "isDefaultWorkspace": false,
+              "nameRevision": 1
+            },
+            {
+              "path": "/home/owner/Workspaces/Maple",
+              "name": "Maple Workspace",
+              "lastUsedMs": 0,
+              "isDefaultWorkspace": true,
+              "nameRevision": 0
+            }
+          ]
+        }
+      }
     }
   ],
   "send": {
@@ -183,5 +206,91 @@
         "Ok": "Interrupted"
       }
     }
+  },
+  "rename_project": {
+    "id": 14,
+    "method": "rename_project_root",
+    "send_id": null,
+    "params": [
+      "account",
+      "/project",
+      "Shared project"
+    ]
+  },
+  "projects": {
+    "Response": {
+      "id": 14,
+      "result": {
+        "Ok": [
+          {
+            "path": "/project",
+            "name": "Shared project",
+            "lastUsedMs": 2,
+            "isDefaultWorkspace": false,
+            "nameRevision": 1
+          },
+          {
+            "path": "/home/owner/Workspaces/Maple",
+            "name": "Maple Workspace",
+            "lastUsedMs": 0,
+            "isDefaultWorkspace": true,
+            "nameRevision": 0
+          }
+        ]
+      }
+    }
+  },
+  "bootstrap": {
+    "project_root": "/project",
+    "sessions": [],
+    "recent_roots": [
+      {
+        "path": "/project",
+        "name": "Shared project",
+        "lastUsedMs": 2,
+        "isDefaultWorkspace": false,
+        "nameRevision": 1
+      },
+      {
+        "path": "/home/owner/Workspaces/Maple",
+        "name": "Maple Workspace",
+        "lastUsedMs": 0,
+        "isDefaultWorkspace": true,
+        "nameRevision": 0
+      }
+    ],
+    "latest": null,
+    "questions": []
+  },
+  "recovery": {
+    "bootstrap": {
+      "project_root": "/project",
+      "sessions": [],
+      "recent_roots": [
+        {
+          "path": "/project",
+          "name": "Shared project",
+          "lastUsedMs": 2,
+          "isDefaultWorkspace": false,
+          "nameRevision": 1
+        },
+        {
+          "path": "/home/owner/Workspaces/Maple",
+          "name": "Maple Workspace",
+          "lastUsedMs": 0,
+          "isDefaultWorkspace": true,
+          "nameRevision": 0
+        }
+      ],
+      "latest": null,
+      "questions": []
+    },
+    "status": {
+      "running": false,
+      "projectRoot": null,
+      "model": null,
+      "activeRuns": {}
+    },
+    "selected": null
   }
 }

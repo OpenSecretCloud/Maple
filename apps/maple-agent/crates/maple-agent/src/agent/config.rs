@@ -437,6 +437,8 @@ pub fn include_default_maple_workspace(
         path,
         name: MAPLE_WORKSPACE_DISPLAY_NAME.to_string(),
         last_used_ms: 0,
+        is_default_workspace: true,
+        name_revision: 0,
     });
     roots
 }
@@ -580,6 +582,8 @@ pub(super) fn project_root_record(path: String, last_used_ms: u128) -> RecentPro
         path,
         name,
         last_used_ms,
+        is_default_workspace: false,
+        name_revision: 0,
     }
 }
 

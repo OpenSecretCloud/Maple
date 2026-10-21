@@ -2,8 +2,8 @@
 mod network;
 mod pairing;
 mod store;
-mod streams;
-mod wire;
+pub(crate) mod streams;
+pub(crate) mod wire;
 
 pub mod control;
 pub mod manager;

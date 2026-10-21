@@ -110,6 +110,10 @@ Goose, with an independent dependency graph.
   directory the app was launched from are trusted by default. Other
   projects that provide skills, prompt templates, or a `.maple/SYSTEM.md`
   ask once for a trust decision before those load.
+  Project display names belong to the execution computer's daemon and account.
+  Renaming from its desktop or a paired controller updates connected views and
+  persists across restarts without changing the folder path. The owner supplies
+  the default workspace label too. Personal pins remain desktop preferences.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the

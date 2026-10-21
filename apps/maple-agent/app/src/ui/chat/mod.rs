@@ -14,7 +14,8 @@ use maple_agent::agent::{
     AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
     AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
     AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
-    AgentThinkingState, AgentTimelineItem, CatalogEntry, SideQuestionEvent, ThinkingLevel,
+    AgentThinkingState, AgentTimelineItem, CatalogEntry, RecentProjectRoot, SideQuestionEvent,
+    ThinkingLevel,
 };
 
 use crate::backend::{AgentBackend, PendingQuestion};
@@ -490,7 +491,7 @@ pub struct ChatScreen {
     /// Project context shown by the UI and used explicitly for new tasks.
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
-    recent_roots: Vec<String>,
+    recent_roots: Vec<RecentProjectRoot>,
     /// Which of the chat's popup menus is open: the header's project menu,
     /// a composer chip's menu, or the transcript's right-click menu.
     popup: Popup<ChatScreen, ChatPopup>,
@@ -755,9 +756,14 @@ impl ChatScreen {
     ) {
         match event.clone() {
             SidebarEvent::Navigate(request) => cx.emit(request),
+            SidebarEvent::RenameProject(request) => cx.emit(request),
             SidebarEvent::PreferencesChanged => {
-                self.refresh_project_caption();
+                self.refresh_project_caption(cx);
                 cx.emit(NavigationChanged);
+                cx.notify();
+            }
+            SidebarEvent::ProjectsChanged(roots) => {
+                self.apply_recent_roots(roots, cx);
                 cx.notify();
             }
             SidebarEvent::Select(id) => self.select_session(&id, cx),
@@ -1332,7 +1338,7 @@ impl ChatScreen {
             self.project_root_changed(cx);
             self.check_project_trust(cx);
         }
-        self.recent_roots = boot.recent_roots;
+        self.apply_recent_roots(boot.recent_roots, cx);
         self.sessions = boot.sessions;
         self.sync_sidebar(cx);
         if let Some(detail) = boot
@@ -1431,15 +1437,16 @@ impl ChatScreen {
     }
 
     /// Take the recent-root list the service returned, newest first.
-    fn apply_recent_roots(
-        &mut self,
-        roots: Vec<maple_agent::agent::RecentProjectRoot>,
-        cx: &mut Context<Self>,
-    ) {
-        let roots = roots.into_iter().map(|root| root.path).collect::<Vec<_>>();
+    fn apply_recent_roots(&mut self, mut roots: Vec<RecentProjectRoot>, cx: &mut Context<Self>) {
+        // Reads and mutation replies use separate streams from pushed events.
+        // Keep a newer owner-issued name when an older snapshot arrives late.
+        self.sidebar
+            .read(cx)
+            .preserve_newer_project_names(&mut roots);
         if self.recent_roots != roots {
             self.recent_roots = roots;
             self.sync_sidebar(cx);
+            self.refresh_project_caption(cx);
         }
     }
 
@@ -1625,7 +1632,7 @@ impl ChatScreen {
     /// The root changed: update the header label, then read its branch
     /// and watch its git dir.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
-        self.refresh_project_caption();
+        self.refresh_project_caption(cx);
         self.refresh_branch(cx);
     }
 
@@ -1796,10 +1803,10 @@ impl ChatScreen {
     }
 
     /// Text for the header project chip.
-    pub fn project_label(&self) -> String {
+    pub fn project_label(&self, cx: &gpui::App) -> String {
         self.project_root
             .as_deref()
-            .map(root_display_name)
+            .map(|root| self.sidebar.read(cx).root_name(root))
             .unwrap_or_else(|| "Choose folder".to_string())
     }
 
@@ -5219,10 +5226,10 @@ impl ChatScreen {
         self.pending_questions.clear();
         self.question_selected.clear();
         self.sessions = snapshot.bootstrap.sessions;
-        self.recent_roots = snapshot.bootstrap.recent_roots;
+        self.apply_recent_roots(snapshot.bootstrap.recent_roots, cx);
         if self.navigation_only {
             self.project_root = snapshot.bootstrap.project_root;
-            self.refresh_project_caption();
+            self.refresh_project_caption(cx);
         }
         self.handle_service_events(snapshot.bootstrap.questions, cx);
         if self.selection_generation == selection {
@@ -5341,6 +5348,14 @@ impl ChatScreen {
         }
         match event {
             AgentServiceEvent::AccountChanged(_) => return false,
+            AgentServiceEvent::ProjectsChanged { user_id, roots } => {
+                if user_id != self.user_id {
+                    return false;
+                }
+                let previous = self.recent_roots.clone();
+                self.apply_recent_roots(roots, cx);
+                return self.recent_roots != previous;
+            }
             AgentServiceEvent::QuestionResolved { request_id } => {
                 let showing = self
                     .current_question()

@@ -19,6 +19,7 @@ mod external_agents;
 mod integrations;
 mod login_path;
 mod mcp;
+mod projects;
 pub(crate) mod provider;
 mod questions;
 mod resources;
@@ -592,11 +593,6 @@ impl AgentRuntimeHandle {
         save_agent_config_inner(self.paths(), &self.user_id, &next).map_err(|e| e.to_string())
     }
 
-    pub async fn list_recent_project_roots(&self) -> Result<Vec<RecentProjectRoot>, String> {
-        self.verify_generation().await?;
-        load_recent_project_roots_inner(self.paths(), &self.user_id).map_err(|e| e.to_string())
-    }
-
     pub async fn save_recent_project_root(
         &self,
         path: String,
@@ -612,7 +608,7 @@ impl AgentRuntimeHandle {
             .removed_project_roots
             .iter()
             .any(|removed| removed == &canonical_path);
-        let roots = if restoring {
+        if restoring {
             restore_explicit_project_root_inner(self.paths(), &self.user_id, &project_root)
         } else {
             register_explicit_project_root_inner(self.paths(), &self.user_id, &project_root)
@@ -637,7 +633,7 @@ impl AgentRuntimeHandle {
         }
         Ok(AgentProjectRootRegistration {
             project_root: canonical_path,
-            roots,
+            roots: self.project_roots_locked()?,
             config,
         })
     }
@@ -768,7 +764,9 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let _settings = self.lock_settings().await;
-        save_project_root_order_inner(self.paths(), &self.user_id, paths).map_err(|e| e.to_string())
+        save_project_root_order_inner(self.paths(), &self.user_id, paths)
+            .map_err(|e| e.to_string())?;
+        self.project_roots_locked()
     }
 
     /// Deliver the user's answer to a question from this account's runtime.

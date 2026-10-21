@@ -21,7 +21,7 @@ pub struct Endpoint {
 
 impl Endpoint {
     #[cfg(test)]
-    pub(super) fn for_test(directory: PathBuf) -> Self {
+    pub(crate) fn for_test(directory: PathBuf) -> Self {
         #[cfg(unix)]
         let address = directory.join("ipc.sock");
         #[cfg(windows)]

@@ -72,7 +72,7 @@ pub enum RestoreOutcome {
 pub struct LocalBootstrap {
     pub project_root: Option<String>,
     pub sessions: Vec<AgentSessionSummary>,
-    pub recent_roots: Vec<String>,
+    pub recent_roots: Vec<RecentProjectRoot>,
     pub latest: Option<AgentSessionDetail>,
     pub questions: Vec<AgentServiceEvent>,
 }
@@ -523,21 +523,6 @@ fn gui_start_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
             fallback_project_root()
         }
     }
-}
-
-/// Recent projects, with the default Maple workspace offered when the user
-/// has not removed it. Existing saved order is left as it is. Listing does
-/// not create the folder; choosing or opening it does.
-fn offered_project_roots(
-    config: &maple_agent::agent::AgentConfig,
-    roots: Vec<RecentProjectRoot>,
-) -> Vec<RecentProjectRoot> {
-    let workspace = maple_agent::agent::default_maple_workspace_path();
-    maple_agent::agent::include_default_maple_workspace(
-        roots,
-        &config.removed_project_roots,
-        workspace.as_deref(),
-    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -1601,9 +1586,36 @@ impl LocalBackend {
         user_id: &str,
     ) -> Result<Vec<RecentProjectRoot>, String> {
         let handle = self.service.handle_for_user(user_id).await?;
-        let config = handle.load_config().await?;
-        let roots = handle.list_recent_project_roots().await?;
-        Ok(offered_project_roots(&config, roots))
+        self.migrate_project_names(&handle).await?;
+        handle.list_recent_project_roots().await
+    }
+
+    /// Import only this computer's legacy names. Controller-local remote
+    /// nicknames are presentation preferences and never become owner metadata.
+    /// The runtime records completion per account/device and serializes it with
+    /// rename, so a later settings read cannot resurrect a cleared name.
+    async fn migrate_project_names(
+        &self,
+        handle: &maple_agent::agent::AgentRuntimeHandle,
+    ) -> Result<(), String> {
+        if handle.project_names_migrated().await? {
+            return Ok(());
+        }
+        let names = tokio::task::spawn_blocking(crate::settings::load_project_names_for_migration)
+            .await
+            .map_err(|_| "Could not read legacy project names".to_string())??;
+        handle.migrate_project_names(names).await
+    }
+
+    pub async fn rename_project_root(
+        &self,
+        user_id: &str,
+        path: String,
+        name: String,
+    ) -> Result<Vec<RecentProjectRoot>, String> {
+        let handle = self.service.handle_for_user(user_id).await?;
+        self.migrate_project_names(&handle).await?;
+        handle.rename_project_root(path, name).await
     }
 
     /// Register and select the default root for new tasks.
@@ -1622,18 +1634,12 @@ impl LocalBackend {
         path: String,
     ) -> Result<AgentProjectRootRegistration, String> {
         let handle = self.service.handle_for_user(user_id).await?;
+        self.migrate_project_names(&handle).await?;
         // The listed Maple workspace is created the first time it is chosen.
         if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path.trim())) {
             maple_agent::agent::ensure_default_maple_workspace()?;
         }
-        let mut registration = handle.save_recent_project_root(path).await?;
-        // The screen shows these roots as they are: offer the workspace in
-        // them the same way the project list does.
-        registration.roots = offered_project_roots(
-            &registration.config,
-            std::mem::take(&mut registration.roots),
-        );
-        Ok(registration)
+        handle.save_recent_project_root(path).await
     }
 
     pub async fn list_sessions(
@@ -1667,14 +1673,11 @@ impl LocalBackend {
         load_latest: bool,
     ) -> Result<LocalBootstrap, String> {
         let handle = self.service.handle_for_user(user_id).await?;
+        self.migrate_project_names(&handle).await?;
         let config = handle.load_config().await?;
         let project_root = gui_project_root(&config);
         let sessions = handle.list_sessions(None).await?;
-        let recent_roots =
-            offered_project_roots(&config, handle.list_recent_project_roots().await?)
-                .into_iter()
-                .map(|root| root.path)
-                .collect();
+        let recent_roots = handle.list_recent_project_roots().await?;
         // Same choice the screen's auto-select makes: the newest unarchived
         // task under the root that the runtime will start in. An empty task
         // is a draft an older build persisted; the screen's own new-task
@@ -2565,6 +2568,10 @@ fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "project_names_tests.rs"]
+mod project_names_tests;
 
 #[cfg(test)]
 mod tests {

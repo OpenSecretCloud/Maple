@@ -13,7 +13,9 @@ actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
 
 use crate::backend::AgentBackend;
 use crate::ui;
-use crate::ui::chat::computers::{Computer, Destination, Navigate, NavigationChanged};
+use crate::ui::chat::computers::{
+    Computer, Destination, Navigate, NavigationChanged, ProjectRenameRequest, ProjectTarget,
+};
 use crate::ui::chat::{ChatScreen, LoggedOut};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
@@ -44,6 +46,16 @@ struct RemoteComputer {
 struct PendingNavigation {
     request: Navigate,
     source: Option<(gpui::EntityId, u64)>,
+}
+
+/// A rename belongs to the owner and pairing that admitted it, regardless of
+/// which computer the user is viewing when its response arrives.
+struct PendingProjectRename {
+    target: ProjectTarget,
+    account: String,
+    owner: gpui::EntityId,
+    grant: Option<[u8; 16]>,
+    source: gpui::WeakEntity<ChatScreen>,
 }
 
 enum ConnectionAttempt {
@@ -327,6 +339,120 @@ impl MapleApp {
         });
     }
 
+    fn project_owner(
+        &self,
+        target: &ProjectTarget,
+    ) -> Option<(Entity<ChatScreen>, Option<[u8; 16]>)> {
+        match &target.computer {
+            None => self.local_chat.clone().map(|chat| (chat, None)),
+            Some(peer) => self.remote_computers.get(peer).and_then(|computer| {
+                computer
+                    .chat
+                    .clone()
+                    .map(|chat| (chat, Some(computer.grant)))
+            }),
+        }
+    }
+
+    fn has_chat(&self, id: gpui::EntityId) -> bool {
+        self.local_chat
+            .as_ref()
+            .is_some_and(|chat| chat.entity_id() == id)
+            || self.remote_computers.values().any(|computer| {
+                computer
+                    .chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.entity_id() == id)
+            })
+    }
+
+    fn rename_project(
+        &mut self,
+        source: Entity<ChatScreen>,
+        request: ProjectRenameRequest,
+        cx: &mut Context<Self>,
+    ) {
+        // Old screens may finish emitting while sign-out or unpairing removes
+        // them. They cannot initiate a mutation for the replacement account.
+        let Some(account) = self
+            .user_id
+            .clone()
+            .filter(|_| self.has_chat(source.entity_id()))
+        else {
+            return;
+        };
+        let Some((owner, grant)) = self
+            .project_owner(&request.target)
+            .filter(|(chat, _)| chat.read(cx).project_names_available())
+        else {
+            source.update(cx, |chat, cx| {
+                chat.finish_project_rename(
+                    request.target,
+                    Err(
+                        "This computer is unavailable. Reconnect it before renaming the project."
+                            .into(),
+                    ),
+                    cx,
+                );
+            });
+            return;
+        };
+        let backend = owner.read(cx).execution_backend();
+        let pending = PendingProjectRename {
+            target: request.target.clone(),
+            account: account.clone(),
+            owner: owner.entity_id(),
+            grant,
+            source: source.downgrade(),
+        };
+        let executor = backend.clone();
+        let bridge = ui::task::call(
+            &executor,
+            async move {
+                backend
+                    .rename_project_root(&account, request.target.path, request.name)
+                    .await
+            },
+            cx,
+            move |app, result, cx| app.complete_project_rename(pending, result, cx),
+        );
+        ui::task::retain(&self.remote_bridges, bridge);
+    }
+
+    fn complete_project_rename(
+        &mut self,
+        pending: PendingProjectRename,
+        result: Result<Vec<maple_agent::agent::RecentProjectRoot>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        // Never repopulate a removed computer, a new grant, or a replacement
+        // account from an old response. No connection or rename is replayed.
+        if self.user_id.as_deref() != Some(&pending.account) {
+            return;
+        }
+        let owner = self.project_owner(&pending.target).filter(|(chat, grant)| {
+            chat.entity_id() == pending.owner
+                && *grant == pending.grant
+                && !chat.read(cx).connection_ended()
+        });
+        let result = match owner {
+            Some((owner, _)) => result.map(|roots| {
+                owner.update(cx, |chat, cx| chat.apply_project_names(roots, cx));
+                // Publish the accepted name before removing the source's
+                // optimistic label, so it never flashes back to the old name.
+                self.sync_computers(cx);
+            }),
+            None => Err("The computer connection changed. Check its current project name before trying again.".into()),
+        };
+        if let Some(source) = pending.source.upgrade()
+            && self.has_chat(source.entity_id())
+        {
+            source.update(cx, |chat, cx| {
+                chat.finish_project_rename(pending.target, result, cx)
+            });
+        }
+    }
+
     fn navigate(&mut self, request: Navigate, cx: &mut Context<Self>) {
         self.requested_navigation = Some(PendingNavigation {
             request: request.clone(),
@@ -596,6 +722,10 @@ impl MapleApp {
         .detach();
         cx.subscribe(chat, |app, _, request: &Navigate, cx| {
             app.navigate(request.clone(), cx)
+        })
+        .detach();
+        cx.subscribe(chat, |app, source, request: &ProjectRenameRequest, cx| {
+            app.rename_project(source, request.clone(), cx)
         })
         .detach();
         cx.subscribe(
@@ -1454,6 +1584,206 @@ mod tests {
     }
 
     use super::*;
+
+    fn project_roots(name: &str) -> Vec<maple_agent::agent::RecentProjectRoot> {
+        vec![maple_agent::agent::RecentProjectRoot {
+            path: "/same/project".into(),
+            name: name.into(),
+            last_used_ms: 0,
+            is_default_workspace: false,
+            name_revision: 1,
+        }]
+    }
+
+    fn project_shell(cx: &mut gpui::TestAppContext) -> Entity<MapleApp> {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let mut chat = |name: &str| {
+            cx.new(|cx| {
+                let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+                let mut chat = ChatScreen::new_without_start(backend.clone(), "user".into(), cx);
+                let mut roots = project_roots(name);
+                roots[0].name_revision = 0;
+                chat.apply_project_names(roots, cx);
+                chat
+            })
+        };
+        let local = chat("Local name");
+        let east = chat("East name");
+        let west = chat("West name");
+        cx.new(|cx| {
+            let settings = crate::settings::AppSettings::default();
+            let shortcuts =
+                crate::shortcuts::ShortcutRuntime::bootstrap(&settings.shortcut_overrides, cx);
+            MapleApp {
+                backend,
+                screen: Screen::Chat(local.clone()),
+                user_id: Some("user".into()),
+                parked_chat: None,
+                local_chat: Some(local),
+                selected_host: None,
+                remote_computers: [
+                    (
+                        "east".into(),
+                        RemoteComputer {
+                            name: "East".into(),
+                            grant: [1; 16],
+                            chat: Some(east),
+                            attempt: ConnectionAttempt::Idle,
+                        },
+                    ),
+                    (
+                        "west".into(),
+                        RemoteComputer {
+                            name: "West".into(),
+                            grant: [2; 16],
+                            chat: Some(west),
+                            attempt: ConnectionAttempt::Idle,
+                        },
+                    ),
+                ]
+                .into(),
+                next_connection_attempt: 0,
+                requested_navigation: None,
+                computers_sync_pending: false,
+                remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                tray: None,
+                remote_bridges: Default::default(),
+                settings,
+                shortcuts,
+                titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
+            }
+        })
+    }
+
+    fn rename_attempt(app: &MapleApp, computer: Option<&str>) -> PendingProjectRename {
+        let target = ProjectTarget {
+            computer: computer.map(str::to_string),
+            path: "/same/project".into(),
+        };
+        let (owner, grant) = app.project_owner(&target).unwrap();
+        let Screen::Chat(source) = &app.screen else {
+            panic!("chat fixture")
+        };
+        PendingProjectRename {
+            target,
+            account: "user".into(),
+            owner: owner.entity_id(),
+            grant,
+            source: source.downgrade(),
+        }
+    }
+
+    fn label(app: &MapleApp, computer: Option<&str>, cx: &App) -> String {
+        let (chat, _) = app
+            .project_owner(&ProjectTarget {
+                computer: computer.map(str::to_string),
+                path: "/same/project".into(),
+            })
+            .unwrap();
+        chat.read(cx)
+            .computer_snapshot("Fixture".into(), cx)
+            .projects
+            .into_iter()
+            .find(|project| project.path == "/same/project")
+            .unwrap()
+            .label
+            .to_string()
+    }
+
+    #[gpui::test]
+    fn project_rename_results_route_by_computer_without_navigation(cx: &mut gpui::TestAppContext) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let Screen::Chat(active) = &app.screen else { panic!("chat fixture") };
+            let active_id = active.entity_id();
+            let navigation = active.read(cx).navigation_generation();
+            let pending = rename_attempt(app, Some("east"));
+            app.complete_project_rename(pending, Ok(project_roots("Renamed east")), cx);
+            assert_eq!(label(app, Some("east"), cx), "Renamed east");
+            assert_eq!(label(app, Some("west"), cx), "West name");
+            assert_eq!(label(app, None, cx), "Local name");
+            assert!(matches!(&app.screen, Screen::Chat(chat) if chat.entity_id() == active_id && chat.read(cx).navigation_generation() == navigation));
+            assert!(app.selected_host.is_none());
+            assert!(app.requested_navigation.is_none());
+
+            let east = app.remote_computers["east"].chat.as_ref().unwrap().clone();
+            app.screen = Screen::Chat(east.clone());
+            app.selected_host = Some("east".into());
+            let pending = rename_attempt(app, None);
+            app.complete_project_rename(pending, Ok(project_roots("Renamed local")), cx);
+            assert_eq!(label(app, None, cx), "Renamed local");
+            assert_eq!(label(app, Some("east"), cx), "Renamed east");
+            assert!(matches!(&app.screen, Screen::Chat(chat) if chat.entity_id() == east.entity_id()));
+            assert_eq!(app.selected_host.as_deref(), Some("east"));
+            assert!(app.requested_navigation.is_none());
+
+            let pending = rename_attempt(app, Some("west"));
+            app.complete_project_rename(pending, Err("Connection closed".into()), cx);
+            assert_eq!(label(app, Some("west"), cx), "West name");
+            assert!(matches!(&app.screen, Screen::Chat(chat) if chat.entity_id() == east.entity_id()));
+        });
+    }
+
+    #[gpui::test]
+    fn stale_project_rename_never_repopulates_an_account_or_pairing(cx: &mut gpui::TestAppContext) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let pending = rename_attempt(app, Some("east"));
+            app.remote_computers.get_mut("east").unwrap().grant = [3; 16];
+            app.complete_project_rename(pending, Ok(project_roots("Old grant")), cx);
+            assert_eq!(label(app, Some("east"), cx), "East name");
+
+            let pending = rename_attempt(app, Some("east"));
+            let west = app.remote_computers["west"].chat.clone();
+            app.remote_computers.get_mut("east").unwrap().chat = west;
+            app.complete_project_rename(pending, Ok(project_roots("Old owner")), cx);
+            assert_eq!(label(app, Some("east"), cx), "West name");
+
+            let pending = rename_attempt(app, Some("east"));
+            app.remote_computers.remove("east");
+            app.complete_project_rename(pending, Ok(project_roots("Unpaired")), cx);
+            assert!(!app.remote_computers.contains_key("east"));
+
+            let pending = rename_attempt(app, None);
+            app.user_id = Some("another-account".into());
+            app.complete_project_rename(pending, Ok(project_roots("Old account")), cx);
+            assert_eq!(label(app, None, cx), "Local name");
+        });
+    }
+
+    #[gpui::test]
+    fn unavailable_project_rename_does_not_connect_or_queue_navigation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let source = app.local_chat.as_ref().unwrap().clone();
+            // The cached fixture has not finished its initial navigation
+            // snapshot, so no mutation may be sent through it yet.
+            app.rename_project(
+                source.clone(),
+                ProjectRenameRequest {
+                    target: ProjectTarget {
+                        computer: Some("east".into()),
+                        path: "/same/project".into(),
+                    },
+                    name: "Not sent".into(),
+                },
+                cx,
+            );
+            assert!(app.remote_bridges.borrow().is_empty());
+            assert_eq!(app.next_connection_attempt, 0);
+            assert!(app.requested_navigation.is_none());
+            assert!(app.selected_host.is_none());
+            assert!(
+                matches!(&app.screen, Screen::Chat(chat) if chat.entity_id() == source.entity_id())
+            );
+            assert_eq!(label(app, Some("east"), cx), "East name");
+        });
+    }
 
     fn bounds(width: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(gpui::point(px(0.), px(0.)), size(px(width), px(height)))

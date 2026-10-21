@@ -492,6 +492,12 @@ pub struct RecentProjectRoot {
     pub path: String,
     pub name: String,
     pub last_used_ms: u128,
+    /// Computed by the owning computer, never inferred from a remote path.
+    #[serde(default)]
+    pub is_default_workspace: bool,
+    /// Revision of this computer's display name, including an explicit reset.
+    #[serde(default)]
+    pub name_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -669,6 +675,11 @@ pub enum AgentServiceEvent {
     /// Remote authorization/protocol ended; reconnecting cannot repair it.
     RemoteAccessEnded(String),
     RuntimeStatus(AgentRuntimeStatus),
+    /// The owning daemon committed project display metadata for this account.
+    ProjectsChanged {
+        user_id: String,
+        roots: Vec<RecentProjectRoot>,
+    },
     /// The agent asked the user one or more related questions (ask_user
     /// tool); every question in the batch is answered in one card.
     Question {
