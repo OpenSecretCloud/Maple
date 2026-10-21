@@ -1,5 +1,77 @@
 use super::*;
 
+#[tokio::test]
+async fn archive_project_scans_past_archived_pages_and_keeps_other_projects() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let runtime = harness.runtime().await;
+    let root = path_string(&normalize_project_root(harness.project.path()).unwrap());
+    for index in 0..205 {
+        let mut row = TaskRow::new(
+            format!("10000000-0000-7000-8000-{index:012x}"),
+            "Task".into(),
+            root.clone(),
+            TaskKind::Desktop,
+            None,
+            index + 1,
+        );
+        if index >= 5 {
+            row.state = AgentTaskState::Archived;
+        }
+        runtime.store.insert(&row).unwrap();
+    }
+    let other = tempfile::tempdir().unwrap();
+    let other_root = path_string(&normalize_project_root(other.path()).unwrap());
+    let other_id = "20000000-0000-7000-8000-000000000001";
+    runtime
+        .store
+        .insert(&TaskRow::new(
+            other_id.into(),
+            "Other".into(),
+            other_root,
+            TaskKind::Desktop,
+            None,
+            1,
+        ))
+        .unwrap();
+    let first = runtime
+        .store
+        .store()
+        .archive_project_candidates(runtime.store.account(), &root, None, 200)
+        .unwrap();
+    assert!(first.task_ids.is_empty());
+    assert!(first.next.is_some());
+    harness
+        .handle
+        .archive_project_root(root.clone(), None)
+        .await
+        .unwrap();
+    for index in 0..205 {
+        assert_eq!(
+            runtime
+                .store
+                .get(&format!("10000000-0000-7000-8000-{index:012x}"))
+                .unwrap()
+                .unwrap()
+                .state,
+            AgentTaskState::Archived
+        );
+    }
+    assert!(
+        runtime
+            .store
+            .store()
+            .project(runtime.store.account(), &root)
+            .unwrap()
+            .unwrap()
+            .removed_ms
+            .is_some()
+    );
+    assert_eq!(
+        runtime.store.get(other_id).unwrap().unwrap().state,
+        AgentTaskState::Active
+    );
+}
+
 #[test]
 fn a_prompt_title_is_one_shortened_line() {
     assert_eq!(

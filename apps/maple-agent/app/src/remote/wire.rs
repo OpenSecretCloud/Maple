@@ -2,10 +2,11 @@
 //! local IPC. Adding a local backend operation never makes it remotely callable.
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 
@@ -107,18 +108,31 @@ impl Hello {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
+    NavigationBootstrap,
+    ListTasks,
+    ListProjects,
+    PinnedTasks,
+    GetTasks,
+    ListProjectGroups,
+    SearchTasks,
+    OpenTask,
+    HistoryBefore,
+    HistoryForward,
+    TaskFacts,
+    ReadRow,
+    ReadAttachment,
+    QueuedMessage,
+    Subscribe,
+    ListMcpDefinitions,
+    SaveMcpDefinitionEdits,
     TaskBootstrap,
-    RecentProjectRoots,
     SelectProjectRoot,
     RenameProjectRoot,
-    ListSessions,
-    LocalBootstrap,
-    RecoverySnapshot,
     CreateSession,
-    LoadSession,
     SetSessionState,
     DeleteSession,
     RemoveProjectRoot,
+    ArchiveProjectRoot,
     RenameSession,
     ProjectTrust,
     SetProjectTrust,
@@ -127,7 +141,6 @@ pub enum Method {
     EndQueuedMessageEdit,
     SendMessage,
     SendOutcome,
-    ReadImageAttachment,
     CancelRun,
     AvailableModelIds,
     ModelCatalogEntry,
@@ -154,11 +167,43 @@ pub enum Method {
     SetThinkingLevel,
     SaveDefaultModel,
     SavedModel,
-    LoadToolSummaries,
     StoreToolSummary,
 }
 
 impl Method {
+    pub fn priority(self) -> i32 {
+        if self.urgent() {
+            10
+        } else if matches!(self, Self::OpenTask | Self::HistoryBefore) {
+            5
+        } else {
+            0
+        }
+    }
+
+    pub fn reply_limit(self) -> usize {
+        if matches!(
+            self,
+            Self::NavigationBootstrap
+                | Self::ListTasks
+                | Self::ListProjects
+                | Self::PinnedTasks
+                | Self::GetTasks
+                | Self::ListProjectGroups
+                | Self::SearchTasks
+                | Self::OpenTask
+                | Self::HistoryBefore
+                | Self::HistoryForward
+                | Self::TaskFacts
+                | Self::ReadRow
+                | Self::ReadAttachment
+                | Self::QueuedMessage
+        ) {
+            4 * 1024 * 1024
+        } else {
+            MAX_FRAME
+        }
+    }
     pub fn urgent(self) -> bool {
         matches!(
             self,
@@ -215,7 +260,7 @@ pub async fn read<T: DeserializeOwned>(
     if size == 0 || size > limit.min(MAX_FRAME) {
         return Err(Error::InvalidFrame);
     }
-    let mut bytes = vec![0; size];
+    let mut bytes = Zeroizing::new(vec![0; size]);
     reader
         .read_exact(&mut bytes)
         .await
@@ -228,16 +273,14 @@ pub async fn write<T: Serialize>(
     value: &T,
     limit: usize,
 ) -> Result<(), Error> {
-    let bytes = encode(value, limit)?;
+    let bytes = Zeroizing::new(encode(value, limit)?);
     write_encoded(writer, &bytes).await
 }
 
 pub fn encode<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>, Error> {
-    let bytes = serde_json::to_vec(value).map_err(|_| Error::InvalidFrame)?;
-    if bytes.len() > limit.min(MAX_FRAME) {
-        return Err(Error::InvalidFrame);
-    }
-    Ok(bytes)
+    let mut bytes =
+        crate::framing::encode(value, limit.min(MAX_FRAME)).map_err(|_| Error::InvalidFrame)?;
+    Ok(std::mem::take(&mut *bytes))
 }
 
 pub async fn write_encoded(
@@ -278,7 +321,7 @@ pub async fn read_progress<T: DeserializeOwned>(
     if size == 0 || size > limit.min(MAX_FRAME) {
         return Err(Error::InvalidFrame);
     }
-    let mut bytes = vec![0; size];
+    let mut bytes = Zeroizing::new(vec![0; size]);
     read_progress_bytes(reader, &mut bytes, idle).await?;
     serde_json::from_slice(&bytes).map_err(|_| Error::InvalidFrame)
 }
@@ -353,6 +396,48 @@ mod tests {
             "remote_pair",
             "transcribe_audio",
             "synthesize_speech",
+            "store_status",
+            "host_status",
+            "unlock",
+            "setup_store",
+            "set_store_password",
+            "change_store_password",
+            "remove_store_password",
+            "cancel_store_operation",
+            "erase_local_data",
+            "get_ui_settings",
+            "set_ui_settings",
+            "flush_ui_settings",
+            "dictionary",
+            "add_word",
+            "set_task_pinned",
+            "set_project_display_name",
+            "get_remote_sidebars",
+            "set_remote_sidebar",
+            "account_deletion_status",
+            "store_progress",
+            "start_fresh",
+            "generate_store_passphrase",
+            "assess_store_password",
+            "repair_store",
+            "damaged_copies",
+            "delete_damaged_copy",
+            "repair_status",
+            "repair_progress",
+            "cancel_store_repair",
+            "authenticate_repair_password",
+            "preview_salvage",
+            "salvage_preview_page",
+            "salvage_store",
+            "check_store_integrity",
+            "get_acp_config",
+            "set_acp_config",
+            "list_sessions",
+            "load_session",
+            "local_bootstrap",
+            "recovery_snapshot",
+            "read_image_attachment",
+            "load_tool_summaries",
         ] {
             assert!(Method::parse(name).is_err(), "{name}");
         }
@@ -409,23 +494,17 @@ mod tests {
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
     }
     #[tokio::test]
-    async fn project_metadata_wire_upgrade_refuses_version_four_before_decoding() {
-        // The previous shipped shape used path strings in bootstrap and had no
-        // rename command/event. Do not let a mixed pair fail during navigation.
-        let previous = serde_json::json!({
-            "version": 4,
-            "minimum_version": 4,
-            "account": "account",
-            "project": "project",
-            "deployment": "local",
-            "channel": "unpackaged",
-            "mode": { "kind": "control" }
-        });
+    async fn paging_wire_upgrade_refuses_version_five_before_decoding() {
+        // Version 5 shipped whole catalogs and transcripts. Reject the old
+        // handshake before any bounded page or metadata delta is sent.
+        let previous: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v5.json")).unwrap();
+        let previous = &previous["hello"];
         let (mut tx, mut rx) = tokio::io::duplex(4096);
         write(&mut tx, &previous, MAX_PREFACE).await.unwrap();
         let refusal = match read_hello(&mut rx).await {
             Err(refusal) => refusal,
-            Ok(_) => panic!("version 4 must update before project metadata is sent"),
+            Ok(_) => panic!("version 5 must update before paged state is sent"),
         };
         assert!(refusal.terminal);
         assert!(refusal.message.contains("Update both computers"));
@@ -488,7 +567,7 @@ mod tests {
     #[test]
     fn shipped_wire_examples_are_stable() {
         let examples: serde_json::Value =
-            serde_json::from_str(include_str!("wire_v5.json")).unwrap();
+            serde_json::from_str(include_str!("wire_v6.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
             let decoded: T = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
@@ -498,20 +577,27 @@ mod tests {
         check::<super::super::streams::Header>(&examples["header"]);
         check::<Command>(&examples["command"]);
         check::<Result<(), Refusal>>(&examples["refusal"]);
-        for key in ["image", "failure", "sessions", "receipt", "projects"] {
+        for key in ["image", "failure", "tasks", "receipt", "resync", "project"] {
             check::<crate::host::protocol::Message>(&examples[key]);
         }
         check::<Command>(&examples["send"]);
         check::<Command>(&examples["rename_project"]);
-        check::<Vec<maple_agent::agent::RecentProjectRoot>>(
-            &examples["projects"]["Response"]["result"]["Ok"],
+        check::<maple_agent::agent::RecentProjectRoot>(
+            &examples["project"]["Response"]["result"]["Ok"],
         );
-        check::<crate::backend::LocalBootstrap>(&examples["bootstrap"]);
-        check::<crate::backend::RecoverySnapshot>(&examples["recovery"]);
+        check::<crate::backend::paging::NavigationBootstrap>(&examples["bootstrap"]);
+        check::<crate::backend::SelectedProject>(&examples["selected_project"]);
+        check::<maple_agent::store::NavigationProjectPage>(&examples["project_page"]);
         check::<(String, maple_agent::agent::AgentSendMessageRequest)>(&examples["send"]["params"]);
-        check::<Vec<maple_agent::agent::AgentSessionSummary>>(
-            &examples["sessions"]["Response"]["result"]["Ok"],
+        check::<maple_agent::store::NavigationTaskPage>(
+            &examples["tasks"]["Response"]["result"]["Ok"],
         );
+        check::<maple_agent::store::AttachmentRangeReply>(
+            &examples["image"]["Response"]["result"]["Ok"],
+        );
+        for value in examples["paged_commands"].as_array().unwrap() {
+            check::<Command>(value);
+        }
         check::<crate::host::receipts::Outcome>(&examples["receipt"]["Response"]["result"]["Ok"]);
         for value in examples["events"].as_array().unwrap() {
             check::<crate::host::protocol::Message>(value);

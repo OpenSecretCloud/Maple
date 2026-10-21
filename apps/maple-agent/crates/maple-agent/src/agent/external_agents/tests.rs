@@ -198,6 +198,51 @@ fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> impl Future<Output = T> 
     }
 }
 
+#[tokio::test]
+async fn live_revision_changes_on_finish_and_is_retained_without_a_live_row() {
+    let harness = Harness::new("background");
+    let agent = Arc::new(ExternalAgent::new(
+        "codex".into(),
+        "agent".into(),
+        "task".into(),
+        "work".into(),
+        harness.project.clone(),
+        harness.host.clone(),
+    ));
+    harness
+        .registry
+        .sessions
+        .lock()
+        .await
+        .entry("task".into())
+        .or_default()
+        .agents
+        .insert("agent".into(), Arc::clone(&agent));
+    {
+        let mut state = agent.state.lock().await;
+        state.activity.begin_turn();
+        state.turn = Some(ActiveTurn {
+            turn_id: None,
+            row_id: "tool-row".into(),
+            synthetic: false,
+            background: true,
+            done: None,
+            ended: CancellationToken::new(),
+        });
+    }
+    agent.emit_row(true).await;
+    let running = harness.registry.live_revision("task").await;
+    assert!(running > 0);
+    assert_eq!(harness.registry.live_rows("task").await.len(), 1);
+    agent.finish_turn(TurnOutcome::Completed, None).await;
+    let finished = harness.registry.live_revision("task").await;
+    assert!(finished > running);
+    assert!(harness.registry.live_rows("task").await.is_empty());
+    assert_eq!(harness.registry.live_revision("task").await, finished);
+    harness.registry.shutdown_session("task").await;
+    assert_eq!(harness.registry.live_revision("task").await, 0);
+}
+
 /// What the model reads of a call: the result's text, or the error.
 fn result_text(result: &Result<AgentToolResult, String>) -> String {
     match result {

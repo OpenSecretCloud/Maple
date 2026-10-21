@@ -1,9 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::store::{AccountId, ImageUpload, Store};
 
 pub(super) const MAX_AGENT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 pub(super) const MAX_AGENT_IMAGES_PER_MESSAGE: usize = 10;
@@ -30,16 +29,17 @@ pub(super) struct PreparedAgentImage {
     pub base64_data: String,
 }
 
-#[derive(Debug, Clone)]
+/// The runtime's account-bound view of the host-owned SQL attachment store.
+/// It never resolves an app data path or opens a previous attachment cache.
+#[derive(Clone)]
 pub(super) struct AgentAttachmentStore {
-    root: PathBuf,
+    store: Arc<Store>,
+    account: AccountId,
 }
 
 impl AgentAttachmentStore {
-    pub(super) fn new(account_local_data_dir: PathBuf) -> Self {
-        Self {
-            root: account_local_data_dir.join("attachments"),
-        }
+    pub(super) fn new(store: Arc<Store>, account: AccountId) -> Self {
+        Self { store, account }
     }
 
     pub(super) fn store_uploads(
@@ -52,142 +52,112 @@ impl AgentAttachmentStore {
                 "Attach at most {MAX_AGENT_IMAGES_PER_MESSAGE} images at a time"
             ));
         }
-        if uploads.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let session_dir = self.session_dir(session_id)?;
-        if let Some(account_dir) = self.root.parent() {
-            create_owner_only_dir(account_dir)?;
-        }
-        create_owner_only_dir(&self.root)?;
-        create_owner_only_dir(&session_dir)?;
-
-        let mut prepared = Vec::with_capacity(uploads.len());
-        let mut created_paths = Vec::with_capacity(uploads.len());
-        for upload in uploads {
-            let result = self.store_upload(&session_dir, upload);
-            match result {
-                Ok((image, path)) => {
-                    created_paths.push(path);
-                    prepared.push(image);
+        // Keep current validation messages and the model's original base64. The
+        // privileged store independently validates the same batch before writes.
+        let encoded = uploads
+            .iter()
+            .map(|upload| {
+                let (declared_mime, base64_data) = parse_data_url(&upload.data_url)?;
+                if base64_data.len() > maximum_base64_chars(MAX_AGENT_IMAGE_BYTES) {
+                    return Err("Image too large (max 10MB)".to_string());
                 }
-                Err(error) => {
-                    for path in created_paths {
-                        let _ = fs::remove_file(path);
-                    }
-                    return Err(error);
+                let bytes = BASE64_STANDARD
+                    .decode(base64_data)
+                    .map_err(|_| "Image attachment is not valid base64".to_string())?;
+                if bytes.len() > MAX_AGENT_IMAGE_BYTES {
+                    return Err("Image too large (max 10MB)".to_string());
                 }
-            }
-        }
-        Ok(prepared)
+                let detected = supported_image_mime(&bytes)?;
+                if normalize_mime(declared_mime) != detected {
+                    return Err("Image content does not match its declared type".to_string());
+                }
+                Ok(base64_data.to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let uploads = uploads
+            .iter()
+            .map(|upload| ImageUpload {
+                name: upload.name.clone(),
+                data_url: upload.data_url.clone(),
+            })
+            .collect::<Vec<_>>();
+        let stored = self
+            .store
+            .store_image_uploads(self.account, session_id, &uploads)
+            .map_err(|error| error.to_string())?;
+        Ok(stored
+            .into_iter()
+            .zip(encoded)
+            .map(|(attachment, base64_data)| PreparedAgentImage {
+                attachment: AgentImageAttachment {
+                    id: attachment.id,
+                    name: attachment.name,
+                    mime_type: attachment.mime_type,
+                    source: attachment.source,
+                },
+                base64_data,
+            })
+            .collect())
     }
 
     pub(super) fn read(&self, session_id: &str, attachment_id: &str) -> Result<Vec<u8>, String> {
         validate_attachment_id(attachment_id)?;
-        let path = self.session_dir(session_id)?.join(attachment_id);
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("Failed to find Agent image attachment: {error}"))?;
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-            return Err("Agent image attachment is not a regular file".to_string());
-        }
-        if metadata.len() > MAX_AGENT_IMAGE_BYTES as u64 {
-            return Err("Agent image attachment exceeds the 10MB limit".to_string());
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(&path)
-            .map_err(|error| format!("Failed to read Agent image attachment: {error}"))?;
-        if !file
-            .metadata()
-            .map_err(|error| format!("Failed to inspect Agent image attachment: {error}"))?
-            .is_file()
-        {
-            return Err("Agent image attachment is not a regular file".to_string());
-        }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.take(MAX_AGENT_IMAGE_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("Failed to read Agent image attachment: {error}"))?;
-        if bytes.len() > MAX_AGENT_IMAGE_BYTES {
-            return Err("Agent image attachment exceeds the 10MB limit".to_string());
+        let mut bytes = Vec::new();
+        loop {
+            // Every bounded range rechecks both the captured account and task.
+            let range = self
+                .store
+                .read_attachment(
+                    self.account,
+                    session_id,
+                    attachment_id,
+                    bytes.len() as u64,
+                    crate::store::MAX_ATTACHMENT_RANGE_BYTES,
+                )
+                .map_err(|error| error.to_string())?;
+            if range.size > MAX_AGENT_IMAGE_BYTES as u64 {
+                return Err("Agent image attachment exceeds the 10MB limit".to_string());
+            }
+            if bytes.len().saturating_add(range.data.len()) as u64 > range.size {
+                return Err("Agent image attachment is incomplete".to_string());
+            }
+            bytes.extend_from_slice(&range.data);
+            if bytes.len() as u64 == range.size {
+                break;
+            }
+            if range.data.is_empty() {
+                return Err("Agent image attachment is incomplete".to_string());
+            }
         }
         supported_image_mime(&bytes)?;
         Ok(bytes)
     }
+}
 
-    pub(super) fn delete_session(&self, session_id: &str) -> Result<(), String> {
-        let path = self.session_dir(session_id)?;
-        remove_exact_path(&path)
-            .map_err(|error| format!("Failed to remove Agent image attachments: {error}"))
+#[cfg(test)]
+pub(super) fn fixture_attachment_store(
+    root: &std::path::Path,
+    tasks: &[&str],
+) -> AgentAttachmentStore {
+    let store = Arc::new(Store::open(crate::store::StorePaths::new(root)).unwrap());
+    let account = store.upsert_account("attachment-fixture", 1).unwrap();
+    for uuid in tasks {
+        store
+            .create_task(
+                account,
+                &crate::store::NewTask {
+                    uuid: (*uuid).to_string(),
+                    project_root: root.to_string_lossy().into_owned(),
+                    kind: crate::store::TaskKind::Desktop,
+                    title: "Image fixture".to_string(),
+                    provisional: false,
+                    model: None,
+                    created_ms: 1,
+                },
+            )
+            .unwrap();
     }
-
-    fn store_upload(
-        &self,
-        session_dir: &Path,
-        upload: &AgentImageUpload,
-    ) -> Result<(PreparedAgentImage, PathBuf), String> {
-        let (declared_mime, base64_data) = parse_data_url(&upload.data_url)?;
-        if base64_data.len() > maximum_base64_chars(MAX_AGENT_IMAGE_BYTES) {
-            return Err("Image too large (max 10MB)".to_string());
-        }
-        let bytes = BASE64_STANDARD
-            .decode(base64_data)
-            .map_err(|_| "Image attachment is not valid base64".to_string())?;
-        if bytes.len() > MAX_AGENT_IMAGE_BYTES {
-            return Err("Image too large (max 10MB)".to_string());
-        }
-        let detected_mime = supported_image_mime(&bytes)?;
-        if normalize_mime(declared_mime) != detected_mime {
-            return Err("Image content does not match its declared type".to_string());
-        }
-
-        let id = format!("{:032x}", rand::random::<u128>());
-        let path = session_dir.join(&id);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&path)
-            .map_err(|error| format!("Failed to store Agent image attachment: {error}"))?;
-        if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-            let _ = fs::remove_file(&path);
-            return Err(format!("Failed to store Agent image attachment: {error}"));
-        }
-
-        let attachment = AgentImageAttachment {
-            source: format!("maple-attachment://{id}"),
-            id,
-            name: safe_display_name(&upload.name),
-            mime_type: detected_mime.to_string(),
-        };
-        Ok((
-            PreparedAgentImage {
-                attachment,
-                base64_data: base64_data.to_string(),
-            },
-            path,
-        ))
-    }
-
-    fn session_dir(&self, session_id: &str) -> Result<PathBuf, String> {
-        let session_id = session_id.trim();
-        if session_id.is_empty() {
-            return Err("Agent task ID cannot be empty".to_string());
-        }
-        let digest = Sha256::digest(session_id.as_bytes());
-        Ok(self.root.join(format!("{digest:x}")))
-    }
+    AgentAttachmentStore::new(store, account)
 }
 
 pub(super) fn attachment_id_from_source(source: &str) -> Option<&str> {
@@ -306,23 +276,6 @@ fn supported_image_mime(bytes: &[u8]) -> Result<&'static str, String> {
     }
 }
 
-fn safe_display_name(name: &str) -> String {
-    let name = name
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(255)
-        .collect::<String>();
-    if name.is_empty() {
-        "image".to_string()
-    } else {
-        name
-    }
-}
-
 fn validate_attachment_id(id: &str) -> Result<(), String> {
     if id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(())
@@ -331,48 +284,24 @@ fn validate_attachment_id(id: &str) -> Result<(), String> {
     }
 }
 
-fn create_owner_only_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|error| format!("Failed to create Agent attachment cache: {error}"))?;
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("Failed to inspect Agent attachment cache: {error}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err("Agent attachment cache is not a regular directory".to_string());
-    }
-    crate::private_file::set_owner_only_dir(path)
-        .map_err(|error| format!("Failed to secure Agent attachment cache: {error}"))?;
-    Ok(())
-}
-
-fn remove_exact_path(path: &Path) -> std::io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if metadata.file_type().is_symlink() || metadata.is_file() {
-        fs::remove_file(path)
-    } else if metadata.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        Err(std::io::Error::other("unsupported attachment cache entry"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    const TASK_A: &str = "018ddbcc-b80b-7c20-8123-000000000001";
+    const TASK_B: &str = "018ddbcc-b80b-7c20-8123-000000000002";
+    const TASK_C: &str = "018ddbcc-b80b-7c20-8123-000000000003";
 
     const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
     #[test]
     fn stores_reads_and_deletes_session_scoped_images() {
         let temp = tempdir().unwrap();
-        let store = AgentAttachmentStore::new(temp.path().to_path_buf());
+        let store = fixture_attachment_store(temp.path(), &[TASK_A, TASK_B]);
         let prepared = store
             .store_uploads(
-                "session-a",
+                TASK_A,
                 &[AgentImageUpload {
                     name: "../screen.png".to_string(),
                     data_url: format!("data:image/png;base64,{PNG_1X1}"),
@@ -382,22 +311,40 @@ mod tests {
 
         assert_eq!(prepared[0].attachment.name, "screen.png");
         assert_eq!(
-            store.read("session-a", &prepared[0].attachment.id).unwrap(),
+            store.read(TASK_A, &prepared[0].attachment.id).unwrap(),
             BASE64_STANDARD.decode(PNG_1X1).unwrap()
         );
-        assert!(store.read("session-b", &prepared[0].attachment.id).is_err());
+        assert!(store.read(TASK_B, &prepared[0].attachment.id).is_err());
 
-        store.delete_session("session-a").unwrap();
-        assert!(store.read("session-a", &prepared[0].attachment.id).is_err());
+        assert!(!temp.path().join("attachments").exists());
+        store
+            .store
+            .mark_task_deleted(store.account, TASK_A, 2)
+            .unwrap();
+        assert!(store.read(TASK_A, &prepared[0].attachment.id).is_err());
+        let mut collected = false;
+        for _ in 0..100 {
+            if store
+                .store
+                .collect_task_step(store.account, TASK_A)
+                .unwrap()
+                .done
+            {
+                collected = true;
+                break;
+            }
+        }
+        assert!(collected);
+        assert!(store.store.task(store.account, TASK_A).unwrap().is_none());
     }
 
     #[test]
     fn rejects_mime_mismatches_and_unsupported_images() {
         let temp = tempdir().unwrap();
-        let store = AgentAttachmentStore::new(temp.path().to_path_buf());
+        let store = fixture_attachment_store(temp.path(), &[TASK_A]);
 
         let mismatch = store.store_uploads(
-            "session-a",
+            TASK_A,
             &[AgentImageUpload {
                 name: "screen.jpg".to_string(),
                 data_url: format!("data:image/jpeg;base64,{PNG_1X1}"),
@@ -409,7 +356,7 @@ mod tests {
         );
 
         let unsupported = store.store_uploads(
-            "session-a",
+            TASK_A,
             &[AgentImageUpload {
                 name: "screen.gif".to_string(),
                 data_url: format!(
@@ -421,6 +368,78 @@ mod tests {
         assert_eq!(
             unsupported.unwrap_err(),
             "Only JPEG, PNG, and WebP images are supported"
+        );
+    }
+
+    #[test]
+    fn attachment_adapter_captures_account_and_never_falls_back_to_files() {
+        let temp = tempdir().unwrap();
+        let store = fixture_attachment_store(temp.path(), &[TASK_A]);
+        let prepared = store
+            .store_uploads(
+                TASK_A,
+                &[AgentImageUpload {
+                    name: "image.png".to_string(),
+                    data_url: format!("data:image/png;base64,{PNG_1X1}"),
+                }],
+            )
+            .unwrap();
+        let other = store
+            .store
+            .upsert_account("other-attachment-fixture", 1)
+            .unwrap();
+        store
+            .store
+            .create_task(
+                other,
+                &crate::store::NewTask {
+                    uuid: TASK_C.to_string(),
+                    project_root: temp.path().to_string_lossy().into_owned(),
+                    kind: crate::store::TaskKind::Desktop,
+                    title: "Other account".to_string(),
+                    provisional: false,
+                    model: None,
+                    created_ms: 1,
+                },
+            )
+            .unwrap();
+        let other = AgentAttachmentStore::new(Arc::clone(&store.store), other);
+        assert!(other.read(TASK_A, &prepared[0].attachment.id).is_err());
+        assert!(other.read(TASK_C, &prepared[0].attachment.id).is_err());
+
+        // A previous-format fixture may remain on disk. An unknown SQL id
+        // cannot select it, and the adapter never creates or removes its files.
+        let old = temp.path().join("attachments");
+        std::fs::create_dir(&old).unwrap();
+        let id = "f".repeat(32);
+        let untouched = old.join(&id);
+        let bytes = BASE64_STANDARD.decode(PNG_1X1).unwrap();
+        std::fs::write(&untouched, &bytes).unwrap();
+        assert!(store.read(TASK_A, &id).is_err());
+        assert_eq!(std::fs::read(untouched).unwrap(), bytes);
+    }
+
+    #[test]
+    fn committed_attachment_is_read_after_reopening_the_new_store() {
+        let temp = tempdir().unwrap();
+        let store = fixture_attachment_store(temp.path(), &[TASK_A]);
+        let prepared = store
+            .store_uploads(
+                TASK_A,
+                &[AgentImageUpload {
+                    name: "image.png".to_string(),
+                    data_url: format!("data:image/png;base64,{PNG_1X1}"),
+                }],
+            )
+            .unwrap();
+        let id = prepared[0].attachment.id.clone();
+        drop(store);
+        let reopened = Arc::new(Store::open(crate::store::StorePaths::new(temp.path())).unwrap());
+        let account = reopened.account_id("attachment-fixture").unwrap().unwrap();
+        let store = AgentAttachmentStore::new(reopened, account);
+        assert_eq!(
+            store.read(TASK_A, &id).unwrap(),
+            BASE64_STANDARD.decode(PNG_1X1).unwrap()
         );
     }
 

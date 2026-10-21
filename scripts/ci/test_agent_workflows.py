@@ -35,6 +35,42 @@ def strings(value):
 
 
 class AgentWorkflowBoundaryTests(unittest.TestCase):
+    def test_windows_crypto_pins_native_perl_only_after_required_module_probe(self):
+        step = next(step for step in workflow("agent-ci.yml")["jobs"]["desktop"]["steps"]
+                    if step.get("name") == "Select native Windows Perl for the static crypto build")
+        self.assertEqual(step["if"], "runner.os == 'Windows'")
+        with tempfile.TemporaryDirectory(prefix="native perl ") as temporary:
+            folder = Path(temporary)
+            native_perl = folder / "native perl.exe"
+            native_perl.write_text("#!/bin/sh\n"
+                                   'test "$1" = "-MLocale::Maketext::Simple" || exit 41\n'
+                                   'test "$2" = "-MIPC::Cmd" || exit 42\n'
+                                   'test "$3" = "-e" || exit 43\n'
+                                   'case "$4" in *MSWin32*) ;; *) exit 44 ;; esac\n'
+                                   'exit "$PERL_PROBE_EXIT"\n')
+            native_perl.chmod(0o755)
+            cygpath = folder / "cygpath"
+            cygpath.write_text('#!/bin/sh\ntest "$1" = -m || exit 45\n'
+                               'test "$2" = "$PERL_PROBE_PATH" || exit 46\n'
+                               'printf "%s\\n" "C:/Native Perl/perl.exe"\n')
+            cygpath.chmod(0o755)
+            script = step["run"].replace("/c/Strawberry/perl/bin/perl.exe", '"' + str(native_perl) + '"')
+            destination = folder / "github-env"
+            for probe_exit in (0, 2):
+                with self.subTest(probe_exit=probe_exit):
+                    destination.unlink(missing_ok=True)
+                    environment = {**os.environ, "PATH": str(folder) + os.pathsep + os.environ["PATH"],
+                                   "GITHUB_ENV": str(destination), "PERL_PROBE_PATH": str(native_perl),
+                                   "PERL_PROBE_EXIT": str(probe_exit)}
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                            env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, probe_exit, result.stderr)
+                    if probe_exit == 0:
+                        self.assertEqual(destination.read_text(),
+                                         "OPENSSL_SRC_PERL=C:/Native Perl/perl.exe\n")
+                    else:
+                        self.assertFalse(destination.exists(), "Failed probes cannot select a Perl executable")
+
     def test_contributor_build_has_no_credentials_or_privileged_events(self):
         config = workflow("agent-ci.yml")
         self.assertEqual(set(config["on"]), {"push", "pull_request", "workflow_dispatch"})
@@ -289,9 +325,10 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                                  "maple-agent-${{ matrix.variant }}-" + platform +
                                  "-${{ github.run_id }}")
                 self.assertIs(upload["with"]["overwrite"], True)
-                expected_path = ("apps/maple-agent/target/release/maple-agent" if name == "macos-build"
-                                 else "apps/maple-agent/dist/${{ matrix.variant }}/")
-                self.assertEqual(upload["with"]["path"], expected_path)
+                expected_paths = (["apps/maple-agent/target/release/maple-agent",
+                                   "apps/maple-agent/target/third-party-notices"] if name == "macos-build"
+                                  else ["apps/maple-agent/dist/${{ matrix.variant }}/"])
+                self.assertEqual(upload["with"]["path"].splitlines(), expected_paths)
                 self.assertEqual(upload["with"]["if-no-files-found"], "error")
                 self.assertEqual(upload["with"]["retention-days"], 7 if name == "macos-build" else 30)
 
@@ -363,7 +400,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 download = next(i for i, step in enumerate(steps)
                                 if step.get("uses", "").startswith("actions/download-artifact@"))
                 self.assertEqual(steps[download]["with"], {
-                    "name": upload["name"], "path": "apps/maple-agent/target/release",
+                    "name": upload["name"], "path": "apps/maple-agent/target",
                 })
                 verify = next(i for i, step in enumerate(steps)
                               if "./scripts/verify-prebuilt-release.sh" in step.get("run", ""))
@@ -373,6 +410,34 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 self.assertGreater(package, verify)
                 self.assertNotIn("env", steps[verify])
                 self.assertIn('"$MAPLE_RELEASE_PROFILE"', steps[verify]["run"])
+
+    def test_prebuilt_notice_payload_preserves_binary_and_target_graph_layout(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+        build_steps = jobs["macos-build"]["steps"]
+        build = next(i for i, step in enumerate(build_steps)
+                     if "./scripts/build-release.sh" in step.get("run", ""))
+        upload = next(i for i, step in enumerate(build_steps)
+                      if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertLess(build, upload)
+        uploaded_paths = [Path(path) for path in build_steps[upload]["with"]["path"].splitlines()]
+        # upload-artifact preserves paths relative to their least common ancestor.
+        # Adding a notices directory must not move the downloaded executable out
+        # of target/release or disconnect target-specific inventories from it.
+        common_root = Path(os.path.commonpath(uploaded_paths))
+        self.assertEqual(common_root, Path("apps/maple-agent/target"))
+        binary = Path("apps/maple-agent/target/release/maple-agent")
+        notices = Path("apps/maple-agent/target/third-party-notices/aarch64-apple-darwin")
+        payload = [binary, *(notices / name for name in
+                            ("manifest.json", "THIRD_PARTY_NOTICES.html", "THIRD_PARTY_NOTICES.txt"))]
+        self.assertIn(binary, uploaded_paths)
+        self.assertIn(notices.parent, uploaded_paths)
+        for name in ("macos", "macos-unsigned"):
+            with self.subTest(job=name):
+                download = next(step["with"] for step in jobs[name]["steps"]
+                                if step.get("uses", "").startswith("actions/download-artifact@"))
+                destination = Path(download["path"])
+                reconstructed = [destination / path.relative_to(common_root) for path in payload]
+                self.assertEqual(reconstructed, payload)
 
     def test_partial_producer_and_verifier_only_retries_reuse_successful_artifacts(self):
         jobs = workflow(self.WORKFLOW)["jobs"]

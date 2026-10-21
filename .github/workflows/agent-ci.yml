@@ -108,6 +108,21 @@ jobs:
           # Matches the component's frozen rust-overlay input.
           toolchain: 1.98.0
 
+      - name: Select native Windows Perl for the static crypto build
+        if: runner.os == 'Windows'
+        run: |
+          native_perl=/c/Strawberry/perl/bin/perl.exe
+          if [ ! -x "$native_perl" ]; then
+            echo 'Native Windows Perl is missing from the runner' >&2
+            exit 1
+          fi
+          "$native_perl" -MLocale::Maketext::Simple -MIPC::Cmd -e 'die "OpenSSL requires native Windows Perl\n" unless $^O eq "MSWin32"; print "$^V\n"'
+          # Pin the native executable across later Git Bash steps and Rust's
+          # process resolver instead of depending on their PATH ordering.
+          native_perl_windows="$(cygpath -m "$native_perl")"
+          printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
+          # openssl-src uses NASM if available and otherwise selects no-asm.
+
       - name: Cache Agent Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -124,9 +139,15 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             cargo metadata --locked --format-version 1 > "$metadata"
           else
-            nix develop --no-update-lock-file . -c cargo metadata --locked --format-version 1 > "$metadata"
+            # shellcheck disable=SC2016 # The child shell expands its own positional argument.
+            nix develop --no-update-lock-file . -c bash -c 'cargo metadata --locked --format-version 1 > "$1"' -- "$metadata"
           fi
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
+          if [ "$RUNNER_OS" = Windows ]; then
+            python3 scripts/verify-sqlcipher-build.py "$metadata"
+          else
+            nix develop --no-update-lock-file . -c python3 scripts/verify-sqlcipher-build.py "$metadata"
+          fi
 
       - name: Format, lint, build, and test Linux feature matrix
         if: runner.os == 'Linux'
@@ -150,6 +171,38 @@ jobs:
           cargo build --workspace --all-targets --locked
           cargo test --workspace --locked
 
+      - name: Test released rusqlite against the static provider
+        run: |
+          metadata="$(mktemp)"
+          trap 'rm -f "$metadata"' EXIT
+          if [ "$RUNNER_OS" = Windows ]; then
+            cargo metadata --locked --format-version 1 > "$metadata"
+            python3 scripts/test-rusqlite-provider.py "$metadata"
+          else
+            # shellcheck disable=SC2016 # The child shell expands its own positional argument.
+            nix develop --no-update-lock-file . -c bash -c 'cargo metadata --locked --format-version 1 > "$1"' -- "$metadata"
+            nix develop --no-update-lock-file . -c python3 scripts/test-rusqlite-provider.py "$metadata"
+          fi
+
+      - name: Audit Agent dependencies
+        if: runner.os == 'Linux'
+        run: nix develop --no-update-lock-file . -c python3 scripts/audit-sqlcipher-dependencies.py
+
+      - name: Regenerate the signed SQLCipher source
+        if: runner.os == 'Linux'
+        run: |
+          metadata="$(mktemp)"
+          trap 'rm -f "$metadata"' EXIT
+          # shellcheck disable=SC2016 # The child shell expands its own positional argument.
+          nix develop --no-update-lock-file . -c bash -c 'cargo metadata --locked --format-version 1 > "$1"' -- "$metadata"
+          nix develop --no-update-lock-file . -c python3 dependencies/sqlcipher/verify_sqlcipher.py --metadata "$metadata"
+
+      - name: Generate and validate Linux third-party notices
+        if: runner.os == 'Linux'
+        run: |
+          nix develop --no-update-lock-file . -c python3 scripts/generate-third-party-notices.py
+          nix develop --no-update-lock-file . -c python3 scripts/generate-third-party-notices.py --check
+
       - name: Build Linux release binary
         if: runner.os == 'Linux'
         run: nix develop --no-update-lock-file . -c just release
@@ -160,6 +213,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maple-agent-linux-x86_64-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/maple-agent/target/release/maple-agent
+          path: |
+            apps/maple-agent/target/release/maple-agent
+            apps/maple-agent/target/third-party-notices
           if-no-files-found: error
           retention-days: 5

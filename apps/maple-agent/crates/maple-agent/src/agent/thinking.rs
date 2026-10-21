@@ -38,11 +38,47 @@ impl AgentRuntimeHandle {
         model_id: &str,
     ) -> Result<AgentThinkingState, String> {
         if let Some(session_id) = session_id {
-            let session = self.thinking_session(session_id, model_id).await?;
-            let model = session.model().ok_or("No model selected")?;
+            self.verify_generation().await?;
+            let runtime = self.runtime().await?;
+            if let Some(session) = runtime.loaded_session(session_id).await {
+                let model = session.model().ok_or("No model selected")?;
+                return Ok(AgentThinkingState {
+                    levels: model.thinking_levels(),
+                    current: session.thinking_level(),
+                });
+            }
+            let store = self.store()?;
+            let facts = store
+                .store()
+                .task_facts(store.account(), session_id)
+                .map_err(|error| error.to_string())?;
+            let selected_model = if facts.message_count > 0 {
+                facts.model.as_deref().unwrap_or(model_id)
+            } else {
+                model_id
+            };
+            let model = runtime.pi_model(selected_model, None, None).await;
+            let saved = facts
+                .thinking_level
+                .as_deref()
+                .map(|value| {
+                    serde_json::from_value::<ThinkingLevel>(serde_json::Value::String(
+                        value.to_owned(),
+                    ))
+                })
+                .transpose()
+                .map_err(|_| "Invalid saved thinking level".to_string())?;
+            let level = match saved {
+                Some(level) => level,
+                None => self
+                    .load_config()
+                    .await?
+                    .default_thinking_level
+                    .unwrap_or(ThinkingLevel::Medium),
+            };
             return Ok(AgentThinkingState {
                 levels: model.thinking_levels(),
-                current: session.thinking_level(),
+                current: model.clamp_thinking_level(level),
             });
         }
         let runtime = self.runtime().await?;

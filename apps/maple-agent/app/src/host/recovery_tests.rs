@@ -151,41 +151,34 @@ async fn calls_waiting_for_capacity_do_not_cross_a_connection_generation() {
 }
 
 #[tokio::test]
-async fn slow_frontend_recovers_after_a_bounded_event_queue_overflow() {
+async fn slow_frontend_resyncs_after_a_bounded_event_queue_overflow_without_blocking_replies() {
     let (_root, endpoint) = endpoint();
     let mut listener = endpoint.bind().unwrap();
     let (client, mut server) = client(&endpoint, &mut listener).await;
     let mut events = client.take_events().await.unwrap();
-    // Don't consume UI events until the reader has dropped its old socket.
+    // Keep the UI queue full. The reader must continue accepting replies and
+    // replace missed events with one resync on this same connection.
     tokio::time::timeout(Duration::from_secs(5), async {
         for _ in 0..2000 {
-            if protocol::write(
+            protocol::write(
                 &mut server,
                 &Message::Event(Box::new(AgentServiceEvent::QuestionResolved {
                     request_id: "fixture".into(),
                 })),
             )
             .await
-            .is_err()
-            {
-                return;
-            }
+            .unwrap();
         }
-        let _: Result<Request, _> = protocol::read(&mut server).await;
     })
     .await
     .unwrap();
     assert!(events.len() <= 256);
-    drop(server);
-    let (mut server, ()) = tokio::join!(
-        accept(&mut listener, &endpoint, "first-user"),
-        reconnected(&mut events)
-    );
     let (result, ()) = tokio::join!(
         client.call::<bool>("inspect", ()),
         response(&mut server, "inspect", serde_json::json!(true))
     );
     assert!(result.unwrap());
+    reconnected(&mut events).await;
     let ((), ()) = tokio::join!(
         client.detach(),
         response(&mut server, "detach", serde_json::Value::Null)
@@ -292,7 +285,7 @@ async fn concurrent_clients_wait_for_the_next_pipe_instance() {
 async fn unexpected_disconnect_keeps_the_host_alive_but_explicit_stop_still_wins() {
     let (root, endpoint) = endpoint();
     let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
-    let receipts = Arc::new(receipts::Receipts::open(&root.path().join("receipts.db")).unwrap());
+    let receipts = Arc::new(receipts::Receipts::new(backend.store().unwrap().clone()));
     let server_endpoint = endpoint.clone();
     let server =
         tokio::spawn(async move { serve_with_receipts(server_endpoint, backend, receipts).await });
@@ -348,7 +341,7 @@ async fn host_loss_exhausts_recovery_without_starting_a_replacement() {
 async fn graceful_detach_keeps_other_clients_running_and_last_quit_shuts_down() {
     let (root, endpoint) = endpoint();
     let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
-    let receipts = Arc::new(receipts::Receipts::open(&root.path().join("receipts.db")).unwrap());
+    let receipts = Arc::new(receipts::Receipts::new(backend.store().unwrap().clone()));
     let server_endpoint = endpoint.clone();
     let server =
         tokio::spawn(async move { serve_with_receipts(server_endpoint, backend, receipts).await });
@@ -438,9 +431,15 @@ async fn explicit_stop_survives_a_client_that_leaves_before_the_acknowledgement(
     };
     let server = async {
         let mut connection = listener.accept().await.unwrap();
-        let _ =
-            accept_scoped_handshake(&mut connection, &endpoint.profile, None, None, Some(&stop))
-                .await;
+        let _ = accept_scoped_handshake(
+            &mut connection,
+            &endpoint.profile,
+            None,
+            StoreState::Open,
+            None,
+            Some(&stop),
+        )
+        .await;
     };
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(client, server);
@@ -454,9 +453,91 @@ async fn explicit_stop_survives_a_client_that_leaves_before_the_acknowledgement(
 #[tokio::test]
 async fn quit_accepts_a_missing_owner_but_not_an_unreachable_live_owner() {
     let (_root, endpoint) = endpoint();
-    let owner = endpoint.lock("host.lock").unwrap();
+    let owner = endpoint.ownership_lock().unwrap();
     owner.try_lock().unwrap();
     assert!(request_stop_endpoint(&endpoint).await.is_err());
     drop(owner);
     assert!(request_stop_endpoint(&endpoint).await.is_ok());
+}
+
+#[cfg(feature = "desktop")]
+#[tokio::test]
+async fn accepted_stop_waits_for_connection_close_and_authoritative_ownership_release() {
+    let (_root, endpoint) = endpoint();
+    let mut listener = endpoint.bind().unwrap();
+    let owner = endpoint.ownership_lock().unwrap();
+    owner.try_lock().unwrap();
+    let request_endpoint = endpoint.clone();
+    let request = tokio::spawn(async move { request_stop_endpoint(&request_endpoint).await });
+    let mut connection = listener.accept().await.unwrap();
+    let (stop, mut stopped) = mpsc::channel(1);
+    accept_scoped_handshake(
+        &mut connection,
+        &endpoint.profile,
+        None,
+        StoreState::Open,
+        None,
+        Some(&stop),
+    )
+    .await
+    .unwrap();
+    stopped.recv().await.unwrap();
+    assert!(!request.is_finished());
+    drop(connection);
+    tokio::task::yield_now().await;
+    assert!(!request.is_finished());
+    drop(owner);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn maintenance_client_gets_its_state_without_waiting_for_open_or_sign_in() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let mut client: ipc::Connection = Box::new(client);
+    let server = async {
+        let hello = protocol::read::<Hello>(&mut server).await.unwrap();
+        let mut server: ipc::Connection = Box::new(server);
+        accept_hello(
+            &mut server,
+            hello,
+            "profile",
+            None,
+            StoreState::Maintenance,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    };
+    let client = async {
+        protocol::write(
+            &mut client,
+            &Hello {
+                version: protocol::VERSION,
+                profile: "profile".into(),
+                build: protocol::BUILD.into(),
+                mode: ConnectionMode::Client,
+                remote_host: None,
+            },
+        )
+        .await
+        .unwrap();
+        let welcome = protocol::read::<Result<Welcome, String>>(&mut client)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(welcome.store, StoreState::Maintenance);
+        assert!(welcome.user_id.is_none());
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(server, client);
+    })
+    .await
+    .unwrap();
 }

@@ -12,8 +12,41 @@
 
 #[path = "sidebar_computers.rs"]
 mod computers;
+#[path = "sidebar_paging.rs"]
+mod paging;
 use super::computers::{Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget};
-use computers::{OtherTask, ProjectHeading};
+use computers::{ComputerPages, OtherTask, ProjectHeading};
+use paging::{PageKind, SidebarPages};
+
+pub(super) fn project_from_summary(
+    project: maple_agent::store::ProjectSummary,
+) -> RecentProjectRoot {
+    RecentProjectRoot {
+        name: project
+            .display_name
+            .unwrap_or_else(|| remote_root_display_name(&project.root)),
+        path: project.root,
+        last_used_ms: u128::try_from(project.last_used_ms).unwrap_or_default(),
+        is_default_workspace: project.is_default_workspace,
+        name_revision: project.name_revision,
+    }
+}
+
+pub(super) fn bootstrap_projects(
+    projects: Vec<maple_agent::store::ProjectSummary>,
+    default_project: Option<maple_agent::store::ProjectSummary>,
+) -> Vec<RecentProjectRoot> {
+    let mut roots = projects
+        .into_iter()
+        .map(project_from_summary)
+        .collect::<Vec<_>>();
+    if let Some(default_project) = default_project
+        && !roots.iter().any(|root| root.path == default_project.root)
+    {
+        roots.push(project_from_summary(default_project));
+    }
+    roots
+}
 
 /// Browsing belongs to the desktop window; conversations belong to computers.
 /// Carry this small view state when swapping the per-computer chat screens.
@@ -46,9 +79,37 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
+pub(super) fn session_from_summary(
+    summary: &maple_agent::store::TaskSummary,
+) -> AgentSessionSummary {
+    AgentSessionSummary {
+        id: summary.uuid.clone(),
+        title: summary.title.clone(),
+        project_root: summary.project_root.clone(),
+        created_ms: summary.created_ms,
+        updated_ms: summary.updated_ms,
+        message_count: usize::try_from(summary.message_count).unwrap_or(usize::MAX),
+        model: summary.model.clone(),
+        web_enabled: summary.web_enabled,
+        state: match summary.state.as_str() {
+            "settled" => AgentTaskState::Settled,
+            "archived" => AgentTaskState::Archived,
+            _ => AgentTaskState::Active,
+        },
+        acp: summary.kind == "acp",
+    }
+}
+
 /// What the sidebar asks the screen to do.
 #[derive(Clone, Debug)]
 pub(super) enum SidebarEvent {
+    PagesReady {
+        sessions: Vec<AgentSessionSummary>,
+        generation: u64,
+    },
+    ProjectsReady {
+        roots: Vec<RecentProjectRoot>,
+    },
     Navigate(Navigate),
     RenameProject(ProjectRenameRequest),
     PreferencesChanged,
@@ -169,6 +230,8 @@ pub(super) enum SidebarEntry {
     ComputerProject(usize),
     OtherTask(usize),
     Computer(usize),
+    ComputerMore(usize),
+    LoadMore(PageKind),
     NewTask,
     /// The project switcher row above the sections.
     ProjectsHeader,
@@ -315,6 +378,8 @@ pub(super) struct SwitcherRoot {
 }
 
 pub(super) struct Sidebar {
+    pages: SidebarPages,
+    group_pages: ComputerPages,
     computers: Arc<Vec<Computer>>,
     computer_projects: Vec<ProjectHeading>,
     other_tasks: Vec<OtherTask>,
@@ -374,6 +439,12 @@ pub(super) struct Sidebar {
     /// A late list can omit a newly restored project without erasing its revision.
     /// This cache is scoped to this account/computer view, never UI settings.
     project_metadata: HashMap<String, RecentProjectRoot>,
+    /// Owner labels returned with loaded task pages, before that project's
+    /// revisioned metadata page has been requested. Never a settings override.
+    task_project_labels: HashMap<String, String>,
+    /// Explicit removals survive page refreshes until an owner reply lists or
+    /// selects that project again. Cached task rows cannot recreate membership.
+    removed_projects: HashSet<String>,
     pending_project_names: HashMap<ProjectTarget, String>,
     // Application Vim's view of the rows.
     vim_selected: Option<SidebarTarget>,
@@ -442,18 +513,34 @@ impl Sidebar {
             .computers
             .iter()
             .map(|computer| {
-                computer
-                    .projects
-                    .iter()
-                    .map(|project| {
-                        let target = ProjectTarget {
-                            computer: computer.key.clone(),
-                            path: project.path.clone(),
-                        };
-                        let name = self.project_name(&target).into();
-                        SwitcherRoot::new(target, name)
-                    })
-                    .collect()
+                if let Some(projects) = self.group_pages.project_summaries(&computer.key) {
+                    projects
+                        .iter()
+                        .map(|project| {
+                            let target = ProjectTarget {
+                                computer: computer.key.clone(),
+                                path: project.root.clone(),
+                            };
+                            SwitcherRoot::new(
+                                target,
+                                self.computer_project_name(computer, project).into(),
+                            )
+                        })
+                        .collect()
+                } else {
+                    computer
+                        .projects
+                        .iter()
+                        .map(|project| {
+                            let target = ProjectTarget {
+                                computer: computer.key.clone(),
+                                path: project.path.clone(),
+                            };
+                            let name = self.project_name(&target).into();
+                            SwitcherRoot::new(target, name)
+                        })
+                        .collect()
+                }
             })
             .collect();
     }
@@ -488,6 +575,10 @@ impl Sidebar {
         self.archived_expanded = state.archived_expanded;
         // A project filter belongs to the previous execution computer.
         self.project_filter = None;
+        if self.pages.enabled {
+            self.refresh_pages(cx);
+            return;
+        }
         self.rebuild_sections();
         self.list.scroll_to(state.scroll);
         cx.notify();
@@ -524,6 +615,8 @@ impl Sidebar {
         })
         .detach();
         Self {
+            pages: SidebarPages::default(),
+            group_pages: ComputerPages::default(),
             computers: Arc::new(Vec::new()),
             computer_projects: Vec::new(),
             other_tasks: Vec::new(),
@@ -568,6 +661,8 @@ impl Sidebar {
                 .as_ref()
                 .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
             project_metadata: HashMap::new(),
+            task_project_labels: HashMap::new(),
+            removed_projects: HashSet::new(),
             pending_project_names: HashMap::new(),
             vim_selected: None,
             vim_by_row: Vec::new(),
@@ -586,6 +681,12 @@ impl Sidebar {
         sessions: Vec<AgentSessionSummary>,
         cx: &mut Context<Self>,
     ) {
+        if self.pages.enabled {
+            // The screen supplies current/live summaries. Keep the bounded
+            // pages as the navigation source and reconcile events by UUID.
+            self.merge_live_sessions(sessions, cx);
+            return;
+        }
         let unchanged = self.sessions.len() == sessions.len()
             && self
                 .sessions
@@ -636,6 +737,10 @@ impl Sidebar {
         mut roots: Vec<RecentProjectRoot>,
         cx: &mut Context<Self>,
     ) {
+        if self.pages.enabled {
+            self.merge_project_metadata(roots, cx);
+            return;
+        }
         self.preserve_newer_project_names(&mut roots);
         let paths = roots
             .iter()
@@ -664,6 +769,38 @@ impl Sidebar {
                 root.name_revision = current.name_revision;
             }
         }
+    }
+
+    /// A successful reconnect reauthorizes only the bounded owner snapshot.
+    /// Unloaded cached labels may have changed while events were unavailable;
+    /// fresh task pages will supply them again. Buffered pushes replay afterward.
+    pub(super) fn prepare_project_cache_for_recovery(&mut self, roots: &[RecentProjectRoot]) {
+        let listed: HashSet<&str> = roots.iter().map(|root| root.path.as_str()).collect();
+        // Keep the old anchor long enough for reconcile_default_project to
+        // explicitly purge it when the separate owner lookup reported None.
+        self.project_metadata
+            .retain(|path, root| root.is_default_workspace || listed.contains(path.as_str()));
+        self.task_project_labels.clear();
+    }
+
+    /// Merge owner-issued point updates without replacing paged membership.
+    pub(super) fn merge_project_metadata(
+        &mut self,
+        mut roots: Vec<RecentProjectRoot>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.preserve_newer_project_names(&mut roots);
+        let changed = roots
+            .iter()
+            .any(|root| self.project_metadata.get(&root.path) != Some(root));
+        if !changed {
+            return false;
+        }
+        self.project_metadata
+            .extend(roots.into_iter().map(|root| (root.path.clone(), root)));
+        self.rebuild_sections();
+        cx.notify();
+        true
     }
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -702,12 +839,14 @@ impl Sidebar {
 
     /// Forget tasks that left the app (their project was removed).
     pub(super) fn forget_tasks(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        self.forget_page_tasks(ids);
         let before = self.pinned_tasks.len();
         self.pinned_tasks
             .retain(|candidate| !ids.contains(candidate));
         if self.pinned_tasks.len() != before {
-            let pinned = self.pinned_tasks.clone();
-            self.persist_pins(pinned);
+            for id in ids {
+                self.persist_pin(id.clone(), false, cx);
+            }
         }
         self.rebuild_sections();
         cx.notify();
@@ -734,6 +873,7 @@ impl Sidebar {
                     .get(root)
                     .map(|root| root.name.clone())
             })
+            .or_else(|| self.task_project_labels.get(root).cloned())
             .unwrap_or_else(|| {
                 if self.backend.remote_host().is_some() {
                     remote_root_display_name(root)
@@ -745,6 +885,47 @@ impl Sidebar {
 
     pub(super) fn pinned_tasks(&self) -> &[String] {
         &self.pinned_tasks
+    }
+
+    pub(super) fn project_names(&self) -> HashMap<String, String> {
+        let mut names = self.task_project_labels.clone();
+        names.extend(
+            self.project_metadata
+                .iter()
+                .map(|(path, root)| (path.clone(), root.name.clone())),
+        );
+        names
+    }
+
+    pub(super) fn navigation_sessions(&self) -> Vec<AgentSessionSummary> {
+        self.sessions.clone()
+    }
+
+    pub(super) fn navigation_roots(&self) -> Vec<String> {
+        self.recent_roots.clone()
+    }
+
+    pub(super) fn project_is_removed(&self, root: &str) -> bool {
+        self.removed_projects.contains(root)
+    }
+
+    pub(super) fn merge_page_sessions(&mut self, summaries: Vec<AgentSessionSummary>) {
+        for summary in summaries {
+            if self.pages.is_deleted(&summary.id) {
+                continue;
+            }
+            let summary = self.pages.latest_summary(summary);
+            if let Some(current) = self
+                .sessions
+                .iter_mut()
+                .find(|current| current.id == summary.id)
+            {
+                *current = summary;
+            } else {
+                self.sessions.push(summary);
+            }
+        }
+        self.sync_rows();
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
@@ -885,8 +1066,9 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn set_filter_for_test(&mut self, filter: &str) {
+    pub(super) fn set_filter_for_test(&mut self, filter: &str, cx: &mut Context<Self>) {
         self.filter = filter.to_lowercase();
+        self.ensure_computer_pages(cx);
         self.rebuild_sections();
     }
 
@@ -902,6 +1084,8 @@ impl Sidebar {
     pub(super) fn reset_persisted_for_test(&mut self) {
         self.pinned_tasks.clear();
         self.project_metadata.clear();
+        self.task_project_labels.clear();
+        self.removed_projects.clear();
         self.pending_project_names.clear();
         self.rebuild_sections();
     }
@@ -973,6 +1157,10 @@ impl Sidebar {
             return;
         }
         self.archived_expanded = expanded;
+        if expanded && self.pages.enabled {
+            self.load_page(PageKind::Archived, cx);
+        }
+        self.refresh_computer_pages(cx);
         self.rebuild_entries();
         cx.notify();
     }
@@ -1009,8 +1197,18 @@ impl Sidebar {
         let mut seen_roots: HashSet<&str> = HashSet::new();
         let mut root_search: HashMap<&str, String> = HashMap::new();
         for (index, session) in self.sessions.iter().enumerate() {
+            if self.pages.enabled
+                && !self.pages.contains(&session.id, filtering)
+                && !self.running.contains(&session.id)
+                && self.selected.as_ref() != Some(&session.id)
+            {
+                continue;
+            }
             let root = session.project_root.as_str();
-            if seen_roots.insert(root) {
+            if session.state != AgentTaskState::Archived
+                && !self.removed_projects.contains(root)
+                && seen_roots.insert(root)
+            {
                 session_roots.push(root);
             }
             // The cached count updates when a run ends. Its first run
@@ -1129,7 +1327,7 @@ impl Sidebar {
             &self.settled_rows,
             self.section_expanded(SidebarSection::Settled),
         );
-        if !self.archived_rows.is_empty() {
+        if !self.archived_rows.is_empty() || (self.pages.enabled && self.filter.is_empty()) {
             entries.push(SidebarEntry::ArchivedHeader);
             if self.archived_expanded {
                 entries.extend(self.archived_rows.iter().map(|&session| {
@@ -1142,9 +1340,23 @@ impl Sidebar {
                 }));
             }
         }
-        if !entries
-            .iter()
-            .any(|entry| matches!(entry, SidebarEntry::Task(_) | SidebarEntry::ArchivedHeader))
+        if self.pages.enabled {
+            for (kind, expanded) in [
+                (PageKind::Pinned, self.pinned_expanded),
+                (PageKind::Active, self.active_expanded),
+                (PageKind::Settled, self.settled_expanded),
+                (PageKind::Archived, self.archived_expanded),
+                (PageKind::Search, !self.filter.is_empty()),
+            ] {
+                if expanded && self.pages.has_more(kind) {
+                    entries.push(SidebarEntry::LoadMore(kind));
+                }
+            }
+        }
+        if !entries.iter().any(|entry| {
+            matches!(entry, SidebarEntry::Task(_))
+                || (!self.pages.enabled && matches!(entry, SidebarEntry::ArchivedHeader))
+        }) && !self.pages.any_loading()
         {
             entries.push(SidebarEntry::Empty(if self.filter.is_empty() {
                 SidebarEmpty::NoTasks
@@ -1152,7 +1364,7 @@ impl Sidebar {
                 SidebarEmpty::NoMatches
             }));
         }
-        if self.computers.len() > 1 {
+        if self.computers.len() > 1 && self.project_filter.is_none() {
             entries = self.computer_entries();
         }
         let old = std::mem::replace(&mut self.entries, entries);
@@ -1231,6 +1443,11 @@ impl Sidebar {
         let filter = input.read(cx).text_ref().trim().to_lowercase();
         if filter != self.filter {
             self.filter = filter;
+            if self.pages.enabled {
+                self.refresh_pages(cx);
+                return;
+            }
+            self.ensure_computer_pages(cx);
             self.rebuild_sections();
             cx.notify();
         }
@@ -1243,6 +1460,11 @@ impl Sidebar {
         }
         self.search_input.update(cx, |input, cx| input.clear(cx));
         self.filter.clear();
+        if self.pages.enabled {
+            self.refresh_pages(cx);
+            return true;
+        }
+        self.ensure_computer_pages(cx);
         self.rebuild_sections();
         cx.notify();
         true
@@ -1294,24 +1516,33 @@ impl Sidebar {
         }
         self.rebuild_sections();
         cx.notify();
-        let pinned = self.pinned_tasks.clone();
-        self.persist_pins(pinned);
+        self.persist_pin(session_id.to_owned(), pinned, cx);
         cx.emit(SidebarEvent::PreferencesChanged);
     }
 
-    fn persist_pins(&self, pins: Vec<String>) {
-        let computer = self.backend.remote_host().map(str::to_owned);
-        persist_settings(move |settings| {
-            if let Some(key) = computer {
-                settings
-                    .remote_sidebars
-                    .entry(key)
-                    .or_default()
-                    .pinned_tasks = pins;
-            } else {
-                settings.pinned_tasks = pins;
-            }
-        });
+    fn persist_pin(&self, task: String, pinned: bool, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user = self.user_id.clone();
+        let computer = backend.remote_host().map(str::to_owned);
+        self.call(
+            async move {
+                if let Some(computer) = computer {
+                    let patch = if pinned {
+                        serde_json::json!({"pinned_tasks":{"add":[task]}})
+                    } else {
+                        serde_json::json!({"pinned_tasks":{"remove":[task]}})
+                    };
+                    backend.set_remote_sidebar(&user, computer, patch).await
+                } else {
+                    backend.set_task_pinned(&user, &task, pinned).await
+                }
+            },
+            cx,
+            |this, result, cx| match result {
+                Ok(()) => this.refresh_pages(cx),
+                Err(error) => cx.emit(SidebarEvent::Notice(error.into())),
+            },
+        );
     }
 
     /// Whether a collapsible section shows its rows.
@@ -1368,6 +1599,10 @@ impl Sidebar {
         self.project_popup.close(cx);
         if self.switcher_menu_open() {
             self.popup.close(cx);
+        }
+        if self.pages.enabled {
+            self.refresh_pages(cx);
+            return;
         }
         self.rebuild_sections();
         cx.notify();
@@ -1541,9 +1776,9 @@ impl Sidebar {
                     move |this, result, cx| {
                         this.pending_project_names.remove(&root);
                         match result {
-                            Ok(roots) => {
-                                this.set_recent_roots(roots.clone(), cx);
-                                cx.emit(SidebarEvent::ProjectsChanged(roots));
+                            Ok(root) => {
+                                this.merge_project_metadata(vec![root.clone()], cx);
+                                cx.emit(SidebarEvent::ProjectsChanged(vec![root]));
                             }
                             Err(message) => cx.emit(SidebarEvent::Notice(message.into())),
                         }
@@ -1843,10 +2078,14 @@ impl Sidebar {
             .map(|entry| match *entry {
                 entry @ (SidebarEntry::ComputerProject(_)
                 | SidebarEntry::OtherTask(_)
-                | SidebarEntry::Computer(_)) => self.computer_target(entry),
+                | SidebarEntry::Computer(_)
+                | SidebarEntry::ComputerMore(_)) => self.computer_target(entry),
                 SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
                 SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
                 SidebarEntry::SectionLabel(_) | SidebarEntry::Empty(_) => None,
+                SidebarEntry::LoadMore(kind) => {
+                    Some(SidebarTarget::LoadMore(format!("page:{}", kind.label())))
+                }
                 SidebarEntry::Task(task) => self
                     .sessions
                     .get(task.session)
@@ -2005,8 +2244,10 @@ impl Sidebar {
             Some(
                 entry @ (SidebarEntry::ComputerProject(_)
                 | SidebarEntry::OtherTask(_)
-                | SidebarEntry::Computer(_)),
+                | SidebarEntry::Computer(_)
+                | SidebarEntry::ComputerMore(_)),
             ) => self.render_computer_entry(entry, self.vim_selects_row(ix), cx),
+            Some(SidebarEntry::LoadMore(kind)) => self.render_load_more(kind, cx),
             Some(SidebarEntry::NewTask) => div()
                 .id("new-task")
                 .role(gpui::Role::Button)
@@ -2128,15 +2369,28 @@ impl Sidebar {
             }
             Some(SidebarEntry::ArchivedHeader) => {
                 let expanded = self.archived_expanded;
-                let count = if self.computers.len() > 1 {
+                let count = if self.computers.len() > 1 && self.project_filter.is_none() {
                     self.computer_archived_count
                 } else {
                     self.archived_rows.len()
                 };
+                let count_label = if self.pages.enabled && self.project_filter.is_some()
+                    || (self.pages.enabled && self.computers.len() <= 1)
+                {
+                    if self.pages.has_more(PageKind::Archived) {
+                        format!("{count}+")
+                    } else if !self.pages.has_started(PageKind::Archived) {
+                        String::new()
+                    } else {
+                        count.to_string()
+                    }
+                } else {
+                    count.to_string()
+                };
                 div()
                     .id("archived-toggle")
                     .role(gpui::Role::Button)
-                    .aria_label(format!("Archived tasks, {count}"))
+                    .aria_label(format!("Archived tasks {count_label}"))
                     .aria_expanded(expanded)
                     .mt_5()
                     .w_full()
@@ -2169,7 +2423,7 @@ impl Sidebar {
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child(count.to_string()),
+                            .child(count_label),
                     )
                     .into_any_element()
             }
@@ -2334,6 +2588,15 @@ impl Sidebar {
                 item = item.content(field);
             }
             menu = menu.item(item);
+        }
+        if self.pages.has_more(PageKind::Projects) {
+            menu = menu.item(MenuItem::new(
+                "switcher-more-projects",
+                "Load more projects",
+                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.load_page(PageKind::Projects, cx)
+                },
+            ));
         }
         menu.item(
             MenuItem::new(
@@ -2813,11 +3076,6 @@ impl Render for Sidebar {
             )
             .child(self.render_footer())
     }
-}
-
-/// Apply `update` to the settings file off the UI thread.
-fn persist_settings(update: impl FnOnce(&mut crate::settings::AppSettings) + Send + 'static) {
-    crate::settings::update_settings_in_background(update);
 }
 
 /// A spinner while the task runs, a dot once it completed unseen. The

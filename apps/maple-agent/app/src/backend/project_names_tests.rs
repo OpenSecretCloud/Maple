@@ -12,16 +12,18 @@ const USER: &str = "project-name-owner";
 
 fn owner(root: &std::path::Path) -> LocalBackend {
     let backend = LocalBackend::isolated_for_test(root);
-    backend
-        .persisted_auth
-        .claim_and_persist(&MapleApiAuthSnapshot {
-            user_id: USER.into(),
-            access_token: "fixture-token".into(),
-            refresh_token: None,
-            native_instance_id: "fixture-native".into(),
-            session_id: "fixture-session".into(),
-            revision: 1,
-        });
+    assert!(
+        backend
+            .persisted_auth
+            .claim_and_persist(&MapleApiAuthSnapshot {
+                user_id: USER.into(),
+                access_token: "fixture-token".into(),
+                refresh_token: None,
+                native_instance_id: "fixture-native".into(),
+                session_id: "fixture-session".into(),
+                revision: 1,
+            })
+    );
     backend
 }
 
@@ -34,8 +36,20 @@ fn request(method: &str, params: Value) -> protocol::Request {
     }
 }
 
-fn project<'a>(roots: &'a [RecentProjectRoot], path: &str) -> &'a RecentProjectRoot {
-    roots.iter().find(|root| root.path == path).unwrap()
+fn project<'a>(
+    roots: &'a [maple_agent::store::ProjectSummary],
+    path: &str,
+) -> &'a maple_agent::store::ProjectSummary {
+    roots.iter().find(|root| root.root == path).unwrap()
+}
+
+async fn bootstrap(backend: &LocalBackend) -> crate::backend::paging::NavigationBootstrap {
+    serde_json::from_value(
+        crate::backend::dispatch(backend, request("navigation_bootstrap", json!([USER])))
+            .await
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 async fn project_event(
@@ -47,6 +61,7 @@ async fn project_event(
         while let Some(event) = events.recv().await {
             if let AgentServiceEvent::ProjectsChanged { user_id, roots } = &event {
                 assert_eq!(user_id, USER);
+                assert_eq!(roots.len(), 1, "project events carry only the changed root");
                 if roots
                     .iter()
                     .any(|root| root.path == path && root.name == name)
@@ -71,7 +86,7 @@ async fn project_rename_ipc_preserves_account_boundary_and_recovery_metadata() {
         .await
         .unwrap();
     let path = registration.project_root;
-    let default_name = project(&registration.roots, &path).name.clone();
+    let default_name = registration.project.name.clone();
     let mut events = backend.take_events().await.unwrap();
 
     // Unix socket paths need a short temp root; Windows uses an isolated pipe.
@@ -112,20 +127,19 @@ async fn project_rename_ipc_preserves_account_boundary_and_recovery_metadata() {
     else {
         panic!("rename failed");
     };
-    let roots: Vec<RecentProjectRoot> = serde_json::from_value(value).unwrap();
-    let renamed = project(&roots, &path);
+    let renamed: RecentProjectRoot = serde_json::from_value(value).unwrap();
     assert_eq!(renamed.name, "Owner project");
     assert!(renamed.name_revision > 0);
     project_event(&mut events, &path, "Owner project").await;
 
     for method in [
         "rename_project_root",
-        "recent_project_roots",
-        "recovery_snapshot",
+        "navigation_bootstrap",
+        "list_projects",
     ] {
         let params = match method {
             "rename_project_root" => json!(["another-account", path, "Wrong owner"]),
-            "recovery_snapshot" => json!(["another-account", null]),
+            "list_projects" => json!(["another-account", {"cursor": null, "limit": 1}]),
             _ => json!(["another-account"]),
         };
         assert!(
@@ -135,32 +149,69 @@ async fn project_rename_ipc_preserves_account_boundary_and_recovery_metadata() {
                 .contains("account changed")
         );
     }
-    let snapshot = backend.recovery_snapshot(USER, None).await.unwrap();
-    assert_eq!(project(&snapshot.bootstrap.recent_roots, &path), renamed);
+    let snapshot = bootstrap(&backend).await;
+    let metadata = project(&snapshot.recent_projects, &path);
     assert_eq!(
-        snapshot.bootstrap.project_root.as_deref(),
-        Some(path.as_str())
+        metadata.display_name.as_deref(),
+        Some(renamed.name.as_str())
     );
-    assert!(snapshot.bootstrap.sessions.is_empty());
+    assert_eq!(metadata.name_revision, renamed.name_revision);
+    assert_eq!(metadata.is_default_workspace, renamed.is_default_workspace);
+    assert_eq!(snapshot.project_root.as_deref(), Some(path.as_str()));
 
     let cleared = backend
         .rename_project_root(USER, path.clone(), default_name.clone())
         .await
         .unwrap();
-    let cleared = project(&cleared, &path);
     assert_eq!(cleared.name, default_name);
     assert!(cleared.name_revision > renamed.name_revision);
+    drop(events);
+    drop(backend);
     let reopened = owner(storage.path());
+    let snapshot = bootstrap(&reopened).await;
+    let restored = project(&snapshot.recent_projects, &path);
     assert_eq!(
-        project(
-            &reopened.local_bootstrap(USER).await.unwrap().recent_roots,
-            &path
-        ),
-        cleared
+        restored.display_name.as_deref(),
+        Some(cleared.name.as_str())
     );
+    assert_eq!(restored.name_revision, cleared.name_revision);
     assert!(
         folder.path().is_dir(),
         "a label rename must not move the folder"
+    );
+}
+
+#[tokio::test]
+async fn default_workspace_metadata_survives_a_full_first_project_page() {
+    let Some(workspace) = maple_agent::agent::default_maple_workspace_path() else {
+        return;
+    };
+    let storage = tempfile::tempdir().unwrap();
+    let backend = owner(storage.path());
+    let store = backend.store().unwrap();
+    let account = store.upsert_account(USER, 1).unwrap();
+    for index in 0..55 {
+        let path = storage.path().join(format!("project-{index:03}"));
+        store
+            .remember_project(account, &path.to_string_lossy(), index, 1)
+            .unwrap();
+    }
+    let snapshot = bootstrap(&backend).await;
+    assert_eq!(snapshot.recent_projects.len(), 50);
+    assert!(snapshot.projects_next.is_some());
+    let workspace = workspace.to_string_lossy();
+    assert!(
+        snapshot
+            .recent_projects
+            .iter()
+            .all(|project| project.root != workspace)
+    );
+    let anchor = snapshot.default_project.unwrap();
+    assert_eq!(anchor.root, workspace);
+    assert!(anchor.is_default_workspace);
+    assert_eq!(
+        anchor.display_name.as_deref(),
+        Some(maple_agent::agent::MAPLE_WORKSPACE_DISPLAY_NAME)
     );
 }
 
@@ -201,9 +252,11 @@ async fn remote_call(
         let _slot = capacity.acquire(header.method).unwrap();
         let command = header.body(&mut rx).await.unwrap();
         assert_eq!(command.method, method);
-        let result =
-            crate::backend::dispatch(backend, request(&command.method.name(), command.params))
-                .await;
+        let result = crate::backend::dispatch_remote_inner(
+            backend,
+            request(&command.method.name(), command.params),
+        )
+        .await;
         streams::reply(
             &mut tx,
             &protocol::Message::Response {
@@ -251,11 +304,14 @@ async fn project_names_cross_iroh_in_both_directions_and_recover_from_snapshot()
         )
         .await
         .unwrap();
-        let roots: Vec<RecentProjectRoot> = serde_json::from_value(response).unwrap();
-        assert_eq!(project(&roots, &path).name, "From controller");
+        let renamed: RecentProjectRoot = serde_json::from_value(response).unwrap();
+        assert_eq!(renamed.name, "From controller");
+        let snapshot = bootstrap(&backend).await;
         assert_eq!(
-            project(&backend.recent_project_roots(USER).await.unwrap(), &path).name,
-            "From controller"
+            project(&snapshot.recent_projects, &path)
+                .display_name
+                .as_deref(),
+            Some("From controller")
         );
         project_event(&mut events, &path, "From controller").await;
 
@@ -279,7 +335,7 @@ async fn project_names_cross_iroh_in_both_directions_and_recover_from_snapshot()
         };
         let ((), received) = tokio::join!(sent, received);
         assert!(
-            matches!(received, protocol::Message::Event(event) if matches!(*event, AgentServiceEvent::ProjectsChanged { ref user_id, ref roots } if user_id == USER && project(roots, &path).name == "From owner desktop"))
+            matches!(received, protocol::Message::Event(event) if matches!(*event, AgentServiceEvent::ProjectsChanged { ref user_id, ref roots } if user_id == USER && roots.len() == 1 && roots[0].path == path && roots[0].name == "From owner desktop"))
         );
 
         let denied = remote_call(
@@ -301,17 +357,19 @@ async fn project_names_cross_iroh_in_both_directions_and_recover_from_snapshot()
             &backend,
             &controller,
             &execution,
-            wire::Method::RecoverySnapshot,
-            json!([USER, null]),
+            wire::Method::NavigationBootstrap,
+            json!([USER]),
         )
         .await
         .unwrap();
-        let snapshot: RecoverySnapshot = serde_json::from_value(recovered).unwrap();
+        let snapshot: crate::backend::paging::NavigationBootstrap =
+            serde_json::from_value(recovered).unwrap();
+        let recovered_name = project(&snapshot.recent_projects, &path);
         assert_eq!(
-            project(&snapshot.bootstrap.recent_roots, &path).name,
-            "From owner desktop"
+            recovered_name.display_name.as_deref(),
+            Some("From owner desktop")
         );
-        assert!(snapshot.bootstrap.sessions.is_empty());
+        assert!(recovered_name.name_revision > renamed.name_revision);
         controller.close(0u32.into(), b"done");
     };
     tokio::time::timeout(Duration::from_secs(30), exercise)

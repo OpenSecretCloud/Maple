@@ -1,3 +1,5 @@
+const TASK_ID: &str = "018ddbcc-b80b-7c20-8123-000000000001";
+
 use std::path::PathBuf;
 
 use pi_agent_core::{ToolInvocation, ToolUpdates};
@@ -41,26 +43,32 @@ impl MapleWebTransport for NoWeb {
 
 /// A task of `kind`: no login PATH, a broker nobody answers, and the web
 /// switch on.
-fn task(kind: TaskKind) -> TaskToolsFor {
-    TaskToolsFor {
-        session_id: "task-1".to_string(),
-        kind,
-        login_path: None,
-        questions: broker(),
-        web: Arc::new(NoWeb),
-        web_enabled: true,
-        read_image: ReadImageFor {
-            session_id: "task-1".to_string(),
-            cwd: PathBuf::from("/work"),
-            attachments: Arc::new(crate::agent::attachments::AgentAttachmentStore::new(
-                std::env::temp_dir().join("maple-tools-tests"),
-            )),
-            models: pi_coding_agent::ModelRegistry::new(Arc::new(
-                pi_coding_agent::StaticKeys::default(),
-            )),
-            describe: false,
+fn task(kind: TaskKind) -> (tempfile::TempDir, TaskToolsFor) {
+    let dir = tempfile::tempdir().unwrap();
+    let attachments = Arc::new(crate::agent::attachments::fixture_attachment_store(
+        dir.path(),
+        &[TASK_ID],
+    ));
+    (
+        dir,
+        TaskToolsFor {
+            session_id: TASK_ID.to_string(),
+            kind,
+            login_path: None,
+            questions: broker(),
+            web: Arc::new(NoWeb),
+            web_enabled: true,
+            read_image: ReadImageFor {
+                session_id: TASK_ID.to_string(),
+                cwd: PathBuf::from("/work"),
+                attachments,
+                models: pi_coding_agent::ModelRegistry::new(Arc::new(
+                    pi_coding_agent::StaticKeys::default(),
+                )),
+                describe: false,
+            },
         },
-    }
+    )
 }
 
 fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
@@ -76,9 +84,10 @@ fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
 
 #[test]
 fn commands_get_the_login_path_and_the_task_id() {
+    let (_dir, task) = task(TaskKind::Desktop);
     let tools = task_tools(TaskToolsFor {
         login_path: Some("/login/bin:/usr/bin".to_string()),
-        ..task(TaskKind::Desktop)
+        ..task
     });
     let hook = tools.options.bash.spawn_hook.unwrap();
     let started = hook(spawn(&[("PATH", "/usr/bin"), ("HOME", "/home/me")]));
@@ -88,7 +97,7 @@ fn commands_get_the_login_path_and_the_task_id() {
     );
     assert_eq!(
         started.env.get("AGENT_SESSION_ID").map(String::as_str),
-        Some("task-1")
+        Some(TASK_ID)
     );
     assert_eq!(
         started.env.get("HOME").map(String::as_str),
@@ -98,7 +107,8 @@ fn commands_get_the_login_path_and_the_task_id() {
 
 #[test]
 fn without_a_login_path_commands_keep_the_path_they_start_with() {
-    let tools = task_tools(task(TaskKind::Acp));
+    let (_dir, task) = task(TaskKind::Acp);
+    let tools = task_tools(task);
     let hook = tools.options.bash.spawn_hook.unwrap();
     let started = hook(spawn(&[("PATH", "/client/bin:/usr/bin")]));
     assert_eq!(
@@ -109,7 +119,8 @@ fn without_a_login_path_commands_keep_the_path_they_start_with() {
 
 #[test]
 fn the_model_gets_read_a_shell_edit_and_write() {
-    let tools = task_tools(task(TaskKind::Desktop));
+    let (_dir, task) = task(TaskKind::Desktop);
+    let tools = task_tools(task);
     let shell = if cfg!(windows) {
         tools.builtin[1].as_str()
     } else {
@@ -128,8 +139,9 @@ fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {
         .unwrap()
 }
 
-fn desktop_tools() -> TaskTools {
-    task_tools(task(TaskKind::Desktop))
+fn desktop_tools() -> (tempfile::TempDir, TaskTools) {
+    let (dir, task) = task(TaskKind::Desktop);
+    (dir, task_tools(task))
 }
 
 fn maple_tool_names(tools: &TaskTools) -> Vec<(String, bool)> {
@@ -143,8 +155,9 @@ fn maple_tool_names(tools: &TaskTools) -> Vec<(String, bool)> {
 #[test]
 fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
     let on = |name: &str| (name.to_string(), true);
+    let (_desktop_dir, desktop) = desktop_tools();
     assert_eq!(
-        maple_tool_names(&desktop_tools()),
+        maple_tool_names(&desktop),
         [
             on("read_image"),
             on("todo_write"),
@@ -153,9 +166,10 @@ fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
             on("open_url")
         ]
     );
+    let (_acp_dir, task) = task(TaskKind::Acp);
     let acp = task_tools(TaskToolsFor {
         web_enabled: false,
-        ..task(TaskKind::Acp)
+        ..task
     });
     assert_eq!(
         maple_tool_names(&acp),
@@ -169,7 +183,8 @@ fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
 
 #[tokio::test]
 async fn the_plan_is_echoed_to_the_model() {
-    let todo = tool(&desktop_tools(), "todo_write");
+    let (_dir, desktop) = desktop_tools();
+    let todo = tool(&desktop, "todo_write");
     let args = json!({"todos": [{"content": "Read the code", "status": "in_progress"}]});
     let result = todo
         .execute(ToolInvocation {
@@ -186,7 +201,8 @@ async fn the_plan_is_echoed_to_the_model() {
 
 #[test]
 fn near_miss_questions_take_the_schema_shape() {
-    let ask = tool(&desktop_tools(), "request_user_input");
+    let (_dir, desktop) = desktop_tools();
+    let ask = tool(&desktop, "request_user_input");
     let prepare = |args: Value| {
         let Value::Object(map) = args else {
             unreachable!()
@@ -258,9 +274,10 @@ fn questions_are_deduplicated_capped_and_defaulted() {
 #[tokio::test]
 async fn an_unanswered_question_is_taken_back_when_the_run_stops() {
     let questions = broker();
+    let (_dir, task) = task(TaskKind::Desktop);
     let tools = task_tools(TaskToolsFor {
         questions: questions.clone(),
-        ..task(TaskKind::Desktop)
+        ..task
     });
     let ask = tool(&tools, "request_user_input");
     let cancel = CancellationToken::new();

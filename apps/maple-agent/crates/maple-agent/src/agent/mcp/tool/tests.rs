@@ -177,3 +177,63 @@ fn long_text_is_cut_in_the_middle_and_saved_whole() {
     std::fs::remove_file(path).unwrap();
     assert_eq!(shown[1], "<image image/png>");
 }
+
+#[test]
+fn mcp_binary_and_text_spills_use_the_same_explicit_task_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let resource = ContentBlock::Resource(EmbeddedResource::new(
+        ResourceContents::BlobResourceContents {
+            uri: "file:///fixture.bin".into(),
+            mime_type: Some("application/octet-stream".into()),
+            blob: base64::engine::general_purpose::STANDARD.encode(b"binary fixture"),
+            meta: None,
+        },
+    ));
+    let binary = convert_result_in(
+        "fixture",
+        "binary",
+        result(vec![resource]),
+        Some(dir.path()),
+    );
+    assert!(texts(&binary.content)[0].contains(&dir.path().display().to_string()));
+    let text = "long text".repeat(MCP_OUTPUT_MAX_BYTES);
+    let converted = convert_result_in(
+        "fixture",
+        "text",
+        result(vec![ContentBlock::text(text.clone())]),
+        Some(dir.path()),
+    );
+    let details = converted.details.unwrap();
+    let path = std::path::PathBuf::from(details["fullOutputPath"].as_str().unwrap());
+    assert_eq!(path.parent(), Some(dir.path()));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+    let outputs: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(outputs.len(), 2);
+    assert!(outputs.iter().any(|bytes| bytes == b"binary fixture"));
+}
+
+#[test]
+fn a_failed_mcp_spill_directory_truncates_without_a_global_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing");
+    let converted = convert_result_in(
+        "fixture",
+        "text",
+        result(vec![ContentBlock::text(
+            "x".repeat(MCP_OUTPUT_MAX_BYTES + 1),
+        )]),
+        Some(&missing),
+    );
+    assert!(converted.details.unwrap().get("fullOutputPath").is_none());
+    assert!(texts(&converted.content)[0].contains("Could not save the full output"));
+    assert!(!missing.exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}

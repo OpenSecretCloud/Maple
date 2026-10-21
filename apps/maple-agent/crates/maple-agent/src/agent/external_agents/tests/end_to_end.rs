@@ -6,7 +6,6 @@
 use pi_ai::faux::faux_tool_call;
 
 use super::*;
-use crate::agent::config::account_local_data_dir_path;
 use crate::agent::tests::{Harness, eventually, finished, last_user_text};
 use crate::agent::{
     AgentRunTerminal, AgentSessionIntegrationKind, AgentSetSessionMcpServerRequest,
@@ -15,17 +14,20 @@ use crate::agent::{
 /// Switch external agents on in Settings, as the Integrations page saves
 /// them.
 fn switch_on_in_settings(harness: &Harness, providers: &[&str]) {
-    let dir = account_local_data_dir_path(harness.handle.paths(), &harness.handle.user_id).unwrap();
-    fs::create_dir_all(&dir).unwrap();
     let entries: Vec<Value> = providers
         .iter()
         .map(|id| json!({"id": id, "enabled": true, "backend": "embedded"}))
         .collect();
-    fs::write(
-        dir.join("integrations.json"),
-        json!({"version": 2, "integrations": entries}).to_string(),
-    )
-    .unwrap();
+    let store = harness.handle.store().unwrap();
+    store
+        .store()
+        .set_account_setting(
+            store.account(),
+            "agent.integrations",
+            &json!({"version": 2, "integrations": entries}),
+            1,
+        )
+        .unwrap();
 }
 
 /// Switch external agents on for a task, as its MCP menu does once the
@@ -105,7 +107,7 @@ async fn the_tools_follow_settings_and_the_tasks_choice() {
         declared_agent_tools(&runtime, &task).await,
         EXTERNAL_AGENT_TOOLS
     );
-    let skills = crate::agent::config::account_config_dir_path(
+    let skills = crate::agent::config::account_generated_resource_dir(
         harness.handle.paths(),
         &harness.handle.user_id,
     )

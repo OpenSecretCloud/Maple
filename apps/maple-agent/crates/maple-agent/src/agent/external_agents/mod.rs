@@ -434,6 +434,83 @@ impl ExternalAgentRegistry {
         }
     }
 
+    /// Hold launch/state locks across a bounded maintenance mutation. The caller
+    /// first holds the task's normal run-admission guard. Contention fails closed.
+    pub(crate) fn while_session_idle<T>(
+        &self,
+        session_id: &str,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let sessions = self
+            .sessions
+            .try_lock()
+            .map_err(|_| "External agent state is busy".to_string())?;
+        let agents = sessions
+            .get(session_id)
+            .map(|session| session.agents.values().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let _launches = agents
+            .iter()
+            .map(|agent| {
+                agent
+                    .launch
+                    .try_lock()
+                    .map_err(|_| "An external agent is starting".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let states = agents
+            .iter()
+            .map(|agent| {
+                agent
+                    .state
+                    .try_lock()
+                    .map_err(|_| "External agent state is busy".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if states.iter().any(|state| state.turn.is_some()) {
+            return Err("An external agent is working".to_string());
+        }
+        action()
+    }
+
+    /// Admit one short profile-wide maintenance effect only while every
+    /// autonomous agent is idle, retaining the same launch/state guards.
+    pub(crate) fn while_all_idle<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let sessions = self
+            .sessions
+            .try_lock()
+            .map_err(|_| "External agent state is busy".to_string())?;
+        let agents = sessions
+            .values()
+            .flat_map(|session| session.agents.values())
+            .collect::<Vec<_>>();
+        let _launches = agents
+            .iter()
+            .map(|agent| {
+                agent
+                    .launch
+                    .try_lock()
+                    .map_err(|_| "An external agent is starting".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let states = agents
+            .iter()
+            .map(|agent| {
+                agent
+                    .state
+                    .try_lock()
+                    .map_err(|_| "External agent state is busy".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if states.iter().any(|state| state.turn.is_some()) {
+            return Err("An external agent is working".to_string());
+        }
+        action()
+    }
+
     /// Find and start the agents of every task on `path`, as a test's fake
     /// agents need. Those tests run on Unix.
     #[cfg(all(test, unix))]
@@ -758,6 +835,18 @@ impl ExternalAgentRegistry {
         rows
     }
 
+    pub(crate) async fn live_revision(&self, session_id: &str) -> u64 {
+        let agents = match self.sessions.lock().await.get(session_id) {
+            Some(session) => session.agents.values().cloned().collect::<Vec<_>>(),
+            None => return 0,
+        };
+        let mut revision = 0;
+        for agent in agents {
+            revision = revision.max(agent.state.lock().await.last_row_revision);
+        }
+        revision
+    }
+
     pub(crate) async fn shutdown_session(&self, session_id: &str) {
         let agents = self
             .sessions
@@ -900,6 +989,7 @@ struct AgentState {
     /// own can spawn the process the same way.
     last_call: Option<StoredCall>,
     last_row_emit: Option<Instant>,
+    last_row_revision: u64,
     /// The transcript row of the latest turn, for the notice that lands
     /// after the turn is gone.
     last_row_id: Option<String>,
@@ -953,6 +1043,7 @@ impl ExternalAgent {
                 open_questions: 0,
                 last_call: None,
                 last_row_emit: None,
+                last_row_revision: 0,
                 last_row_id: None,
             }),
             provider,
@@ -1008,9 +1099,15 @@ impl ExternalAgent {
             .map(|turn| (turn.row_id.clone(), turn.synthetic))?;
         self.refresh_elapsed(&mut state);
         let mut item = activity_row_item(&row_id, &state.activity, unix_ms());
+        item.revision = state.last_row_revision;
+        item.live = Some(super::AgentLiveRowIdentity {
+            run_id: external_run_id(&self.agent_id),
+            occurrence: u64::from(state.activity.turns),
+        });
         if synthetic {
             item.title = Some(SYNTHETIC_TURN_TITLE.to_string());
         }
+        self.decorate_live_item(&mut item);
         Some(item)
     }
 
@@ -1022,6 +1119,9 @@ impl ExternalAgent {
         input: TurnInput,
     ) -> Result<AgentToolResult, String> {
         let launch = self.launch.lock().await;
+        if let Some(runtime) = self.host.runtime.upgrade() {
+            runtime.host.cancel_integrity_check();
+        }
         if self.cancel.is_cancelled() {
             return Err("This external agent has been shut down.".to_string());
         }
@@ -1068,6 +1168,7 @@ impl ExternalAgent {
             });
             state.messages.clear();
             state.activity.begin_turn();
+            state.last_row_revision = super::runs::next_timeline_revision();
             (client, thread_id, done_rx)
         };
         log::info!("External agent {} turn starts", self.agent_id);
@@ -1787,6 +1888,12 @@ impl ExternalAgent {
             }
             self.refresh_elapsed(&mut state);
             let mut row = activity_row_item(&turn.row_id, &state.activity, unix_ms());
+            state.last_row_revision = super::runs::next_timeline_revision();
+            row.revision = state.last_row_revision;
+            row.live = Some(super::AgentLiveRowIdentity {
+                run_id: external_run_id(&self.agent_id),
+                occurrence: u64::from(state.activity.turns),
+            });
             if turn.synthetic {
                 row.title = Some(SYNTHETIC_TURN_TITLE.to_string());
             }
@@ -1863,6 +1970,10 @@ impl ExternalAgent {
             })),
         );
         let mut row = activity_row_item(&row_id, &activity, unix_ms());
+        row.live = Some(super::AgentLiveRowIdentity {
+            run_id: external_run_id(&self.agent_id),
+            occurrence: u64::from(activity.turns),
+        });
         row.output = Some(json!({
             "text": result_text,
             "structuredContent": { ACTIVITY_KEY: activity },
@@ -1965,7 +2076,11 @@ impl ExternalAgent {
         );
     }
 
-    fn emit_item(&self, item: AgentTimelineItem) {
+    fn emit_item(&self, mut item: AgentTimelineItem) {
+        if item.revision == 0 {
+            item.revision = super::runs::next_timeline_revision();
+        }
+        self.decorate_live_item(&mut item);
         emit_agent_event(
             &self.host.events,
             AgentServiceEvent::TimelineItem {
@@ -1974,6 +2089,33 @@ impl ExternalAgent {
                 item,
             },
         );
+    }
+
+    fn decorate_live_item(&self, item: &mut AgentTimelineItem) {
+        if item.live.is_none() {
+            return;
+        }
+        let Some(runtime) = self.host.runtime.upgrade() else {
+            return;
+        };
+        match runtime.store.store().external_repaint_target(
+            runtime.store.account(),
+            &self.session_id,
+            &item.id,
+        ) {
+            Ok(Some(row)) => {
+                item.persisted = Some(super::AgentPersistedRowIdentity {
+                    task_id: self.session_id.clone(),
+                    rows_epoch: row.epoch,
+                    row_seq: row.row_seq,
+                    update_seq: row.update_seq,
+                })
+            }
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("Could not resolve the external agent's committed row: {error}")
+            }
+        }
     }
 
     /// Repaint the transcript row of the current turn with the activity so
@@ -1993,9 +2135,15 @@ impl ExternalAgent {
                 return;
             }
             state.last_row_emit = Some(now);
+            state.last_row_revision = super::runs::next_timeline_revision();
             state.last_row_id = Some(row_id.clone());
             self.refresh_elapsed(&mut state);
             let mut item = activity_row_item(&row_id, &state.activity, unix_ms());
+            item.revision = state.last_row_revision;
+            item.live = Some(super::AgentLiveRowIdentity {
+                run_id: external_run_id(&self.agent_id),
+                occurrence: u64::from(state.activity.turns),
+            });
             if state.turn.as_ref().is_some_and(|turn| turn.synthetic) {
                 item.title = Some(SYNTHETIC_TURN_TITLE.to_string());
             }
@@ -2126,6 +2274,9 @@ fn activity_row_item(
         _ => "completed",
     };
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: row_id.to_string(),
         item_type: "tool".to_string(),

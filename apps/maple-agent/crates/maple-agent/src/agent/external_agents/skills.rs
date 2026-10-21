@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::agent::AgentPathLayout;
-use crate::agent::config::{account_config_dir_path, set_owner_only_dir_permissions};
+use crate::agent::config::account_generated_resource_dir;
 
 /// Frontmatter line that marks a skill file as Maple's, so switching the
 /// agents off removes only what switching them on wrote.
@@ -29,7 +29,7 @@ const SKILLS: [(&str, &str); 3] = [
 
 /// The account's skills folder, Pi's `~/.pi/agent/skills`.
 fn skills_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
-    Ok(account_config_dir_path(paths, user_id)
+    Ok(account_generated_resource_dir(paths, user_id)
         .map_err(|error| error.to_string())?
         .join("skills"))
 }
@@ -46,6 +46,46 @@ pub(in crate::agent) fn sync(
         debug_assert!(content.contains(MARKER));
         let dir = root.join(name);
         let file = dir.join("SKILL.md");
+        // This namespace is new and app-owned. Never follow a planted link
+        // from a generated skill to an earlier app directory or user file.
+        let scope = crate::maple_api::account_scope(user_id)?;
+        let names = ["accounts", &scope, "skills", name];
+        let verified = if enabled {
+            paths
+                .store()?
+                .paths()
+                .prepare_resource_directory(&names)
+                .map_err(|error| error.to_string())?
+        } else {
+            let Some(directory) = paths
+                .store()?
+                .paths()
+                .existing_resource_directory(&names)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            directory
+        };
+        if verified != dir {
+            return Err("Generated skill path is outside the current store".into());
+        }
+        match fs::symlink_metadata(&file) {
+            Ok(metadata) => {
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err("Generated skill must be a regular file".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if metadata.nlink() != 1 {
+                        return Err("Generated skill must not be a hard link".into());
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
         if enabled {
             let current = fs::read_to_string(&file).ok();
             if current.as_deref() == Some(content) {
@@ -60,7 +100,6 @@ pub(in crate::agent) fn sync(
             }
             crate::private_file::write_private_file(&file, content.as_bytes())
                 .map_err(|error| format!("Failed to install the {name} skill: {error}"))?;
-            set_owner_only_dir_permissions(&dir);
         } else {
             let Ok(current) = fs::read_to_string(&file) else {
                 continue;
@@ -82,7 +121,11 @@ mod tests {
     use super::*;
 
     fn layout(root: &std::path::Path) -> AgentPathLayout {
-        AgentPathLayout::from_app_roots(root.join("config"), root.join("data"))
+        let store = std::sync::Arc::new(
+            crate::store::Store::open(crate::store::StorePaths::new(root.join("data"))).unwrap(),
+        );
+        AgentPathLayout::from_resource_root(store.paths().resources())
+            .with_store(store)
             .with_home(Some(root.join("home")))
     }
 
@@ -92,7 +135,13 @@ mod tests {
         let paths = layout(temp.path());
         let root = skills_dir(&paths, "user").unwrap();
         let own = root.join("advisor").join("SKILL.md");
-        fs::create_dir_all(own.parent().unwrap()).unwrap();
+        let scope = crate::maple_api::account_scope("user").unwrap();
+        paths
+            .store()
+            .unwrap()
+            .paths()
+            .prepare_resource_directory(&["accounts", &scope, "skills", "advisor"])
+            .unwrap();
         fs::write(&own, "---\nname: advisor\n---\nmine").unwrap();
 
         sync(&paths, "user", true).unwrap();

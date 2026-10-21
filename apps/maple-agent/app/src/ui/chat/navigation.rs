@@ -31,6 +31,7 @@ pub(super) enum SidebarTarget {
     Projects,
     Task(String),
     Archived,
+    LoadMore(String),
 }
 
 #[derive(Clone, Debug)]
@@ -539,6 +540,9 @@ impl ChatScreen {
                 Some(SidebarTarget::Computer(request)) => cx.emit(request),
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
+                Some(SidebarTarget::LoadMore(id)) => self
+                    .sidebar
+                    .update(cx, |sidebar, cx| sidebar.activate_more(&id, cx)),
                 None => {}
             },
             ChatRegion::Transcript => self.set_application_expanded_toggle(cx),

@@ -1,23 +1,52 @@
-//! Maple's own account files and the project list.
+//! Maple's account defaults and projects in the host's injected local store.
 //!
-//! The account `config.json` (default project and model, MCP servers, project
-//! trust), the device-local list of removed projects, the recent project
-//! roots, the default Maple workspace, and the paths of the account folders.
-//! None of it depends on how tasks run, so it carried over from the Goose
-//! runtime unchanged.
+//! Defaults use account settings; project names, order, trust and removal use
+//! typed project records. No JSON sidecar is read, adopted or written. General
+//! instruction Markdown, prompts and skills may be read from a separately
+//! configured instruction namespace, which this module never creates.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
-use super::attachments::AgentAttachmentStore;
 use super::types::*;
 use super::{AgentPathLayout, LEGACY_AGENT_DEFAULT_MODEL, PREVIOUS_RECOMMENDED_AGENT_MODEL};
 use crate::maple_api::account_scope;
+#[cfg(test)]
+use crate::store::ProjectRecord;
+use crate::store::{AccountId, Store};
+
+const AGENT_DEFAULTS_KEY: &str = "agent.defaults";
+
+/// Project data and MCP definitions have their own authoritative SQL records.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredAgentDefaults {
+    default_project_root: Option<String>,
+    #[serde(default = "default_agent_model")]
+    default_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_thinking_level: Option<ThinkingLevel>,
+}
+
+pub(super) fn account_store<'a>(
+    paths: &'a AgentPathLayout,
+    user_id: &str,
+) -> Result<(&'a Store, AccountId), anyhow::Error> {
+    let store = paths.store().map_err(anyhow::Error::msg)?;
+    let account = match store.account_id(user_id)? {
+        Some(account) => account,
+        None => store.upsert_account(user_id, store_now_ms())?,
+    };
+    Ok((store.as_ref(), account))
+}
+
+fn store_now_ms() -> i64 {
+    i64::try_from(unix_ms()).unwrap_or(i64::MAX)
+}
 
 pub(super) fn stopped_status() -> AgentRuntimeStatus {
     AgentRuntimeStatus {
@@ -36,8 +65,8 @@ pub(super) fn resolve_project_root(
         return normalize_project_root(Path::new(path));
     }
 
-    // A removed project persists only as a device-local tombstone; the
-    // roaming default may still name it. Never boot into a hidden root.
+    // A removed project retains a tombstone even when a saved default still
+    // names it. Never boot into a hidden root.
     if let Some(path) = config
         .default_project_root
         .as_deref()
@@ -68,163 +97,126 @@ pub(super) fn normalize_project_root(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-pub(super) fn agent_root_dir(paths: &AgentPathLayout) -> Result<PathBuf, anyhow::Error> {
-    let path = paths.config_root.clone();
-    fs::create_dir_all(&path)?;
-    set_owner_only_dir_permissions(&path);
-    Ok(path)
-}
-
-pub(super) fn account_config_dir_path(
+/// Generated delegation skills are the only files Maple creates for an account.
+/// User-authored general instruction files keep their separate read-only root.
+pub(super) fn account_generated_resource_dir(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<PathBuf, anyhow::Error> {
     let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
-    Ok(agent_root_dir(paths)?.join("accounts").join(scope))
+    Ok(paths.generated_resource_root.join("accounts").join(scope))
 }
 
-pub(super) fn account_local_data_dir_path(
+/// The account's existing general instructions, prompt templates and skills.
+/// This path is read-only: locating it must not create or change a prior app
+/// namespace, including its directory permissions.
+pub(super) fn account_instruction_dir_path(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<PathBuf, anyhow::Error> {
     let scope = account_scope(user_id).map_err(anyhow::Error::msg)?;
-    Ok(paths.local_data_root.join("accounts").join(scope))
-}
-
-/// The device-local data directory this crate owns for one account: task
-/// sessions and their index, image attachments, and anything else keyed to
-/// the signed-in user. Removing it removes the account's local state.
-///
-/// Pure path arithmetic; it creates nothing and touches no disk. Callers
-/// outside this crate should use it instead of rebuilding the layout by
-/// hand, because the on-disk shape is this crate's private business.
-pub fn account_local_data_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
-    account_local_data_dir_path(paths, user_id).map_err(|error| error.to_string())
-}
-
-/// The store of model-written tool call summaries for one account.
-///
-/// The app owns this file; the agent runtime never opens it. It lives
-/// beside the runtime's own account data so that deleting the account
-/// removes the summaries with it.
-pub fn account_tool_summaries_db_path(
-    paths: &AgentPathLayout,
-    user_id: &str,
-) -> Result<PathBuf, String> {
-    Ok(account_local_data_dir(paths, user_id)?.join(AGENT_TOOL_SUMMARIES_DB_NAME))
-}
-
-pub(super) fn account_attachment_store(
-    paths: &AgentPathLayout,
-    user_id: &str,
-) -> Result<AgentAttachmentStore, String> {
-    account_local_data_dir_path(paths, user_id)
-        .map(AgentAttachmentStore::new)
-        .map_err(|error| error.to_string())
-}
-
-pub(super) fn agent_config_dir(
-    paths: &AgentPathLayout,
-    user_id: &str,
-) -> Result<PathBuf, anyhow::Error> {
-    let path = account_config_dir_path(paths, user_id)?;
-    fs::create_dir_all(&path)?;
-    set_owner_only_dir_permissions(&path);
-    Ok(path)
-}
-
-/// Folder of the account's task session files, below its local data folder.
-const AGENT_SESSIONS_SUBDIR: &str = "sessions";
-
-/// File name of the account's task index, beside the session files.
-pub(super) const AGENT_TASK_INDEX_NAME: &str = "tasks.db";
-
-/// File name of the app-owned tool call summary store below an account
-/// directory. See [`account_tool_summaries_db_path`].
-const AGENT_TOOL_SUMMARIES_DB_NAME: &str = "tool_summaries.db";
-
-/// The folder of one account's task session files, created owner-only.
-///
-/// Session history is device-local, so it lives in the local data root, next
-/// to the attachments. The account `config.json` stays in the config root,
-/// which a user may sync between machines.
-pub(super) fn account_sessions_dir(
-    paths: &AgentPathLayout,
-    user_id: &str,
-) -> Result<PathBuf, String> {
-    let account_dir =
-        account_local_data_dir_path(paths, user_id).map_err(|error| error.to_string())?;
-    sessions_dir_for_account_dir(&account_dir)
-}
-
-pub(super) fn sessions_dir_for_account_dir(account_dir: &Path) -> Result<PathBuf, String> {
-    let sessions = account_dir.join(AGENT_SESSIONS_SUBDIR);
-    create_owner_only_dir_all(&sessions)
-        .map_err(|error| format!("Failed to create the task folder: {error}"))?;
-    Ok(sessions)
-}
-
-/// Create `path` and its missing parents, making each folder this call
-/// creates, and `path` itself, readable only by the owner.
-pub(super) fn create_owner_only_dir_all(path: &Path) -> std::io::Result<()> {
-    let mut missing = Vec::new();
-    let mut current = Some(path);
-    while let Some(directory) = current {
-        if directory.exists() {
-            break;
-        }
-        missing.push(directory.to_path_buf());
-        current = directory.parent();
-    }
-    fs::create_dir_all(path)?;
-    for directory in missing.iter().rev() {
-        set_owner_only_dir_permissions(directory);
-    }
-    set_owner_only_dir_permissions(path);
-    Ok(())
+    Ok(paths.instruction_config_root().join("accounts").join(scope))
 }
 
 pub(super) fn load_agent_config_inner(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<AgentConfig, anyhow::Error> {
-    let path = agent_config_dir(paths, user_id)?.join("config.json");
-    let removed_project_roots_path =
-        account_local_data_dir_path(paths, user_id)?.join("removed_project_roots.json");
-    load_agent_config_files(&path, &removed_project_roots_path)
-}
-
-pub(super) fn load_agent_config_files(
-    config_path: &Path,
-    removed_project_roots_path: &Path,
-) -> Result<AgentConfig, anyhow::Error> {
-    let had_legacy_project_skills_trust = config_file_uses_legacy_project_skills_trust(config_path);
-    let mut config = load_agent_config_file(config_path)?;
-    // This field was introduced by the unshipped remove-project work. Never
-    // adopt it from the roaming config: on Windows it may have come from a
-    // different device using the same roaming profile.
-    let had_roaming_removed_project_roots = !config.removed_project_roots.is_empty();
-    let migrated = migrate_agent_config(&mut config);
-    config.removed_project_roots = load_removed_project_roots_file(removed_project_roots_path)?;
-    if migrated || had_roaming_removed_project_roots || had_legacy_project_skills_trust {
-        save_agent_config_file(config_path, &config)?;
+    let (store, account) = account_store(paths, user_id)?;
+    let mut config = AgentConfig::default();
+    if let Some(value) = store.account_setting(account, AGENT_DEFAULTS_KEY)? {
+        let defaults: StoredAgentDefaults = serde_json::from_value(value)?;
+        config.default_project_root = defaults.default_project_root;
+        config.default_model = defaults.default_model;
+        config.default_thinking_level = defaults.default_thinking_level;
+    }
+    // Defaults carry only their target project's state. Navigation never
+    // reconstructs all account projects, trust entries or removal tombstones.
+    if let Some(root) = config.default_project_root.clone() {
+        load_project_state(store, account, &root, &mut config)?;
+    }
+    // The one well-known fallback also needs its own removal tombstone; a
+    // missing saved folder must not resurrect a workspace the user hid.
+    if let Some(workspace) = default_maple_workspace_path() {
+        load_project_state(store, account, &path_string(&workspace), &mut config)?;
+    }
+    config.mcp_servers =
+        super::mcp::load_saved_mcp_servers(paths, user_id).map_err(anyhow::Error::msg)?;
+    if migrate_agent_config(&mut config) {
+        save_agent_config_inner(paths, user_id, &config)?;
     }
     Ok(config)
 }
 
-pub(super) fn config_file_uses_legacy_project_skills_trust(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .is_some_and(|config| config.get("projectSkillsTrust").is_some())
+fn load_project_state(
+    store: &Store,
+    account: AccountId,
+    root: &str,
+    config: &mut AgentConfig,
+) -> Result<(), anyhow::Error> {
+    config.project_trust.retain(|entry| entry.path != root);
+    config.removed_project_roots.retain(|entry| entry != root);
+    if let Some(project) = store.project(account, root)? {
+        if let Some(trusted) = project.trusted {
+            config.project_trust.push(AgentProjectTrust {
+                path: project.root.clone(),
+                trusted,
+            });
+        }
+        if project.removed_ms.is_some() {
+            config.removed_project_roots.push(project.root);
+        }
+    }
+    Ok(())
 }
 
-pub(super) fn load_agent_config_file(path: &Path) -> Result<AgentConfig, anyhow::Error> {
-    if !path.exists() {
-        return Ok(AgentConfig::default());
-    }
-    let contents = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&contents)?)
+pub(super) fn load_project_config_inner(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    project_root: &Path,
+) -> Result<AgentConfig, anyhow::Error> {
+    let mut config = load_agent_config_inner(paths, user_id)?;
+    let (store, account) = account_store(paths, user_id)?;
+    load_project_state(store, account, &path_string(project_root), &mut config)?;
+    Ok(config)
+}
+
+/// Persist one default-root change without rewriting any project's trust,
+/// removal state, display name, MCP defaults or manual order.
+pub(super) fn save_default_project_root_inner(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    root: Option<String>,
+) -> Result<(), anyhow::Error> {
+    let (store, account) = account_store(paths, user_id)?;
+    let mut defaults = match store.account_setting(account, AGENT_DEFAULTS_KEY)? {
+        Some(value) => serde_json::from_value::<StoredAgentDefaults>(value)?,
+        None => StoredAgentDefaults {
+            default_project_root: None,
+            default_model: default_agent_model(),
+            default_thinking_level: None,
+        },
+    };
+    defaults.default_project_root = root;
+    store.save_agent_defaults(
+        account,
+        &serde_json::to_value(defaults)?,
+        &[],
+        store_now_ms(),
+    )?;
+    Ok(())
+}
+
+pub(super) fn project_trust_decision_inner(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    project_root: &Path,
+) -> Result<Option<bool>, anyhow::Error> {
+    let (store, account) = account_store(paths, user_id)?;
+    Ok(store
+        .project(account, &path_string(project_root))?
+        .and_then(|project| project.trusted)
+        .or_else(|| is_implicitly_trusted_project_root(project_root).then_some(true)))
 }
 
 pub(super) fn migrate_agent_config(config: &mut AgentConfig) -> bool {
@@ -247,39 +239,31 @@ pub(super) fn save_agent_config_inner(
     user_id: &str,
     config: &AgentConfig,
 ) -> Result<(), anyhow::Error> {
-    let path = agent_config_dir(paths, user_id)?.join("config.json");
-    save_agent_config_file(&path, config)
+    let (store, account) = account_store(paths, user_id)?;
+    let defaults = serde_json::to_value(StoredAgentDefaults {
+        default_project_root: config.default_project_root.clone(),
+        default_model: config.default_model.clone(),
+        default_thinking_level: config.default_thinking_level,
+    })?;
+    let trust = config
+        .project_trust
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.trusted))
+        .collect::<Vec<_>>();
+    store.save_agent_defaults(account, &defaults, &trust, store_now_ms())?;
+    Ok(())
 }
 
-pub(super) fn save_agent_config_file(
-    path: &Path,
-    config: &AgentConfig,
-) -> Result<(), anyhow::Error> {
-    let mut roaming_config = config.clone();
-    roaming_config.removed_project_roots.clear();
-    write_json_file(path, &roaming_config)
-}
-
-pub(super) fn load_removed_project_roots_file(path: &Path) -> Result<Vec<String>, anyhow::Error> {
-    if !path.try_exists()? {
-        return Ok(Vec::new());
-    }
-    let contents = fs::read_to_string(path)?;
-    let roots = serde_json::from_str::<Vec<String>>(&contents)?;
-    let sanitized = sanitize_project_root_paths(roots.clone());
-    if sanitized != roots {
-        write_device_local_json_file(path, &sanitized)?;
-    }
-    Ok(sanitized)
-}
-
+#[cfg(test)]
 pub(super) fn save_removed_project_roots_inner(
     paths: &AgentPathLayout,
     user_id: &str,
     roots: &[String],
 ) -> Result<(), anyhow::Error> {
-    let path = account_local_data_dir_path(paths, user_id)?.join("removed_project_roots.json");
-    write_device_local_json_file(&path, roots)
+    let (store, account) = account_store(paths, user_id)?;
+    let roots = sanitize_project_root_paths(roots.to_vec());
+    store.set_removed_project_roots(account, &roots, store_now_ms())?;
+    Ok(())
 }
 
 pub(super) fn home_dir() -> Option<PathBuf> {
@@ -413,7 +397,7 @@ pub(super) fn usable_saved_project_root(config: &AgentConfig) -> Option<String> 
 
 /// Offer the Maple workspace in the project list without moving roots the
 /// user already saved. A removed workspace stays hidden even if an older
-/// recent-root file still names it. Listing never creates the folder, and
+/// saved project record still names it. Listing never creates the folder, and
 /// the comparisons are on the canonical path strings, so this does not
 /// touch the Documents folder.
 pub fn include_default_maple_workspace(
@@ -521,30 +505,50 @@ pub(super) fn apply_project_trust(config: &mut AgentConfig, project_root: &Path,
         .push(AgentProjectTrust { path, trusted });
 }
 
+#[cfg(test)]
 pub(super) fn load_recent_project_roots_inner(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
-    load_recent_project_roots_file(&path)
+    let (store, account) = account_store(paths, user_id)?;
+    recent_project_roots(store.account_projects(account)?)
 }
 
-pub(super) fn read_recent_project_roots_file(
-    path: &Path,
+#[cfg(test)]
+fn recent_project_roots(
+    projects: Vec<ProjectRecord>,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let contents = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&contents)?)
+    projects
+        .into_iter()
+        .filter(|project| project.position.is_some() && project.removed_ms.is_none())
+        .map(|project| {
+            let used_ms = u128::try_from(project.last_used_ms)
+                .map_err(|_| anyhow::anyhow!("Invalid saved project timestamp"))?;
+            let mut root = project_root_record(project.root, used_ms);
+            if let Some(name) = project.display_name {
+                root.name = name;
+            }
+            Ok(root)
+        })
+        .collect()
 }
 
-pub(super) fn load_recent_project_roots_file(
-    path: &Path,
-) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    Ok(sanitize_recent_project_roots(
-        read_recent_project_roots_file(path)?,
-    ))
+#[cfg(test)]
+fn persist_project_order(
+    store: &Store,
+    account: AccountId,
+    roots: &[RecentProjectRoot],
+) -> Result<(), anyhow::Error> {
+    let order = roots
+        .iter()
+        .map(|root| {
+            let used_ms = i64::try_from(root.last_used_ms)
+                .map_err(|_| anyhow::anyhow!("Invalid project timestamp"))?;
+            Ok((root.path.clone(), used_ms))
+        })
+        .collect::<Result<Vec<_>, anyhow::Error>>()?;
+    store.replace_project_order(account, &order)?;
+    Ok(())
 }
 
 pub(super) fn structurally_valid_project_root(path: &str) -> bool {
@@ -559,6 +563,7 @@ pub(super) fn sanitize_project_root_paths(paths: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn sanitize_recent_project_roots(
     roots: Vec<RecentProjectRoot>,
 ) -> Vec<RecentProjectRoot> {
@@ -571,6 +576,7 @@ pub(super) fn sanitize_recent_project_roots(
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn project_root_record(path: String, last_used_ms: u128) -> RecentProjectRoot {
     let name = Path::new(&path)
         .file_name()
@@ -587,6 +593,7 @@ pub(super) fn project_root_record(path: String, last_used_ms: u128) -> RecentPro
     }
 }
 
+#[cfg(test)]
 pub(super) fn register_explicit_project_root(
     roots: Vec<RecentProjectRoot>,
     project_root: &Path,
@@ -604,28 +611,22 @@ pub(super) fn register_explicit_project_root(
     (roots, true)
 }
 
-pub(super) fn register_explicit_project_root_file(
-    file_path: &Path,
-    project_root: &Path,
-    last_used_ms: u128,
-) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let roots = read_recent_project_roots_file(file_path)?;
-    let (roots, changed) = register_explicit_project_root(roots, project_root, last_used_ms);
-    if changed {
-        write_json_file(file_path, &roots)?;
-    }
-    Ok(roots)
-}
-
+#[cfg(test)]
 pub(super) fn register_explicit_project_root_inner(
     paths: &AgentPathLayout,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
-    register_explicit_project_root_file(&file_path, project_root, unix_ms())
+    let (store, account) = account_store(paths, user_id)?;
+    let roots = recent_project_roots(store.account_projects(account)?)?;
+    let (roots, changed) = register_explicit_project_root(roots, project_root, unix_ms());
+    if changed {
+        persist_project_order(store, account, &roots)?;
+    }
+    recent_project_roots(store.account_projects(account)?)
 }
 
+#[cfg(test)]
 pub(super) fn restore_explicit_project_root(
     roots: Vec<RecentProjectRoot>,
     project_root: &Path,
@@ -640,29 +641,25 @@ pub(super) fn restore_explicit_project_root(
     roots
 }
 
-pub(super) fn restore_explicit_project_root_file(
-    file_path: &Path,
-    project_root: &Path,
-    last_used_ms: u128,
-) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let roots = restore_explicit_project_root(
-        read_recent_project_roots_file(file_path)?,
-        project_root,
-        last_used_ms,
-    );
-    write_json_file(file_path, &roots)?;
-    Ok(roots)
-}
-
+#[cfg(test)]
 pub(super) fn restore_explicit_project_root_inner(
     paths: &AgentPathLayout,
     user_id: &str,
     project_root: &Path,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(paths, user_id)?.join("recent_roots.json");
-    restore_explicit_project_root_file(&file_path, project_root, unix_ms())
+    let (store, account) = account_store(paths, user_id)?;
+    let roots = restore_explicit_project_root(
+        recent_project_roots(store.account_projects(account)?)?,
+        project_root,
+        unix_ms(),
+    );
+    // The caller clears the removal tombstone only after its other saves
+    // succeed. Assigning order must not unhide the root prematurely.
+    persist_project_order(store, account, &roots)?;
+    Ok(roots)
 }
 
+#[cfg(test)]
 pub(super) fn apply_project_root_order(
     roots: Vec<RecentProjectRoot>,
     paths: Vec<String>,
@@ -703,73 +700,17 @@ pub(super) fn apply_project_root_order(
         .collect())
 }
 
-pub(super) fn save_project_root_order_file(
-    file_path: &Path,
-    paths: Vec<String>,
-    last_used_ms: u128,
-) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let roots = read_recent_project_roots_file(file_path)?;
-    let roots = apply_project_root_order(roots, paths, last_used_ms).map_err(anyhow::Error::msg)?;
-    write_json_file(file_path, &roots)?;
-    Ok(roots)
-}
-
+#[cfg(test)]
 pub(super) fn save_project_root_order_inner(
     layout: &AgentPathLayout,
     user_id: &str,
-    mut paths: Vec<String>,
+    paths: Vec<String>,
 ) -> Result<Vec<RecentProjectRoot>, anyhow::Error> {
-    let file_path = agent_config_dir(layout, user_id)?.join("recent_roots.json");
-    let removed = load_agent_config_inner(layout, user_id)?
-        .removed_project_roots
-        .into_iter()
-        .collect::<HashSet<_>>();
-    let requested = paths.iter().cloned().collect::<HashSet<_>>();
-    paths.extend(
-        read_recent_project_roots_file(&file_path)?
-            .into_iter()
-            .filter(|root| removed.contains(&root.path) && !requested.contains(&root.path))
-            .map(|root| root.path),
-    );
-    save_project_root_order_file(&file_path, paths, unix_ms())
-}
-
-pub(super) fn project_has_active_session_run(
-    session_roots: &HashMap<String, String>,
-    active_session_ids: &HashSet<String>,
-    project_root: &str,
-) -> bool {
-    active_session_ids.iter().any(|session_id| {
-        session_roots
-            .get(session_id)
-            .is_some_and(|root| root == project_root)
-    })
-}
-
-pub(super) fn apply_project_root_removal(
-    config: &mut AgentConfig,
-    project_root: &str,
-    fallback_path: Option<&str>,
-) -> Result<(), String> {
-    if fallback_path.is_some_and(|fallback| {
-        config
-            .removed_project_roots
-            .iter()
-            .any(|removed| removed == fallback)
-    }) {
-        return Err("Project fallback is already removed".to_string());
-    }
-    if !config
-        .removed_project_roots
-        .iter()
-        .any(|removed| removed == project_root)
-    {
-        config.removed_project_roots.push(project_root.to_string());
-    }
-    if config.default_project_root.as_deref() == Some(project_root) {
-        config.default_project_root = fallback_path.map(ToOwned::to_owned);
-    }
-    Ok(())
+    let (store, account) = account_store(layout, user_id)?;
+    let roots = recent_project_roots(store.account_projects(account)?)?;
+    let roots = apply_project_root_order(roots, paths, unix_ms()).map_err(anyhow::Error::msg)?;
+    persist_project_order(store, account, &roots)?;
+    recent_project_roots(store.account_projects(account)?)
 }
 
 pub(super) fn update_runtime_project_root_after_removal(
@@ -797,33 +738,6 @@ pub(super) fn ensure_session_project_root_is_visible(
     Ok(())
 }
 
-pub(super) fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), anyhow::Error> {
-    crate::private_file::write_private_json(path, value)?;
-    Ok(())
-}
-
-pub(super) fn write_device_local_json_file<T: Serialize + ?Sized>(
-    path: &Path,
-    value: &T,
-) -> Result<(), anyhow::Error> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Device-local Agent data path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    set_owner_only_dir_permissions(parent);
-    crate::private_file::write_private_json(path, value)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-pub(super) fn set_owner_only_dir_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
-}
-
-#[cfg(not(unix))]
-pub(super) fn set_owner_only_dir_permissions(_path: &Path) {}
-
 pub(super) fn unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -834,3 +748,6 @@ pub(super) fn unix_ms() -> u128 {
 pub(super) fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
+
+#[cfg(test)]
+mod tests;

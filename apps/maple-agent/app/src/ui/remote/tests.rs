@@ -214,3 +214,22 @@ fn settings_reentry_keeps_the_open_window_with_existing_controllers(cx: &mut Tes
         assert!(screen.notice.as_ref().unwrap().contains("Computer paired"));
     });
 }
+
+#[gpui::test]
+fn late_nickname_snapshot_updates_labels_without_replacing_the_active_editor(
+    cx: &mut TestAppContext,
+) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        screen.rename("peer".into(), "Advertised hostname".into(), cx);
+        let input = screen.renaming.as_ref().unwrap().1.clone();
+        input.update(cx, |input, cx| input.set_text("Unsubmitted edit", cx));
+        screen.set_names([("peer".into(), "Saved Office nickname".into())].into(), cx);
+        assert_eq!(screen.names["peer"], "Saved Office nickname");
+        assert_eq!(
+            screen.renaming.as_ref().unwrap().1.entity_id(),
+            input.entity_id()
+        );
+        assert_eq!(input.read(cx).text(), "Unsubmitted edit");
+    });
+}

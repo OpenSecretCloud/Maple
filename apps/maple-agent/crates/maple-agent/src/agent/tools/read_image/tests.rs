@@ -1,3 +1,5 @@
+const TASK_ID: &str = "018ddbcc-b80b-7c20-8123-000000000001";
+
 use pi_agent_core::ToolUpdates;
 use pi_ai::faux::FauxProvider;
 use pi_coding_agent::StaticKeys;
@@ -18,20 +20,23 @@ fn png() -> Vec<u8> {
 }
 
 struct Fixture {
-    dir: tempfile::TempDir,
     attachments: Arc<AgentAttachmentStore>,
+    dir: tempfile::TempDir,
 }
 
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let attachments = Arc::new(AgentAttachmentStore::new(dir.path().join("account")));
+        let attachments = Arc::new(crate::agent::attachments::fixture_attachment_store(
+            dir.path(),
+            &[TASK_ID],
+        ));
         Self { dir, attachments }
     }
 
     fn tool(&self, describer: Option<ModelRegistry>) -> Arc<dyn AgentTool> {
         read_image_tool(ReadImageFor {
-            session_id: "task-1".to_string(),
+            session_id: TASK_ID.to_string(),
             cwd: self.dir.path().to_path_buf(),
             attachments: Arc::clone(&self.attachments),
             describe: describer.is_some(),
@@ -152,7 +157,7 @@ async fn an_attachment_of_the_task_is_read() {
     let stored = fixture
         .attachments
         .store_uploads(
-            "task-1",
+            TASK_ID,
             &[AgentImageUpload {
                 name: "shot.png".to_string(),
                 data_url,

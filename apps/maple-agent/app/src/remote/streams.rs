@@ -2,11 +2,11 @@
 //! carries ordered events only. No transfer owns the connection's dispatch loop.
 use super::wire::{self, Command, Method};
 use crate::host::protocol::Message;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use iroh::endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use zeroize::Zeroizing;
 
 pub const MAX_REQUESTS: usize = 40;
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,6 +30,7 @@ pub fn transport_config() -> QuicTransportConfig {
 pub struct Capacity {
     ordinary: Arc<Semaphore>,
     urgent: Arc<Semaphore>,
+    ranges: Arc<Semaphore>,
 }
 
 impl Capacity {
@@ -37,10 +38,13 @@ impl Capacity {
         Self {
             ordinary: Arc::new(Semaphore::new(32)),
             urgent: Arc::new(Semaphore::new(2)),
+            ranges: Arc::new(Semaphore::new(4)),
         }
     }
     pub fn acquire(&self, method: Method) -> Result<OwnedSemaphorePermit, String> {
-        let pool = if method.urgent() {
+        let pool = if matches!(method, Method::ReadAttachment | Method::ReadRow) {
+            &self.ranges
+        } else if method.urgent() {
             &self.urgent
         } else {
             &self.ordinary
@@ -100,44 +104,27 @@ fn transfer_timeout(method: Method) -> Duration {
     }
 }
 
-// The local facade still returns bytes. Only the remote image reply uses base64.
+// Ranged payloads are already base64 in the transport-neutral store response.
 pub fn encode_result(
-    method: Method,
+    _method: Method,
     result: Result<serde_json::Value, String>,
 ) -> Result<serde_json::Value, String> {
-    let value = result?;
-    if method != Method::ReadImageAttachment {
-        return Ok(value);
-    }
-    let bytes: Vec<u8> = serde_json::from_value(value).map_err(|_| "Invalid image attachment")?;
-    Ok(serde_json::Value::String(STANDARD.encode(bytes)))
+    result
 }
-pub fn decode_result(method: Method, message: Message) -> Message {
-    match message {
-        Message::Response {
-            id,
-            result: Ok(value),
-        } if method == Method::ReadImageAttachment => {
-            let result = value
-                .as_str()
-                .ok_or("Invalid remote image attachment")
-                .and_then(|text| {
-                    STANDARD
-                        .decode(text)
-                        .map_err(|_| "Invalid remote image attachment")
-                })
-                .and_then(|bytes| {
-                    serde_json::to_value(bytes).map_err(|_| "Invalid remote image attachment")
-                })
-                .map_err(str::to_owned);
-            Message::Response { id, result }
-        }
-        other => other,
-    }
+pub fn decode_result(_method: Method, message: Message) -> Message {
+    message
 }
 
 pub async fn reply(tx: &mut SendStream, message: &Message) -> Result<(), String> {
-    let bytes = match wire::encode(message, wire::MAX_FRAME) {
+    reply_with_limit(tx, message, wire::MAX_FRAME).await
+}
+
+pub async fn reply_with_limit(
+    tx: &mut SendStream,
+    message: &Message,
+    limit: usize,
+) -> Result<(), String> {
+    let bytes = Zeroizing::new(match wire::encode(message, limit) {
         Ok(bytes) => bytes,
         Err(error) => match message {
             Message::Response { id, .. } => wire::encode(
@@ -150,7 +137,7 @@ pub async fn reply(tx: &mut SendStream, message: &Message) -> Result<(), String>
             .map_err(|e| e.to_string())?,
             _ => return Err(error.to_string()),
         },
-    };
+    });
     wire::write_progress(tx, &bytes, TRANSFER_TIMEOUT)
         .await
         .map_err(|e| e.to_string())?;
@@ -172,6 +159,7 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
             result: Err("Remote message is too large. Try fewer or smaller images.".into()),
         });
     };
+    let body = Zeroizing::new(body);
     let header = Header {
         id,
         method: command.method,
@@ -181,7 +169,7 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
         .await
         .map_err(|_| "Remote stream capacity timed out")?
         .map_err(|_| "Remote connection closed")?;
-    tx.set_priority(if header.method.urgent() { 10 } else { 0 })
+    tx.set_priority(header.method.priority())
         .map_err(|_| "Remote stream closed")?;
     tokio::time::timeout(IO_TIMEOUT, wire::write(&mut tx, &header, wire::MAX_PREFACE))
         .await
@@ -191,7 +179,12 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
         .await
         .map_err(|e| e.to_string())?;
     tx.finish().map_err(|_| "Remote request closed")?;
-    let response = wire::read_progress::<Message>(&mut rx, wire::MAX_FRAME, TRANSFER_TIMEOUT, true);
+    let response = wire::read_progress::<Message>(
+        &mut rx,
+        header.method.reply_limit(),
+        TRANSFER_TIMEOUT,
+        true,
+    );
     let response = if header.method.urgent() {
         tokio::time::timeout(IO_TIMEOUT, response)
             .await

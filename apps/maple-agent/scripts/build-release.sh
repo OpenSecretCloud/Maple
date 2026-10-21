@@ -21,6 +21,11 @@ fi
 if [[ "$(uname -s)" == Darwin ]]; then
     export MACOSX_DEPLOYMENT_TARGET=15.0
 fi
+# Cargo metadata resolves more of the locked graph than a native build fetches.
+# Populate all targets before the offline notice inventory on this unprivileged
+# worker; signing workers consume the generated output without Cargo.
+cargo fetch --locked
 cargo build --release -p maple-agent-app --locked
+python3 "$component/scripts/generate-third-party-notices.py"
 "$component/target/release/maple-agent" --build-info |
     python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; assert info["profile"] == expected, "incorrect release profile"' "$1"

@@ -88,6 +88,12 @@ where
         |(mut writer, outbound), line: String| async move {
             use tokio::io::AsyncWriteExt as _;
 
+            if line.len() > MAX_ACP_FRAME_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "ACP output frame exceeds its byte limit",
+                ));
+            }
             let session_update = is_session_update_line(&line);
             writer.write_all(line.as_bytes()).await?;
             writer.write_all(b"\n").await?;

@@ -4,8 +4,9 @@
 //! event and for the stored session, so a row streamed during a run is the
 //! row a reload produces: `u{timestamp}` for a user message, `a{timestamp}`
 //! plus `-thinking`, `-text` or `-error` for a reply, `a{timestamp}-{call id}`
-//! for a tool call and its result. Pi stamps every message with a time no
-//! other message of the process has, which makes those ids unique. Rows of
+//! for a tool call and its result. These are merge lookup keys; repeated
+//! timestamps across process restarts may repeat them. Persisted rows have a
+//! separate (task, epoch, row sequence) identity. Rows of
 //! Maple's own session entries, such as the "Stopped by user" notice, carry
 //! the id the runtime gave the entry.
 //!
@@ -75,8 +76,12 @@ fn created_ms(timestamp: Timestamp) -> u128 {
 }
 
 /// The timeline of a stored session: its current branch, oldest first.
+#[cfg(test)]
 pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineItem> {
     let mut items: Vec<AgentTimelineItem> = Vec::new();
+    // Repeated legacy keys deliberately select their first visible occurrence.
+    // Keep the first index when inserting a duplicate, matching merge_into.
+    let mut first_by_key: HashMap<String, usize> = HashMap::new();
     // A tool result's row is its call's row, found by call id.
     let mut tool_rows: HashMap<String, String> = HashMap::new();
     let branch = session.branch();
@@ -96,6 +101,7 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
         if omitted.contains(entry.id.as_str()) {
             continue;
         }
+        let start = items.len();
         match &entry.kind {
             EntryKind::Message { message } => match message {
                 SessionMessage::Llm(Message::User(user)) => {
@@ -112,8 +118,9 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
                         .get(&result.tool_call_id)
                         .cloned()
                         .unwrap_or_else(|| format!("tool-{}", result.tool_call_id));
-                    merge_into(
+                    merge_indexed(
                         &mut items,
+                        &mut first_by_key,
                         tool_result_item(
                             id,
                             &result.content,
@@ -162,7 +169,7 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
             } if custom_type == external_agents::TURN_END_ENTRY => {
                 if let Some(item) = external_agents::turn_end_row(data, created_ms(entry.timestamp))
                 {
-                    merge_into(&mut items, item);
+                    merge_indexed(&mut items, &mut first_by_key, item);
                 }
             }
             EntryKind::Compaction { .. } => {
@@ -183,8 +190,37 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
             }
             _ => {}
         }
+        for (index, item) in items.iter().enumerate().skip(start) {
+            first_by_key.entry(item.id.clone()).or_insert(index);
+        }
     }
     items
+}
+
+/// A custom external-agent turn end, using the canonical external builder.
+pub(crate) fn external_turn_end_row(
+    data: &Value,
+    timestamp: Timestamp,
+) -> Option<AgentTimelineItem> {
+    external_agents::turn_end_row(data, created_ms(timestamp))
+}
+
+pub(crate) fn is_external_turn_end(custom_type: &str) -> bool {
+    custom_type == external_agents::TURN_END_ENTRY
+}
+
+#[cfg(test)]
+fn merge_indexed(
+    items: &mut Vec<AgentTimelineItem>,
+    first_by_key: &mut HashMap<String, usize>,
+    incoming: AgentTimelineItem,
+) {
+    if let Some(&index) = first_by_key.get(&incoming.id) {
+        merge_item(&mut items[index], incoming);
+    } else {
+        first_by_key.insert(incoming.id.clone(), items.len());
+        items.push(incoming);
+    }
 }
 
 /// Merge `incoming` into the row with its id, or add it.
@@ -193,6 +229,10 @@ pub(crate) fn merge_into(items: &mut Vec<AgentTimelineItem>, incoming: AgentTime
         items.push(incoming);
         return;
     };
+    merge_item(previous, incoming);
+}
+
+pub(crate) fn merge_item(previous: &mut AgentTimelineItem, incoming: AgentTimelineItem) {
     let append = incoming.merge == "append"
         && matches!(incoming.item_type.as_str(), "message" | "thinking")
         && incoming.text.is_some();
@@ -225,7 +265,11 @@ pub(crate) fn merge_into(items: &mut Vec<AgentTimelineItem>, incoming: AgentTime
 
 /// A user's message: what they typed, and the images they attached, which
 /// the interface draws from the task's attachments.
-fn user_item(timestamp: Timestamp, content: &[Content], merge: &str) -> AgentTimelineItem {
+pub(crate) fn user_item(
+    timestamp: Timestamp,
+    content: &[Content],
+    merge: &str,
+) -> AgentTimelineItem {
     let text = content_text(content);
     let (text, input) = match split_image_prompt(&text) {
         Some((typed, attachments)) => {
@@ -244,6 +288,9 @@ fn user_item(timestamp: Timestamp, content: &[Content], merge: &str) -> AgentTim
         None => (text, None),
     };
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: user_row_id(timestamp),
         item_type: "message".to_string(),
@@ -260,7 +307,7 @@ fn user_item(timestamp: Timestamp, content: &[Content], merge: &str) -> AgentTim
 
 /// The rows of a finished reply: its thinking, its text, its tool calls and,
 /// when it failed, its error.
-fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
+pub(crate) fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
     let mut items = Vec::new();
     let thinking: Vec<&str> = reply
         .content
@@ -299,6 +346,9 @@ fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
 
 fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: reply_row_id(timestamp, "thinking"),
         item_type: "thinking".to_string(),
@@ -315,6 +365,9 @@ fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimeli
 
 fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: reply_row_id(timestamp, "text"),
         item_type: "message".to_string(),
@@ -331,6 +384,9 @@ fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineIt
 
 fn tool_call_item(reply_timestamp: Timestamp, call: &ToolCall, status: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: tool_row_id(reply_timestamp, &call.id),
         item_type: "tool".to_string(),
@@ -348,7 +404,7 @@ fn tool_call_item(reply_timestamp: Timestamp, call: &ToolCall, status: &str) -> 
     }
 }
 
-fn tool_result_item(
+pub(crate) fn tool_result_item(
     id: String,
     content: &[Content],
     details: Option<&Value>,
@@ -356,6 +412,9 @@ fn tool_result_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id,
         item_type: "tool".to_string(),
@@ -381,6 +440,9 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         .clone()
         .unwrap_or_else(|| "The model's reply failed".to_string());
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: reply_row_id(reply.timestamp, "error"),
         item_type: "error".to_string(),
@@ -418,6 +480,9 @@ pub(crate) fn notice_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id,
         item_type: "system".to_string(),
@@ -436,6 +501,9 @@ pub(crate) fn notice_item(
 pub(crate) fn error_item(message: String) -> AgentTimelineItem {
     let now = pi_ai::now_ms();
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: format!("error-{now}"),
         item_type: "error".to_string(),
@@ -533,6 +601,9 @@ impl LiveTimeline {
                 };
                 let arguments = args.as_object().cloned().unwrap_or_default();
                 vec![AgentTimelineItem {
+                    persisted: None,
+                    live: None,
+                    truncated: None,
                     revision: 0,
                     id: id.clone(),
                     item_type: "tool".to_string(),
@@ -601,6 +672,9 @@ impl LiveTimeline {
                 let row = tool_row_id(reply.timestamp, id);
                 self.tool_rows.insert(id.clone(), row.clone());
                 vec![AgentTimelineItem {
+                    persisted: None,
+                    live: None,
+                    truncated: None,
                     revision: 0,
                     id: row,
                     item_type: "tool".to_string(),

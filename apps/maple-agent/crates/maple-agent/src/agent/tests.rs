@@ -13,6 +13,9 @@ use serde_json::json;
 use super::*;
 use crate::maple_api::test_maple_api_session;
 
+#[path = "image_persistence_tests.rs"]
+mod image_persistence_tests;
+
 const USER: &str = "slice@example.com";
 
 #[derive(Default)]
@@ -75,9 +78,9 @@ pub(crate) struct Harness {
 }
 
 /// Side-model requests to their own script, the rest to the task's.
-struct SplitStream {
-    task: FauxProvider,
-    side: FauxProvider,
+pub(super) struct SplitStream {
+    pub(super) task: FauxProvider,
+    pub(super) side: FauxProvider,
 }
 
 impl pi_ai::StreamFn for SplitStream {
@@ -96,17 +99,27 @@ impl pi_ai::StreamFn for SplitStream {
 }
 
 fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
-    MapleAgentService::new(MapleAgentHostResources::new(
-        // A home of its own, so no skill or instruction file of the real
-        // one reaches the tasks.
-        AgentPathLayout::from_app_roots(data.join("config"), data.join("local"))
-            .with_home(Some(data.join("home"))),
-        recorder,
-        "You are Maple.".to_string(),
-    ))
+    MapleAgentService::new(
+        MapleAgentHostResources::new(
+            // A home of its own, so no skill or instruction file of the real
+            // one reaches the tasks.
+            AgentPathLayout::from_app_roots(data.join("config"), data.join("local"))
+                .with_home(Some(data.join("home"))),
+            recorder,
+            "You are Maple.".to_string(),
+        )
+        .with_store(Arc::new(
+            crate::store::Store::open(crate::store::StorePaths::new(data.join("local"))).unwrap(),
+        )),
+    )
 }
 
 impl Harness {
+    #[cfg(feature = "acp")]
+    pub(crate) fn emit_service_event(&self, event: AgentServiceEvent) {
+        emit_agent_event(&self.service.host.events, event);
+    }
+
     pub(crate) fn emit_timeline_item(&self, session_id: &str, item: AgentTimelineItem) {
         emit_agent_event(
             &self.service.host.events,
@@ -799,6 +812,41 @@ async fn a_side_question_streams_an_answer_and_leaves_the_task_alone() {
 }
 
 #[tokio::test]
+async fn persistence_retry_keeps_the_runtime_context_and_active_run() {
+    let harness = Harness::new().await;
+    let runtime = harness.runtime().await;
+    let task = harness.create_task().await;
+    harness.faux.push(pi_ai::faux::FauxResponse::Hang);
+    let mut run = harness.send(&task, "Keep working").await;
+    eventually(|| !harness.faux.requests().is_empty()).await;
+    let session = runtime.loaded_session(&task).await.unwrap();
+    let before = session.with_session(|manager| manager.entries().len());
+    let store = harness.service.host.store.as_ref().unwrap();
+    store.record_persistence_failure(&crate::store::StoreError::DiskFull);
+    assert!(store.persistence_failure().is_some());
+
+    harness.service.flush_persistence().await.unwrap();
+
+    assert!(store.persistence_failure().is_none());
+    assert!(Arc::ptr_eq(&runtime, &harness.runtime().await));
+    assert!(!runtime.lifetime.is_cancelled());
+    assert!(runtime.runs.is_running(&task));
+    assert!(runtime.loaded_session(&task).await.is_some());
+    assert_eq!(
+        session.with_session(|manager| manager.entries().len()),
+        before
+    );
+    assert!(!session.has_unpersisted());
+
+    harness
+        .handle
+        .cancel_desktop_run(run.run_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Cancelled);
+}
+
+#[tokio::test]
 async fn stop_keeps_the_reply_so_far_and_says_it_was_stopped() {
     let harness =
         Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(20))).await;
@@ -1378,12 +1426,10 @@ async fn tasks_rename_archive_and_delete_with_their_files() {
         .unwrap();
     assert_eq!(archived.state, AgentTaskState::Archived);
 
-    let session_file = account_sessions_dir(harness.handle.paths(), USER)
-        .unwrap()
-        .join(format!("{task}.jsonl"));
-    assert!(session_file.exists());
+    let store = harness.handle.store().unwrap();
+    assert!(!store.timeline(&task).unwrap().is_empty());
     harness.handle.delete_session(task.clone()).await.unwrap();
-    assert!(!session_file.exists());
+    assert!(store.get(&task).unwrap().is_none());
     assert!(harness.handle.list_sessions(None).await.unwrap().is_empty());
     assert!(harness.handle.load_session(task).await.is_err());
 }
@@ -1743,19 +1789,13 @@ async fn project_mcp_defaults_are_private_account_local_and_reject_invalid_chang
         catalog
     );
 
-    let local = account_local_data_dir_path(harness.handle.paths(), USER)
-        .unwrap()
-        .join("project_mcp_defaults.json");
-    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap();
-    assert_eq!(saved, json!({root.clone(): {"files": false}}));
-    let config = account_config_dir_path(harness.handle.paths(), USER)
+    let sql = harness.handle.store().unwrap();
+    let saved = sql.store().project(sql.account(), &root).unwrap().unwrap();
+    assert_eq!(saved.mcp_defaults, json!({"files": false}));
+    let config = account_generated_resource_dir(harness.handle.paths(), USER)
         .unwrap()
         .join("config.json");
-    assert!(
-        !std::fs::read_to_string(config)
-            .unwrap()
-            .contains("projectMcp")
-    );
+    assert!(!config.exists());
     harness
         .handle
         .save_config(AgentConfig::default())
@@ -1772,6 +1812,7 @@ async fn project_mcp_defaults_are_private_account_local_and_reject_invalid_chang
     #[cfg(unix)]
     {
         use std::os::unix::fs::{PermissionsExt, symlink};
+        let local = sql.store().paths().database();
         assert_eq!(
             std::fs::metadata(&local).unwrap().permissions().mode() & 0o777,
             0o600
@@ -1820,26 +1861,21 @@ async fn project_mcp_defaults_are_private_account_local_and_reject_invalid_chang
             .is_err()
     );
 
-    // A broken local file is reported, never interpreted as inherited defaults
-    // or overwritten by an otherwise valid toggle.
-    std::fs::write(&local, "not json").unwrap();
+    // Invalid values are rejected at the typed privileged boundary and cannot
+    // replace the already saved project switches.
     assert!(
-        harness
-            .handle
-            .list_project_mcp_servers(root.clone())
-            .await
-            .unwrap_err()
-            .contains("Failed to read project MCP defaults")
-    );
-    assert!(
-        harness
-            .handle
-            .set_project_mcp_server_enabled(root.clone(), "Files".into(), true)
-            .await
+        sql.store()
+            .set_project_mcp_defaults(sql.account(), &root, &json!({"files": "invalid"}), 1)
             .is_err()
     );
-    assert_eq!(std::fs::read_to_string(&local).unwrap(), "not json");
-    assert!(harness.handle.create_session(None).await.is_err());
+    assert_eq!(
+        sql.store()
+            .project(sql.account(), &root)
+            .unwrap()
+            .unwrap()
+            .mcp_defaults,
+        json!({"files": false})
+    );
     harness
         .service
         .advance_generation(&account_scope(USER).unwrap());
@@ -2277,20 +2313,21 @@ async fn integrations_list_and_refuse_what_cannot_be_enabled() {
 /// Save built-in CUA as set up on the device, as Settings does once its
 /// permissions are granted, on or off for new tasks.
 fn set_up_cua(harness: &Harness, on_for_new_tasks: bool) {
-    let dir = config::account_local_data_dir_path(harness.handle.paths(), &harness.handle.user_id)
+    let store = harness.handle.store().unwrap();
+    store
+        .store()
+        .set_account_setting(
+            store.account(),
+            "agent.integrations",
+            &json!({
+                "version": 2,
+                "integrations": [
+                    {"id": "cua-driver", "enabled": on_for_new_tasks, "backend": "embedded"}
+                ]
+            }),
+            1,
+        )
         .unwrap();
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("integrations.json"),
-        json!({
-            "version": 2,
-            "integrations": [
-                {"id": "cua-driver", "enabled": on_for_new_tasks, "backend": "embedded"}
-            ]
-        })
-        .to_string(),
-    )
-    .unwrap();
 }
 
 fn cua_row(rows: &[AgentSessionMcpServer]) -> (&str, bool, bool) {
@@ -2456,6 +2493,77 @@ async fn answers_reach_the_question_broker_of_the_service() {
 }
 
 #[tokio::test]
+async fn pending_question_snapshots_respect_account_task_and_generation_authorization() {
+    let data = tempfile::tempdir().unwrap();
+    let service = service(data.path(), Arc::new(Recorder::default()));
+    let alice = service.handle_for_user("synthetic-alice").await.unwrap();
+    let bob = service.handle_for_user("synthetic-bob").await.unwrap();
+    let store = service.host.store.as_ref().unwrap();
+    let alice_account = store.upsert_account("synthetic-alice", 1).unwrap();
+    let bob_account = store.upsert_account("synthetic-bob", 1).unwrap();
+    let task = |account| {
+        let uuid = uuid::Uuid::new_v4().to_string();
+        store
+            .create_task(
+                account,
+                &crate::store::NewTask {
+                    uuid: uuid.clone(),
+                    project_root: data.path().to_string_lossy().into_owned(),
+                    kind: crate::store::TaskKind::Desktop,
+                    title: "Synthetic question task".into(),
+                    provisional: false,
+                    model: None,
+                    created_ms: 1,
+                },
+            )
+            .unwrap();
+        uuid
+    };
+    let alice_task = task(alice_account);
+    let bob_task = task(bob_account);
+    let mut asks = Vec::new();
+    for task in [alice_task.clone(), bob_task.clone()] {
+        let broker = service.question_broker();
+        asks.push(tokio::spawn(
+            async move { broker.ask(&task, Vec::new()).await },
+        ));
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while service.pending_questions().await.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let alice_questions = alice.pending_questions().await;
+    let bob_questions = bob.pending_questions().await;
+    assert_eq!(alice_questions.len(), 1);
+    assert_eq!(bob_questions.len(), 1);
+    assert!(
+        matches!(&alice_questions[0],AgentServiceEvent::Question {session_id,..} if session_id==&alice_task)
+    );
+    assert!(
+        matches!(&bob_questions[0],AgentServiceEvent::Question {session_id,..} if session_id==&bob_task)
+    );
+    store
+        .mark_task_deleted(alice_account, &alice_task, 2)
+        .unwrap();
+    assert!(alice.pending_questions().await.is_empty());
+    assert_eq!(bob.pending_questions().await.len(), 1);
+    service.advance_generation(&bob.account_scope);
+    assert!(bob.pending_questions().await.is_empty());
+    let bob = service.handle_for_user("synthetic-bob").await.unwrap();
+    store
+        .begin_account_deletion(bob_account, &uuid::Uuid::new_v4().to_string(), 3)
+        .unwrap();
+    assert!(bob.pending_questions().await.is_empty());
+    for ask in asks {
+        ask.abort();
+        let _ = ask.await;
+    }
+}
+
+#[tokio::test]
 async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
     use ThinkingLevel::{High, Low, Max};
     let mut harness = Harness::new().await;
@@ -2541,4 +2649,41 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .current,
         ThinkingLevel::Off
     );
+}
+
+#[tokio::test]
+async fn viewing_unloaded_task_thinking_and_history_does_not_load_context() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let runtime = harness.runtime().await;
+    assert!(runtime.loaded_session(&task).await.is_none());
+    let before = runtime
+        .store
+        .store()
+        .task(runtime.store.account(), &task)
+        .unwrap()
+        .unwrap();
+    harness
+        .handle
+        .thinking_state(Some(&task), "glm-5-3")
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .handle
+            .load_session(task.clone())
+            .await
+            .unwrap()
+            .timeline
+            .is_empty()
+    );
+    assert!(runtime.loaded_session(&task).await.is_none());
+    let after = runtime
+        .store
+        .store()
+        .task(runtime.store.account(), &task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.last_seq, after.last_seq);
+    assert_eq!(before.facts, after.facts);
 }

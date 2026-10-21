@@ -187,6 +187,54 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         .active(|style| style.opacity(0.8))
 }
 
+/// A labeled checkbox row. The caller supplies its tab index and click/key
+/// handlers, so mouse and keyboard activation share the same state change.
+pub fn checkbox(id: impl Into<ElementId>, checked: bool, label: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(Role::CheckBox)
+        .aria_label(label)
+        .aria_toggled(if checked {
+            gpui::Toggled::True
+        } else {
+            gpui::Toggled::False
+        })
+        .flex()
+        .items_center()
+        .gap_2()
+        .py_1()
+        .rounded(theme::RADIUS_SM)
+        .text_sm()
+        .text_color(gpui::rgb(theme::text_primary()))
+        .focus_visible(focus_ring)
+        .hover(|style| style.cursor_pointer())
+        .active(|style| style.opacity(0.85))
+        .child(
+            div()
+                .flex_none()
+                .size(px(18.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(gpui::rgb(if checked {
+                    theme::accent()
+                } else {
+                    theme::text_muted()
+                }))
+                .bg(gpui::rgb(if checked {
+                    theme::accent()
+                } else {
+                    theme::bg_input()
+                }))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(checked, |square| {
+                    square.child(icon("check", px(14.), theme::on_accent()))
+                }),
+        )
+        .child(label)
+}
+
 /// The look of a [`switch`] without its role or input, for a row that is
 /// itself the control, such as a switch item in a popup menu.
 pub fn switch_track(on: bool) -> Div {

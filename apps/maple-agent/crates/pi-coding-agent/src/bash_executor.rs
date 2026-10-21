@@ -128,10 +128,36 @@ pub async fn execute_bash_with_operations(
     on_chunk: Option<OnChunk>,
     cancel: CancellationToken,
 ) -> Result<BashResult, String> {
+    execute_bash_with_operations_in(
+        command,
+        cwd,
+        operations,
+        file_prefix,
+        None,
+        on_chunk,
+        cancel,
+    )
+    .await
+}
+
+/// Run a user command with the same bounded output behavior, placing overflow in
+/// an explicit host-owned directory when supplied. A failed path has no fallback.
+pub async fn execute_bash_with_operations_in(
+    command: &str,
+    cwd: &Path,
+    operations: &dyn BashOperations,
+    file_prefix: &str,
+    output_dir: Option<&Path>,
+    on_chunk: Option<OnChunk>,
+    cancel: CancellationToken,
+) -> Result<BashResult, String> {
     let collected = Arc::new(Mutex::new(Collected {
         pending: Vec::new(),
         pending_ansi: String::new(),
-        output: OutputAccumulator::new(file_prefix),
+        output: OutputAccumulator::new_with_output_dir(
+            file_prefix,
+            output_dir.map(Path::to_path_buf),
+        ),
     }));
     let on_data: OnData = {
         let collected = collected.clone();

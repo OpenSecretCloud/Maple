@@ -17,7 +17,18 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ (import rust-overlay) ];
+        overlays = [
+          (import rust-overlay)
+          (_final: prev: {
+            # actionlint must start analyzer readers before feeding their stdin.
+            actionlint = prev.actionlint.overrideAttrs (old: {
+              patches = (old.patches or [ ]) ++ [ ./scripts/ci/patches/actionlint-stream-stdin.patch ];
+              postCheck = (old.postCheck or "") + ''
+                go test -run '^TestCmdExecutionStreamsLargeStdin$' .
+              '';
+            });
+          })
+        ];
         pkgs = import nixpkgs {
           inherit system overlays;
           config = {
@@ -26,6 +37,31 @@
           };
         };
         lib = pkgs.lib;
+        # Darwin can expose 512-byte pipes. Larger heredocs must use Bash's
+        # tempfile path instead of filling a pipe before starting its reader.
+        mapleBash = if pkgs.stdenv.hostPlatform.isDarwin then
+          pkgs.bash.overrideAttrs (old: {
+            # Bootstrap with Apple's shell: the cached Bash has the same
+            # small-pipe problem while running configure's heredocs.
+            configureScript = "/bin/bash ./configure";
+            makeFlags = (old.makeFlags or [ ]) ++ [ "SHELL=/bin/bash" ];
+            preConfigure = (old.preConfigure or "") + ''
+              export SHELL=/bin/bash
+              export CONFIG_SHELL=/bin/bash
+            '';
+            env = (old.env or { }) // {
+              NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "") + " -DHEREDOC_PIPESIZE=512";
+            };
+            postInstall = (old.postInstall or "") + ''
+              printf -v maple_here_doc_payload '%4096s' x
+              maple_here_doc_actual="$(timeout 10 "$out/bin/bash" -c 'cat <<<"$1"' -- "$maple_here_doc_payload")"
+              test "$maple_here_doc_actual" = "$maple_here_doc_payload"
+              maple_here_doc_script="$(printf "cat <<'MAPLE_HEREDOC'\n%s\nMAPLE_HEREDOC\n" "$maple_here_doc_payload")"
+              maple_here_doc_actual="$(timeout 10 "$out/bin/bash" -c "$maple_here_doc_script")"
+              test "$maple_here_doc_actual" = "$maple_here_doc_payload"
+            '';
+          })
+        else pkgs.bash;
         supportsAndroidHost = system == "x86_64-linux";
         appleToolchain = builtins.fromJSON (builtins.readFile ./scripts/ci/apple-toolchain.json);
 
@@ -170,7 +206,7 @@
         jdk = pkgs.jdk21;
 
         commonPackages = with pkgs; [
-          bash
+          mapleBash
           bun
           coreutils
           curl
@@ -733,7 +769,7 @@
           '';
 
           apple-toolchain = pkgs.runCommand "maple-apple-toolchain-check" {
-            nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
@@ -755,7 +791,7 @@
           '';
 
           opensecret-workflows = pkgs.runCommand "maple-opensecret-workflow-check" {
-            nativeBuildInputs = with pkgs; [ bash git jq python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash git jq python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
@@ -774,7 +810,7 @@
           '';
 
           agent-workflows = pkgs.runCommand "maple-agent-workflow-check" {
-            nativeBuildInputs = with pkgs; [ bash git python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
@@ -782,6 +818,7 @@
             python3 scripts/ci/test_agent_master_selection.py
             python3 scripts/ci/test_agent_rust_deps.py
             python3 scripts/ci/test_agent_debug_plist.py
+            python3 apps/maple-agent/scripts/test_third_party_notices.py
             python3 apps/maple-agent/scripts/test_release_packaging.py
             python3 apps/maple-agent/scripts/test_linux_release_appimage.py
             python3 apps/maple-agent/scripts/test_macos_release_dylibs.py
@@ -801,7 +838,7 @@
           '';
 
           ios-build-profile = pkgs.runCommand "maple-ios-build-profile-check" {
-            nativeBuildInputs = with pkgs; [ bash python3 unzip ];
+            nativeBuildInputs = with pkgs; [ mapleBash python3 unzip ];
             src = ./.;
           } ''
             cd "$src"
@@ -811,7 +848,7 @@
           '';
 
           pages = pkgs.runCommand "maple-pages-deployment-check" {
-            nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
@@ -820,7 +857,7 @@
           '';
 
           sdk-publishing = pkgs.runCommand "maple-sdk-publishing-check" {
-            nativeBuildInputs = with pkgs; [ bash git python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash git python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
@@ -840,7 +877,7 @@
 
           release-gates = pkgs.runCommand "maple-release-gates-check" {
             nativeBuildInputs = with pkgs; [
-              bash
+              mapleBash
               coreutils
               git
               jq

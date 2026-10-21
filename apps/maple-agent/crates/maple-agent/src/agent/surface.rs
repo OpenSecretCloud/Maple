@@ -10,8 +10,8 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::config::{
-    account_attachment_store, apply_project_trust, load_agent_config_inner, normalize_project_root,
-    path_string, save_agent_config_inner,
+    apply_project_trust, load_agent_config_inner, normalize_project_root, path_string,
+    save_agent_config_inner,
 };
 use super::mcp::{name_to_key, normalize_mcp_servers};
 use super::runtime::AgentRuntime;
@@ -168,40 +168,21 @@ pub(super) fn is_listed(row: &TaskRow) -> bool {
     !is_provisional(row)
 }
 
-/// A provisional task that nothing touched: not prompted, not renamed.
-fn is_untouched(row: &TaskRow) -> bool {
-    is_provisional(row) && !row.title_user_set && row.message_count == 0
-}
-
-/// Delete a task and its attachments.
-fn delete_task(
-    store: &TaskStore,
-    paths: &AgentPathLayout,
-    user_id: &str,
-    session_id: &str,
-) -> Result<(), String> {
-    let attachments = account_attachment_store(paths, user_id)?;
-    store.delete(session_id, || attachments.delete_session(session_id))?;
-    Ok(())
-}
-
 /// Remove the provisional tasks a crash stranded: untouched, and older than
 /// any a live surface would still be about to prompt.
-pub(super) fn sweep_stale_provisional(store: &TaskStore, paths: &AgentPathLayout, user_id: &str) {
-    let rows = match store.list(None) {
-        Ok(rows) => rows,
-        Err(error) => {
-            log::warn!("Failed to look for stranded ACP tasks: {error}");
-            return;
-        }
-    };
-    let now = pi_ai::now_ms();
-    for row in rows {
-        if is_untouched(&row)
-            && now.saturating_sub(row.created_ms) >= STALE_PROVISIONAL_AGE_MS
-            && let Err(error) = delete_task(store, paths, user_id, &row.id)
+pub(super) fn sweep_stale_provisional(store: &TaskStore, _paths: &AgentPathLayout, _user_id: &str) {
+    let before = pi_ai::now_ms().saturating_sub(STALE_PROVISIONAL_AGE_MS);
+    loop {
+        match store
+            .store()
+            .sweep_provisional_tasks(store.account(), before, 200)
         {
-            log::warn!("Failed to remove the stranded ACP task {}: {error}", row.id);
+            Ok(200) => continue,
+            Ok(_) => return,
+            Err(error) => {
+                log::warn!("Failed to collect stranded ACP drafts: {error}");
+                return;
+            }
         }
     }
 }
@@ -250,17 +231,28 @@ impl AgentRuntime {
     }
 
     /// Delete a surface's task that nothing touched.
-    async fn discard_if_provisional(&self, session_id: &str) {
-        if self.runs.is_running(session_id) {
-            return;
-        }
-        match self.store.get(session_id) {
-            Ok(Some(row)) if is_untouched(&row) => {}
-            _ => return,
-        }
-        self.failures.clear(session_id);
-        if let Err(error) = delete_task(&self.store, &self.host.paths, &self.user_id, session_id) {
-            log::warn!("Failed to discard the unused ACP task {session_id}: {error}");
+    async fn discard_if_provisional(self: &Arc<Self>, session_id: &str) {
+        let runtime = Arc::clone(self);
+        let session_id = session_id.to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            runtime.maintenance_while_idle(&session_id, || {
+                if runtime.has_unpersisted_session(&session_id)? {
+                    return Err(
+                        "Draft has pending source history; retaining its loaded context".into(),
+                    );
+                }
+                // The exact untouched predicate is rechecked by the tombstone
+                // transaction, so a metadata edit after an earlier read cannot
+                // be hidden. Run/launch admission stays held through the hide.
+                if runtime.store.discard_provisional(&session_id)? {
+                    runtime.failures.clear(&session_id);
+                }
+                Ok(())
+            })
+        })
+        .await;
+        if let Err(error) = result.unwrap_or_else(|_| Err("Draft cleanup was interrupted".into())) {
+            log::debug!("Unused ACP task cleanup deferred: {error}");
         }
     }
 }
@@ -317,6 +309,59 @@ impl AgentRuntimeHandle {
         Ok(AgentSurfaceSession { detail, lease })
     }
 
+    /// Acquire the same surface lease while leaving persisted history in the
+    /// paged store. The detail carries only the currently live overlay; a caller
+    /// must stream committed history through history_forward_page separately.
+    pub async fn attach_surface_session_paged(
+        &self,
+        session_id: &str,
+        mcp_servers: Vec<AgentMcpServer>,
+    ) -> Result<AgentSurfaceSession, String> {
+        self.ensure_accepting_new_work()?;
+        let runtime = self.runtime().await?;
+        self.task_summary(session_id.to_string()).await?;
+        let mcp_servers = normalize_mcp_servers(mcp_servers)?;
+        let lease = runtime.lease(session_id, mcp_servers, false).await?;
+        let summary = self.task_summary(session_id.to_string()).await?;
+        let live = self.live_task_page(session_id, 500, 512 * 1024).await?;
+        if live.has_more {
+            return Err(
+                "The active task is too large to replay completely; reload after its turn ends"
+                    .into(),
+            );
+        }
+        let timeline_revision = live.timeline_revision;
+        let timeline = live.items;
+        let state = match summary.state.as_str() {
+            "active" => super::AgentTaskState::Active,
+            "settled" => super::AgentTaskState::Settled,
+            "archived" => super::AgentTaskState::Archived,
+            _ => return Err("Invalid task state".to_string()),
+        };
+        Ok(AgentSurfaceSession {
+            detail: AgentSessionDetail {
+                timeline_revision,
+                session: super::AgentSessionSummary {
+                    id: summary.uuid,
+                    title: summary.title,
+                    project_root: summary.project_root,
+                    created_ms: summary.created_ms,
+                    updated_ms: summary.updated_ms,
+                    message_count: usize::try_from(summary.message_count)
+                        .map_err(|_| "Invalid task message count")?,
+                    model: summary.model,
+                    web_enabled: summary.web_enabled,
+                    state,
+                    acp: summary.kind == "acp",
+                },
+                timeline,
+                mcp_errors: Vec::new(),
+                queue: runtime.runs.queue_snapshot(session_id),
+            },
+            lease,
+        })
+    }
+
     /// Save the account's trust decision for the project of a task a surface
     /// holds, as the surface asked its user. The task's session is built
     /// again with it.
@@ -354,7 +399,7 @@ impl AgentRuntimeHandle {
             config
         };
         if !runtime.runs.is_running(session_id) {
-            runtime.unload_task(session_id).await;
+            runtime.unload_task(session_id).await?;
         }
         Ok(self.project_trust_status(&config, &project_root))
     }

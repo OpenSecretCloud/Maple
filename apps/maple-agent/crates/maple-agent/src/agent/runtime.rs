@@ -4,8 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pi_agent_core::QueueMode;
 use pi_ai::Model;
@@ -14,7 +15,7 @@ use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
 
-use super::config::{account_attachment_store, path_string};
+use super::config::path_string;
 use super::cua::{self, TaskCua};
 use super::external_agents::{
     ExternalAgentHost, ExternalAgentRegistry, ExternalAgentToolsFor, TaskProviders,
@@ -83,6 +84,16 @@ struct LoadedTask {
     mcp: Arc<TaskMcp>,
     cua: Arc<TaskCua>,
     agents: TaskProviders,
+    last_used: Instant,
+    unloading: Arc<AtomicBool>,
+}
+
+/// Clear the marker even if an RPC is cancelled during extension shutdown.
+struct UnloadingTask(Arc<AtomicBool>);
+impl Drop for UnloadingTask {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 pub(super) struct AgentRuntime {
@@ -168,8 +179,46 @@ impl AgentRuntime {
         }
     }
 
+    pub(super) async fn store_activity(&self) -> (usize, usize) {
+        let running = self.runs.running_task_ids().len();
+        // A task with active external agents cannot be unloaded. Snapshot its
+        // ids without holding the sessions mutex across registry awaits.
+        let tasks = self
+            .sessions
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut background = 0;
+        for task in tasks {
+            background += self.external_agents.snapshot(&task).await.len();
+        }
+        (running, background)
+    }
+
     pub(super) fn running_task_ids(&self) -> HashSet<String> {
         self.runs.running_task_ids()
+    }
+
+    /// Serialize the final maintenance check/write with normal run admission and
+    /// autonomous external-agent launches. No async snapshots grant permission.
+    pub(super) fn maintenance_while_idle<T>(
+        &self,
+        session_id: &str,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.runs.while_idle(session_id, || {
+            self.external_agents.while_session_idle(session_id, action)
+        })
+    }
+
+    pub(super) fn maintenance_while_all_idle<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.runs
+            .while_all_idle(|| self.external_agents.while_all_idle(action))
     }
 
     /// Follow the removal of the project new tasks start in.
@@ -185,42 +234,105 @@ impl AgentRuntime {
         );
     }
 
-    /// Forget the loaded sessions of a project's idle tasks, so they are
-    /// built again with what changed.
-    pub(super) async fn unload_project_tasks(&self, project_root: &str) {
+    /// Forget idle project sessions only after pending source writes commit.
+    pub(super) async fn unload_project_tasks(&self, project_root: &str) -> Result<(), String> {
         let running = self.running_task_ids();
-        let unloaded: Vec<LoadedTask> = {
-            let mut sessions = self.sessions.lock().await;
-            let ids: Vec<String> = sessions
-                .iter()
-                .filter(|(id, task)| {
-                    !running.contains(*id)
-                        && task
-                            .session
-                            .with_session(|manager| manager.cwd() == project_root)
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.iter().filter_map(|id| sessions.remove(id)).collect()
-        };
-        futures_util::future::join_all(unloaded.iter().map(|task| task.session.shutdown())).await;
+        let ids = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(id, task)| {
+                !running.contains(*id)
+                    && task
+                        .session
+                        .with_session(|manager| manager.cwd() == project_root)
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.unload_task(&id).await?;
+        }
+        Ok(())
     }
 
-    /// Forget a task's loaded session, which stops its MCP servers.
-    pub(super) async fn unload_task(&self, session_id: &str) {
-        let task = self.sessions.lock().await.remove(session_id);
-        if let Some(task) = task {
-            task.session.shutdown().await;
+    /// Retain the session throughout shutdown/flush. A failed persistence retry
+    /// never drops the only in-memory copy, and a concurrent loader cannot revive
+    /// a session whose extensions are being stopped.
+    pub(super) async fn unload_task(&self, session_id: &str) -> Result<(), String> {
+        let (session, _unloading) = {
+            let mut sessions = self.sessions.lock().await;
+            if self.runs.is_running(session_id) {
+                return Err("Stop the running agent before unloading this task".into());
+            }
+            let Some(task) = sessions.get_mut(session_id) else {
+                return Ok(());
+            };
+            if task.unloading.swap(true, Ordering::AcqRel) {
+                return Err("Agent task is being unloaded".into());
+            }
+            (
+                task.session.clone(),
+                UnloadingTask(Arc::clone(&task.unloading)),
+            )
+        };
+        session.shutdown().await;
+        flush_session(&session).await?;
+        self.sessions.lock().await.remove(session_id);
+        Ok(())
+    }
+
+    /// Keep at most eight idle contexts. Active runs, detached external work and
+    /// failed persistence retries retain their context until safe to unload.
+    async fn evict_idle_tasks(&self, current: &str) {
+        let mut candidates = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(id, task)| id.as_str() != current && !task.unloading.load(Ordering::Acquire))
+            .map(|(id, task)| (task.last_used, id.clone()))
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(used, _)| *used);
+        for (_, id) in candidates {
+            if self.sessions.lock().await.len() <= 8 {
+                break;
+            }
+            if self.runs.is_running(&id) || !self.external_agents.snapshot(&id).await.is_empty() {
+                continue;
+            }
+            if let Err(error) = self.unload_task(&id).await {
+                log::warn!("Retained an Agent context whose unload failed: {error}");
+            }
         }
     }
 
-    /// A task's loaded session, if it is loaded.
+    /// A loaded session, if it is available and not being evicted.
     pub(super) async fn loaded_session(&self, session_id: &str) -> Option<AgentSession> {
-        self.sessions
-            .lock()
-            .await
-            .get(session_id)
-            .map(|task| task.session.clone())
+        let mut sessions = self.sessions.lock().await;
+        let task = sessions.get_mut(session_id)?;
+        if task.unloading.load(Ordering::Acquire) {
+            return None;
+        }
+        task.last_used = Instant::now();
+        Some(task.session.clone())
+    }
+
+    /// Read only while run/external admission is held. A failed source append
+    /// can leave the SQL draft caches empty while its only conversation copy
+    /// is still in this loaded Pi session.
+    pub(super) fn has_unpersisted_session(&self, session_id: &str) -> Result<bool, String> {
+        let sessions = self
+            .sessions
+            .try_lock()
+            .map_err(|_| "Agent contexts are busy".to_string())?;
+        let Some(task) = sessions.get(session_id) else {
+            return Ok(false);
+        };
+        if task.unloading.load(Ordering::Acquire) {
+            return Err("Agent task is being unloaded".into());
+        }
+        Ok(task.session.has_unpersisted())
     }
 
     /// A loaded task's MCP servers.
@@ -327,7 +439,7 @@ impl AgentRuntime {
             return Err(super::RUNTIME_NOT_RUNNING_ERROR.into());
         }
         // Host and client servers must never silently replace each other.
-        let saved = read_saved_servers(&self.host.paths, &self.user_id)?;
+        let saved = super::mcp::load_saved_mcp_servers(&self.host.paths, &self.user_id)?;
         let mut surfaces = lock(&self.surfaces);
         let attached = surfaces.entry(session_id.to_string()).or_default();
         for server in &task.mcp_servers {
@@ -535,9 +647,17 @@ impl AgentRuntime {
         // Every interface drives the same host-owned tools.
         let providers = task_providers(&agents_on, row);
         if let Some(LoadedTask {
-            session, agents, ..
-        }) = sessions.get(&row.id)
+            session,
+            agents,
+            last_used,
+            unloading,
+            ..
+        }) = sessions.get_mut(&row.id)
         {
+            if unloading.load(Ordering::Acquire) {
+                return Err("Agent task is being unloaded".into());
+            }
+            *last_used = Instant::now();
             // A new context window or vision flag for the same model, or
             // another model for a task that has not started.
             if session.model().as_ref() != Some(&model) {
@@ -567,8 +687,14 @@ impl AgentRuntime {
         options.model = Some(model);
         options.settings = self.settings();
         options.resources = resources.unwrap_or_default();
-        let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
-        let tools = tools::task_tools(tools::TaskToolsFor {
+        let attachments = Arc::new(super::attachments::AgentAttachmentStore::new(
+            Arc::clone(self.store.store()),
+            self.store.account(),
+        ));
+        let output_dir = crate::store::spill::SpillRoot::new(self.store.store().paths())
+            .and_then(|spills| spills.output_dir(&row.id))
+            .map_err(|error| error.to_string())?;
+        let mut tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
             kind: TaskKind::Desktop,
             login_path: search_path.clone(),
@@ -583,6 +709,7 @@ impl AgentRuntime {
                 describe,
             },
         });
+        tools.options.output_dir = Some(output_dir.clone());
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
         options.tools = tools.maple;
@@ -597,7 +724,11 @@ impl AgentRuntime {
                 login_path: search_path.clone(),
                 providers: agents.clone(),
             }));
-        let mcp = TaskMcp::new(Path::new(&row.project_root), search_path);
+        let mcp = TaskMcp::new_with_output_dir(
+            Path::new(&row.project_root),
+            search_path,
+            Some(output_dir),
+        );
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
         options.extensions.push(task_cua.extension());
@@ -612,8 +743,12 @@ impl AgentRuntime {
                 mcp,
                 cua: task_cua,
                 agents,
+                last_used: Instant::now(),
+                unloading: Arc::new(AtomicBool::new(false)),
             },
         );
+        drop(sessions);
+        self.evict_idle_tasks(&row.id).await;
         Ok(session)
     }
 
@@ -672,22 +807,69 @@ impl AgentRuntime {
         self.models.register_api(super::provider::MAPLE_API, stream);
     }
 
+    #[cfg(test)]
+    pub(super) async fn hold_loaded_sessions_for_test(&self) -> impl Send + '_ {
+        self.sessions.lock().await
+    }
+
+    /// Retry pending source writes without changing the lifetime or ownership
+    /// of any loaded context. A failure in one task does not skip the others.
+    pub(super) async fn flush_loaded_sessions(&self) -> Result<(), String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .await
+            .values()
+            .map(|task| task.session.clone())
+            .collect::<Vec<_>>();
+        let mut first_error = None;
+        for session in sessions {
+            if let Err(error) = flush_session(&session).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// Stop every run, end detached work and external agents, and close the
     /// loaded sessions.
-    pub(super) async fn shutdown(&self) {
+    pub(super) async fn shutdown(&self) -> Result<(), String> {
         self.lifetime.cancel();
         self.runs.stop_all().await;
         self.external_agents
             .shutdown_all(EXTERNAL_AGENTS_SHUTDOWN)
             .await;
-        let tasks: Vec<LoadedTask> = self
+        let sessions = self
             .sessions
             .lock()
             .await
-            .drain()
-            .map(|(_, task)| task)
-            .collect();
-        futures_util::future::join_all(tasks.iter().map(|task| task.session.shutdown())).await;
+            .values()
+            .map(|task| task.session.clone())
+            .collect::<Vec<_>>();
+        // Keep every LoadedTask in the map until every session has shut down and
+        // its persistence retry succeeds. The host must retain this runtime on
+        // failure and keep its ownership lock/key until a successful retry.
+        futures_util::future::join_all(sessions.iter().map(AgentSession::shutdown)).await;
+        self.finish_shutdown().await
+    }
+
+    /// Finish saving an already-drained runtime without notifying extensions or
+    /// stopping tools again. The service keeps this runtime non-runnable until
+    /// every retained session is durable.
+    pub(super) async fn finish_shutdown(&self) -> Result<(), String> {
+        self.flush_loaded_sessions().await?;
+        self.sessions.lock().await.clear();
+        Ok(())
+    }
+
+    /// The service has awaited this runtime's drain, and an explicitly
+    /// confirmed reset has committed or fenced the old generation for recovery.
+    /// No second Pi shutdown fires.
+    pub(super) async fn discard_drained_sessions(&self) {
+        self.sessions.lock().await.clear();
     }
 }
 
@@ -696,4 +878,21 @@ fn context_limit_override() -> Option<u64> {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|limit| *limit > 0)
+}
+
+/// SQLite runs off the async executor; the session mutex serializes the retry
+/// against any final external append.
+async fn flush_session(session: &AgentSession) -> Result<(), String> {
+    let session = session.clone();
+    tokio::task::spawn_blocking(move || {
+        session
+            .flush()
+            .map_err(|error| format!("Failed to save Agent history: {error}"))?;
+        if session.has_unpersisted() {
+            return Err("Agent history is still waiting to be saved".into());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Failed to flush Agent history: {error}"))?
 }

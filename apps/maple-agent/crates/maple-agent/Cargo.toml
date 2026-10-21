@@ -9,6 +9,8 @@ license.workspace = true
 default = ["acp"]
 # The Agent Client Protocol server (`maple_agent::acp`).
 acp = ["dep:agent-client-protocol"]
+# Explicit synthetic-fixture diagnostics; absent from product package builds.
+store-bench = []
 
 [dependencies]
 serde = { workspace = true }
@@ -30,7 +32,16 @@ httpdate = "1"
 icu_properties = "2.1.1"
 agent-client-protocol = { version = "=2.2.0", optional = true, default-features = false, features = ["unstable_end_turn_token_usage"] }
 rand = "0.8.6"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { workspace = true }
+libsqlite3-sys = { workspace = true }
+argon2 = { version = "=0.6.0", features = ["parallel", "zeroize"] }
+chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
+zeroize = { workspace = true }
+unicode-normalization = "0.1"
+zxcvbn = "=3.1.1"
+# Keep the existing compatible locked compression release for store payloads.
+zstd = "0.13.3"
+uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tempfile = "3"
 maple-sdk = { workspace = true }
@@ -46,6 +57,9 @@ pi-coding-agent = { path = "../pi-coding-agent" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "process-session"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CUA's native SDK is not published to crates.io yet. Pin the trycua/cua
@@ -67,7 +81,6 @@ zbus = { version = "5.19", default-features = false, features = ["blocking-api",
 cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00", package = "cua-driver-sdk", features = ["portal-input"] }
 
 [dev-dependencies]
-chacha20poly1305 = "0.10"
 hkdf = "0.12"
 axum = "0.8"
 ciborium = "0.2"
