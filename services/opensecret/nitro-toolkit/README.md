@@ -70,11 +70,13 @@ The credential requester and logger are separate containers on the parent,
 not part of the application EIF. Their Dockerfiles pin the Python 3.13
 Bookworm multi-architecture image by digest. They install only the complete,
 hash-locked Python dependency closures in their respective `requirements.txt`
-files; `requirements.in` lists the direct imports and the urllib3 security
-floor. The previously installed `iproute2` package is not used by either
-helper and is omitted from the refreshed images. The build removes pip and its
-`ensurepip` bootstrap wheel after checking dependencies, since the running
-helpers do not use them.
+files; `requirements.in` lists the direct imports and security constraints.
+The credential requester pins a reviewed `certifi` CA bundle because Botocore
+uses it for HTTPS Secrets Manager requests; its offline image test verifies the
+installed bundle and default CA path. The previously installed `iproute2`
+package is not used by either helper and is omitted from the refreshed images.
+The build removes pip and its `ensurepip` bootstrap wheel after checking
+dependencies, since the running helpers do not use them.
 
 To refresh a lock, run this from the relevant helper directory, then review
 the version and hash diff before building an image:
