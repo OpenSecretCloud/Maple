@@ -760,6 +760,11 @@ impl ChatScreen {
         let has_images = !self.draft_images.is_empty();
         let images_ready = self.draft_images.iter().all(DraftImage::ready);
         let can_send = !disabled && images_ready && (has_text || has_images);
+        // One control. Stop only while a run is active and nothing is
+        // waiting to send. Text, or an image that is still encoding,
+        // turns it back into Send, which queues behind the run.
+        let drafting = has_text || has_images;
+        let show_stop = running && !disabled && !drafting;
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
@@ -1105,62 +1110,66 @@ impl ChatScreen {
                                 self.context_fraction.unwrap_or(0.0),
                             )),
                     )
-                    .when(running, |row| {
-                        row.child(
-                            div()
-                                .id("stop-run")
-                                .size_8()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .bg(gpui::rgb(theme::status_error()))
-                                .hover(|style| style.opacity(0.85).cursor_pointer())
-                                .active(|style| style.opacity(0.7))
-                                .tooltip(widgets::tooltip("Stop the run", None))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.stop(cx);
-                                }))
-                                .child(
-                                    div()
-                                        .size_3()
-                                        .rounded(theme::RADIUS_SM)
-                                        .bg(gpui::rgb(theme::bg_app())),
-                                ),
-                        )
-                    })
-                    .child(
+                    .child({
+                        let button_id = if show_stop {
+                            "stop-run"
+                        } else {
+                            "send-message"
+                        };
+                        let button_label: SharedString = if show_stop {
+                            "Stop the run".into()
+                        } else if running && drafting {
+                            "Queue for next turn".into()
+                        } else {
+                            "Send".into()
+                        };
                         div()
-                            .id("send-message")
-                            .debug_selector(|| "send-message".to_string())
+                            .id(button_id)
+                            .debug_selector(move || button_id.to_string())
+                            .role(gpui::Role::Button)
+                            .aria_label(button_label.clone())
                             .size_8()
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded_full()
-                            .bg(gpui::linear_gradient(
-                                180.,
-                                gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
-                                gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
-                            ))
-                            .when(!can_send, |el| el.opacity(0.4))
-                            .when(can_send, |el| {
-                                el.hover(|style| style.opacity(0.9).cursor_pointer())
-                                    .active(|style| style.opacity(0.75))
-                                    .tooltip(widgets::tooltip(
-                                        if running { "Queue message" } else { "Send" },
-                                        Some("↵"),
-                                    ))
+                            .when(show_stop, |el| {
+                                el.bg(gpui::rgb(theme::status_error()))
+                                    .hover(|style| style.opacity(0.85).cursor_pointer())
+                                    .active(|style| style.opacity(0.7))
+                                    .tooltip(widgets::tooltip("Stop the run", None))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.send_inner(cx);
+                                        this.stop(cx);
                                     }))
+                                    .child(
+                                        div()
+                                            .size_3()
+                                            .rounded(theme::RADIUS_SM)
+                                            .bg(gpui::rgb(theme::bg_app())),
+                                    )
                             })
-                            .child(if disabled {
-                                spinner("send-booting", px(16.), theme::on_accent())
-                            } else {
-                                icon("arrow-up", px(16.), theme::on_accent()).into_any_element()
-                            }),
-                    ),
+                            .when(!show_stop, |el| {
+                                el.bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
+                                    gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
+                                ))
+                                .when(!can_send, |el| el.opacity(0.4))
+                                .when(can_send, |el| {
+                                    el.hover(|style| style.opacity(0.9).cursor_pointer())
+                                        .active(|style| style.opacity(0.75))
+                                        .tooltip(widgets::tooltip(button_label.clone(), Some("↵")))
+                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                            this.send_inner(cx);
+                                        }))
+                                })
+                                .child(if disabled {
+                                    spinner("send-booting", px(16.), theme::on_accent())
+                                } else {
+                                    icon("arrow-up", px(16.), theme::on_accent()).into_any_element()
+                                })
+                            })
+                    }),
             )
     }
 }

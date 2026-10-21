@@ -93,9 +93,11 @@ Goose, with an independent dependency graph.
 - The composer spell checks as you type; right-click a word for
   suggestions or to add it to your dictionary.
 - Message queue: Enter during a run queues the message for the next turn,
-  Ctrl+Enter (Cmd+Enter) steers it into the current turn. Queued messages
-  can be sent now, edited in the composer (the message keeps its place in
-  the queue), or removed.
+  Ctrl+Enter (Cmd+Enter) steers it into the current turn. The composer has
+  one button. It is Send, and it becomes Stop while a run is active and the
+  field is empty. Typing or attaching an image turns it back into Send, and
+  that click queues. Queued messages can be sent now, edited in the composer
+  (the message keeps its place in the queue), or removed.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Optional composer-only Vim editing provides Normal, Insert, and characterwise

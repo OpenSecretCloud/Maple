@@ -2772,6 +2772,85 @@ mod state_tests {
         });
     }
 
+    /// The composer has one action button. It is Send, and it becomes Stop
+    /// only while a run is active and nothing is waiting to go out. A draft
+    /// turns it back into Send, including an image that is still encoding.
+    /// The runtime's starting spinner stays Send too.
+    #[gpui::test]
+    fn test_the_composer_button_is_send_or_stop(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let composer = chat.update(cx, |this, _| this.composer.clone().unwrap());
+
+        fn shown(cx: &mut gpui::VisualTestContext) -> &'static str {
+            // The second frame sees a composer observer that landed after
+            // the text change.
+            let mut send = false;
+            let mut stop = false;
+            for _ in 0..2 {
+                cx.run_until_parked();
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+                send = cx.debug_bounds("send-message").is_some();
+                stop = cx.debug_bounds("stop-run").is_some();
+            }
+            match (send, stop) {
+                (true, false) => "send",
+                (false, true) => "stop",
+                (true, true) => "both",
+                (false, false) => "neither",
+            }
+        }
+
+        assert_eq!(shown(cx), "send", "an idle empty composer offers Send");
+
+        chat.update(cx, |this, cx| {
+            this.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+            cx.notify();
+        });
+        assert_eq!(
+            shown(cx),
+            "stop",
+            "a running composer with nothing queued offers Stop"
+        );
+
+        composer.update(cx, |input, cx| input.set_text("next turn", cx));
+        assert_eq!(
+            shown(cx),
+            "send",
+            "a draft during a run offers Send, which queues"
+        );
+
+        composer.update(cx, |input, cx| input.set_text("   ", cx));
+        assert_eq!(shown(cx), "stop", "whitespace is not a draft");
+
+        chat.update(cx, |this, cx| {
+            this.draft_images = vec![DraftImage {
+                id: 1,
+                name: "shot.png".into(),
+                data_url: None,
+                thumbnail: None,
+            }];
+            cx.notify();
+        });
+        assert_eq!(
+            shown(cx),
+            "send",
+            "an image that is still encoding keeps Send instead of Stop"
+        );
+
+        chat.update(cx, |this, cx| {
+            this.draft_images.clear();
+            this.booting = true;
+            cx.notify();
+        });
+        assert_eq!(
+            shown(cx),
+            "send",
+            "starting the runtime keeps the Send spinner"
+        );
+    }
+
     /// A typed command that needs a task becomes the draft's first send
     /// and, like a message, stays in the composer until it runs; a create
     /// that is refused leaves it there too. A command that needs no task
