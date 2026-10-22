@@ -33,6 +33,9 @@ scripts/              One maintainer helper: screenshot.py takes a desktop
                       Nothing in the build or the app uses it.
 ```
 
+The Pi crates' embedding adaptations and upstream review process are recorded
+in [crates/UPSTREAM.md](crates/UPSTREAM.md).
+
 ### Backend / frontend boundary
 
 `app/src/backend.rs` is the asynchronous client facade. `app/src/host.rs`
@@ -40,7 +43,13 @@ starts or joins one OS-local host; `backend/local.rs` owns account credentials,
 local persistence, and the Maple runtime inside that host. GPUI owns presentation
 and native permission prompts. The ACP adapter forwards stdio to the same host,
 which projects shared task events onto ACP. Pi remains the agent loop; it has no
-knowledge of frontends or IPC. See [local host](docs/local-host.md).
+knowledge of frontends or IPC. See [local host](docs/local-host.md) and
+[local storage, unlock passwords and backups](docs/local-store.md).
+
+This version starts fresh in `store-v1/`. Previous application data is left
+untouched, with no import, fallback reads or cleanup. General Markdown
+instructions, skills and prompt resources retain their file-loading behavior.
+Password-setting controls remain debug-only pending native release qualification.
 
 The runtime began as a copy of Research’s Tauri agent (now
 `apps/maple-research/frontend/src-tauri/src`) with Tauri removed, and now runs
@@ -54,8 +63,8 @@ Goose, with an independent dependency graph.
   return; unpackaged builds retain the callback URL paste flow. Hosted sign-in
   requires the matching Auth host and provider/backend callback configuration;
   building the client does not deploy those services.
-  The session persists in `auth.json` (mode 0600) so the next launch and
-  the `acp` mode skip sign-in. The window opens while the saved session is
+  The session persists in the private local store so the next unlocked launch
+  and the `acp` mode skip sign-in. The window opens while the saved session is
   checked, and a check that cannot reach the server keeps the credentials
   for the next launch; only a refusal from the server signs the user out.
 - Agent chat with streaming Markdown, tool calls, agent questions, image
@@ -161,8 +170,8 @@ independent per-task switch in the composer; a task with no choice has it off.
 Maple no longer looks for a separately installed CuaDriver application: a
 custom server under one of CUA's names never runs for a task, and a device
 setting that selected the external backend reads as not set up. Custom STDIO
-and Streamable HTTP MCP servers remain account configuration that may roam
-between devices.
+and Streamable HTTP MCP servers are account-scoped configuration in this
+computer's local store. Their definitions and secrets do not automatically roam.
 
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
@@ -275,7 +284,7 @@ choice to replace the other bindings or keep compatible chords.
 The catalog covers the existing GPUI actions plus the typed composer and
 application Vim commands. It does not expose raw input behavior such as
 composer send, Shift-Enter, slash completion, or login field traversal.
-Per-binding changes are stored in `settings.json` under `shortcut_overrides`;
+Per-binding changes are stored in the local store under `shortcut_overrides`;
 missing entries keep their shipped key and `null` disables that exact binding
 slot. Maple validates the complete candidate map before replacing the live one,
 so a malformed override cannot leave ordinary text editing half-installed.
@@ -302,7 +311,10 @@ The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at
 `/Applications/Xcode.app`; Linux libraries come from Nix. Windows CI uses the
 same Rust version resolved by the component’s pinned `flake.lock`, with
-Cargo commands from this directory.
+Cargo commands from this directory. The statically linked SQLCipher/OpenSSL
+build needs Perl; Nix supplies it on macOS/Linux. Windows needs native Windows
+Perl (for example Strawberry Perl), rather than MSYS Perl. NASM enables the
+provider's assembly path when available; its build supports a no-assembly fallback.
 
 For an OpenSecret managed workspace, run its `bin/maple-agent` launcher
 instead of launching the binary directly. It sources private
@@ -406,6 +418,7 @@ maple-agent                 Open the desktop app.
 maple-agent acp             Serve the Agent Client Protocol on stdio.
 maple-agent proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
 maple-agent login           Sign in with email and password from a terminal.
+maple-agent unlock          Unlock the local store using a hidden TTY prompt.
 maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
 ```
@@ -418,13 +431,25 @@ machine that never opens the window so `maple-agent acp` has a sign-in. The
 password is always prompted for; there is no flag for it. OAuth sign-in is
 desktop-only for now.
 
+A password-protected store must be unlocked first. Login uses the Maple account
+password; it does not unlock local storage.
+
+### `maple-agent unlock`
+
+Prompts for the local unlock password through the controlling terminal. No
+password argument or environment variable is accepted. Unlock here or in the
+desktop app before starting ACP against a locked store. See
+[local storage](docs/local-store.md) for password scope, Close/Quit and recovery.
+
 ### `maple-agent acp`
 
 Connects editors and ACP clients to the shared local host over stdio. It
 can start the host without opening a window; desktop later joins that host.
 Both interfaces use the same sign-in, tasks, tools, history, and one active run
 per task. Logs go to the profile log; stdout contains only ACP frames.
-Sign in through desktop or `maple-agent login` first.
+Unlock through desktop or `maple-agent unlock`, then sign in through desktop or
+`maple-agent login` if needed. ACP never places an unlock prompt on its protocol
+stream.
 
 `session/new` creates a draft in the client's working directory. Account MCP
 servers use the Settings defaults with that project's saved choices applied.
@@ -505,42 +530,39 @@ ignored. See [build profiles](docs/release-profiles.md).
 
 ### File locations
 
-The roots follow the platform, the same way the Tauri app's
-`app_config_dir` and `app_local_data_dir` do. `XDG_CONFIG_HOME` and
-`XDG_DATA_HOME` override the base directories on every platform. The table
-shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
-`maple-agent-prod` respectively instead of `maple-agent`.
+The application database lives in `<local data>/store-v1/`. An absolute
+`XDG_DATA_HOME` overrides the data-directory base on every platform;
+`XDG_CONFIG_HOME` selects instruction/configuration resources. The table shows
+unpackaged builds. Packaged Dev and Prod use `maple-agent-dev` and
+`maple-agent-prod` instead of `maple-agent`, with separate data and passwords.
 
 | Root | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Config | `~/.config/maple-agent/` | `~/Library/Application Support/maple-agent/` | `%APPDATA%\maple-agent\` |
+| Config/resources | `~/.config/maple-agent/` | `~/Library/Application Support/maple-agent/` | `%APPDATA%\maple-agent\` |
 | Local data | `~/.local/share/maple-agent/` | `~/Library/Application Support/maple-agent/` | `%LOCALAPPDATA%\maple-agent\` |
 
 | Path | Content |
 | --- | --- |
-| `<config>/settings.json` | App settings. |
-| `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
-| `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md` | The account's own instructions, skills and prompt templates, as Pi's agent folder holds them, and a `SYSTEM.md` that replaces Pi's default prompt ahead of Maple's opening instructions. |
-| `<local data>/send-receipts.db` | Private send admission/results for reconnect reconciliation; no prompt contents. |
-| `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
-| `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
-| `<local data>/agent/accounts/<scope>/project_mcp_defaults.json` | Per-project custom MCP overrides on this device; servers without an override inherit Settings. |
-| `<local data>/agent/accounts/<scope>/sessions/` | One session file (JSONL) per task, and `tasks.db`, the task index (SQLite, WAL). |
-| `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
-| `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
-| `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
-| `<local data>/logs/maple-agent.log` | Log file. Panics are logged here too. |
+| `<local data>/store-v1/db/maple.db` | Account-scoped tasks, full source history, derived timeline, attachments, settings, credentials, MCP secrets, receipts and remote identities/grants. |
+| `<local data>/store-v1/db/maple.db-wal`, `maple.db-shm` | SQLite WAL and coordination files, when present. |
+| `<local data>/store-v1/db/keys.json`, `keys.backup.json` | Matching wrapped data-key copies in password mode. |
+| `<local data>/store-v1/db/generation.json` | Current store generation identity. |
+| `<local data>/store-v1/owner.lock` | Authoritative lifetime ownership lock. |
+| `<local data>/store-v1/logs/maple-agent.log` | Plaintext diagnostics, including panic logging. |
+| `<local data>/store-v1/resources/` | Newly generated delegation instruction Markdown, skills and prompts. |
+| `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md` | General account instruction resources; project/workspace instructions retain their existing lookup behavior. |
 
-Releases before the package rename used `maple-gpui` for both roots. On its
-first start an unpackaged build renames an existing `maple-gpui` directory to `maple-agent`
-when the new one does not exist yet, so sign-in, settings, and history carry
-over in place. Packaged profiles never adopt legacy or Research state.
+`<scope>` is the SHA-256 of the account's user id. General instruction files
+remain outside database encryption and erasure. Other app state uses the fresh
+store only: previous JSON, JSONL, databases, attachments, credentials and remote
+identity files are neither read nor migrated, renamed or deleted. The previous
+`maple-gpui` directory is not adopted. The Research/Tauri app's state is separate.
 
-`<scope>` is the SHA-256 of the account's user id. Small JSON files are
-written atomically (temp file, sync, rename) with owner-only permissions.
-
-These directories are separate from the Tauri app's directories. The two
-apps must not share session storage.
+Use a local filesystem and keep the store private to the OS user. Plain mode
+uses OS permissions; password mode additionally encrypts the current database
+and WAL. Logs, instruction files and earlier copies remain outside that
+protection. For stopped-host backup/restore steps, erase semantics, supported
+filesystem boundaries and release qualification, see [local storage](docs/local-store.md).
 
 ## Tests
 

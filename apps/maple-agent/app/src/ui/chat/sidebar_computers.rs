@@ -1,7 +1,279 @@
 //! The normal sidebar list, grouped by computer and folder when paired hosts
 //! exist. This is a summary projection, never a second task store.
 use super::*;
+use crate::backend::ProjectPageRequest;
 use crate::ui::chat::computers::{Computer, Destination, Navigate};
+use maple_agent::store::{
+    NavigationGroupPage, NavigationGroupQuery, NavigationProjectGroup, NavigationProjectPage,
+    NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery, ProjectSummary, TaskSummary,
+};
+use maple_agent::store::{PinFilter, TaskSection, TaskState};
+use std::hash::{Hash, Hasher};
+
+/// Only requested summary pages are retained. A scope generation fences replies
+/// from a previous search, computer selection, or archive visibility setting.
+#[derive(Default)]
+pub(super) struct ComputerPages {
+    generation: u64,
+    scope: Option<(String, Option<String>, bool)>,
+    hosts: HashMap<Option<String>, ComputerHostPage>,
+    more: Vec<ComputerMore>,
+}
+
+impl ComputerPages {
+    pub(super) fn project_summaries(&self, computer: &Option<String>) -> Option<&[ProjectSummary]> {
+        self.hosts
+            .get(computer)
+            .map(|page| page.projects.as_slice())
+    }
+
+    pub(super) fn own_task_ids(&self, own: Option<&str>) -> HashSet<String> {
+        let Some(page) = self
+            .hosts
+            .iter()
+            .find_map(|(key, page)| (key.as_deref() == own).then_some(page))
+        else {
+            return HashSet::new();
+        };
+        page.groups
+            .iter()
+            .flat_map(|group| group.tasks.iter())
+            .chain(page.search.iter())
+            .chain(page.archived.iter())
+            .map(|task| task.uuid.clone())
+            .collect()
+    }
+}
+
+#[derive(Default)]
+struct ComputerHostPage {
+    projects: Vec<ProjectSummary>,
+    groups: Vec<NavigationProjectGroup>,
+    search: Vec<TaskSummary>,
+    archived: Vec<TaskSummary>,
+    next_groups: Option<String>,
+    next_search: Option<String>,
+    next_archived: Option<String>,
+    next_projects: Option<String>,
+    search_roots: Vec<String>,
+    search_text: String,
+    archived_count: u64,
+    loading: HashSet<String>,
+    errors: HashMap<String, String>,
+    loaded: HashSet<String>,
+}
+
+impl ComputerHostPage {
+    fn cursor_is_current(&self, kind: &ComputerPageKind, cursor: &Option<String>) -> bool {
+        let expected = match kind {
+            ComputerPageKind::Projects => self.next_projects.as_ref(),
+            ComputerPageKind::Groups => self.next_groups.as_ref(),
+            ComputerPageKind::Search => self.next_search.as_ref(),
+            ComputerPageKind::Archived => self.next_archived.as_ref(),
+            ComputerPageKind::Project { root, settled } => self
+                .groups
+                .iter()
+                .find(|group| &group.project.root == root)
+                .and_then(|group| {
+                    if *settled {
+                        group.more.settled.as_ref()
+                    } else {
+                        group.more.active.as_ref()
+                    }
+                }),
+        };
+        cursor.as_ref() == expected && (cursor.is_some() || !self.loaded.contains(&kind.key()))
+    }
+}
+
+#[derive(Clone)]
+struct ComputerMore {
+    computer: Option<String>,
+    generation: u64,
+    kind: ComputerPageKind,
+    cursor: Option<String>,
+    label: SharedString,
+    loading: bool,
+}
+
+#[derive(Clone)]
+enum ComputerPageKind {
+    Projects,
+    Groups,
+    Search,
+    Project { root: String, settled: bool },
+    Archived,
+}
+
+impl ComputerPageKind {
+    fn key(&self) -> String {
+        match self {
+            Self::Projects => "projects".into(),
+            Self::Groups => "groups".into(),
+            Self::Search => "search".into(),
+            Self::Project { root, settled } => format!("project:{settled}:{root}"),
+            Self::Archived => "archived".into(),
+        }
+    }
+}
+
+enum ComputerPageReply {
+    Projects(NavigationProjectPage),
+    Groups(NavigationGroupPage),
+    Tasks(NavigationTaskPage),
+}
+
+fn computer_revision(computers: &[Computer]) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for computer in computers {
+        computer.key.hash(&mut hash);
+        computer.label.hash(&mut hash);
+        computer.backend.as_ref().map(Arc::as_ptr).hash(&mut hash);
+        computer.loading.hash(&mut hash);
+        computer.error.hash(&mut hash);
+        // Loading an older page adds summaries to the snapshot. Only a new
+        // head or an update to the head invalidates these paging cursors.
+        let newest = computer.sessions.iter().map(|task| task.updated_ms).max();
+        for task in computer
+            .sessions
+            .iter()
+            .filter(|task| Some(task.updated_ms) == newest)
+        {
+            task.id.hash(&mut hash);
+            task.updated_ms.hash(&mut hash);
+            task.title.hash(&mut hash);
+            task.message_count.hash(&mut hash);
+            format!("{:?}", task.state).hash(&mut hash);
+        }
+        let mut names = computer.project_names.iter().collect::<Vec<_>>();
+        names.sort_unstable();
+        names.hash(&mut hash);
+    }
+    hash.finish()
+}
+
+fn existing_snapshot_changed(before: &[Computer], after: &[Computer]) -> bool {
+    before.iter().any(|old| {
+        let Some(new) = after.iter().find(|computer| computer.key == old.key) else {
+            return true;
+        };
+        old.projects.iter().any(|previous| {
+            new.projects
+                .iter()
+                .find(|current| current.path == previous.path)
+                .is_none_or(|current| current.label != previous.label)
+        }) || old.sessions.iter().any(|previous| {
+            new.sessions
+                .iter()
+                .find(|current| current.id == previous.id)
+                .is_none_or(|current| !session_summary_eq(previous, current))
+                || old.pinned.contains(&previous.id) != new.pinned.contains(&previous.id)
+        })
+    })
+}
+
+fn merge_tasks(destination: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
+    for task in tasks {
+        if let Some(existing) = destination.iter_mut().find(|row| row.uuid == task.uuid) {
+            *existing = task;
+        } else {
+            destination.push(task);
+        }
+    }
+}
+
+fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> ComputerHostPage {
+    let mut page = ComputerHostPage {
+        projects: computer
+            .projects
+            .iter()
+            .map(|project| ProjectSummary {
+                root: project.path.clone(),
+                display_name: Some(project.label.to_string()),
+                position: None,
+                last_used_ms: 0,
+                name_revision: 0,
+                is_default_workspace: false,
+                truncated: false,
+            })
+            .collect(),
+        ..ComputerHostPage::default()
+    };
+    for session in &computer.sessions {
+        if session.message_count == 0 && !computer.running.contains(&session.id) {
+            continue;
+        }
+        let project = computer
+            .projects
+            .iter()
+            .find(|p| p.path == session.project_root);
+        let state = match session.state {
+            AgentTaskState::Active => "active",
+            AgentTaskState::Settled => "settled",
+            AgentTaskState::Archived => "archived",
+        };
+        let task = TaskSummary {
+            uuid: session.id.clone(),
+            title: session.title.clone(),
+            project_root: session.project_root.clone(),
+            project_display_name: project.map(|p| p.label.to_string()),
+            state: state.into(),
+            kind: if session.acp { "acp" } else { "desktop" }.into(),
+            pinned_ms: computer
+                .pinned
+                .iter()
+                .position(|id| id == &session.id)
+                .map(|index| i64::MAX - i64::try_from(index).unwrap_or(i64::MAX)),
+            web_enabled: session.web_enabled,
+            model: session.model.clone(),
+            message_count: u64::try_from(session.message_count).unwrap_or(u64::MAX),
+            created_ms: session.created_ms,
+            updated_ms: session.updated_ms,
+            truncated: false,
+        };
+        if state == "archived" {
+            page.archived_count = page.archived_count.saturating_add(1);
+            if archived_expanded {
+                page.archived.push(task.clone());
+            }
+        }
+        if !query.is_empty() {
+            if session.title.to_lowercase().contains(query)
+                || computer.label.to_lowercase().contains(query)
+                || project.is_some_and(|p| p.label.to_lowercase().contains(query))
+                || computer
+                    .project_names
+                    .get(&session.project_root)
+                    .is_some_and(|name| name.to_lowercase().contains(query))
+            {
+                page.search.push(task);
+            }
+        } else if state != "archived" {
+            if let Some(group) = page
+                .groups
+                .iter_mut()
+                .find(|g| g.project.root == session.project_root)
+            {
+                group.tasks.push(task);
+            } else {
+                page.groups.push(NavigationProjectGroup {
+                    project: maple_agent::store::ProjectSummary {
+                        root: session.project_root.clone(),
+                        display_name: project.map(|p| p.label.to_string()),
+                        position: None,
+                        last_used_ms: session.updated_ms,
+                        name_revision: 0,
+                        is_default_workspace: false,
+                        truncated: false,
+                    },
+                    tasks: vec![task],
+                    more: Default::default(),
+                });
+            }
+        }
+    }
+    page
+}
 
 pub(super) struct ProjectHeading {
     request: Navigate,
@@ -24,133 +296,699 @@ impl Sidebar {
         computers: Arc<Vec<Computer>>,
         cx: &mut Context<Self>,
     ) {
+        let changed = computer_revision(&self.computers) != computer_revision(&computers)
+            || existing_snapshot_changed(&self.computers, &computers);
         self.computers = computers;
+        if changed {
+            self.refresh_computer_pages(cx);
+        } else {
+            self.ensure_computer_pages(cx);
+        }
         self.rebuild_computer_switcher_roots();
         self.rebuild_entries();
         self.list.remeasure_items(0..self.entries.len());
         cx.notify();
     }
 
+    pub(super) fn refresh_computer_pages(&mut self, cx: &mut Context<Self>) {
+        self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
+        self.group_pages.hosts.clear();
+        self.group_pages.more.clear();
+        self.group_pages.scope = None;
+        self.ensure_computer_pages(cx);
+    }
+
+    pub(super) fn ensure_computer_pages(&mut self, cx: &mut Context<Self>) {
+        if self.computers.len() <= 1 {
+            return;
+        }
+        let scope = (
+            self.filter.clone(),
+            self.project_filter.clone(),
+            self.archived_expanded,
+        );
+        if self.group_pages.scope.as_ref() != Some(&scope) {
+            self.group_pages.generation = self.group_pages.generation.wrapping_add(1);
+            self.group_pages.hosts.clear();
+            self.group_pages.scope = Some(scope);
+        }
+        let computers = self.computers.clone();
+        for computer in computers.iter() {
+            self.group_pages
+                .hosts
+                .entry(computer.key.clone())
+                .or_insert_with(|| snapshot_page(computer, &self.filter, self.archived_expanded));
+        }
+        let hosts = computers
+            .iter()
+            .filter(|computer| computer.backend.is_some())
+            .map(|computer| computer.key.clone())
+            .collect::<Vec<_>>();
+        for computer in hosts {
+            let page = self.group_pages.hosts.entry(computer.clone()).or_default();
+            if !page.loaded.contains("projects")
+                && !page.loading.contains("projects")
+                && !page.errors.contains_key("projects")
+            {
+                self.load_computer_page(
+                    ComputerMore {
+                        computer: computer.clone(),
+                        generation: self.group_pages.generation,
+                        kind: ComputerPageKind::Projects,
+                        cursor: None,
+                        label: "Loading projects…".into(),
+                        loading: false,
+                    },
+                    cx,
+                );
+            }
+            if self.project_filter.is_some() {
+                continue;
+            }
+            let page = self.group_pages.hosts.entry(computer.clone()).or_default();
+            let kind = if self.filter.is_empty() {
+                ComputerPageKind::Groups
+            } else {
+                ComputerPageKind::Search
+            };
+            let key = kind.key();
+            if !page.loaded.contains(&key)
+                && !page.loading.contains(&key)
+                && !page.errors.contains_key(&key)
+            {
+                self.load_computer_page(
+                    ComputerMore {
+                        computer: computer.clone(),
+                        generation: self.group_pages.generation,
+                        kind,
+                        cursor: None,
+                        label: "Loading tasks…".into(),
+                        loading: false,
+                    },
+                    cx,
+                );
+            }
+            if self.archived_expanded && self.filter.is_empty() {
+                let page = self.group_pages.hosts.entry(computer.clone()).or_default();
+                if !page.loaded.contains("archived")
+                    && !page.loading.contains("archived")
+                    && !page.errors.contains_key("archived")
+                {
+                    self.load_computer_page(
+                        ComputerMore {
+                            computer,
+                            generation: self.group_pages.generation,
+                            kind: ComputerPageKind::Archived,
+                            cursor: None,
+                            label: "Loading archived tasks…".into(),
+                            loading: false,
+                        },
+                        cx,
+                    );
+                }
+            }
+        }
+    }
+
+    fn load_computer_page(&mut self, action: ComputerMore, cx: &mut Context<Self>) {
+        if action.generation != self.group_pages.generation {
+            return;
+        }
+        let Some(computer) = self.computers.iter().find(|c| c.key == action.computer) else {
+            return;
+        };
+        let Some(backend) = computer.backend.clone() else {
+            return;
+        };
+        let key = action.kind.key();
+        let page = self
+            .group_pages
+            .hosts
+            .entry(action.computer.clone())
+            .or_default();
+        if !page.cursor_is_current(&action.kind, &action.cursor) {
+            return;
+        }
+        if !page.loading.insert(key.clone()) {
+            return;
+        }
+        page.errors.remove(&key);
+        let user = self.user_id.clone();
+        let query = self.filter.clone();
+        let project = self.project_filter.clone();
+        if matches!(action.kind, ComputerPageKind::Search) && action.cursor.is_none() {
+            // Matching a computer name means browsing that whole computer.
+            // Freeze the request's custom-name roots with its cursor scope.
+            page.search_text = if computer.label.to_lowercase().contains(&query) {
+                String::new()
+            } else {
+                query.clone()
+            };
+            page.search_roots = if page.search_text.is_empty() {
+                Vec::new()
+            } else {
+                computer
+                    .project_names
+                    .iter()
+                    .filter(|(_, name)| name.to_lowercase().contains(&query))
+                    .map(|(root, _)| root.clone())
+                    .collect()
+            };
+            page.search_roots.sort_unstable();
+            page.search_roots.dedup();
+        }
+        let matched_roots = page.search_roots.clone();
+        let search_text = page.search_text.clone();
+        let request = action.clone();
+        self.call(
+            async move {
+                match &request.kind {
+                    ComputerPageKind::Projects => backend
+                        .list_projects(
+                            &user,
+                            ProjectPageRequest {
+                                cursor: request.cursor.clone(),
+                                limit: 50,
+                            },
+                        )
+                        .await
+                        .map(ComputerPageReply::Projects),
+                    ComputerPageKind::Groups => backend
+                        .list_project_groups(
+                            &user,
+                            NavigationGroupQuery {
+                                limit_groups: 20,
+                                per_project: 20,
+                                cursor: request.cursor.clone(),
+                            },
+                        )
+                        .await
+                        .map(ComputerPageReply::Groups),
+                    ComputerPageKind::Search => backend
+                        .search_tasks(
+                            &user,
+                            NavigationSearchQuery {
+                                text: search_text,
+                                project,
+                                project_roots: matched_roots,
+                                cursor: request.cursor.clone(),
+                                limit: 100,
+                            },
+                        )
+                        .await
+                        .map(ComputerPageReply::Tasks),
+                    ComputerPageKind::Project { root, settled } => backend
+                        .list_tasks(
+                            &user,
+                            NavigationTaskQuery {
+                                section: TaskSection::State(if *settled {
+                                    TaskState::Settled
+                                } else {
+                                    TaskState::Active
+                                }),
+                                project: Some(root.clone()),
+                                pins: PinFilter::Ignore,
+                                cursor: request.cursor.clone(),
+                                limit: 50,
+                            },
+                        )
+                        .await
+                        .map(ComputerPageReply::Tasks),
+                    ComputerPageKind::Archived => backend
+                        .list_tasks(
+                            &user,
+                            NavigationTaskQuery {
+                                section: TaskSection::State(TaskState::Archived),
+                                project,
+                                pins: PinFilter::Ignore,
+                                cursor: request.cursor.clone(),
+                                limit: 50,
+                            },
+                        )
+                        .await
+                        .map(ComputerPageReply::Tasks),
+                }
+            },
+            cx,
+            move |this, result, cx| {
+                if action.generation != this.group_pages.generation {
+                    return;
+                }
+                let own = action.computer.as_deref() == this.backend.remote_host();
+                let page = this
+                    .group_pages
+                    .hosts
+                    .entry(action.computer.clone())
+                    .or_default();
+                page.loading.remove(&key);
+                let result = match result {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        page.errors.insert(key, error);
+                        this.rebuild_entries();
+                        cx.notify();
+                        return;
+                    }
+                };
+                page.loaded.insert(key);
+                let mut own_tasks = Vec::new();
+                let mut own_labels = Vec::new();
+                match result {
+                    ComputerPageReply::Projects(reply) => {
+                        if action.cursor.is_none() {
+                            page.projects.clear();
+                        }
+                        page.next_projects = reply.next_cursor;
+                        for project in reply.projects {
+                            if let Some(existing) =
+                                page.projects.iter_mut().find(|p| p.root == project.root)
+                            {
+                                *existing = project;
+                            } else {
+                                page.projects.push(project);
+                            }
+                        }
+                    }
+                    ComputerPageReply::Groups(reply) => {
+                        if action.cursor.is_none() {
+                            page.groups.clear();
+                        }
+                        page.archived_count = reply.archived_count;
+                        page.next_groups = reply.next_cursor;
+                        for group in reply.groups {
+                            if own {
+                                own_tasks.extend(group.tasks.iter().map(session_from_summary));
+                                own_labels.extend(group.tasks.iter().map(|task| {
+                                    (task.project_root.clone(), task.project_display_name.clone())
+                                }));
+                            }
+                            if let Some(existing) = page
+                                .groups
+                                .iter_mut()
+                                .find(|g| g.project.root == group.project.root)
+                            {
+                                merge_tasks(&mut existing.tasks, group.tasks);
+                                existing.more = group.more;
+                                existing.project = group.project;
+                            } else {
+                                page.groups.push(group);
+                            }
+                        }
+                    }
+                    ComputerPageReply::Tasks(reply) => {
+                        if own {
+                            own_tasks.extend(reply.tasks.iter().map(session_from_summary));
+                            own_labels.extend(reply.tasks.iter().map(|task| {
+                                (task.project_root.clone(), task.project_display_name.clone())
+                            }));
+                        }
+                        match action.kind {
+                            ComputerPageKind::Search => {
+                                if action.cursor.is_none() {
+                                    page.search.clear();
+                                }
+                                page.next_search = reply.next_cursor;
+                                merge_tasks(&mut page.search, reply.tasks);
+                            }
+                            ComputerPageKind::Archived => {
+                                if action.cursor.is_none() {
+                                    page.archived.clear();
+                                }
+                                page.next_archived = reply.next_cursor;
+                                merge_tasks(&mut page.archived, reply.tasks);
+                                page.archived_count = page
+                                    .archived_count
+                                    .max(u64::try_from(page.archived.len()).unwrap_or(u64::MAX));
+                            }
+                            ComputerPageKind::Project { root, settled } => {
+                                if let Some(group) =
+                                    page.groups.iter_mut().find(|g| g.project.root == root)
+                                {
+                                    if settled {
+                                        group.more.settled = reply.next_cursor;
+                                    } else {
+                                        group.more.active = reply.next_cursor;
+                                    }
+                                    merge_tasks(&mut group.tasks, reply.tasks);
+                                }
+                            }
+                            ComputerPageKind::Groups | ComputerPageKind::Projects => {}
+                        }
+                    }
+                }
+                if own {
+                    this.remember_task_project_labels(own_labels);
+                    this.merge_page_sessions(own_tasks);
+                }
+                this.rebuild_computer_switcher_roots();
+                this.rebuild_entries();
+                this.list.remeasure_items(0..this.entries.len());
+                cx.notify();
+            },
+        );
+        self.rebuild_entries();
+        cx.notify();
+    }
+
+    fn computer_more_entry(
+        &mut self,
+        entries: &mut Vec<SidebarEntry>,
+        computer: &Option<String>,
+        kind: ComputerPageKind,
+        cursor: Option<String>,
+        label: &str,
+    ) {
+        let Some(page) = self.group_pages.hosts.get(computer) else {
+            return;
+        };
+        let key = kind.key();
+        let loading = page.loading.contains(&key);
+        let failed = page.errors.contains_key(&key);
+        if cursor.is_none() && !loading && !failed {
+            return;
+        }
+        let index = self.group_pages.more.len();
+        self.group_pages.more.push(ComputerMore {
+            computer: computer.clone(),
+            generation: self.group_pages.generation,
+            kind,
+            cursor,
+            loading,
+            label: if failed {
+                format!("Could not load tasks — retry {label}").into()
+            } else if loading {
+                "Loading tasks…".into()
+            } else {
+                label.to_string().into()
+            },
+        });
+        entries.push(SidebarEntry::ComputerMore(index));
+    }
+
     pub(super) fn computer_entries(&mut self) -> Vec<SidebarEntry> {
         self.computer_projects.clear();
         self.other_tasks.clear();
+        self.group_pages.more.clear();
         self.computer_archived_count = 0;
         let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::ProjectsHeader];
-        for (computer_index, computer) in self.computers.iter().enumerate() {
+        let mut archived_entries = Vec::new();
+        // These small clones let rendering append row projections without
+        // borrowing the per-host paging cache for the whole rebuild.
+        let computers = self.computers.clone();
+        for (computer_index, computer) in computers.iter().enumerate() {
             let own = computer.key.as_deref() == self.backend.remote_host();
             if self.project_filter.is_some() && !own {
                 continue;
             }
-            self.computer_archived_count += computer
-                .sessions
-                .iter()
-                .filter(|s| {
-                    s.state == AgentTaskState::Archived
-                        && self
-                            .project_filter
-                            .as_ref()
-                            .is_none_or(|root| root == &s.project_root)
-                })
-                .count();
-            if computer.projects.is_empty() || computer.error.is_some() {
+            let Some(page) = self.group_pages.hosts.get(&computer.key) else {
+                entries.push(SidebarEntry::Computer(computer_index));
+                continue;
+            };
+            self.computer_archived_count = self
+                .computer_archived_count
+                .saturating_add(usize::try_from(page.archived_count).unwrap_or(usize::MAX));
+            let searching = !self.filter.is_empty();
+            let mut groups = page.groups.clone();
+            let search = page.search.clone();
+            let archived = page.archived.clone();
+            let next = if searching {
+                page.next_search.clone()
+            } else {
+                page.next_groups.clone()
+            };
+            let next_archived = page.next_archived.clone();
+            if searching {
+                groups.clear();
+                for task in search {
+                    if task.state == "archived" && !self.archived_expanded {
+                        continue;
+                    }
+                    if let Some(group) = groups
+                        .iter_mut()
+                        .find(|g| g.project.root == task.project_root)
+                    {
+                        group.tasks.push(task);
+                    } else {
+                        let project = computer
+                            .projects
+                            .iter()
+                            .find(|p| p.path == task.project_root);
+                        groups.push(NavigationProjectGroup {
+                            project: maple_agent::store::ProjectSummary {
+                                root: task.project_root.clone(),
+                                display_name: computer
+                                    .project_names
+                                    .get(&task.project_root)
+                                    .cloned()
+                                    .or_else(|| task.project_display_name.clone())
+                                    .or_else(|| project.map(|p| p.label.to_string())),
+                                position: None,
+                                last_used_ms: task.updated_ms,
+                                name_revision: 0,
+                                is_default_workspace: false,
+                                truncated: false,
+                            },
+                            tasks: vec![task],
+                            more: Default::default(),
+                        });
+                    }
+                }
+            }
+            if groups.is_empty() && (computer.backend.is_none() || computer.error.is_some()) {
                 entries.push(SidebarEntry::Computer(computer_index));
             }
-            for project in &computer.projects {
+            for mut group in groups {
                 if own
                     && self
                         .project_filter
                         .as_ref()
-                        .is_some_and(|p| p != &project.path)
+                        .is_some_and(|root| root != &group.project.root)
                 {
                     continue;
                 }
-                let project_name = self.project_name(&ProjectTarget {
-                    computer: computer.key.clone(),
-                    path: project.path.clone(),
-                });
-                let matches_group = self.filter.is_empty()
-                    || computer.label.to_lowercase().contains(&self.filter)
-                    || project_name.to_lowercase().contains(&self.filter);
-                let mut tasks = computer
-                    .sessions
-                    .iter()
-                    .filter(|task| {
-                        task.project_root == project.path
-                            && (task.message_count > 0 || computer.running.contains(&task.id))
-                            && (task.state != AgentTaskState::Archived || self.archived_expanded)
-                            && (matches_group || task.title.to_lowercase().contains(&self.filter))
-                    })
-                    .collect::<Vec<_>>();
-                tasks.sort_by_key(|s| {
+                let root = group.project.root.clone();
+                self.push_computer_heading(&mut entries, computer_index, computer, &group.project);
+                group.tasks.sort_by_key(|task| {
                     (
-                        s.state == AgentTaskState::Archived,
-                        s.state == AgentTaskState::Settled,
-                        computer
-                            .pinned
-                            .iter()
-                            .position(|id| id == &s.id)
-                            .unwrap_or(usize::MAX),
-                        std::cmp::Reverse(s.updated_ms),
+                        task.state == "archived",
+                        task.state == "settled",
+                        task.pinned_ms.is_none(),
+                        std::cmp::Reverse(task.pinned_ms),
+                        std::cmp::Reverse(task.updated_ms),
                     )
                 });
-                if tasks.is_empty() {
-                    continue;
+                for task in &group.tasks {
+                    self.push_computer_task(&mut entries, computer_index, computer, task);
                 }
-                let heading = self.computer_projects.len();
-                self.computer_projects.push(ProjectHeading {
-                    request: Navigate {
-                        computer: computer.key.clone(),
-                        destination: Destination::Project(project.path.clone()),
-                    },
-                    id: format!("computer-{computer_index}-folder-{heading}").into(),
-                    label: format!("{} · {}", computer.label, project_name).into(),
-                    remote: computer.key.is_some(),
-                });
-                entries.push(SidebarEntry::ComputerProject(heading));
-                for task in tasks {
-                    if own {
-                        if let Some(index) = self.sessions.iter().position(|s| s.id == task.id) {
-                            entries.push(SidebarEntry::Task(SidebarTaskEntry {
-                                session: index,
-                                pinned: self.pinned_tasks.contains(&task.id),
-                                settled: task.state == AgentTaskState::Settled,
-                                archived: task.state == AgentTaskState::Archived,
-                            }));
-                        }
-                    } else {
-                        let index = self.other_tasks.len();
-                        self.other_tasks.push(OtherTask {
-                            archived: task.state == AgentTaskState::Archived,
-                            request: Navigate {
-                                computer: computer.key.clone(),
-                                destination: Destination::Task(task.id.clone()),
-                            },
-                            id: format!("computer-{computer_index}-task-{}", task.id).into(),
-                            title: task.title.clone().into(),
-                            pinned: computer.pinned.contains(&task.id),
-                            activity: if computer.running.contains(&task.id) {
-                                Some(SessionActivity::Running)
-                            } else if computer.unread.contains(&task.id) {
-                                Some(SessionActivity::CompletedUnread)
-                            } else {
-                                None
-                            },
-                        });
-                        entries.push(SidebarEntry::OtherTask(index));
-                    }
+                if !searching {
+                    self.computer_more_entry(
+                        &mut entries,
+                        &computer.key,
+                        ComputerPageKind::Project {
+                            root: root.clone(),
+                            settled: false,
+                        },
+                        group.more.active,
+                        "more active tasks",
+                    );
+                    self.computer_more_entry(
+                        &mut entries,
+                        &computer.key,
+                        ComputerPageKind::Project {
+                            root,
+                            settled: true,
+                        },
+                        group.more.settled,
+                        "more settled tasks",
+                    );
                 }
             }
+            self.computer_more_entry(
+                &mut entries,
+                &computer.key,
+                if searching {
+                    ComputerPageKind::Search
+                } else {
+                    ComputerPageKind::Groups
+                },
+                next,
+                if searching {
+                    "more matching tasks"
+                } else {
+                    "more projects"
+                },
+            );
+            if self.archived_expanded && !searching {
+                let mut archived_groups: Vec<(ProjectSummary, Vec<&TaskSummary>)> = Vec::new();
+                for task in &archived {
+                    if let Some((_, tasks)) = archived_groups
+                        .iter_mut()
+                        .find(|(project, _)| project.root == task.project_root)
+                    {
+                        tasks.push(task);
+                    } else {
+                        archived_groups.push((
+                            ProjectSummary {
+                                root: task.project_root.clone(),
+                                display_name: task.project_display_name.clone(),
+                                position: None,
+                                last_used_ms: task.updated_ms,
+                                name_revision: 0,
+                                is_default_workspace: false,
+                                truncated: false,
+                            },
+                            vec![task],
+                        ));
+                    }
+                }
+                for (project, tasks) in archived_groups {
+                    self.push_computer_heading(
+                        &mut archived_entries,
+                        computer_index,
+                        computer,
+                        &project,
+                    );
+                    for task in tasks {
+                        self.push_computer_task(
+                            &mut archived_entries,
+                            computer_index,
+                            computer,
+                            task,
+                        );
+                    }
+                }
+                self.computer_more_entry(
+                    &mut archived_entries,
+                    &computer.key,
+                    ComputerPageKind::Archived,
+                    next_archived,
+                    "more archived tasks",
+                );
+            }
         }
-        if self.computer_archived_count > 0 {
+        if self.computer_archived_count > 0 || !self.filter.is_empty() {
             entries.push(SidebarEntry::ArchivedHeader);
+            entries.extend(archived_entries);
         }
         entries
+    }
+
+    fn push_computer_heading(
+        &mut self,
+        entries: &mut Vec<SidebarEntry>,
+        computer_index: usize,
+        computer: &Computer,
+        project: &ProjectSummary,
+    ) {
+        let heading = self.computer_projects.len();
+        let root = &project.root;
+        let label = self.computer_project_name(computer, project);
+        self.computer_projects.push(ProjectHeading {
+            request: Navigate {
+                computer: computer.key.clone(),
+                destination: Destination::Project(root.clone()),
+            },
+            id: format!("computer-{computer_index}-folder-{heading}").into(),
+            label: format!("{} · {}", computer.label, label).into(),
+            remote: computer.key.is_some(),
+        });
+        entries.push(SidebarEntry::ComputerProject(heading));
+    }
+
+    pub(super) fn computer_project_name(
+        &self,
+        computer: &Computer,
+        project: &ProjectSummary,
+    ) -> String {
+        let target = ProjectTarget {
+            computer: computer.key.clone(),
+            path: project.root.clone(),
+        };
+        self.pending_project_names
+            .get(&target)
+            .cloned()
+            .or_else(|| {
+                (target.computer.as_deref() == self.backend.remote_host())
+                    .then(|| self.project_metadata.get(&project.root))
+                    .flatten()
+                    .filter(|metadata| metadata.name_revision >= project.name_revision)
+                    .map(|metadata| metadata.name.clone())
+            })
+            .or_else(|| {
+                // Snapshot-only fallbacks have no owner revision. A refreshed
+                // computer snapshot can supply their newest owner label.
+                (project.name_revision == 0)
+                    .then(|| computer.project_names.get(&project.root).cloned())
+                    .flatten()
+            })
+            .or_else(|| project.display_name.clone())
+            .unwrap_or_else(|| self.project_name(&target))
+    }
+
+    fn push_computer_task(
+        &mut self,
+        entries: &mut Vec<SidebarEntry>,
+        computer_index: usize,
+        computer: &Computer,
+        task: &TaskSummary,
+    ) {
+        let own = computer.key.as_deref() == self.backend.remote_host();
+        if own {
+            if let Some(index) = self.sessions.iter().position(|s| s.id == task.uuid) {
+                let state = self.sessions[index].state;
+                if state == AgentTaskState::Archived && !self.archived_expanded {
+                    return;
+                }
+                entries.push(SidebarEntry::Task(SidebarTaskEntry {
+                    session: index,
+                    pinned: task.pinned_ms.is_some(),
+                    settled: state == AgentTaskState::Settled,
+                    archived: state == AgentTaskState::Archived,
+                }));
+            }
+        } else {
+            let latest = computer
+                .sessions
+                .iter()
+                .find(|session| session.id == task.uuid)
+                .filter(|session| session.updated_ms >= task.updated_ms);
+            let archived = latest.map_or(task.state == "archived", |session| {
+                session.state == AgentTaskState::Archived
+            });
+            if archived && !self.archived_expanded {
+                return;
+            }
+            let index = self.other_tasks.len();
+            self.other_tasks.push(OtherTask {
+                archived,
+                request: Navigate {
+                    computer: computer.key.clone(),
+                    destination: Destination::Task(task.uuid.clone()),
+                },
+                id: format!("computer-{computer_index}-task-{}", task.uuid).into(),
+                title: latest
+                    .map_or_else(|| task.title.clone(), |session| session.title.clone())
+                    .into(),
+                pinned: task.pinned_ms.is_some(),
+                activity: if computer.running.contains(&task.uuid) {
+                    Some(SessionActivity::Running)
+                } else if computer.unread.contains(&task.uuid) {
+                    Some(SessionActivity::CompletedUnread)
+                } else {
+                    None
+                },
+            });
+            entries.push(SidebarEntry::OtherTask(index));
+        }
     }
 
     pub(in crate::ui::chat) fn computer_target(
         &self,
         entry: SidebarEntry,
     ) -> Option<SidebarTarget> {
+        if let SidebarEntry::ComputerMore(index) = entry {
+            return Some(SidebarTarget::LoadMore(self.computer_more_id(index)));
+        }
         let request = match entry {
             SidebarEntry::ComputerProject(index) => {
                 self.computer_projects.get(index)?.request.clone()
@@ -165,6 +1003,33 @@ impl Sidebar {
         Some(SidebarTarget::Computer(request))
     }
 
+    pub(super) fn computer_more_id(&self, index: usize) -> String {
+        let action = &self.group_pages.more[index];
+        format!(
+            "computer:{}",
+            serde_json::to_string(&(
+                action.generation,
+                &action.computer,
+                action.kind.key(),
+                &action.cursor,
+            ))
+            .expect("computer paging identity is serializable")
+        )
+    }
+
+    pub(super) fn activate_computer_more(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(index) =
+            (0..self.group_pages.more.len()).find(|index| self.computer_more_id(*index) == id)
+        else {
+            return false;
+        };
+        let action = self.group_pages.more[index].clone();
+        if !action.loading {
+            self.load_computer_page(action, cx);
+        }
+        true
+    }
+
     pub(super) fn render_computer_entry(
         &self,
         entry: SidebarEntry,
@@ -172,6 +1037,36 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match entry {
+            SidebarEntry::ComputerMore(index) => {
+                let action = self.group_pages.more[index].clone();
+                let label = action.label.clone();
+                let loading = action.loading;
+                div()
+                    .id(SharedString::from(format!("computer-page-{index}")))
+                    .role(gpui::Role::Button)
+                    .aria_label(label.clone())
+                    .px_8()
+                    .py_2()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .when(selected, |row| {
+                        row.aria_active_descendant()
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                    })
+                    .when(!loading, |row| {
+                        row.hover(|s| {
+                            s.cursor_pointer()
+                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        })
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !loading {
+                            this.load_computer_page(action.clone(), cx);
+                        }
+                    }))
+                    .child(label)
+                    .into_any_element()
+            }
             SidebarEntry::ComputerProject(index) => {
                 let project = &self.computer_projects[index];
                 let request = project.request.clone();
@@ -321,6 +1216,7 @@ impl Sidebar {
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(computer.label.clone()),
             );
+            let page = self.group_pages.hosts.get(&computer.key);
             for root in &self.computer_switcher_roots[index] {
                 let target = root.target.clone();
                 let own = target.computer.as_deref() == self.backend.remote_host();
@@ -352,6 +1248,36 @@ impl Sidebar {
                 }
                 menu = menu.item(item);
             }
+            if let Some(page) = page {
+                let loading = page.loading.contains("projects");
+                let failed = page.errors.contains_key("projects");
+                if page.next_projects.is_some() || loading || failed {
+                    let action = ComputerMore {
+                        computer: computer.key.clone(),
+                        generation: self.group_pages.generation,
+                        kind: ComputerPageKind::Projects,
+                        cursor: page.next_projects.clone(),
+                        label: "Load more projects".into(),
+                        loading,
+                    };
+                    menu = menu.item(
+                        MenuItem::new(
+                            SharedString::from(format!("switcher-computer-{index}-more-projects")),
+                            if loading {
+                                "Loading projects…"
+                            } else if failed {
+                                "Could not load projects — retry"
+                            } else {
+                                "Load more projects"
+                            },
+                            move |this: &mut Self, _, cx| {
+                                this.load_computer_page(action.clone(), cx)
+                            },
+                        )
+                        .enabled(!loading),
+                    );
+                }
+            }
             let request = Navigate {
                 computer: computer.key.clone(),
                 destination: Destination::NewProject,
@@ -366,5 +1292,145 @@ impl Sidebar {
             );
         }
         menu
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+    use crate::ui::chat::computers::Project;
+
+    fn task(id: &str) -> TaskSummary {
+        TaskSummary {
+            uuid: id.into(),
+            title: id.into(),
+            project_root: "/tmp/project".into(),
+            project_display_name: None,
+            state: "active".into(),
+            kind: "desktop".into(),
+            pinned_ms: None,
+            web_enabled: false,
+            model: None,
+            message_count: 1,
+            created_ms: 1,
+            updated_ms: 2,
+            truncated: false,
+        }
+    }
+
+    fn computer() -> Computer {
+        Computer {
+            key: None,
+            label: "This computer".into(),
+            backend: None,
+            project_names: HashMap::new(),
+            projects: Vec::new(),
+            sessions: vec![session_from_summary(&task("head"))],
+            running: HashSet::new(),
+            unread: HashSet::new(),
+            pinned: Vec::new(),
+            loading: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn loading_an_older_page_does_not_invalidate_group_cursors() {
+        let mut computer = computer();
+        let original = computer.clone();
+        let before = computer_revision(std::slice::from_ref(&computer));
+        let mut older = task("older");
+        older.updated_ms = 1;
+        computer.sessions.push(session_from_summary(&older));
+        computer.projects.push(Project {
+            path: "/tmp/old-project".into(),
+            label: "Old project".into(),
+        });
+        assert_eq!(before, computer_revision(std::slice::from_ref(&computer)));
+        assert!(!existing_snapshot_changed(
+            std::slice::from_ref(&original),
+            std::slice::from_ref(&computer)
+        ));
+        computer.sessions[0].updated_ms = 3;
+        assert_ne!(before, computer_revision(std::slice::from_ref(&computer)));
+        assert!(existing_snapshot_changed(
+            std::slice::from_ref(&original),
+            std::slice::from_ref(&computer)
+        ));
+    }
+
+    #[test]
+    fn removing_an_older_loaded_task_invalidates_grouped_rows() {
+        let mut before = computer();
+        let mut older = task("deleted");
+        older.updated_ms = 1;
+        before.sessions.push(session_from_summary(&older));
+        let mut after = before.clone();
+        after.sessions.retain(|task| task.id != "deleted");
+        assert_eq!(
+            computer_revision(std::slice::from_ref(&before)),
+            computer_revision(std::slice::from_ref(&after))
+        );
+        assert!(existing_snapshot_changed(
+            std::slice::from_ref(&before),
+            std::slice::from_ref(&after)
+        ));
+    }
+
+    #[test]
+    fn duplicate_page_delivery_updates_rows_without_duplicating_them() {
+        let mut rows = vec![task("same")];
+        let mut renamed = task("same");
+        renamed.title = "Renamed".into();
+        merge_tasks(&mut rows, vec![renamed, task("next")]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].title, "Renamed");
+    }
+
+    #[test]
+    fn current_host_projection_excludes_other_hosts() {
+        let mut pages = ComputerPages::default();
+        pages.hosts.insert(
+            None,
+            ComputerHostPage {
+                search: vec![task("own")],
+                ..ComputerHostPage::default()
+            },
+        );
+        pages.hosts.insert(
+            Some("remote".into()),
+            ComputerHostPage {
+                search: vec![task("foreign")],
+                ..ComputerHostPage::default()
+            },
+        );
+        assert_eq!(pages.own_task_ids(None), HashSet::from(["own".into()]));
+        assert_eq!(
+            pages.own_task_ids(Some("remote")),
+            HashSet::from(["foreign".into()])
+        );
+    }
+
+    #[test]
+    fn stale_load_more_actions_cannot_rewind_a_continuation() {
+        let mut page = ComputerHostPage::default();
+        assert!(page.cursor_is_current(&ComputerPageKind::Groups, &None));
+        page.loaded.insert("groups".into());
+        page.next_groups = Some("second-page".into());
+        assert!(!page.cursor_is_current(&ComputerPageKind::Groups, &None));
+        assert!(page.cursor_is_current(&ComputerPageKind::Groups, &Some("second-page".into())));
+        page.next_groups = Some("third-page".into());
+        assert!(!page.cursor_is_current(&ComputerPageKind::Groups, &Some("second-page".into())));
+    }
+
+    #[test]
+    fn bounded_snapshot_keeps_running_empty_tasks_and_hides_idle_empty_tasks() {
+        let mut computer = computer();
+        computer.sessions[0].message_count = 0;
+        assert!(snapshot_page(&computer, "", false).groups.is_empty());
+        computer.running.insert("head".into());
+        let page = snapshot_page(&computer, "", false);
+        assert_eq!(page.groups.len(), 1);
+        assert_eq!(page.groups[0].tasks[0].uuid, "head");
     }
 }

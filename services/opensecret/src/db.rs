@@ -754,6 +754,11 @@ pub trait DBConnection {
         after: Option<Uuid>,
         order: &str,
     ) -> Result<Vec<RawThreadMessage>, DBError>;
+    fn get_conversation_item(
+        &self,
+        conversation_id: i64,
+        item_uuid: Uuid,
+    ) -> Result<Option<RawThreadMessage>, DBError>;
     fn get_response_context_messages(
         &self,
         response_id: i64,
@@ -3026,6 +3031,16 @@ impl DBConnection for PostgresConnection {
     ) -> Result<Vec<RawThreadMessage>, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
         RawThreadMessage::get_conversation_context(conn, conversation_id, limit, after, order)
+            .map_err(DBError::from)
+    }
+
+    fn get_conversation_item(
+        &self,
+        conversation_id: i64,
+        item_uuid: Uuid,
+    ) -> Result<Option<RawThreadMessage>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        RawThreadMessage::get_conversation_item(conn, conversation_id, item_uuid)
             .map_err(DBError::from)
     }
 

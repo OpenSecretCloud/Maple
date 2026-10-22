@@ -2,10 +2,14 @@
 
 ## Authority
 
-Each account/deployment/channel/storage scope owns a random persistent Iroh key
-and local grants in an owner-only, atomically replaced file, separate from the
-auth token cache. Changing builds does not change identity. Losing that file
-requires re-pairing; discovery cannot reconstruct grants. Signing out invalidates
+Each account/deployment/channel/storage scope owns a random persistent Iroh key,
+local grants, advertised name and peer nicknames in its account-scoped local
+application database. Password mode protects these with the same encrypted store
+as credentials and history; a locked host does not load its identity or start
+remote serving. Changing builds within the same profile does not change identity.
+Losing or erasing this store requires re-pairing; discovery cannot reconstruct
+grants. Earlier application identity files are not imported. Erase does not remove
+the stale peer on another computer; revoke it there. Signing out invalidates
 the account session and closes its remote connections. Same-account sign-in can
 reuse persisted grants. Local revocation wins over delayed pairing acknowledgements.
 

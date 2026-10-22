@@ -82,6 +82,8 @@ macos_release_main() {
     local icon=maple-agent.icns
     [[ "$profile" != dev ]] || icon=maple-agent-dev.icns
     cp "$component/app/packaging/$icon" "$app/Contents/Resources/MapleAgent.icns"
+    python3 "$component/scripts/stage-third-party-notices.py" "$app/Contents/Resources/licenses" \
+        --target aarch64-apple-darwin
     python3 "$component/scripts/release-info.py" plist "$profile" "$output_dir/build-info.json" \
         --build-number "$build_number" --output "$app/Contents/Info.plist"
     macos_embed_dylibs "$component" "$binary" "$app"
@@ -106,7 +108,9 @@ macos_release_main() {
     # private umask and ownership are encoded into the DMG and tar archive.
     chmod -R a+rX "$app"
 
-    local identity="-" timestamp=--timestamp=none
+    # Ad-hoc previews have no Team ID. Hardened-runtime library validation
+    # would reject their bundled dylibs before main can run.
+    local identity="-" timestamp=--timestamp=none app_options=0
     if [[ "$unsigned" == false ]]; then
         [[ -n "${APPLE_CERTIFICATE:-}" && -n "${APPLE_CERTIFICATE_PASSWORD:-}" \
            && -n "${APPLE_ID:-}" && -n "${APPLE_ID_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]] || {
@@ -158,6 +162,7 @@ matches=[m.group(1) for line in sys.stdin for m in [re.search(r"\b([0-9A-Fa-f]{4
 if len(matches) != 1: raise SystemExit("expected exactly one Developer ID Application identity for the configured team")
 print(matches[0])' "$APPLE_TEAM_ID")"
         timestamp=--timestamp
+        app_options=runtime
     fi
     local keychain_args=()
     [[ -z "$macos_release_keychain" ]] || keychain_args=(--keychain "$macos_release_keychain")
@@ -169,7 +174,7 @@ print(matches[0])' "$APPLE_TEAM_ID")"
         macos_native codesign --force --sign "$identity" "$timestamp" --options runtime \
             "${keychain_args[@]}" "$library"
     done < <(find "$frameworks" -type f -name '*.dylib' -print0)
-    macos_native codesign --force --sign "$identity" "$timestamp" --options runtime \
+    macos_native codesign --force --sign "$identity" "$timestamp" --options "$app_options" \
         --identifier "$bundle_id" --entitlements "$component/app/packaging/macos-entitlements.plist" \
         "${keychain_args[@]}" "$app"
     macos_native codesign --verify --deep --strict --verbose=2 "$app"

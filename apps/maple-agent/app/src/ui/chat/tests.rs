@@ -176,6 +176,8 @@ mod state_tests {
             let remote = Computer {
                 key: Some("paired-device".into()),
                 label: "Office Mac".into(),
+                backend: None,
+                project_names: HashMap::new(),
                 projects: vec![Project {
                     path: "/tmp/proj".into(),
                     label: "proj".into(),
@@ -347,6 +349,139 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn project_name_delta_preserves_other_loaded_projects(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.apply_recent_roots(
+                vec![
+                    named_root("/tmp/proj", "Original name", 1),
+                    named_root("/another/project", "Other project", 3),
+                ],
+                cx,
+            );
+            let selection = this.selected_session.clone();
+            let generation = this.selection_generation;
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: vec![named_root("/tmp/proj", "Owner rename", 2)],
+                },
+                cx,
+            ));
+            assert_eq!(this.recent_roots.len(), 2);
+            assert_eq!(this.recent_roots[0].name, "Owner rename");
+            assert_eq!(this.recent_roots[1].name, "Other project");
+            assert_eq!(
+                this.sidebar.read(cx).navigation_roots(),
+                vec!["/tmp/proj", "/another/project"]
+            );
+            assert_eq!(this.selected_session, selection);
+            assert_eq!(this.selection_generation, generation);
+        });
+    }
+
+    #[gpui::test]
+    fn removed_workspace_anchor_stays_hidden_until_an_owner_restore(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let mut workspace = named_root("/workspace", "Maple Workspace", 7);
+            workspace.is_default_workspace = true;
+            let other = named_root("/another/project", "Other project", 2);
+            this.apply_recent_roots(vec![workspace.clone(), other.clone()], cx);
+            // A first page can omit an older, still-listed workspace. That
+            // ordinary absence must retain its separately loaded anchor.
+            let page = || maple_agent::store::NavigationProjectPage {
+                projects: vec![maple_agent::store::ProjectSummary {
+                    root: other.path.clone(),
+                    display_name: Some(other.name.clone()),
+                    name_revision: other.name_revision,
+                    is_default_workspace: false,
+                    last_used_ms: 0,
+                    position: None,
+                    truncated: false,
+                }],
+                next_cursor: Some("more-projects".into()),
+            };
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.apply_project_page_for_test(page(), cx);
+                assert!(sidebar.navigation_roots().contains(&workspace.path));
+            });
+            assert!(!this.apply_service_event(
+                AgentServiceEvent::ProjectRemoved {
+                    user_id: "different-account".into(),
+                    project_root: workspace.path.clone(),
+                },
+                cx,
+            ));
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectRemoved {
+                    user_id: "user".into(),
+                    project_root: workspace.path.clone(),
+                },
+                cx,
+            ));
+            // A pushed removal (including one from another controller),
+            // later page refreshes, and stale metadata all keep it hidden.
+            this.sidebar.update(cx, |sidebar, cx| {
+                assert!(sidebar.project_is_removed(&workspace.path));
+                sidebar.apply_project_page_for_test(page(), cx);
+                sidebar.merge_project_metadata(vec![workspace.clone()], cx);
+                assert!(!sidebar.navigation_roots().contains(&workspace.path));
+            });
+            assert!(
+                !this
+                    .recent_roots
+                    .iter()
+                    .any(|root| root.path == workspace.path)
+            );
+
+            // Only an owner-issued selection/restore or an authoritative
+            // project page lists the path again.
+            this.restore_selected_project(workspace.clone(), cx);
+            this.sidebar.update(cx, |sidebar, cx| {
+                assert!(!sidebar.project_is_removed(&workspace.path));
+                sidebar.apply_project_page_for_test(page(), cx);
+                assert!(sidebar.navigation_roots().contains(&workspace.path));
+            });
+            assert!(
+                this.recent_roots
+                    .iter()
+                    .any(|root| root.path == workspace.path)
+            );
+
+            // If removal happened while disconnected, no push is available.
+            // Recovery's separate default-project lookup reports None, so its
+            // bootstrap roots omit the anchor even if it is still cached.
+            this.selected_session = None;
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: Some(other.path.clone()),
+                        recent_roots: vec![other.clone()],
+                        sessions: Vec::new(),
+                        latest: None,
+                        questions: Vec::new(),
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: false,
+                        project_root: Some(other.path.clone()),
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.apply_project_page_for_test(page(), cx);
+                assert!(sidebar.project_is_removed(&workspace.path));
+                assert!(!sidebar.navigation_roots().contains(&workspace.path));
+            });
+        });
+    }
+
+    #[gpui::test]
     fn project_name_revisions_survive_stale_events_snapshots_and_explicit_reset(
         cx: &mut TestAppContext,
     ) {
@@ -464,6 +599,144 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn unloaded_project_owner_label_survives_task_search_projection(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let root = "/tmp/ordinary-folder";
+            let task = maple_agent::store::TaskSummary {
+                uuid: "label-match".into(),
+                title: "Discuss next step".into(),
+                project_root: root.into(),
+                project_display_name: Some("Nebula Planning".into()),
+                state: "active".into(),
+                kind: "desktop".into(),
+                pinned_ms: None,
+                web_enabled: false,
+                model: None,
+                message_count: 1,
+                created_ms: 0,
+                updated_ms: 1,
+                truncated: false,
+            };
+            assert!(!task.title.to_lowercase().contains("nebula"));
+            assert!(!root.contains("nebula"));
+            assert_eq!(this.sidebar.read(cx).root_name(root), "ordinary-folder");
+            for project in [None, Some(root.to_owned())] {
+                this.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.apply_search_page_for_test("nebula", project, vec![task.clone()], cx);
+                    assert_eq!(sidebar.active_rows().len(), 1);
+                    let row = &sidebar.rows()[sidebar.active_rows()[0]];
+                    assert_eq!(row.title.as_ref(), "Discuss next step");
+                    assert_eq!(row.project_name.as_ref(), "Nebula Planning");
+                    assert!(
+                        sidebar
+                            .entries()
+                            .iter()
+                            .any(|entry| matches!(entry, sidebar::SidebarEntry::Task(_)))
+                    );
+                });
+            }
+            // A newer pushed owner name still supersedes unversioned labels
+            // carried by task pages, including a delayed old search reply.
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: vec![named_root(root, "Renamed owner project", 2)],
+                },
+                cx
+            ));
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.apply_search_page_for_test("nebula", None, vec![task], cx);
+                assert!(sidebar.active_rows().is_empty());
+                assert_eq!(sidebar.root_name(root), "Renamed owner project");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn recovery_reauthorizes_an_unloaded_project_label_before_search(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let root = "/tmp/older-project";
+            let owner_page = (0..50)
+                .map(|index| named_root(&format!("/tmp/recent-{index:02}"), "Recent project", 1))
+                .collect::<Vec<_>>();
+            let mut before_disconnect = owner_page.clone();
+            before_disconnect.push(named_root(root, "Old cached label", 4));
+            this.apply_recent_roots(before_disconnect, cx);
+            assert_eq!(this.sidebar.read(cx).root_name(root), "Old cached label");
+            assert!(!owner_page.iter().any(|project| project.path == root));
+
+            // The successful reconnect snapshot covers fifty other projects.
+            // Its callback resets unobserved labels before replaying pushes.
+            this.prepare_project_cache_for_recovery(&owner_page, cx);
+            this.selected_session = None;
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: None,
+                        recent_roots: owner_page,
+                        sessions: Vec::new(),
+                        latest: None,
+                        questions: Vec::new(),
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: false,
+                        project_root: None,
+                        model: None,
+                        active_runs: HashMap::new(),
+                    },
+                    selected: None,
+                },
+                this.selection_generation,
+                cx,
+            );
+            let task = maple_agent::store::TaskSummary {
+                uuid: "offline-label-match".into(),
+                title: "Unrelated title".into(),
+                project_root: root.into(),
+                project_display_name: Some("ÄPFEL research".into()),
+                state: "active".into(),
+                kind: "desktop".into(),
+                pinned_ms: None,
+                web_enabled: false,
+                model: None,
+                message_count: 1,
+                created_ms: 0,
+                updated_ms: 1,
+                truncated: false,
+            };
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.apply_search_page_for_test("äpfel", None, vec![task.clone()], cx);
+                assert_eq!(sidebar.active_rows().len(), 1);
+                let row = &sidebar.rows()[sidebar.active_rows()[0]];
+                assert_eq!(row.project_name.as_ref(), "ÄPFEL research");
+                assert!(
+                    sidebar
+                        .entries()
+                        .iter()
+                        .any(|entry| matches!(entry, sidebar::SidebarEntry::Task(_)))
+                );
+            });
+
+            // A newer push buffered during the owner read is applied after
+            // that reset; an older task-page reply still cannot undo it.
+            assert!(this.apply_service_event(
+                AgentServiceEvent::ProjectsChanged {
+                    user_id: "user".into(),
+                    roots: vec![named_root(root, "Newest owner label", 6)],
+                },
+                cx
+            ));
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.apply_search_page_for_test("äpfel", None, vec![task], cx);
+                assert!(sidebar.active_rows().is_empty());
+                assert_eq!(sidebar.root_name(root), "Newest owner label");
+            });
+        });
+    }
+
+    #[gpui::test]
     fn renamed_computer_project_keeps_picker_identity_and_updates_cross_computer_search(
         cx: &mut TestAppContext,
     ) {
@@ -575,8 +848,145 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn persisted_rows_with_repeated_legacy_keys_keep_distinct_view_identities(
+        cx: &mut TestAppContext,
+    ) {
+        let chat = screen(cx);
+        chat.update(cx, |this, _cx| {
+            for row_seq in 1..=2 {
+                let mut row = item("u7", "message", Some("same timestamp"));
+                row.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                    task_id: "s1".into(),
+                    rows_epoch: 0,
+                    row_seq,
+                    update_seq: row_seq,
+                });
+                this.apply_timeline_item("s1", row);
+            }
+            assert_eq!(this.timeline.len(), 2);
+            assert_ne!(this.timeline[0].id, this.timeline[1].id);
+            let mut live = item("u7", "message", Some("streamed"));
+            live.live = Some(maple_agent::agent::AgentLiveRowIdentity {
+                run_id: "run".into(),
+                occurrence: 1,
+            });
+            this.apply_timeline_item("s1", live.clone());
+            live.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                task_id: "s1".into(),
+                rows_epoch: 0,
+                row_seq: 3,
+                update_seq: 3,
+            });
+            this.apply_timeline_item("s1", live);
+            assert_eq!(this.timeline.len(), 3);
+            assert_eq!(this.timeline[2].persisted.as_ref().unwrap().row_seq, 3);
+        });
+    }
+
+    #[gpui::test]
+    fn transcript_window_eviction_and_prepend_restore_the_visible_occurrence(
+        cx: &mut TestAppContext,
+    ) {
+        let chat = screen(cx);
+        chat.update(cx, |this, _cx| {
+            let rows = (1..=2100)
+                .map(|row_seq| {
+                    let mut row = item("u7", "message", Some("history"));
+                    row.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                        task_id: "s1".into(),
+                        rows_epoch: 0,
+                        row_seq,
+                        update_seq: row_seq,
+                    });
+                    row
+                })
+                .collect();
+            this.replace_timeline(rows);
+            assert_eq!(this.timeline.len(), 2000);
+            assert!(this.pages.before);
+            this.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 10,
+                offset_in_item: px(23.),
+            });
+            let anchor = this.scroll_anchor();
+            let id = anchor.as_ref().unwrap().0.clone();
+            let mut older = item("older", "message", Some("earlier"));
+            older.id = "stored:s1:0:100".into();
+            this.timeline.insert(0, older);
+            this.bound_transcript_window(false);
+            this.rebuild_window(anchor);
+            let offset = this.list_state.logical_scroll_top();
+            assert_eq!(this.timeline[offset.item_ix].id, id);
+            assert_eq!(offset.offset_in_item, px(23.));
+            assert!(this.pages.after);
+            assert_eq!(this.timeline.len(), 2000);
+        });
+    }
+
+    #[gpui::test]
+    fn stale_commit_does_not_rekey_a_newer_live_occurrence(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, _cx| {
+            let mut live = item("legacy", "message", Some("newer live output"));
+            live.revision = 20;
+            live.live = Some(maple_agent::agent::AgentLiveRowIdentity {
+                run_id: "run".into(),
+                occurrence: 1,
+            });
+            this.apply_timeline_item("s1", live.clone());
+            let key = this.timeline[0].id.clone();
+            let mut old = live;
+            old.revision = 19;
+            old.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                task_id: "s1".into(),
+                rows_epoch: 0,
+                row_seq: 1,
+                update_seq: 1,
+            });
+            assert!(this.apply_timeline_item("s1", old).is_none());
+            assert_eq!(this.timeline[0].id, key);
+            assert!(this.timeline[0].persisted.is_none());
+            assert_eq!(this.timeline_index.get(&key).map(|entry| entry.0), Some(0));
+        });
+    }
+
+    #[gpui::test]
+    fn missed_live_occurrence_keeps_reload_available_at_the_committed_tail(
+        cx: &mut TestAppContext,
+    ) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("history", "message", Some("older history"))]);
+            this.pages.after = true;
+            let mut live = item("waiting-tool", "tool", Some("waiting for an answer"));
+            live.revision = 100;
+            live.live = Some(maple_agent::agent::AgentLiveRowIdentity {
+                run_id: "run".into(),
+                occurrence: 42,
+            });
+            this.apply_incoming_item("s1", live, cx);
+            assert_eq!(this.timeline.len(), 1);
+            assert!(this.pages.live_has_more);
+            // This is the final forward-page transition. It cannot prove a
+            // paused, uncommitted occurrence was recovered from durable rows.
+            this.pages.after = false;
+            assert!(this.pages.live_has_more);
+            let reload = this.reload_generation;
+            this.reload_paged_latest(cx);
+            assert!(this.reload_generation > reload);
+            assert!(
+                this.pages.live_has_more,
+                "only a successful bounded open clears the notice"
+            );
+        });
+    }
+
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            persisted: None,
+            live: None,
+            truncated: None,
             revision: 0,
             id: id.to_string(),
             item_type: item_type.to_string(),
@@ -598,10 +1008,8 @@ mod state_tests {
         }
     }
 
-    /// Serializes constructions that read the settings file: the
-    /// persisted-defaults test swaps XDG_CONFIG_HOME process-wide, so no
-    /// other test may resolve, read, or write settings while the swap is
-    /// live.
+    /// Serializes constructions that read the shared settings snapshot while
+    /// another fixture installs its own host-backed settings cache.
     use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
 
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
@@ -618,9 +1026,8 @@ mod state_tests {
             screen.selected_session = Some("s1".to_string());
             screen
         });
-        // Tests that settle or pin persist their fixture ids into the real
-        // settings file, which this fixture just loaded; sections must not
-        // depend on what an earlier test left there.
+        // Sections must not depend on presentation preferences left in the
+        // shared settings cache by an earlier fixture.
         screen.update(cx, |this, cx| {
             this.sidebar
                 .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
@@ -954,17 +1361,20 @@ mod state_tests {
     fn test_constructor_reads_persisted_defaults(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let _guard = SETTINGS_LOCK.lock();
-        let dir = std::env::temp_dir().join(format!("maple-agent-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config = dir.join("maple-agent");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(
-            config.join("settings.json"),
-            r#"{"tool_details":false,"default_web_enabled":false}"#,
-        )
-        .unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let previous = crate::settings::load_settings();
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(directory.path()))
+                .unwrap(),
+        );
+        store
+            .set_app_setting(
+                "ui",
+                &serde_json::json!({"tool_details":false,"default_web_enabled":false}),
+                1,
+            )
+            .unwrap();
+        crate::settings::install_test_store(store);
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
@@ -981,11 +1391,7 @@ mod state_tests {
                 cx,
             )
         });
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::settings::install_test_settings(previous);
         screen.update(cx, |this, _cx| {
             assert!(!this.tool_details);
             assert!(!this.default_web_enabled);
@@ -1209,6 +1615,50 @@ mod state_tests {
                 this.timeline.len(),
                 1,
                 "snapshot/event overlap must not duplicate rows"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn store_maintenance_preserves_the_draft_and_cancels_an_unsent_catalog_wait(
+        cx: &mut TestAppContext,
+    ) {
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.booting = false;
+        });
+        chat.update(cx, |this, cx| {
+            this.fill_empty_composer("keep this unsent draft", cx);
+            this.session_setup_pending = true;
+            this.first_send_waiting_for_mcp = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "keep this unsent draft".into(),
+                steer: false,
+            });
+            this.begin_store_maintenance(cx);
+            let epoch = this.host_recovery.epoch;
+            this.begin_store_maintenance(cx);
+            assert_eq!(
+                this.host_recovery.epoch, epoch,
+                "duplicate barriers coalesce"
+            );
+            assert!(this.host_recovery.unavailable);
+            assert!(this.booting);
+            assert!(!this.first_send_waiting_for_mcp);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            this.handle_service_event(AgentServiceEvent::HostReconnected, cx);
+            assert!(
+                this.host_recovery.events.is_none(),
+                "wait for verified Open"
+            );
+            this.send_inner(cx);
+            assert!(
+                this.pending_first_send.is_none(),
+                "maintenance cannot submit a draft"
+            );
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("keep this unsent draft")
             );
         });
     }
@@ -2446,6 +2896,60 @@ mod state_tests {
         });
     }
 
+    /// A newly created task waits for its subscription, and a later
+    /// navigation wins even while that acknowledgement is in flight.
+    #[gpui::test]
+    fn new_task_waits_for_subscription_and_yields_to_newer_navigation(cx: &mut TestAppContext) {
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.project_root = Some(root.clone());
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        chat.update(cx, |this, cx| {
+            this.session_setup_pending = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "first message".into(),
+                steer: false,
+            });
+            let generation = this.selection_generation;
+            let intent = this.backend.next_subscription_intent();
+            this.subscribe_new_session(
+                summary_at("created", "New Task", &root),
+                Vec::new(),
+                generation,
+                intent,
+                cx,
+            );
+            assert!(this.session_setup_pending);
+            assert!(this.pending_first_send.is_some());
+            assert!(this.selected_session.is_none());
+            assert!(
+                !this.awaiting_first_token,
+                "no send before subscription acknowledgement"
+            );
+
+            // Navigation during the subscription round trip supersedes the
+            // first send just as navigation during task creation does.
+            this.begin_navigation();
+            this.withdraw_first_send(cx);
+            this.set_active_session(
+                summary_at("newer", "Newer selection", &root),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+        });
+        wait_until(&chat, cx, "old subscription callback settled", |this| {
+            !this.session_setup_pending
+        });
+        chat.update(cx, |this, _| {
+            assert_eq!(this.selected_session.as_deref(), Some("newer"));
+            assert!(this.pending_first_send.is_none());
+            assert!(!this.awaiting_first_token, "the abandoned task never sent");
+        });
+    }
+
     /// Enter while the first send is still creating its task does not
     /// start a second create; the new text waits in the composer.
     #[gpui::test]
@@ -3327,10 +3831,12 @@ mod state_tests {
     ) -> Vec<RecentProjectRoot> {
         let owner = backend.clone();
         let root = root.to_string();
-        await_backend_result(backend, async move {
-            owner.select_project_root("user", root).await
-        })
-        .roots
+        vec![
+            await_backend_result(backend, async move {
+                owner.select_project_root("user", root).await
+            })
+            .project,
+        ]
     }
 
     fn mcp_project(tag: &str) -> String {
@@ -3362,18 +3868,29 @@ mod state_tests {
             let backend = backend.clone();
             let other = other.clone();
             backend.clone().spawn(async move {
-                let _ = sender.send(backend.select_project_root("user", other).await);
+                let result = async {
+                    let selected = backend.select_project_root("user", other).await?;
+                    let page = backend
+                        .list_projects(
+                            "user",
+                            crate::backend::ProjectPageRequest {
+                                cursor: None,
+                                limit: 50,
+                            },
+                        )
+                        .await?;
+                    Ok::<_, String>((selected, page))
+                }
+                .await;
+                let _ = sender.send(result);
             });
         }
-        let registration = receiver
+        let (registration, page) = receiver
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("select task")
             .expect("project selected");
-        let roots: Vec<String> = registration
-            .roots
-            .into_iter()
-            .map(|root| root.path)
-            .collect();
+        assert_eq!(registration.project_root, other);
+        let roots: Vec<String> = page.projects.into_iter().map(|root| root.root).collect();
         assert_eq!(
             roots,
             vec![other.clone(), workspace.to_string_lossy().to_string()]
@@ -4686,7 +5203,12 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             let sink = events.clone();
             cx.subscribe(&this.sidebar, move |_, _, event: &SidebarEvent, _| {
-                if !matches!(event, SidebarEvent::PreferencesChanged) {
+                // This presentation fixture uses synthetic task IDs; pin I/O
+                // has separate account-backed tests. Observe ladder intents.
+                if matches!(
+                    event,
+                    SidebarEvent::SetState { .. } | SidebarEvent::DeleteTask(_)
+                ) {
                     sink.borrow_mut().push(event.clone());
                 }
             })
@@ -5093,6 +5615,62 @@ mod state_tests {
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
     }
 
+    #[gpui::test]
+    fn unsaved_local_work_has_a_retry_beside_both_chat_composers(cx: &mut TestAppContext) {
+        use crate::ui::store_gate::RetryStorePersistence;
+        use maple_agent::store::{PersistenceFailure, PersistenceFailureReason};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.persistence_status.failure = Some(PersistenceFailure {
+                store_id: Some("local-store".into()),
+                revision: 1,
+                reason: PersistenceFailureReason::DiskFull,
+            });
+        });
+        let retries = Rc::new(Cell::new(0));
+        let observed = retries.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, _: &RetryStorePersistence, _| {
+                observed.set(observed.get() + 1);
+            })
+        });
+        for has_history in [false, true] {
+            if has_history {
+                chat.update(cx, |this, cx| {
+                    this.replace_timeline(vec![user_item("saved", "Earlier message")]);
+                    cx.notify();
+                });
+            }
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            let composer = cx.debug_bounds("composer-box").expect("composer");
+            let feedback = cx
+                .debug_bounds("chat-persistence-feedback")
+                .expect("unsaved-work feedback");
+            assert!(
+                feedback.top() >= composer.bottom(),
+                "save feedback stays beside the composer, outside the window header"
+            );
+            press(cx, "retry-local-store-persistence");
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            retries.get(),
+            2,
+            "each click requests a desktop-owned retry"
+        );
+        chat.update(cx, |this, cx| {
+            this.persistence_status.failure = None;
+            cx.notify();
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-persistence-feedback").is_none());
+        assert!(cx.debug_bounds("retry-local-store-persistence").is_none());
+    }
+
     /// The composer offers the model and integration chips; there is no
     /// approval-mode chip because every tool call runs without asking.
     #[gpui::test]
@@ -5324,6 +5902,8 @@ mod state_tests {
             .map(|(computer, label, name)| computers::Computer {
                 key: computer.map(str::to_string),
                 label: label.into(),
+                backend: None,
+                project_names: HashMap::new(),
                 projects: vec![computers::Project {
                     path: "/shared".into(),
                     label: name.into(),
@@ -5585,6 +6165,160 @@ mod state_tests {
         assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
     }
 
+    /// A task's rename ends when its field loses focus or the pointer
+    /// presses anywhere outside it, and keeps what was typed, as Enter
+    /// does: a click anywhere else never leaves the row stuck in its
+    /// field. Escape still discards it.
+    #[gpui::test]
+    fn test_a_task_rename_commits_when_the_user_leaves_it(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let sent = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| sidebar.renames_sent().to_vec())
+        };
+        let rename = |cx: &mut gpui::VisualTestContext, typed: &str| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+            });
+            cx.run_until_parked();
+            cx.simulate_input(typed);
+        };
+        let ended = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none())
+        };
+
+        // Escape, then focus moving on: nothing is sent.
+        rename(cx, "Discarded");
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.focus_search(window, cx)));
+        cx.run_until_parked();
+        assert!(ended(cx));
+        assert!(sent(cx).is_empty(), "Escape discards the rename");
+
+        // Focus moving away commits what was typed, once.
+        rename(cx, "Moved");
+        cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.focus_search(window, cx)));
+        cx.run_until_parked();
+        assert!(ended(cx), "focus leaving ends the rename");
+        assert_eq!(sent(cx), vec![("s1".to_string(), "Moved".to_string())]);
+
+        // A press on another row, which takes no focus, commits too.
+        rename(cx, "Pressed");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let other_row = cx.debug_bounds("menu-session-s2").expect("s2's row");
+        let on_row = other_row.center() - gpui::point(gpui::px(80.), gpui::px(0.));
+        cx.simulate_mouse_down(on_row, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(on_row, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(ended(cx), "a press outside the field ends the rename");
+        assert_eq!(sent(cx).len(), 2, "one request per rename");
+        assert_eq!(sent(cx)[1], ("s1".to_string(), "Pressed".to_string()));
+    }
+
+    /// Under Application Vim, the Escape that leaves the field discards the
+    /// rename before focus moves on, so the move commits nothing.
+    #[gpui::test]
+    fn test_application_vim_escape_discards_a_task_rename(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.set_application_vim_enabled(true, cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_input("Changed");
+        // The first Escape leaves Insert; the next leaves the field.
+        cx.simulate_keystrokes("escape escape");
+        cx.run_until_parked();
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()));
+        assert!(
+            sidebar.update(cx, |sidebar, _| sidebar.renames_sent().is_empty()),
+            "Escape discards the rename"
+        );
+    }
+
+    /// The field's own right-click menu (Paste, Cut) keeps the rename open;
+    /// it ends only once the user really leaves.
+    #[gpui::test]
+    fn test_a_task_rename_survives_its_fields_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let field = cx.debug_bounds("rename-field").expect("the rename field");
+        cx.simulate_mouse_down(
+            field.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            field.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        let input = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
+        assert!(
+            input.is_some_and(|input| input.read_with(cx, |input, _| input.menu_open())),
+            "the field's menu opened"
+        );
+        assert!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_some()),
+            "the field's menu keeps the rename open"
+        );
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.renames_sent().is_empty()));
+    }
+
+    /// A task's rename opens with the old name selected, so typing replaces
+    /// it, and the row drops its hover actions while it is a text field.
+    #[gpui::test]
+    fn test_a_task_rename_opens_selected_without_hover_actions(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let rename_button = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds("rename-session-s1")
+        };
+        assert!(
+            rename_button(cx).is_some(),
+            "a listed row has its hover actions"
+        );
+
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        assert!(rename_button(cx).is_none(), "a row being renamed has none");
+        cx.simulate_input("Fresh");
+        let field = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
+        assert_eq!(
+            field.map(|field| field.read_with(cx, |field, _| field.text())),
+            Some("Fresh".to_string()),
+            "typing replaces the selected old name"
+        );
+
+        chat.update(cx, |this, cx| this.cancel_rename(cx));
+        assert!(rename_button(cx).is_some(), "the actions come back after");
+    }
+
     /// A project's rename field sits in the switcher. Escape ends the
     /// rename and Enter commits it; either way the switcher stays open and
     /// has the keyboard again.
@@ -5639,11 +6373,23 @@ mod state_tests {
             "Nice"
         );
         let owner = backend.clone();
-        let roots =
-            await_backend_result(
-                &backend,
-                async move { owner.recent_project_roots("user").await },
-            );
+        let roots = await_backend_result(&backend, async move {
+            owner
+                .list_projects(
+                    "user",
+                    crate::backend::ProjectPageRequest {
+                        cursor: None,
+                        limit: 50,
+                    },
+                )
+                .await
+                .map(|page| {
+                    page.projects
+                        .into_iter()
+                        .map(sidebar::project_from_summary)
+                        .collect::<Vec<_>>()
+                })
+        });
         assert_eq!(
             roots
                 .iter()
@@ -5733,11 +6479,23 @@ mod state_tests {
             assert_eq!(this.project_label.as_ref(), "Optimistic owner name");
         });
         let owner = backend.clone();
-        let persisted =
-            await_backend_result(
-                &backend,
-                async move { owner.recent_project_roots("user").await },
-            );
+        let persisted = await_backend_result(&backend, async move {
+            owner
+                .list_projects(
+                    "user",
+                    crate::backend::ProjectPageRequest {
+                        cursor: None,
+                        limit: 50,
+                    },
+                )
+                .await
+                .map(|page| {
+                    page.projects
+                        .into_iter()
+                        .map(sidebar::project_from_summary)
+                        .collect::<Vec<_>>()
+                })
+        });
         assert_eq!(
             persisted
                 .iter()
@@ -5786,7 +6544,7 @@ mod state_tests {
             assert!(this.apply_service_event(
                 AgentServiceEvent::ProjectsChanged {
                     user_id: "user".into(),
-                    roots: current,
+                    roots: vec![current],
                 },
                 cx
             ));
@@ -5815,11 +6573,23 @@ mod state_tests {
             );
         });
         let owner = backend.clone();
-        let persisted =
-            await_backend_result(
-                &backend,
-                async move { owner.recent_project_roots("user").await },
-            );
+        let persisted = await_backend_result(&backend, async move {
+            owner
+                .list_projects(
+                    "user",
+                    crate::backend::ProjectPageRequest {
+                        cursor: None,
+                        limit: 50,
+                    },
+                )
+                .await
+                .map(|page| {
+                    page.projects
+                        .into_iter()
+                        .map(sidebar::project_from_summary)
+                        .collect::<Vec<_>>()
+                })
+        });
         assert_eq!(
             persisted
                 .iter()
@@ -7470,6 +8240,50 @@ mod state_tests {
         );
     }
     #[gpui::test]
+    fn receipt_completion_uncertainty_never_restores_or_replays_the_original_draft(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::host::receipts::Outcome;
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            chat.composer = Some(composer.clone());
+            chat.selected_session = Some("s1".into());
+            // Receipt transport is covered by host's native IPC regression.
+            // Keep this presentation check deterministic without a live query.
+            chat.host_recovery.unavailable = true;
+            for draft in ["", "a newer draft"] {
+                composer.update(cx, |input, cx| input.set_text(draft, cx));
+                let id = uuid::Uuid::new_v4().to_string();
+                chat.finish_send(id.clone(), UnresolvedSend {
+                    outcome: None,
+                    session: "s1".into(),
+                    text: "already admitted original message".into(),
+                    from_composer: true,
+                    images: vec![DraftImage {
+                        id: 50,
+                        name: "image.png".into(),
+                        data_url: Some(Arc::from("data:image/png;base64,cGljdHVyZQ==")),
+                        thumbnail: None,
+                    }],
+                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.")), cx);
+                assert_eq!(composer.read(cx).text_ref(), draft);
+                assert!(chat.draft_images.is_empty());
+                assert_eq!(chat.unresolved_sends[&id].images.len(), 1);
+                assert!(chat.unresolved_sends[&id].awaiting_receipt());
+                chat.apply_send_receipt(&id, Some(Outcome::Pending), cx);
+                assert_eq!(composer.read(cx).text_ref(), draft);
+                assert!(chat.draft_images.is_empty());
+                assert!(chat.unresolved_sends[&id].awaiting_receipt());
+                chat.apply_send_receipt(&id, Some(Outcome::Finished(Ok(serde_json::json!("accepted-run")))), cx);
+                assert_eq!(composer.read(cx).text_ref(), draft);
+                assert!(chat.draft_images.is_empty());
+                assert!(!chat.unresolved_sends.contains_key(&id));
+            }
+        });
+    }
+
+    #[gpui::test]
     fn uncertain_send_keeps_images_and_does_not_overwrite_another_draft(cx: &mut TestAppContext) {
         use crate::host::receipts::Outcome;
         let chat = screen(cx);
@@ -7696,6 +8510,8 @@ mod state_tests {
                     .map(|key| Computer {
                         key: key.map(str::to_owned),
                         label: key.unwrap_or("Local").into(),
+                        backend: None,
+                        project_names: HashMap::new(),
                         projects: vec![Project {
                             path: absolute_fixture_root("project"),
                             label: "Project".into(),

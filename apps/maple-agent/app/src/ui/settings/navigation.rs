@@ -30,6 +30,7 @@ pub(super) enum GeneralTarget {
     ChatSize,
     ToolDetails,
     Notifications,
+    PasswordNotificationDetails,
     ReduceMotion,
     ToolSummaries,
     ComposerVim,
@@ -130,6 +131,7 @@ impl SettingsScreen {
                 GeneralTarget::ChatSize,
                 GeneralTarget::ToolDetails,
                 GeneralTarget::Notifications,
+                GeneralTarget::PasswordNotificationDetails,
                 GeneralTarget::ReduceMotion,
                 GeneralTarget::ToolSummaries,
                 GeneralTarget::ComposerVim,
@@ -180,7 +182,7 @@ impl SettingsScreen {
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
                 )
                 .collect(),
-            Section::Remote | Section::Usage | Section::About => Vec::new(),
+            Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
         }
     }
 
@@ -251,12 +253,13 @@ impl SettingsScreen {
     ) {
         match self.application_vim.region {
             SettingsRegion::Navigation => {
-                let current = Section::ALL
+                let sections = self.visible_sections();
+                let current = sections
                     .iter()
                     .position(|section| *section == self.application_vim.section)
                     .unwrap_or(0);
-                let index = stepped_index(Some(current), Section::ALL.len(), direction, count);
-                self.application_vim.section = Section::ALL[index];
+                let index = stepped_index(Some(current), sections.len(), direction, count);
+                self.application_vim.section = sections[index];
             }
             SettingsRegion::Pane => {
                 let targets = self.visible_application_targets();
@@ -284,10 +287,11 @@ impl SettingsScreen {
     ) {
         match self.application_vim.region {
             SettingsRegion::Navigation => {
+                let sections = self.visible_sections();
                 self.application_vim.section = if first {
-                    Section::ALL[0]
+                    sections[0]
                 } else {
-                    Section::ALL[Section::ALL.len() - 1]
+                    sections[sections.len() - 1]
                 };
             }
             SettingsRegion::Pane => {
@@ -374,6 +378,9 @@ impl SettingsScreen {
             GeneralTarget::ChatSize => self.toggle_setting_menu(SettingMenu::ChatSize, cx),
             GeneralTarget::ToolDetails => self.toggle_tool_details(cx),
             GeneralTarget::Notifications => self.toggle_desktop_notifications(cx),
+            GeneralTarget::PasswordNotificationDetails => {
+                self.toggle_password_notification_details(cx);
+            }
             GeneralTarget::ReduceMotion => self.toggle_reduce_motion(cx),
             GeneralTarget::ToolSummaries => self.toggle_tool_summaries(cx),
             GeneralTarget::ComposerVim => self.toggle_composer_vim(cx),
@@ -717,15 +724,17 @@ mod tests {
                     backend: None,
                 },
             ]);
-            this.mcp_servers = Some(vec![maple_agent::agent::AgentMcpServer {
+            this.mcp_servers = Some(vec![maple_agent::store::records::McpDefinition {
+                key: "custom".to_string(),
                 name: "custom".to_string(),
                 description: String::new(),
                 enabled: true,
                 timeout_seconds: 300,
-                transport: maple_agent::agent::AgentMcpTransport::Stdio {
+                target: maple_agent::store::records::McpTarget::Stdio {
                     command: "custom-mcp".to_string(),
-                    environment: Vec::new(),
                 },
+                environment: Vec::new(),
+                headers: Vec::new(),
             }]);
 
             assert_eq!(
@@ -1154,16 +1163,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn picking_from_the_dropdown_persists_to_disk(cx: &mut TestAppContext) {
+    fn picking_from_the_dropdown_persists_in_reopened_store(cx: &mut TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
-        let dir = std::env::temp_dir().join(format!(
-            "maple-agent-dropdown-persist-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let root = tempfile::tempdir().unwrap();
+        let paths = maple_agent::store::StorePaths::new(root.path());
+        let store = std::sync::Arc::new(maple_agent::store::Store::open(paths.clone()).unwrap());
+        crate::settings::install_test_store(store.clone());
         let settings = dropdown_screen(cx, false);
         let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
             settings: settings.clone(),
@@ -1174,19 +1179,25 @@ mod tests {
             this.toggle_setting_menu(SettingMenu::Appearance, cx);
             this.pick_setting_option(SettingMenu::Appearance, 2, cx);
         });
-        // Wait for the writer thread to flush the queued change.
         crate::settings::update_settings_and_wait(|_| {});
-        let reloaded = crate::settings::load_settings();
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-
+        // Detach the writer's Arc and discard its cached value before closing
+        // the database. The assertion must read the independently reopened
+        // authoritative store, even when the in-memory cache disagrees.
+        crate::settings::discard_decrypted_cache();
+        assert_ne!(crate::settings::load_settings().theme, "light");
+        store.close().unwrap();
+        drop(store);
+        let reopened = maple_agent::store::Store::open(paths).unwrap();
+        let saved = reopened
+            .app_setting("ui")
+            .unwrap()
+            .expect("saved UI settings");
         assert_eq!(
-            reloaded.theme, "light",
-            "a dropdown pick must reach the settings file"
+            saved.get("theme").and_then(serde_json::Value::as_str),
+            Some("light"),
+            "a dropdown pick must reach the authoritative store"
         );
+        reopened.close().unwrap();
+        cx.run_until_parked();
     }
 }

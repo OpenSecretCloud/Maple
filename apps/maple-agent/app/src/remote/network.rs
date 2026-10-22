@@ -3,9 +3,27 @@ use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 
 use super::wire::ALPN;
 
-pub async fn bind(key: SecretKey, relays: RelayMode, relay_only: bool) -> Result<Endpoint, String> {
+pub async fn bind(
+    key: SecretKey,
+    relays: RelayMode,
+    relay_only: bool,
+    loopback_only: bool,
+) -> Result<Endpoint, String> {
     let has_relay = !matches!(relays, RelayMode::Disabled);
-    let endpoint = builder(key, relays, relay_only)
+    if loopback_only && (has_relay || relay_only) {
+        return Err("Loopback remote qualification requires relays disabled".into());
+    }
+    let mut endpoint = builder(key, relays, relay_only);
+    if loopback_only {
+        // The caller has checked the explicit unpackaged Local debug gate.
+        // This fixed binding matches the same-machine transport test and does
+        // not expose a socket on the VM's LAN or choose a public relay.
+        endpoint = endpoint
+            .clear_ip_transports()
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|_| "Could not configure loopback remote qualification")?;
+    }
+    let endpoint = endpoint
         .bind()
         .await
         .map_err(|_| "Could not start Maple remote networking".to_string())?;
@@ -43,15 +61,13 @@ mod tests {
     async fn exchange(relays: RelayMode, relay_only: bool) {
         let endpoint = |relays| async move {
             if relay_only {
-                bind(SecretKey::generate(), relays, true).await.unwrap()
+                bind(SecretKey::generate(), relays, true, false)
+                    .await
+                    .unwrap()
             } else {
                 // A deterministic same-machine direct path without relying on
                 // the VM's bridged LAN interface or altering its firewall.
-                builder(SecretKey::generate(), relays, false)
-                    .clear_ip_transports()
-                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-                    .unwrap()
-                    .bind()
+                bind(SecretKey::generate(), relays, false, true)
                     .await
                     .unwrap()
             }
@@ -91,6 +107,18 @@ mod tests {
                 assert!(client.paths().iter().all(|path| !path.is_ip()));
                 assert!(client.paths().iter().any(|path| path.is_relay()));
             } else {
+                assert!(a.addr().relay_urls().next().is_none());
+                assert!(b.addr().relay_urls().next().is_none());
+                assert!(
+                    a.addr()
+                        .ip_addrs()
+                        .all(|address| address.ip().is_loopback())
+                );
+                assert!(
+                    b.addr()
+                        .ip_addrs()
+                        .all(|address| address.ip().is_loopback())
+                );
                 assert!(client.paths().iter().any(|path| path.is_ip()));
             }
             let controller = async {
@@ -139,6 +167,20 @@ mod tests {
     #[tokio::test]
     async fn separate_endpoints_pair_over_direct_iroh() {
         exchange(RelayMode::Disabled, false).await;
+    }
+
+    #[tokio::test]
+    async fn loopback_qualification_rejects_relay_transports_before_binding() {
+        assert!(
+            bind(SecretKey::generate(), RelayMode::Default, false, true)
+                .await
+                .is_err()
+        );
+        assert!(
+            bind(SecretKey::generate(), RelayMode::Disabled, true, true)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

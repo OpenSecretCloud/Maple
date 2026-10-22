@@ -28,6 +28,7 @@
 /apps/maple-agent/release_profile.rs @AnthonyRonning
 /apps/maple-agent/release-profiles.json @AnthonyRonning
 /apps/maple-agent/scripts/ @AnthonyRonning
+/apps/maple-agent/crates/maple-agent-updater/ @AnthonyRonning
 /apps/maple-agent/app/packaging/ @AnthonyRonning
 /apps/maple-agent/app/macos/ @AnthonyRonning
 /apps/maple-research/frontend/package.json @AnthonyRonning
@@ -75,4 +76,5 @@
 
 # Retain the existing owner boundary for these distribution components.
 /services/updates/ @AnthonyRonning
+/services/agent-updates/ @AnthonyRonning
 /proxy/ @AnthonyRonning

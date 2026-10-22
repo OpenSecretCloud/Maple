@@ -1,7 +1,7 @@
 //! The ACP server: over its framed stdio transport on the scripted runtime,
 //! and its conversions and checks one by one.
 
-use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config};
+use super::config::MAX_ACP_CONNECTIONS;
 use super::convert::{
     acp_session_config_options, acp_tool_update, client_supports_form_elicitation,
     timeline_tool_text,
@@ -71,6 +71,10 @@ impl StdioAcpClient {
         assert!(
             read > 0,
             "the agent closed the connection before the expected frame"
+        );
+        assert!(
+            line.len() <= MAX_ACP_FRAME_BYTES + 1,
+            "ACP must bound every encoded frame"
         );
         let message: Value =
             serde_json::from_str(line.trim()).expect("every frame should be valid JSON");
@@ -194,11 +198,318 @@ impl StdioAcpClient {
     }
 }
 
+fn append_test_messages(handle: &AgentRuntimeHandle, task: &str, project: &Path, texts: &[String]) {
+    let (store, account) = handle.test_persistence().unwrap();
+    let mut session = store
+        .load_session(account, task, crate::store::SessionLoad::Context)
+        .unwrap()
+        .into_manager(&project.to_string_lossy());
+    for text in texts {
+        // Repeated timestamps deliberately produce duplicate legacy row keys.
+        let message = pi_ai::Message::User(pi_ai::UserMessage {
+            content: vec![pi_ai::Content::text(text)],
+            timestamp: 7,
+        });
+        session.append_message(message.into());
+    }
+    session.flush().unwrap();
+}
+
+#[tokio::test]
+async fn session_list_keysets_do_not_skip_neighbors_when_a_seen_task_reorders() {
+    let harness = Harness::new().await;
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    let project = harness.project.path().canonicalize().unwrap();
+    for index in 0..150 {
+        store
+            .create_task(
+                account,
+                &crate::store::NewTask {
+                    uuid: format!("00000000-0000-7000-8000-{index:012x}"),
+                    project_root: project.to_string_lossy().into_owned(),
+                    kind: crate::store::TaskKind::Desktop,
+                    title: format!("Task {index}"),
+                    provisional: false,
+                    model: None,
+                    created_ms: index + 1,
+                },
+            )
+            .unwrap();
+    }
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let first = client.call("session/list", json!({"cwd":project})).await;
+    assert_eq!(first["sessions"].as_array().unwrap().len(), 100);
+    let cursor = first["nextCursor"].as_str().unwrap();
+    assert!(cursor.parse::<usize>().is_err());
+    let seen = first["sessions"][0]["sessionId"].as_str().unwrap();
+    append_test_messages(
+        &harness.handle,
+        seen,
+        &project,
+        &["A newly saved message".to_string()],
+    );
+    let second = client
+        .call("session/list", json!({"cwd":project,"cursor":cursor}))
+        .await;
+    assert_eq!(second["sessions"].as_array().unwrap().len(), 50);
+    let ids = first["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["sessions"].as_array().unwrap())
+        .map(|session| session["sessionId"].as_str().unwrap())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), 150);
+    let invalid = client
+        .request("session/list", json!({"cwd":project,"cursor":"100"}))
+        .await;
+    assert_eq!(client.response(invalid).await["error"]["code"], -32602);
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn session_load_replays_more_than_two_pages_with_distinct_duplicate_key_messages() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let texts = (0..401)
+        .map(|index| format!("History message {index}"))
+        .collect::<Vec<_>>();
+    append_test_messages(&harness.handle, &task, harness.project.path(), &texts);
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    client
+        .call(
+            "session/load",
+            json!({"sessionId":task,"cwd":harness.project.path(),"mcpServers":[]}),
+        )
+        .await;
+    let replayed = client.texts("user_message_chunk");
+    assert_eq!(replayed.len(), texts.len());
+    assert_eq!(
+        replayed.iter().map(|(_, text)| text).collect::<Vec<_>>(),
+        texts.iter().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        replayed
+            .iter()
+            .map(|(id, _)| id)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        texts.len()
+    );
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn oversized_replay_text_is_complete_and_every_encoded_frame_is_bounded() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let text = "\0\n\"\\🦀é".repeat(400_000);
+    append_test_messages(
+        &harness.handle,
+        &task,
+        harness.project.path(),
+        std::slice::from_ref(&text),
+    );
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    client
+        .call(
+            "session/load",
+            json!({"sessionId":task,"cwd":harness.project.path(),"mcpServers":[]}),
+        )
+        .await;
+    assert!(
+        client
+            .updates
+            .iter()
+            .filter(|update| update["update"]["sessionUpdate"] == "user_message_chunk")
+            .count()
+            > 1
+    );
+    let replayed = client.texts("user_message_chunk");
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].1, text);
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn source_append_during_replay_keeps_a_complete_snapshot_and_one_live_message() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let texts = (0..601)
+        .map(|index| format!("History {index}: {}", "a".repeat(1024)))
+        .collect::<Vec<_>>();
+    append_test_messages(&harness.handle, &task, harness.project.path(), &texts);
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let request = client
+        .request(
+            "session/load",
+            json!({"sessionId":task,"cwd":harness.project.path(),"mcpServers":[]}),
+        )
+        .await;
+    client
+        .wait_for_updates("history replay starts", |updates| {
+            updates
+                .iter()
+                .any(|update| update["update"]["sessionUpdate"] == "user_message_chunk")
+        })
+        .await;
+    let canary = "new-source-canary";
+    append_test_messages(
+        &harness.handle,
+        &task,
+        harness.project.path(),
+        &[canary.to_owned()],
+    );
+    // Publish the append the way the host's shared run does. Its committed
+    // occurrence is after the frozen snapshot and must arrive exactly once.
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    let mut page = store
+        .open_task_page(
+            account,
+            &crate::store::OpenTaskPageRequest {
+                task: task.clone(),
+                limit_rows: Some(1),
+                limit_bytes: None,
+            },
+            crate::store::PageTransport::Local,
+        )
+        .unwrap();
+    let last = page.rows.pop().unwrap();
+    let mut live = last.item;
+    live.persisted = Some(crate::agent::AgentPersistedRowIdentity {
+        task_id: task.clone(),
+        rows_epoch: last.rows_epoch,
+        row_seq: last.row_seq,
+        update_seq: last.update_seq,
+    });
+    harness.emit_timeline_item(&task, live);
+    let response = client.response(request).await;
+    assert!(response.get("error").is_none(), "{response}");
+    client
+        .wait_for_updates("post-snapshot append", |updates| {
+            updates
+                .iter()
+                .any(|update| update["update"]["content"]["text"] == canary)
+        })
+        .await;
+    let replayed = client.texts("user_message_chunk");
+    let mut expected = texts;
+    expected.push(canary.to_owned());
+    assert_eq!(
+        replayed.iter().map(|(_, text)| text).collect::<Vec<_>>(),
+        expected.iter().collect::<Vec<_>>()
+    );
+    let ids = replayed
+        .iter()
+        .map(|(id, _)| id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), expected.len());
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+#[tokio::test]
+async fn tool_completion_during_history_replay_updates_the_original_call() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let history = (0..601)
+        .map(|i| format!("History {i}: {}", "a".repeat(1024)))
+        .collect::<Vec<_>>();
+    append_test_messages(&harness.handle, &task, harness.project.path(), &history);
+    let _responder = harness.handle.question_responder();
+    let mut events = harness.handle.subscribe();
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question":"Continue?","options":[{"label":"Yes"}]}),
+    )]);
+    harness.faux.push_text("The tool completed during replay.");
+    let mut run = harness.send(&task, "Continue the existing task").await;
+    let question = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let crate::agent::AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                ..
+            } = events.recv().await.unwrap()
+                && session_id == task
+            {
+                break request_id;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let request = client
+        .request(
+            "session/load",
+            json!({"sessionId":task,"cwd":harness.project.path(),"mcpServers":[]}),
+        )
+        .await;
+    client
+        .wait_for_updates("immutable history begins replay", |updates| {
+            updates
+                .iter()
+                .any(|update| update["update"]["sessionUpdate"] == "user_message_chunk")
+        })
+        .await;
+    assert!(
+        harness
+            .handle
+            .answer_question_via_handle(&question, "Yes".into())
+            .await
+            .unwrap()
+    );
+    let response = client.response(request).await;
+    assert!(response.get("error").is_none(), "{response}");
+    client
+        .wait_for_updates("completed tool follows replay", |updates| {
+            updates.iter().any(|update| {
+                update["update"]["sessionUpdate"] == "tool_call_update"
+                    && update["update"]["status"] == "completed"
+            })
+        })
+        .await;
+    crate::agent::tests::finished(&mut run).await;
+    let calls = client.take("tool_call");
+    assert_eq!(
+        calls.len(),
+        1,
+        "the replayed call must not be announced twice"
+    );
+    let completed = client.take("tool_call_update");
+    assert!(completed.iter().any(|update| update["update"]["toolCallId"]
+        == calls[0]["update"]["toolCallId"]
+        && update["update"]["status"] == "completed"));
+    client.shutdown().await;
+    finish(serving).await;
+}
+
 /// A connection to `handle`'s runtime, served the way `serve_stdio` serves.
 fn connect(
     handle: &AgentRuntimeHandle,
     answer: Answer,
 ) -> (StdioAcpClient, tokio::task::JoinHandle<Result<(), String>>) {
+    let (client, serving, _) = connect_with_context(handle, answer);
+    (client, serving)
+}
+
+fn connect_with_context(
+    handle: &AgentRuntimeHandle,
+    answer: Answer,
+) -> (
+    StdioAcpClient,
+    tokio::task::JoinHandle<Result<(), String>>,
+    Arc<AcpConnectionContext>,
+) {
     let config = Arc::new(RwLock::new(
         normalize_config(AgentAcpConfig::default()).expect("the default ACP config is valid"),
     ));
@@ -210,7 +521,7 @@ fn connect(
     );
     let (client_write, agent_read) = tokio::io::duplex(64 * 1024);
     let (agent_write, client_read) = tokio::io::duplex(64 * 1024);
-    let serving = tokio::spawn(serve(context, agent_read, agent_write));
+    let serving = tokio::spawn(serve(context.clone(), agent_read, agent_write));
     (
         StdioAcpClient {
             write: client_write,
@@ -221,6 +532,7 @@ fn connect(
             answer,
         },
         serving,
+        context,
     )
 }
 
@@ -835,6 +1147,9 @@ fn row(
     merge: &str,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: id.to_string(),
         item_type: item_type.to_string(),
@@ -852,6 +1167,9 @@ fn row(
 #[test]
 fn completed_replayed_tool_prefers_result_over_request_summary() {
     let item = AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: "tool-1".to_string(),
         item_type: "tool".to_string(),
@@ -870,6 +1188,156 @@ fn completed_replayed_tool_prefers_result_over_request_summary() {
     assert_eq!(timeline_tool_text(&item).as_deref(), Some("/tmp/project"));
     assert_eq!(encoded["content"][0]["content"]["text"], "/tmp/project");
     assert_eq!(encoded["rawInput"]["command"], "pwd");
+}
+
+#[test]
+fn a_completion_of_a_frozen_historical_tool_is_an_update_without_retaining_all_ids() {
+    let mut projection = AcpProjection::default();
+    projection.note_replayed_history("task", 4, 20);
+    let mut completed = row("legacy-tool", "tool", Some("assistant"), "", "replace");
+    completed.status = Some("completed".into());
+    completed.output = Some(json!({"text":"Done"}));
+    completed.persisted = Some(crate::agent::AgentPersistedRowIdentity {
+        task_id: "task".into(),
+        rows_epoch: 4,
+        row_seq: 20,
+        update_seq: 99,
+    });
+    completed.live = Some(crate::agent::AgentLiveRowIdentity {
+        run_id: "run".into(),
+        occurrence: 7,
+    });
+    assert!(matches!(
+        timeline_update(&completed, &mut projection, true),
+        Some(SessionUpdate::ToolCallUpdate(_))
+    ));
+
+    let mut later = completed.clone();
+    later.live = Some(crate::agent::AgentLiveRowIdentity {
+        run_id: "run".into(),
+        occurrence: 8,
+    });
+    later.persisted.as_mut().unwrap().row_seq = 21;
+    assert!(matches!(
+        timeline_update(&later, &mut projection, true),
+        Some(SessionUpdate::ToolCall(_))
+    ));
+    let mut other_epoch = completed;
+    other_epoch.live = Some(crate::agent::AgentLiveRowIdentity {
+        run_id: "run".into(),
+        occurrence: 9,
+    });
+    other_epoch.persisted.as_mut().unwrap().rows_epoch = 5;
+    assert!(matches!(
+        timeline_update(&other_epoch, &mut projection, true),
+        Some(SessionUpdate::ToolCall(_))
+    ));
+}
+
+#[test]
+fn retained_projection_limits_fail_explicitly_without_capping_ephemeral_history_rows() {
+    let first = row("a", "message", Some("assistant"), "123", "replace");
+    let second = row("b", "message", Some("assistant"), "456", "replace");
+    let mut count_limited = AcpProjection::default();
+    assert!(
+        convert::checked_timeline_update_with_limits(&first, &mut count_limited, true, 1, 100)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        convert::checked_timeline_update_with_limits(&second, &mut count_limited, true, 1, 100)
+            .unwrap_err(),
+        convert::ACP_PROJECTION_LIMIT_MESSAGE
+    );
+    let mut byte_limited = AcpProjection::default();
+    assert_eq!(
+        convert::checked_timeline_update_with_limits(&first, &mut byte_limited, true, 100, 3)
+            .unwrap_err(),
+        convert::ACP_PROJECTION_LIMIT_MESSAGE
+    );
+    // A finalized frozen row uses its own disposable projection and retains
+    // the independent reconstruction allowance, not the session state cap.
+    assert!(timeline_update(&first, &mut AcpProjection::default(), true).is_some());
+}
+
+#[test]
+fn main_and_external_live_rows_keep_text_prefixes_and_one_tool_identity() {
+    let mut projection = AcpProjection::default();
+    let mut main = row(
+        "main-text",
+        "message",
+        Some("assistant"),
+        "Hello",
+        "replace",
+    );
+    main.live = Some(crate::agent::AgentLiveRowIdentity {
+        run_id: "main".into(),
+        occurrence: 1,
+    });
+    let first = checked_timeline_update(&main, &mut projection, true)
+        .unwrap()
+        .unwrap();
+    let mut text = serde_json::to_value(&first).unwrap()["content"]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut tool = row("tool", "tool", Some("assistant"), "", "replace");
+    tool.status = Some("running".into());
+    tool.live = Some(crate::agent::AgentLiveRowIdentity {
+        run_id: "main".into(),
+        occurrence: 2,
+    });
+    let announced = checked_timeline_update(&tool, &mut projection, true)
+        .unwrap()
+        .unwrap();
+    let announced_id = serde_json::to_value(&announced).unwrap()["toolCallId"].clone();
+    // The source receipt arrives after the first live announcement, then an
+    // external agent repaints that same persisted tool through its own run.
+    tool.persisted = Some(crate::agent::AgentPersistedRowIdentity {
+        task_id: "task".into(),
+        rows_epoch: 1,
+        row_seq: 9,
+        update_seq: 9,
+    });
+    assert!(matches!(
+        checked_timeline_update(&tool, &mut projection, true).unwrap(),
+        Some(SessionUpdate::ToolCallUpdate(_))
+    ));
+    tool.live = Some(crate::agent::AgentLiveRowIdentity {
+        run_id: "external-agent".into(),
+        occurrence: 1,
+    });
+    let external = checked_timeline_update(&tool, &mut projection, true)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(&external, SessionUpdate::ToolCallUpdate(_)));
+    assert_eq!(
+        serde_json::to_value(external).unwrap()["toolCallId"],
+        announced_id
+    );
+    main.text = Some("Hello world".into());
+    let suffix = checked_timeline_update(&main, &mut projection, true)
+        .unwrap()
+        .unwrap();
+    text.push_str(
+        serde_json::to_value(suffix).unwrap()["content"]["text"]
+            .as_str()
+            .unwrap(),
+    );
+    assert_eq!(text, "Hello world");
+    assert!(
+        checked_timeline_update(&main, &mut projection, true)
+            .unwrap()
+            .is_none()
+    );
+    tool.status = Some("completed".into());
+    let completed = checked_timeline_update(&tool, &mut projection, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(completed).unwrap()["toolCallId"],
+        announced_id
+    );
 }
 
 #[test]
@@ -908,6 +1376,9 @@ fn available_commands_lead_with_the_built_ins_plus_skills() {
 fn failed_replayed_tool_preserves_result_and_failure_badge_message() {
     let mut projection = AcpProjection::default();
     let pending = AgentTimelineItem {
+        persisted: None,
+        live: None,
+        truncated: None,
         revision: 0,
         id: "tool-1".to_string(),
         item_type: "tool".to_string(),
@@ -1284,25 +1755,51 @@ fn allowed_project_root_rejects_relative_paths() {
 }
 
 #[test]
-fn the_config_loads_from_the_account_folder_or_defaults() {
+fn acp_config_uses_only_account_sql_and_never_prior_json() {
     let root = tempfile::tempdir().unwrap();
     let user_id = "acp-config-user";
+    let store =
+        crate::store::Store::open(crate::store::StorePaths::new(root.path().join("profile")))
+            .unwrap();
+    store.upsert_account(user_id, 1).unwrap();
+    let prior = root.path().join("profile/acp/accounts/old/config.json");
+    std::fs::create_dir_all(prior.parent().unwrap()).unwrap();
+    std::fs::write(&prior, b"previous malformed ACP configuration").unwrap();
     assert_eq!(
-        load_config(root.path(), user_id).unwrap(),
+        load_acp_config(&store, user_id).unwrap(),
         AgentAcpConfig::default()
     );
-
     let project_root = root.path().join("project").to_string_lossy().into_owned();
-    let path = config_path(root.path(), user_id).unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &path,
-        json!({"allowedProjectRoots": [project_root], "maxConnections": 4}).to_string(),
+    save_acp_config(
+        &store,
+        user_id,
+        AgentAcpConfig {
+            allowed_project_roots: vec![project_root.clone(), project_root.clone()],
+            max_connections: 400,
+        },
+        2,
     )
     .unwrap();
-    let config = load_config(root.path(), user_id).unwrap();
+    let config = load_acp_config(&store, user_id).unwrap();
     assert_eq!(config.allowed_project_roots, vec![project_root]);
-    assert_eq!(config.max_connections, 4);
+    assert_eq!(config.max_connections, MAX_ACP_CONNECTIONS);
+    assert!(
+        save_acp_config(
+            &store,
+            user_id,
+            AgentAcpConfig {
+                allowed_project_roots: vec!["relative".into()],
+                max_connections: 1,
+            },
+            3
+        )
+        .is_err()
+    );
+    assert_eq!(load_acp_config(&store, user_id).unwrap(), config);
+    assert_eq!(
+        std::fs::read(prior).unwrap(),
+        b"previous malformed ACP configuration"
+    );
 }
 
 #[test]
@@ -1736,3 +2233,6 @@ async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
     client.shutdown().await;
     finish(serving).await;
 }
+
+#[path = "observer_tests.rs"]
+mod observer;

@@ -6,19 +6,19 @@
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::Arc;
 
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
-    AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectRootRegistration,
-    AgentProjectTrustStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
-    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
-    AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
-    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources,
-    MapleAgentService, RecentProjectRoot,
+    AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectTrustStatus,
+    AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
+    AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest, AgentSlashCommand,
+    AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources, MapleAgentService,
+    RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -30,6 +30,10 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
+
+#[path = "deletion.rs"]
+mod deletion;
+pub use deletion::AccountDeletionStatus;
 
 #[derive(Debug, Clone)]
 pub struct PendingQuestion {
@@ -49,6 +53,13 @@ pub use maple_agent::maple_api::{
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuthSession {
     pub user_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedProject {
+    pub project_root: String,
+    pub project: RecentProjectRoot,
 }
 
 /// Result of the background credential validation started by
@@ -84,11 +95,20 @@ pub struct RecoverySnapshot {
     pub selected: Option<AgentSessionDetail>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct DictionaryPage {
+    pub words: Vec<String>,
+    pub next: Option<String>,
+}
+
 pub struct LocalBackend {
+    store: Option<Arc<maple_agent::store::Store>>,
+    row_reader: Option<Arc<maple_agent::store::RowReader>>,
     #[cfg(test)]
     pub(super) ui_fixture: bool,
     pub(crate) account_gate: tokio::sync::RwLock<()>,
     restore_lock: tokio::sync::Mutex<()>,
+    ui_settings_gate: tokio::sync::Mutex<()>,
     service: MapleAgentService,
     auth: MapleApiAuthState,
     api_url: String,
@@ -99,9 +119,6 @@ pub struct LocalBackend {
     billing: crate::billing::BillingClient,
     /// Cached billing JWT per user id. Replaced after a 401.
     billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
-    /// Open handle to the app-owned tool summary store; keyed by account
-    /// scope path so a user switch reopens it.
-    summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
 }
 
 pub(crate) fn configured_client_id() -> Uuid {
@@ -144,51 +161,6 @@ impl AgentEventSink for ChannelEventSink {
 }
 
 pub(crate) const APP_DIR_NAME: &str = crate::profile::DATA_NAMESPACE;
-/// Directory name used before the package rename. An existing directory is
-/// adopted in place on first start; see [`adopt_legacy_app_dirs`].
-const LEGACY_APP_DIR_NAME: &str = "maple-gpui";
-
-/// Rename state written under the previous directory name into the current
-/// one, once per distinct root, before anything opens files. Only a missing
-/// current directory is filled: an already-current or partially migrated
-/// layout is never touched. Returns one line per root for the caller to log
-/// once logging is up.
-pub fn adopt_legacy_app_dirs() -> Vec<String> {
-    if crate::profile::PACKAGED {
-        return Vec::new();
-    }
-    let mut notes = Vec::new();
-    let mut seen: Vec<PathBuf> = Vec::new();
-    for root in [config_root(), local_data_root()] {
-        if seen.contains(&root) {
-            continue;
-        }
-        if let Some(note) = adopt_legacy_app_dir(&root, !crate::profile::PACKAGED) {
-            notes.push(note);
-        }
-        seen.push(root);
-    }
-    notes
-}
-
-fn adopt_legacy_app_dir(root: &Path, allow_legacy: bool) -> Option<String> {
-    if !allow_legacy {
-        return None;
-    }
-    let legacy = root.parent()?.join(LEGACY_APP_DIR_NAME);
-    if root.exists() || !legacy.is_dir() {
-        return None;
-    }
-    Some(match std::fs::rename(&legacy, root) {
-        Ok(()) => format!("adopted {} as {}", legacy.display(), root.display()),
-        Err(error) => format!(
-            "could not adopt {} as {}: {error}",
-            legacy.display(),
-            root.display()
-        ),
-    })
-}
-
 /// Maple's public OpenSecret project id. The backend rejects unknown
 /// client ids, so this must match the registered project.
 const DEFAULT_CLIENT_ID: &str = crate::profile::CLIENT_ID;
@@ -393,19 +365,30 @@ impl LocalBackend {
     #[cfg(test)]
     pub(crate) fn isolated_for_test(root: &std::path::Path) -> Self {
         let api_url = "http://127.0.0.1:1".to_string();
-        let mut backend = Self::new(api_url.clone(), String::new()).unwrap();
+        let store = Arc::new(
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.join("data")))
+                .unwrap(),
+        );
+        let mut backend = Self::new_with_store(api_url.clone(), String::new(), store).unwrap();
         let (events, receiver) = mpsc::unbounded_channel();
-        backend.service = MapleAgentService::new(MapleAgentHostResources::new(
-            maple_agent::agent::AgentPathLayout::from_app_roots(
-                root.join("config"),
-                root.join("data"),
-            ),
-            Arc::new(ChannelEventSink(events)),
-            String::new(),
-        ));
+        backend.service = MapleAgentService::new(
+            MapleAgentHostResources::new(
+                maple_agent::agent::AgentPathLayout::from_resource_root(
+                    backend
+                        .store
+                        .as_ref()
+                        .expect("test store")
+                        .paths()
+                        .resources(),
+                ),
+                Arc::new(ChannelEventSink(events)),
+                String::new(),
+            )
+            .with_store(backend.store.as_ref().expect("test store").clone()),
+        );
         backend.service.manage_question_availability();
         backend.event_rx = tokio::sync::Mutex::new(Some(receiver));
-        backend.persisted_auth = Arc::new(PersistedAuthStore::new(root.join("auth.json"), api_url));
+        backend.persisted_auth = Arc::new(PersistedAuthStore::new(backend.store.clone(), api_url));
         backend
     }
 
@@ -415,67 +398,34 @@ impl LocalBackend {
     }
 }
 
-/// App configuration root (XDG-style), also used by the settings store.
-pub fn app_config_root() -> PathBuf {
-    config_root()
-}
-
-/// Path to the app-owned store of model-written tool call summaries for
-/// one account scope. Lives next to the agent data so it is removed with
-/// the account.
-fn account_summary_db(account_scope: &str) -> PathBuf {
-    local_data_root()
-        .join("agent")
-        .join("accounts")
-        .join(account_scope)
-        .join("tool_summaries.db")
-}
-
-/// Open (and create) the tool summary store.
-fn open_summary_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-    }
-    let conn = rusqlite::Connection::open(path)
-        .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; \
-         CREATE TABLE IF NOT EXISTS tool_summaries ( \
-             session_id TEXT NOT NULL, \
-             item_id TEXT NOT NULL, \
-             summary TEXT NOT NULL, \
-             PRIMARY KEY (session_id, item_id) \
-         );",
-    )
-    .map_err(|error| format!("Cannot init {}: {error}", path.display()))?;
-    Ok(conn)
+/// Only generated Markdown resources and skills live outside SQL.
+pub fn generated_resource_root() -> PathBuf {
+    store_paths().resources()
 }
 
 /// Root for configuration that may roam between machines. Mirrors Tauri's
 /// `app_config_dir`: `~/.config` on Linux, `~/Library/Application Support`
 /// on macOS, `%APPDATA%` on Windows. `XDG_CONFIG_HOME` overrides it on
 /// every platform so tests and portable installs can redirect it.
-fn config_root() -> PathBuf {
+pub fn instruction_config_root() -> PathBuf {
     let base = env_dir("XDG_CONFIG_HOME")
         .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_DIR_NAME)
 }
 
-/// Root for device-local data: session history, attachments, logs, and
-/// credentials. Mirrors Tauri's `app_local_data_dir`: `~/.local/share` on
-/// Linux, `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on
-/// Windows. `XDG_DATA_HOME` overrides it on every platform.
-pub(crate) fn host_data_root() -> PathBuf {
-    local_data_root()
-}
-
-pub fn local_data_root() -> PathBuf {
+/// The selected profile's parent namespace. Runtime app state opens only
+/// the distinct store-v1 child; this resolver performs no filesystem I/O.
+pub fn profile_data_root() -> PathBuf {
     let base = env_dir("XDG_DATA_HOME")
         .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_DIR_NAME)
+}
+
+/// New implementation paths. Previous app directories are never inspected.
+pub fn store_paths() -> maple_agent::store::StorePaths {
+    maple_agent::store::StorePaths::new(profile_data_root())
 }
 
 fn env_dir(name: &str) -> Option<PathBuf> {
@@ -502,7 +452,7 @@ fn fallback_project_root() -> Option<String> {
 /// removed, otherwise Documents/Maple unless the user removed it. Home is
 /// only the last resort. Never the process working directory. The
 /// workspace may not exist yet: `gui_start_root` creates it.
-fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
+pub(super) fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
     let workspace = maple_agent::agent::default_maple_workspace_path();
     maple_agent::agent::startup_project_root(config, workspace.as_deref())
         .or_else(fallback_project_root)
@@ -525,84 +475,109 @@ fn gui_start_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Eq, PartialEq)]
 struct PersistedAuthRecord {
+    owner: maple_agent::store::records::CredentialOwner,
     user_id: String,
     api_url: String,
     access_token: String,
     refresh_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    revision: Option<u64>,
 }
 
-impl PersistedAuthRecord {
-    fn from_snapshot(api_url: &str, snapshot: &MapleApiAuthSnapshot) -> Self {
-        Self {
-            user_id: snapshot.user_id.clone(),
-            api_url: api_url.to_string(),
-            access_token: snapshot.access_token.clone(),
-            refresh_token: snapshot.refresh_token.clone(),
-            session_id: Some(snapshot.session_id.clone()),
-            revision: Some(snapshot.revision),
-        }
+impl std::fmt::Debug for PersistedAuthRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistedAuthRecord")
+            .field("owner", &self.owner)
+            .field("tokens", &"[REDACTED]")
+            .finish_non_exhaustive()
     }
+}
 
-    fn owns_snapshot(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
-        self.user_id == snapshot.user_id
-            && self.session_id.as_deref() == Some(snapshot.session_id.as_str())
+impl Drop for PersistedAuthRecord {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.access_token.zeroize();
+        self.refresh_token.zeroize();
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PersistedAuthOwner {
     user_id: String,
-    session_id: String,
-    revision: u64,
+    durable: maple_agent::store::records::CredentialOwner,
 }
 
 impl PersistedAuthOwner {
-    fn from_snapshot(snapshot: &MapleApiAuthSnapshot) -> Self {
-        Self {
-            user_id: snapshot.user_id.clone(),
-            session_id: snapshot.session_id.clone(),
-            revision: snapshot.revision,
-        }
-    }
-
     fn matches(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
-        self.user_id == snapshot.user_id && self.session_id == snapshot.session_id
+        self.user_id == snapshot.user_id && self.durable.session_id == snapshot.session_id
     }
 }
 
 #[derive(Default)]
 struct PersistedAuthState {
     owner: Option<PersistedAuthOwner>,
+    // A validated SDK session may remain usable after a failed persistence.
+    // This identity never grants a callback durable credential ownership.
+    live: Option<(String, String)>,
+    pending_clear: Option<maple_agent::store::records::CredentialOwner>,
+    // An explicit sign-in may observe an occupied slot belonging to another
+    // origin. A failed write retains that exact replacement authority; Retry
+    // must never reread and adopt a newer slot owner.
+    pending_claim: Option<PendingCredentialClaim>,
 }
 
-/// Serializes persisted credential ownership with token-rotation callbacks.
-/// A queued callback may update only the exact in-memory auth session that
-/// currently owns the file; sign-out compare-clears that same opaque session.
+struct PendingCredentialClaim {
+    user_id: String,
+    session_id: String,
+    expected: Option<maple_agent::store::records::CredentialOwner>,
+}
+
+impl PendingCredentialClaim {
+    fn matches(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
+        self.user_id == snapshot.user_id && self.session_id == snapshot.session_id
+    }
+}
+
+/// Orders SDK callbacks against durable account/session/revision ownership.
+/// Construction never reads credentials; reads require the store to be open.
 struct PersistedAuthStore {
-    path: PathBuf,
+    store: Option<Arc<maple_agent::store::Store>>,
     api_url: String,
     state: std::sync::Mutex<PersistedAuthState>,
 }
 
 impl PersistedAuthStore {
-    fn new(path: PathBuf, api_url: String) -> Self {
+    fn new(store: Option<Arc<maple_agent::store::Store>>, api_url: String) -> Self {
         Self {
-            path,
+            store,
             api_url,
             state: std::sync::Mutex::new(PersistedAuthState::default()),
         }
     }
 
     fn read_record(&self) -> Option<PersistedAuthRecord> {
-        let bytes = std::fs::read(&self.path).ok()?;
-        let record: PersistedAuthRecord = serde_json::from_slice(&bytes).ok()?;
-        (record.api_url == self.api_url).then_some(record)
+        let store = self.store.as_ref()?;
+        if store.state() != maple_agent::store::StoreState::Open {
+            return None;
+        }
+        match store.credentials(&self.api_url) {
+            Ok(record) => record.map(|record| PersistedAuthRecord {
+                owner: record.owner,
+                user_id: record.user_id,
+                api_url: record.api_url,
+                access_token: record.tokens.access_token.expose().to_owned(),
+                refresh_token: record
+                    .tokens
+                    .refresh_token
+                    .as_ref()
+                    .map(|token| token.expose().to_owned()),
+            }),
+            Err(error) => {
+                log::warn!("Cannot read saved credentials: {error}");
+                None
+            }
+        }
     }
 
     fn load(&self) -> Option<PersistedAuthRecord> {
@@ -610,16 +585,143 @@ impl PersistedAuthStore {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.owner = None;
+        state.live = None;
+        state.pending_clear = None;
+        state.pending_claim = None;
         let record = self.read_record()?;
-        state.owner = record
-            .session_id
-            .as_ref()
-            .map(|session_id| PersistedAuthOwner {
-                user_id: record.user_id.clone(),
-                session_id: session_id.clone(),
-                revision: record.revision.unwrap_or(0),
-            });
+        state.live = Some((record.user_id.clone(), record.owner.session_id.clone()));
+        state.owner = Some(PersistedAuthOwner {
+            user_id: record.user_id.clone(),
+            durable: record.owner.clone(),
+        });
         Some(record)
+    }
+
+    fn saved_user_id(&self) -> Option<String> {
+        if self.store.as_ref()?.state() != maple_agent::store::StoreState::Open {
+            return None;
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live
+            .as_ref()
+            .map(|(user, _)| user.clone())
+    }
+
+    fn forget_owner(&self) -> Option<String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.owner = None;
+        state.pending_clear = None;
+        state.pending_claim = None;
+        state.live.take().map(|(user, _)| user)
+    }
+
+    fn live_identity(&self) -> Option<(String, String)> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live
+            .clone()
+    }
+
+    fn retry_snapshot(&self, snapshot: &MapleApiAuthSnapshot) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.live.as_ref().is_some_and(|(user, session)| {
+            user == &snapshot.user_id && session == &snapshot.session_id
+        }) || state.owner.as_ref().is_some_and(|owner| {
+            owner.matches(snapshot) && snapshot.revision < owner.durable.revision
+        }) {
+            return Err("Authentication changed during saving. Retry saving.".into());
+        }
+        let store = self.store.as_ref().ok_or("Local storage is unavailable")?;
+        // Retry retains either the last durable owner or the exact slot an
+        // explicit validated sign-in observed before its failed write. It must
+        // never adopt a newer independently replaced row.
+        let account = store
+            .upsert_account(&snapshot.user_id, Self::now_ms())
+            .map_err(|error| error.to_string())?;
+        let expected = state
+            .pending_claim
+            .as_ref()
+            .filter(|claim| claim.matches(snapshot))
+            .map(|claim| claim.expected.as_ref())
+            .unwrap_or_else(|| state.owner.as_ref().map(|owner| &owner.durable));
+        let durable = store
+            .replace_credentials(
+                expected,
+                account,
+                &self.api_url,
+                &snapshot.session_id,
+                snapshot.revision,
+                &Self::tokens(snapshot),
+                Self::now_ms(),
+            )
+            .map_err(|_| "Current sign-in credentials could not be saved. Keep Maple open and retry saving.")?;
+        state.owner = Some(PersistedAuthOwner {
+            user_id: snapshot.user_id.clone(),
+            durable,
+        });
+        state.pending_clear = None;
+        state.pending_claim = None;
+        Ok(())
+    }
+
+    // A cold restored identity has no SDK session until its first API call.
+    // Verify that it still names the actual durable owner; do not manufacture
+    // or refresh an SDK session just to clear a storage warning.
+    fn retry_without_sdk(&self) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(expected) = state.pending_clear.as_ref() {
+            if !self.clear_owner(expected) {
+                return Err("Sign-out could not remove saved credentials. Retry saving.".into());
+            }
+            state.pending_clear = None;
+        }
+        let Some((user, session)) = state.live.as_ref() else {
+            return Ok(());
+        };
+        let owner = state
+            .owner
+            .as_ref()
+            .filter(|owner| owner.user_id == *user && owner.durable.session_id == *session)
+            .ok_or(
+                "Current sign-in credentials are not saved. Keep Maple open and retry saving.",
+            )?;
+        let store = self.store.as_ref().ok_or("Local storage is unavailable")?;
+        let current = store
+            .credentials(&self.api_url)
+            .map_err(|error| error.to_string())?;
+        if current
+            .as_ref()
+            .is_some_and(|current| current.user_id == *user && current.owner == owner.durable)
+        {
+            Ok(())
+        } else {
+            Err("Saved sign-in ownership changed. Retry saving.".into())
+        }
+    }
+
+    fn tokens(snapshot: &MapleApiAuthSnapshot) -> maple_agent::store::records::CredentialTokens {
+        use maple_agent::store::records::{CredentialTokens, SecretString};
+        CredentialTokens {
+            access_token: SecretString::new(snapshot.access_token.clone()),
+            refresh_token: snapshot.refresh_token.clone().map(SecretString::new),
+        }
+    }
+
+    fn now_ms() -> i64 {
+        chrono::Utc::now().timestamp_millis()
     }
 
     fn claim_and_persist(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
@@ -627,19 +729,104 @@ impl PersistedAuthStore {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.matches(snapshot) && snapshot.revision < owner.revision)
-        {
-            log::debug!(
-                "ignoring stale persisted auth claim (revision {})",
-                snapshot.revision
-            );
+        if state.owner.as_ref().is_some_and(|owner| {
+            owner.matches(snapshot) && snapshot.revision < owner.durable.revision
+        }) {
             return false;
         }
-        state.owner = Some(PersistedAuthOwner::from_snapshot(snapshot));
-        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot))
+        state.live = Some((snapshot.user_id.clone(), snapshot.session_id.clone()));
+        state.pending_claim = None;
+        let Some(store) = self.store.as_ref() else {
+            return false;
+        };
+        let current = match store.credential_owner_for_sign_in() {
+            Ok(current) => current,
+            Err(error) => {
+                log::error!("Cannot read credential ownership: {error}");
+                return false;
+            }
+        };
+        self.save_claim(&mut state, snapshot, current)
+    }
+
+    fn persist_restored(
+        &self,
+        snapshot: &MapleApiAuthSnapshot,
+        restored: &PersistedAuthRecord,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if snapshot.user_id != restored.user_id
+            || restored.api_url != self.api_url
+            || !state.live.as_ref().is_some_and(|(user, session)| {
+                user == &restored.user_id && session == &restored.owner.session_id
+            })
+            || !state.owner.as_ref().is_some_and(|owner| {
+                owner.user_id == restored.user_id && owner.durable == restored.owner
+            })
+        {
+            return false;
+        }
+        state.live = Some((snapshot.user_id.clone(), snapshot.session_id.clone()));
+        // Validation of saved credentials grants no authority over a row that
+        // replaced them while the network request was outstanding.
+        self.save_claim(&mut state, snapshot, Some(restored.owner.clone()))
+    }
+
+    fn save_claim(
+        &self,
+        state: &mut PersistedAuthState,
+        snapshot: &MapleApiAuthSnapshot,
+        current: Option<maple_agent::store::records::CredentialOwner>,
+    ) -> bool {
+        let Some(store) = self.store.as_ref() else {
+            return false;
+        };
+        state.pending_claim = Some(PendingCredentialClaim {
+            user_id: snapshot.user_id.clone(),
+            session_id: snapshot.session_id.clone(),
+            expected: current.clone(),
+        });
+        let result = store
+            .upsert_account(&snapshot.user_id, Self::now_ms())
+            .and_then(|account| {
+                if current.as_ref().is_some_and(|owner| {
+                    owner.account == account
+                        && owner.session_id == snapshot.session_id
+                        && snapshot.revision < owner.revision
+                }) {
+                    return Err(maple_agent::store::StoreError::Conflict);
+                }
+                store.replace_credentials(
+                    current.as_ref(),
+                    account,
+                    &self.api_url,
+                    &snapshot.session_id,
+                    snapshot.revision,
+                    &Self::tokens(snapshot),
+                    Self::now_ms(),
+                )
+            });
+        match result {
+            Ok(durable) => {
+                // Publication follows the successful durable transaction.
+                state.owner = Some(PersistedAuthOwner {
+                    user_id: snapshot.user_id.clone(),
+                    durable,
+                });
+                state.pending_clear = None;
+                state.pending_claim = None;
+                true
+            }
+            Err(error) => {
+                log::error!(
+                    "Cannot save credentials: {error}. Sign in will be needed at the next start."
+                );
+                false
+            }
+        }
     }
 
     fn persist_rotation(&self, snapshot: &MapleApiAuthSnapshot) {
@@ -647,81 +834,95 @@ impl PersistedAuthStore {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(owner) = state.owner.as_mut() else {
-            log::debug!(
-                "ignoring rotated credentials for an unowned persisted auth session (revision {})",
-                snapshot.revision
-            );
-            return;
-        };
-        if !owner.matches(snapshot) || snapshot.revision < owner.revision {
-            log::debug!(
-                "ignoring stale rotated credentials (revision {})",
-                snapshot.revision
-            );
+        if !state.live.as_ref().is_some_and(|(user, session)| {
+            user == &snapshot.user_id && session == &snapshot.session_id
+        }) {
             return;
         }
-        owner.revision = snapshot.revision;
-        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot));
+        let Some(owner) = state.owner.as_mut() else {
+            return;
+        };
+        if !owner.matches(snapshot) || snapshot.revision < owner.durable.revision {
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        // SDK revisions can jump after failed persistence. CAS the last durable
+        // owner while storing the actual SDK revision, rather than incrementing.
+        match store.replace_credentials(
+            Some(&owner.durable),
+            owner.durable.account,
+            &self.api_url,
+            &snapshot.session_id,
+            snapshot.revision,
+            &Self::tokens(snapshot),
+            Self::now_ms(),
+        ) {
+            Ok(durable) => owner.durable = durable,
+            Err(error) => log::error!("Cannot save rotated credentials: {error}"),
+        }
     }
 
-    fn clear_if_owned(&self, snapshot: &MapleApiAuthSnapshot) {
+    fn clear_if_owned(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
+        if state.live.as_ref().is_some_and(|(user, session)| {
+            user == &snapshot.user_id && session == &snapshot.session_id
+        }) {
+            state.live = None;
+            state.pending_claim = None;
+        }
+        if !state
             .owner
             .as_ref()
             .is_some_and(|owner| owner.matches(snapshot))
         {
-            state.owner = None;
+            return true;
         }
-        if self
-            .read_record()
-            .is_some_and(|record| record.owns_snapshot(snapshot))
-        {
-            self.remove_locked();
+        let owner = state.owner.take().expect("matched credential owner");
+        // Stop late callbacks even when durable deletion fails, and let the
+        // caller report that sign-out could not erase the saved credentials.
+        let cleared = self.clear_owner(&owner.durable);
+        if !cleared {
+            state.pending_clear = Some(owner.durable);
         }
+        cleared
     }
 
-    fn clear_record_if_unchanged(&self, expected: &PersistedAuthRecord) {
+    fn clear_record_if_unchanged(&self, expected: &PersistedAuthRecord) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.read_record().as_ref() != Some(expected) {
-            return;
-        }
         if state
             .owner
             .as_ref()
-            .is_some_and(|owner| expected.session_id.as_deref() == Some(owner.session_id.as_str()))
+            .is_some_and(|owner| owner.durable == expected.owner)
         {
             state.owner = None;
+            state.live = None;
+            state.pending_claim = None;
         }
-        self.remove_locked();
+        let cleared = self.clear_owner(&expected.owner);
+        if !cleared {
+            state.pending_clear = Some(expected.owner.clone());
+        }
+        cleared
     }
 
-    fn write_locked(&self, record: &PersistedAuthRecord) -> bool {
-        if let Err(error) = maple_agent::private_file::write_private_json(&self.path, record) {
-            log::error!(
-                "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
-                self.path.display()
-            );
+    fn clear_owner(&self, owner: &maple_agent::store::records::CredentialOwner) -> bool {
+        let Some(store) = self.store.as_ref() else {
             return false;
-        }
-        true
-    }
-
-    fn remove_locked(&self) {
-        if let Err(error) = std::fs::remove_file(&self.path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            log::error!(
-                "Cannot remove credentials at {}: {error}",
-                self.path.display()
-            );
+        };
+        match store.clear_credentials(owner) {
+            Ok(_) => true, // A CAS miss preserves the replacement session.
+            Err(error) => {
+                log::error!("Cannot remove saved credentials: {error}");
+                false
+            }
         }
     }
 }
@@ -745,32 +946,198 @@ impl MapleApiAuthEventSink for PersistAuthSink {
 }
 
 impl LocalBackend {
+    #[cfg(test)]
     pub fn new(api_url: String, harness_instructions: String) -> Result<Self, String> {
+        // App tests never open any developer-owned store, including store-v1.
+        let root = std::env::temp_dir().join(format!("maple-app-store-test-{}", Uuid::new_v4()));
+        let store = Arc::new(
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root))
+                .map_err(|error| error.to_string())?,
+        );
+        Self::build(api_url, harness_instructions, Some(store))
+    }
+
+    pub fn new_with_store(
+        api_url: String,
+        harness_instructions: String,
+        store: Arc<maple_agent::store::Store>,
+    ) -> Result<Self, String> {
+        Self::build(api_url, harness_instructions, Some(store))
+    }
+
+    pub(crate) fn store(&self) -> Option<&Arc<maple_agent::store::Store>> {
+        self.store.as_ref()
+    }
+
+    /// Called only after the host has opened or unlocked the store.
+    pub(crate) fn reload_open_store(&self) -> Result<(), String> {
+        let store = self.store.as_ref().ok_or("Local storage is unavailable")?;
+        if store.state() != maple_agent::store::StoreState::Open {
+            return Err("Maple is locked.".into());
+        }
+        // Spill cleanup is admitted only after this generation is compatible
+        // and authenticated. Locked/refused startup leaves owned spill files
+        // untouched until a later successful open reaches this boundary.
+        maple_agent::store::spill::SpillRoot::new(store.paths())
+            .and_then(|spills| spills.cleanup())
+            .map_err(|error| error.to_string())?;
+        let _ = self.persisted_auth.load();
+        let user = self.persisted_auth.saved_user_id();
+        let account = user
+            .as_deref()
+            .map(|user| store.account_id(user))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .flatten();
+        let settings = crate::settings::load_host_settings(store, account)?;
+        self.set_harness_instructions(settings.effective_harness_instructions());
+        Ok(())
+    }
+
+    pub(crate) async fn retry_store_persistence(&self) -> Result<(), String> {
+        self.reconcile_credentials().await?;
+        // Only explicit Retry dismisses the exact storage-failure latch after
+        // credentials and every retained source history are durably saved.
+        self.service.flush_persistence().await
+    }
+
+    async fn reconcile_credentials(&self) -> Result<(), String> {
+        struct Snapshot(MapleApiAuthSnapshot);
+        impl Drop for Snapshot {
+            fn drop(&mut self) {
+                use zeroize::Zeroize;
+                self.0.access_token.zeroize();
+                self.0.refresh_token.zeroize();
+            }
+        }
+        let mut credentials_ready = false;
+        for _ in 0..3 {
+            let Some((user, session)) = self.persisted_auth.live_identity() else {
+                self.persisted_auth.retry_without_sdk()?;
+                credentials_ready = true;
+                break;
+            };
+            let snapshot = match self.auth.auth_snapshot_for(&user).await {
+                Ok(snapshot) => Snapshot(snapshot),
+                Err(_) => {
+                    self.persisted_auth.retry_without_sdk()?;
+                    credentials_ready = true;
+                    break;
+                }
+            };
+            if snapshot.0.session_id != session {
+                return Err("Authentication changed during saving. Retry saving.".into());
+            }
+            self.persisted_auth.retry_snapshot(&snapshot.0)?;
+            let current = Snapshot(self.auth.auth_snapshot_for(&user).await?);
+            if current.0.session_id == snapshot.0.session_id
+                && current.0.revision == snapshot.0.revision
+            {
+                credentials_ready = true;
+                break;
+            }
+        }
+        if !credentials_ready {
+            return Err(
+                "Sign-in credentials changed during saving. Keep Maple open and retry saving."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn forget_store_session(&self) -> Result<(), String> {
+        self.service.finish_store_reset().await?;
+        self.service.invalidate_store_session();
+        if let Some(user) = self.persisted_auth.forget_owner() {
+            self.auth.clear_auth(&user).await?;
+        }
+        self.billing_tokens.lock().await.clear();
+        self.clear_paging_cache()
+    }
+
+    pub(crate) fn begin_store_drain(&self) {
+        self.service.begin_draining();
+    }
+    pub(crate) fn resume_store_admission(&self) {
+        self.service.resume_admission();
+    }
+    pub(crate) async fn store_activity(&self) -> Result<(usize, usize), String> {
+        self.service.store_activity().await
+    }
+
+    pub(super) fn service(&self) -> &MapleAgentService {
+        &self.service
+    }
+
+    pub(super) fn row_reader(&self) -> Result<Arc<maple_agent::store::RowReader>, String> {
+        self.row_reader
+            .clone()
+            .ok_or_else(|| "Local store is unavailable".into())
+    }
+
+    /// The host closes request admission and drains readers before this call.
+    pub(crate) fn clear_paging_cache(&self) -> Result<(), String> {
+        if let Some(reader) = &self.row_reader {
+            reader.clear().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn build(
+        api_url: String,
+        harness_instructions: String,
+        store: Option<Arc<maple_agent::store::Store>>,
+    ) -> Result<Self, String> {
         // Enforce the credential-bearing URL policy before any client is
         // built, including the login-time SDK client.
         let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let paths =
-            maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
-        let service = MapleAgentService::new(MapleAgentHostResources::new(
+        let resource_root = store
+            .as_ref()
+            .map_or_else(generated_resource_root, |store| store.paths().resources());
+        let instruction_root = if cfg!(test) {
+            resource_root.clone()
+        } else {
+            instruction_config_root()
+        };
+        let paths = maple_agent::agent::AgentPathLayout::from_resource_root(resource_root)
+            .with_instruction_config_root(instruction_root);
+        let mut resources = MapleAgentHostResources::new(
             paths,
             Arc::new(ChannelEventSink(event_tx)),
             harness_instructions,
-        ));
+        );
+        if let Some(store) = &store {
+            resources = resources.with_store(store.clone());
+        }
+        let service = MapleAgentService::new(resources);
         service.manage_question_availability();
         let runtime = Handle::try_current()
             .map_err(|error| format!("Host runtime is unavailable: {error}"))?;
-        let persisted_auth = Arc::new(PersistedAuthStore::new(Self::auth_file(), api_url.clone()));
+        let persisted_auth = Arc::new(PersistedAuthStore::new(store.clone(), api_url.clone()));
+        if store
+            .as_ref()
+            .is_some_and(|store| store.state() == maple_agent::store::StoreState::Open)
+        {
+            let _ = persisted_auth.load();
+        }
         // reqwest clients must be built inside a Tokio runtime context; one
         // built outside never completes a request.
         let billing = {
             let _guard = runtime.enter();
             crate::billing::BillingClient::new(crate::billing::configured_billing_api_url())?
         };
+        let row_reader = store
+            .as_ref()
+            .map(|store| Arc::new(maple_agent::store::RowReader::new(store.clone())));
         Ok(Self {
+            store,
+            row_reader,
             #[cfg(test)]
             ui_fixture: false,
             restore_lock: tokio::sync::Mutex::new(()),
+            ui_settings_gate: tokio::sync::Mutex::new(()),
             account_gate: tokio::sync::RwLock::new(()),
             service,
             auth: MapleApiAuthState::new(),
@@ -781,8 +1148,162 @@ impl LocalBackend {
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
-            summary_db: std::sync::Mutex::new(None),
         })
+    }
+
+    fn open_store(&self) -> Result<Arc<maple_agent::store::Store>, String> {
+        let store = self.store.as_ref().ok_or("Local store is unavailable")?;
+        if store.state() != maple_agent::store::StoreState::Open {
+            return Err("Local store is not open".into());
+        }
+        Ok(store.clone())
+    }
+
+    fn presentation_account(
+        &self,
+        user_id: &str,
+    ) -> Result<
+        (
+            Arc<maple_agent::store::Store>,
+            maple_agent::store::AccountId,
+        ),
+        String,
+    > {
+        self.authorize_account(user_id)?;
+        let store = self.open_store()?;
+        let account = store
+            .account_id(user_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Local account is not ready")?;
+        Ok((store, account))
+    }
+
+    pub async fn get_ui_settings(&self) -> Result<crate::settings::AppSettings, String> {
+        let store = self.open_store()?;
+        tokio::task::spawn_blocking(move || crate::settings::load_host_settings(&store, None))
+            .await
+            .map_err(|_| "Could not read UI settings".to_string())?
+    }
+
+    pub async fn set_ui_settings(&self, patch: serde_json::Value) -> Result<(), String> {
+        let _gate = self.ui_settings_gate.lock().await;
+        let store = self.open_store()?;
+        let harness_changed = patch.get("harness_instructions").is_some();
+        let settings = tokio::task::spawn_blocking(move || {
+            crate::settings::apply_host_patch(&store, None, &patch)?;
+            crate::settings::load_host_settings(&store, None)
+        })
+        .await
+        .map_err(|_| "Could not save UI settings".to_string())??;
+        if harness_changed {
+            self.service
+                .set_harness_instructions(settings.effective_harness_instructions());
+        }
+        Ok(())
+    }
+
+    pub async fn flush_ui_settings(&self) -> Result<(), String> {
+        let _gate = self.ui_settings_gate.lock().await;
+        self.open_store().map(|_| ())
+    }
+
+    pub async fn dictionary(
+        &self,
+        after: Option<String>,
+        limit: u16,
+    ) -> Result<DictionaryPage, String> {
+        let store = self.open_store()?;
+        tokio::task::spawn_blocking(move || {
+            let page = store
+                .dictionary_words(after.as_deref(), limit)
+                .map_err(|e| e.to_string())?;
+            Ok(DictionaryPage {
+                words: page.words,
+                next: page.next,
+            })
+        })
+        .await
+        .map_err(|_| "Could not read dictionary words".to_string())?
+    }
+
+    pub async fn add_word(&self, word: String) -> Result<bool, String> {
+        let store = self.open_store()?;
+        tokio::task::spawn_blocking(move || {
+            store.add_dictionary_word(&word).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| "Could not add dictionary word".to_string())?
+    }
+
+    pub async fn get_remote_sidebars(
+        &self,
+        user_id: &str,
+    ) -> Result<HashMap<String, crate::settings::RemoteSidebarSettings>, String> {
+        let (store, account) = self.presentation_account(user_id)?;
+        tokio::task::spawn_blocking(move || {
+            let value = store
+                .account_setting(account, "remote.sidebars")
+                .map_err(|e| e.to_string())?
+                .unwrap_or_else(|| serde_json::json!({}));
+            serde_json::from_value(value)
+                .map_err(|_| "Saved remote sidebar settings are invalid".to_string())
+        })
+        .await
+        .map_err(|_| "Could not read remote sidebar settings".to_string())?
+    }
+
+    pub async fn set_remote_sidebar(
+        &self,
+        user_id: &str,
+        computer: String,
+        patch: serde_json::Value,
+    ) -> Result<(), String> {
+        if computer.is_empty() || computer.len() > 128 || computer.chars().any(char::is_control) {
+            return Err("Invalid remote computer".into());
+        }
+        let _gate = self.ui_settings_gate.lock().await;
+        let (store, account) = self.presentation_account(user_id)?;
+        tokio::task::spawn_blocking(move || {
+            let mut all: HashMap<String, crate::settings::RemoteSidebarSettings> =
+                serde_json::from_value(
+                    store
+                        .account_setting(account, "remote.sidebars")
+                        .map_err(|e| e.to_string())?
+                        .unwrap_or_else(|| serde_json::json!({})),
+                )
+                .map_err(|_| "Saved remote sidebar settings are invalid".to_string())?;
+            let current = all.entry(computer).or_default();
+            crate::settings::patch_remote_sidebar(current, &patch)?;
+            store
+                .set_account_setting(
+                    account,
+                    "remote.sidebars",
+                    &serde_json::to_value(all)
+                        .map_err(|_| "Could not encode remote sidebar settings")?,
+                    crate::settings::timestamp_ms(),
+                )
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| "Could not save remote sidebar settings".to_string())?
+    }
+
+    pub async fn set_task_pinned(
+        &self,
+        user_id: &str,
+        task: &str,
+        pinned: bool,
+    ) -> Result<(), String> {
+        let (store, account) = self.presentation_account(user_id)?;
+        let task = task.to_owned();
+        tokio::task::spawn_blocking(move || {
+            store
+                .set_task_pinned(account, &task, pinned, crate::settings::timestamp_ms())
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| "Could not save task pin".to_string())?
     }
 
     /// Replace the opening system prompt text for tasks this app hosts.
@@ -796,7 +1317,7 @@ impl LocalBackend {
         self.service.question_responder()
     }
 
-    pub(super) fn authorize_account(&self, user_id: &str) -> Result<(), String> {
+    pub(crate) fn authorize_account(&self, user_id: &str) -> Result<(), String> {
         #[cfg(test)]
         if self.ui_fixture {
             return Ok(());
@@ -809,9 +1330,24 @@ impl LocalBackend {
     }
 
     fn require_signed_out(&self) -> Result<(), String> {
+        if self.pending_deletion_status()?.is_some() {
+            return Err(deletion::PENDING_DELETION_MESSAGE.to_string());
+        }
         if self.saved_user_id().is_some() {
             Err("Maple is already signed in. Sign out before changing accounts.".into())
         } else {
+            if let Some(store) = &self.store {
+                // A pending deletion reserves the one physical slot even if
+                // this launch selected a different API origin. Do not install
+                // a new live session whose credential write must be rejected.
+                store.credential_owner_for_sign_in().map_err(|error| {
+                    if error == maple_agent::store::StoreError::Conflict {
+                        deletion::PENDING_DELETION_MESSAGE.to_owned()
+                    } else {
+                        "Could not read saved sign-in ownership. Try again.".to_owned()
+                    }
+                })?;
+            }
             Ok(())
         }
     }
@@ -869,19 +1405,12 @@ impl LocalBackend {
         Ok(AuthSession { user_id })
     }
 
-    /// Credentials are device-local, like the web app's `localStorage`.
-    /// They must not sit in a roaming profile (`%APPDATA%`), so they live in
-    /// the local data root rather than next to `settings.json`.
-    fn auth_file() -> std::path::PathBuf {
-        local_data_root().join("auth.json")
-    }
-
     fn persist_auth(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
         self.persisted_auth.claim_and_persist(snapshot)
     }
 
     /// The sink the runtime calls when the SDK rotates the token pair
-    /// during an API call. It writes the new pair to `auth.json` so the
+    /// during an API call. It commits the new pair in the store so the
     /// next launch does not restore stale tokens.
     fn auth_sink(&self) -> Arc<dyn MapleApiAuthEventSink> {
         Arc::new(PersistAuthSink {
@@ -894,14 +1423,14 @@ impl LocalBackend {
     }
 
     /// The account id saved by a previous sign-in, without validating it.
-    /// A local file read, so the UI may show the account's data at once
+    /// A read from the open store, so the UI may show account data at once
     /// while the host validates the credentials.
     pub fn saved_user_id(&self) -> Option<String> {
-        self.load_persisted_auth().map(|record| record.user_id)
+        self.persisted_auth.saved_user_id()
     }
 
     /// Validate the saved credentials with the server and install the
-    /// session on success. Definitive rejections clear the saved file.
+    /// session on success. Definitive rejections compare-clear the saved record.
     pub(super) async fn validate_persisted_auth(&self) -> RestoreOutcome {
         let _restore = self.restore_lock.lock().await;
         if let Some(user_id) = self.saved_user_id()
@@ -915,10 +1444,10 @@ impl LocalBackend {
         };
         let request_record = persisted.clone();
         let request = MapleApiAuthRequest {
-            user_id: request_record.user_id,
+            user_id: request_record.user_id.clone(),
             api_url: self.api_url.clone(),
-            access_token: request_record.access_token,
-            refresh_token: request_record.refresh_token,
+            access_token: request_record.access_token.clone(),
+            refresh_token: request_record.refresh_token.clone(),
         };
         let result = match tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -932,7 +1461,7 @@ impl LocalBackend {
         };
         match result {
             Ok(snapshot) => {
-                self.persist_auth(&snapshot);
+                self.persisted_auth.persist_restored(&snapshot, &persisted);
                 RestoreOutcome::Valid(snapshot.user_id)
             }
             Err(error) if maple_agent::maple_api::is_auth_rejection(&error) => {
@@ -957,20 +1486,13 @@ impl LocalBackend {
         &self,
         user_id: &str,
     ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
+        self.authorize_account(user_id)?;
         if self.auth.session_for(user_id).await.is_err() {
             let _ = self.validate_persisted_auth().await;
         }
         self.auth.session_for(user_id).await
     }
 
-    /// Snapshot the locally selected account for remote enrollment.
-    pub(crate) fn remote_storage_root(&self) -> PathBuf {
-        self.persisted_auth
-            .path
-            .parent()
-            .expect("auth store has a parent")
-            .to_path_buf()
-    }
     pub(crate) fn remote_api_url(&self) -> &str {
         &self.api_url
     }
@@ -993,6 +1515,22 @@ impl LocalBackend {
     /// `POST /logout`; a deleted account has no session left to report.
     async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
         let _account = self.restore_lock.lock().await;
+        let pending = self.pending_deletion_status()?;
+        if let Some(pending) = pending.as_ref() {
+            if pending.user_id != user_id {
+                return Err(
+                    "The host account changed. Reopen this screen before continuing.".into(),
+                );
+            }
+            // A sign-out cannot resolve an uncertain server deletion. Keep the
+            // exact pending credentials for privileged reconciliation, while
+            // dropping every normal in-memory session and runtime handle.
+            self.service.sign_out(user_id).await?;
+            self.cancel_oauth();
+            let _ = self.persisted_auth.forget_owner();
+            return self.auth.clear_auth(user_id).await;
+        }
+        self.authorize_account(user_id)?;
         self.service.sign_out(user_id).await?;
         self.cancel_oauth();
         let auth_snapshot = self.auth.auth_snapshot_for(user_id).await.ok();
@@ -1019,11 +1557,19 @@ impl LocalBackend {
         let result = self.auth.clear_auth(user_id).await;
         if result.is_ok() {
             if let Some(snapshot) = auth_snapshot.as_ref() {
-                self.persisted_auth.clear_if_owned(snapshot);
+                if !self.persisted_auth.clear_if_owned(snapshot) {
+                    return Err(
+                        "Sign-out could not remove saved credentials. Try again.".to_string()
+                    );
+                }
             } else if let Some(persisted) = persisted_without_session.as_ref() {
                 // Preserve the old offline/logout behavior without letting a
                 // concurrent sign-in's replacement record be removed.
-                self.persisted_auth.clear_record_if_unchanged(persisted);
+                if !self.persisted_auth.clear_record_if_unchanged(persisted) {
+                    return Err(
+                        "Sign-out could not remove saved credentials. Try again.".to_string()
+                    );
+                }
             }
         }
         result
@@ -1164,6 +1710,36 @@ impl LocalBackend {
 
     pub fn cancel_oauth(&self) {
         self.pending_oauth.cancel();
+    }
+
+    /// Exercise the real cancellation primitive without hosted credentials or
+    /// network work. Callers provide the same account/admission guards as IPC.
+    #[cfg(test)]
+    pub(crate) fn pending_oauth_waiter_for_test(
+        &self,
+        release_publication: tokio::sync::oneshot::Receiver<()>,
+        published: Arc<std::sync::atomic::AtomicBool>,
+    ) -> impl Future<Output = Result<(), String>> + '_ {
+        let attempt = self.pending_oauth.begin(
+            OAuthProvider::Google,
+            OpenSecretClient::new("http://127.0.0.1:1").unwrap(),
+        );
+        async move {
+            let _guard = OAuthAttemptGuard {
+                store: &self.pending_oauth,
+                attempt: &attempt,
+                retain: false,
+            };
+            attempt
+                .while_active(async {
+                    release_publication
+                        .await
+                        .map_err(|_| "The OAuth fixture was dropped".to_string())?;
+                    published.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        }
     }
 
     /// Wait on the existing listener and consume exactly the SDK handle that
@@ -1311,36 +1887,6 @@ impl LocalBackend {
             .await
             .map_err(|error| account_error_message(error, "Could not start account deletion"))?;
         Ok(plaintext)
-    }
-
-    /// Delete the account for good. The agent runtime stops first, then
-    /// the server deletes the account, then the local credentials go. A
-    /// server failure leaves the session usable.
-    pub async fn confirm_account_deletion(
-        &self,
-        user_id: &str,
-        confirmation_code: String,
-        plaintext_secret: String,
-    ) -> Result<(), String> {
-        let code = confirmation_code.trim().to_string();
-        if code.is_empty() {
-            return Err("Enter the confirmation code from the email".to_string());
-        }
-        let session = self.session_for(user_id).await?;
-        self.stop_runtime(user_id).await?;
-        session
-            .confirm_account_deletion(code, plaintext_secret)
-            .await
-            .map_err(|error| match error {
-                MapleAccountError::Status(400) => {
-                    "That confirmation code is wrong or has expired".to_string()
-                }
-                other => account_error_message(other, "Could not delete the account"),
-            })?;
-        if let Err(error) = self.clear_session(user_id, false).await {
-            log::warn!("local sign-out after account deletion failed: {error}");
-        }
-        Ok(())
     }
 
     /// The account's API keys, newest first.
@@ -1545,11 +2091,51 @@ impl LocalBackend {
         self.service.handle_for_user(user_id).await?.stop().await
     }
 
-    pub(crate) async fn shutdown_host(&self) {
-        self.service.begin_draining();
-        if let Err(error) = self.service.shutdown().await {
-            log::warn!("Host shutdown: {error}");
+    /// Only the owner's exactly confirmed reset path may call this. Saving
+    /// credentials cannot be a prerequisite for discarding that same store.
+    pub(crate) async fn prepare_store_reset(&self) -> Result<(), String> {
+        self.service.prepare_store_reset().await
+    }
+
+    pub(crate) async fn shutdown_host(&self) -> Result<(), String> {
+        // Stop must not drop the SDK's only current token pair or resurrect
+        // credentials whose earlier logout deletion failed. This path is also
+        // used during password maintenance, under the owner's exclusive gate.
+        // It deliberately does not consult shutdown_requested or clear the
+        // failure notice; inability to save returns before runtime/key release.
+        if self
+            .store
+            .as_ref()
+            .is_some_and(|store| store.state() == maple_agent::store::StoreState::Open)
+        {
+            self.reconcile_credentials().await?;
         }
+        self.service.begin_draining();
+        self.service.shutdown().await
+    }
+
+    #[cfg(feature = "acp")]
+    pub async fn get_acp_config(
+        &self,
+        user_id: &str,
+    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
+        self.authorize_account(user_id)?;
+        maple_agent::acp::load_acp_config(self.open_store()?.as_ref(), user_id)
+    }
+
+    #[cfg(feature = "acp")]
+    pub async fn set_acp_config(
+        &self,
+        user_id: &str,
+        config: maple_agent::acp::AgentAcpConfig,
+    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
+        self.authorize_account(user_id)?;
+        maple_agent::acp::save_acp_config(
+            self.open_store()?.as_ref(),
+            user_id,
+            config,
+            chrono::Utc::now().timestamp_millis(),
+        )
     }
 
     #[cfg(feature = "acp")]
@@ -1575,152 +2161,57 @@ impl LocalBackend {
         let start = maple_agent::acp::shared_runtime_start(async move {
             starting.start(session, None).await.map(|_| ())
         });
-        let config = maple_agent::acp::load_acp_config(&local_data_root(), &user_id)?;
+        let config = maple_agent::acp::load_acp_config(self.open_store()?.as_ref(), &user_id)?;
         drop(account);
         maple_agent::acp::serve_connection(handle, config, start, read, write).await
     }
 
-    /// Roots recently used by this account, most recent first.
-    pub async fn recent_project_roots(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<RecentProjectRoot>, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        self.migrate_project_names(&handle).await?;
-        handle.list_recent_project_roots().await
-    }
-
-    /// Import only this computer's legacy names. Controller-local remote
-    /// nicknames are presentation preferences and never become owner metadata.
-    /// The runtime records completion per account/device and serializes it with
-    /// rename, so a later settings read cannot resurrect a cleared name.
-    async fn migrate_project_names(
-        &self,
-        handle: &maple_agent::agent::AgentRuntimeHandle,
-    ) -> Result<(), String> {
-        if handle.project_names_migrated().await? {
-            return Ok(());
-        }
-        let names = tokio::task::spawn_blocking(crate::settings::load_project_names_for_migration)
-            .await
-            .map_err(|_| "Could not read legacy project names".to_string())??;
-        handle.migrate_project_names(names).await
-    }
-
+    /// Rename one project on the execution computer. The owner publishes a
+    /// bounded metadata delta to every desktop; it never returns the catalog.
     pub async fn rename_project_root(
         &self,
         user_id: &str,
         path: String,
         name: String,
-    ) -> Result<Vec<RecentProjectRoot>, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        self.migrate_project_names(&handle).await?;
-        handle.rename_project_root(path, name).await
+    ) -> Result<RecentProjectRoot, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .rename_project_root(path, name)
+            .await
     }
 
-    /// Register and select the default root for new tasks.
-    ///
-    /// The account runtime is deliberately not restarted: existing tasks own
-    /// their persisted working directories and may keep running under other
-    /// roots while the UI moves between projects.
-    ///
-    /// Choosing a folder does not record a trust decision. Home, the
-    /// process launch directory, and the default Maple workspace are
-    /// already trusted with no saved answer; every other root keeps `None`
-    /// until the one-time prompt. A saved "do not trust" answer stays.
+    /// Register and select the default root for new tasks, retaining each
+    /// existing task's working directory and its independent trust decision.
     pub async fn select_project_root(
         &self,
         user_id: &str,
         path: String,
-    ) -> Result<AgentProjectRootRegistration, String> {
+    ) -> Result<SelectedProject, String> {
         let handle = self.service.handle_for_user(user_id).await?;
-        self.migrate_project_names(&handle).await?;
         // The listed Maple workspace is created the first time it is chosen.
         if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path.trim())) {
             maple_agent::agent::ensure_default_maple_workspace()?;
         }
-        handle.save_recent_project_root(path).await
+        let project_root = handle.save_recent_project_root(path).await?;
+        let project = handle.project_root_metadata(project_root.clone()).await?;
+        Ok(SelectedProject {
+            project_root,
+            project,
+        })
     }
 
-    pub async fn list_sessions(
+    pub async fn archive_project_root(
         &self,
         user_id: &str,
-        project_root: Option<String>,
-    ) -> Result<Vec<AgentSessionSummary>, String> {
-        let sessions = self
-            .service
+        path: String,
+        fallback: Option<String>,
+    ) -> Result<(), String> {
+        self.service
             .handle_for_user(user_id)
             .await?
-            .list_sessions(project_root)
-            .await?;
-        Ok(sessions)
-    }
-
-    /// Read everything the chat screen can show without the network: the
-    /// saved project root, the task list, the recent roots, and the newest
-    /// task's transcript. Call it before `start_runtime`: the runtime start
-    /// holds the lifecycle lock across its network round trips, and these
-    /// reads would queue behind it.
-    pub async fn local_bootstrap(&self, user_id: &str) -> Result<LocalBootstrap, String> {
-        self.read_bootstrap(user_id, true).await
-    }
-
-    /// Navigation and reconnect snapshots need summaries, not an unrelated
-    /// latest transcript. A controller can observe several computers at once.
-    async fn read_bootstrap(
-        &self,
-        user_id: &str,
-        load_latest: bool,
-    ) -> Result<LocalBootstrap, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        self.migrate_project_names(&handle).await?;
-        let config = handle.load_config().await?;
-        let project_root = gui_project_root(&config);
-        let sessions = handle.list_sessions(None).await?;
-        let recent_roots = handle.list_recent_project_roots().await?;
-        // Same choice the screen's auto-select makes: the newest unarchived
-        // task under the root that the runtime will start in. An empty task
-        // is a draft an older build persisted; the screen's own new-task
-        // draft stands in for it.
-        let latest_id = sessions
-            .iter()
-            .find(|session| {
-                session.state != AgentTaskState::Archived
-                    && session.message_count > 0
-                    && Some(&session.project_root) == project_root.as_ref()
-            })
-            .map(|session| session.id.clone());
-        let latest = match latest_id.filter(|_| load_latest) {
-            Some(id) => handle.load_session(id).await.ok(),
-            None => None,
-        };
-        Ok(LocalBootstrap {
-            project_root,
-            sessions,
-            recent_roots,
-            latest,
-            questions: self.service.pending_questions().await,
-        })
-    }
-
-    /// Recover presentation without starting the runtime or resubmitting work.
-    pub async fn recovery_snapshot(
-        &self,
-        user_id: &str,
-        session_id: Option<String>,
-    ) -> Result<RecoverySnapshot, String> {
-        let bootstrap = self.read_bootstrap(user_id, false).await?;
-        let handle = self.service.handle_for_user(user_id).await?;
-        let selected = match session_id.filter(|id| bootstrap.sessions.iter().any(|s| &s.id == id))
-        {
-            Some(id) => Some(handle.load_session(id).await?),
-            None => None,
-        };
-        Ok(RecoverySnapshot {
-            bootstrap,
-            status: handle.status().await?,
-            selected,
-        })
+            .archive_project_root(path, fallback)
+            .await
     }
 
     pub async fn create_session(
@@ -1732,18 +2223,6 @@ impl LocalBackend {
             .handle_for_user(user_id)
             .await?
             .create_session(request)
-            .await
-    }
-
-    pub async fn load_session(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<AgentSessionDetail, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .load_session(session_id.to_string())
             .await
     }
 
@@ -1902,20 +2381,6 @@ impl LocalBackend {
         Ok(run_id)
     }
 
-    /// Bytes of an image the user attached to a message in `session_id`.
-    pub async fn read_image_attachment(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<u8>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .read_image_attachment(session_id.to_string(), attachment_id.to_string())
-            .await
-    }
-
     pub async fn cancel_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
         self.service
             .handle_for_user(user_id)
@@ -2027,6 +2492,17 @@ impl LocalBackend {
             .await
     }
 
+    pub async fn list_mcp_definitions(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_mcp_definitions()
+            .await
+    }
+
     pub async fn list_project_mcp_servers(
         &self,
         user_id: &str,
@@ -2127,6 +2603,42 @@ impl LocalBackend {
             .handle_for_user(user_id)
             .await?
             .save_mcp_servers(servers)
+            .await
+    }
+
+    pub async fn save_mcp_servers_remote(
+        &self,
+        user_id: &str,
+        servers: Vec<maple_agent::agent::AgentMcpServer>,
+    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_mcp_servers_remote(servers)
+            .await
+    }
+
+    pub async fn save_mcp_definition_edits(
+        &self,
+        user_id: &str,
+        edits: Vec<maple_agent::store::records::McpServerEdit>,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_mcp_definition_edits(edits)
+            .await
+    }
+
+    pub async fn save_mcp_definition_edits_remote(
+        &self,
+        user_id: &str,
+        edits: Vec<maple_agent::store::records::McpServerEdit>,
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_mcp_definition_edits_remote(edits)
             .await
     }
 
@@ -2266,62 +2778,6 @@ impl LocalBackend {
             .ask_side_question(session_id, request_id, prior, question)
             .await
     }
-    /// Run `f` against the summary store of `user_id`. Blocking: call from
-    /// `spawn_blocking`.
-    fn with_summary_db<T>(
-        &self,
-        user_id: &str,
-        f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let scope = self
-            .account_scope(user_id)
-            .ok_or_else(|| "No account scope".to_string())?;
-        let db = account_summary_db(&scope);
-        let mut guard = self.summary_db.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-            *guard = Some((db.clone(), open_summary_db(&db)?));
-        }
-        f(&guard.as_ref().expect("summary db opened above").1)
-    }
-
-    /// Stored summaries for one session, keyed by timeline item id.
-    /// Blocking.
-    pub fn load_tool_summaries_blocking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<HashMap<String, String>, String> {
-        self.with_summary_db(user_id, |conn| {
-            let mut stmt = conn
-                .prepare("SELECT item_id, summary FROM tool_summaries WHERE session_id = ?1")
-                .map_err(|error| error.to_string())?;
-            let rows = stmt
-                .query_map([session_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|error| error.to_string())?;
-            rows.collect::<Result<HashMap<_, _>, _>>()
-                .map_err(|error| error.to_string())
-        })
-    }
-
-    /// Persist one summary. Blocking.
-    pub fn store_tool_summary_blocking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        item_id: &str,
-        summary: &str,
-    ) -> Result<(), String> {
-        self.with_summary_db(user_id, |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO tool_summaries (session_id, item_id, summary) \
-                 VALUES (?1, ?2, ?3)",
-                [session_id, item_id, summary],
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-        })
-    }
-
     /// A session's context usage: (context tokens, context limit). The
     /// tokens are the runtime's count of the task's context; the limit comes
     /// from the model catalog for the selected model; MAPLE_CONTEXT_LIMIT is
@@ -2578,6 +3034,109 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn typed_mcp_host_boundary_hides_values_and_remote_edits_cannot_change_them() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token"
+        )));
+        let request = |method: &str, params| crate::host::protocol::Request {
+            id: 1,
+            method: method.into(),
+            params,
+            send_id: None,
+        };
+        let edit = serde_json::json!({
+            "key":"example","name":"Example","description":"Synthetic","enabled":true,"timeoutSeconds":30,
+            "target":{"type":"stdio","command":"synthetic-mcp --serve"},
+            "environment":[{"name":"TOKEN","update":{"operation":"set","value":"synthetic-private-value"}}],"headers":[]
+        });
+        let saved = super::super::dispatch(
+            &backend,
+            request(
+                "save_mcp_definition_edits",
+                serde_json::json!(["fixture-user", [edit.clone()]]),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!saved.to_string().contains("synthetic-private-value"));
+        assert_eq!(
+            saved.pointer("/0/environment/0/hasValue"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let safe = super::super::dispatch(
+            &backend,
+            request("list_mcp_definitions", serde_json::json!(["fixture-user"])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(safe, saved);
+        for mut rejected in [edit.clone(), edit.clone(), edit.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            match rejected.0 {
+                0 => {
+                    rejected.1["environment"][0]["update"] =
+                        serde_json::json!({"operation":"set","value":"remote-new-value"})
+                }
+                1 => {
+                    rejected.1["environment"][0]["update"] =
+                        serde_json::json!({"operation":"clear"})
+                }
+                _ => {
+                    rejected.1["environment"][0]["update"] =
+                        serde_json::json!({"operation":"keep"});
+                    rejected.1["target"]["command"] = "different-target".into();
+                }
+            }
+            assert!(
+                super::super::dispatch_remote_inner(
+                    &backend,
+                    request(
+                        "save_mcp_definition_edits",
+                        serde_json::json!(["fixture-user", [rejected.1]])
+                    )
+                )
+                .await
+                .is_err()
+            );
+        }
+        let mut keep = edit;
+        keep["description"] = "Remote metadata edit".into();
+        keep["environment"][0]["update"] = serde_json::json!({"operation":"keep"});
+        let updated = super::super::dispatch_remote_inner(
+            &backend,
+            request(
+                "save_mcp_definition_edits",
+                serde_json::json!(["fixture-user", [keep]]),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            updated.pointer("/0/environment/0/hasValue"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(!updated.to_string().contains("synthetic-private-value"));
+        let store = backend.store().unwrap();
+        let account = store.account_id("fixture-user").unwrap().unwrap();
+        let definition = store.mcp_definitions(account).unwrap().remove(0);
+        assert_eq!(
+            store
+                .mcp_launch_secrets(account, "example", &definition.target)
+                .unwrap()
+                .environment["TOKEN"]
+                .expose(),
+            "synthetic-private-value"
+        );
+    }
+
+    #[tokio::test]
     async fn project_mcp_operations_use_the_host_account_and_shared_settings_lock() {
         let root = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -2702,9 +3261,9 @@ mod tests {
             "fixture-token",
         ));
         let (events, _) = tokio::sync::broadcast::channel(8);
-        let receipts = Arc::new(
-            crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
-        );
+        let receipts = Arc::new(crate::host::receipts::Receipts::new(
+            backend.store().unwrap().clone(),
+        ));
         let remote = crate::remote::manager::Manager::new(backend.clone(), events, receipts);
         remote.restore().await;
         let status = remote
@@ -2762,9 +3321,9 @@ mod tests {
             "fixture-token",
         ));
         let (events, _) = tokio::sync::broadcast::channel(8);
-        let receipts = Arc::new(
-            crate::host::receipts::Receipts::open(&root.path().join("receipts.db")).unwrap(),
-        );
+        let receipts = Arc::new(crate::host::receipts::Receipts::new(
+            backend.store().unwrap().clone(),
+        ));
         let remote = crate::remote::manager::Manager::new(backend.clone(), events, receipts);
         let request = |method: &str, params| crate::host::protocol::Request {
             id: 1,
@@ -2844,7 +3403,7 @@ mod tests {
         })
         .await;
 
-        for method in ["local_bootstrap", "stop_runtime"] {
+        for method in ["navigation_bootstrap", "stop_runtime"] {
             tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 super::super::dispatch(
@@ -2859,7 +3418,10 @@ mod tests {
         assert!(
             super::super::dispatch(
                 &backend,
-                request("local_bootstrap", serde_json::json!(["different-user"])),
+                request(
+                    "navigation_bootstrap",
+                    serde_json::json!(["different-user"])
+                ),
             )
             .await
             .unwrap_err()
@@ -3042,100 +3604,473 @@ mod tests {
         }
     }
 
+    fn persisted_auth_fixture() -> (
+        tempfile::TempDir,
+        Arc<maple_agent::store::Store>,
+        PersistedAuthStore,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let database = Arc::new(
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap(),
+        );
+        let credentials =
+            PersistedAuthStore::new(Some(database.clone()), "https://api.example".to_owned());
+        (root, database, credentials)
+    }
+
     #[test]
     fn persisted_auth_compare_clear_preserves_a_new_session_and_rejects_late_rotation() {
-        let root = std::env::temp_dir().join(format!(
-            "maple-persisted-auth-race-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("auth.json");
-        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
+        let (_root, database, store) = persisted_auth_fixture();
         let old = auth_snapshot("same-user", "session-old", 2, "old-token");
         let new = auth_snapshot("same-user", "session-new", 1, "new-token");
-
-        store.claim_and_persist(&old);
+        assert!(store.claim_and_persist(&old));
         let mut newer_old = old.clone();
         newer_old.revision = 3;
-        newer_old.access_token = "newer-old-token".to_string();
+        newer_old.access_token = "newer-old-token".to_owned();
         store.persist_rotation(&newer_old);
-        store.claim_and_persist(&old);
-        assert_eq!(
-            store.read_record().unwrap().access_token,
-            "newer-old-token",
-            "a late same-session claim must not roll back a newer rotation"
-        );
-
-        store.claim_and_persist(&new);
-        store.clear_if_owned(&old);
-        assert_eq!(
-            store.read_record().unwrap().access_token,
-            "new-token",
-            "a delayed old logout must not erase a new same-account session"
-        );
-
-        let mut late_old = old.clone();
-        late_old.revision = 3;
-        late_old.access_token = "late-old-token".to_string();
-        store.persist_rotation(&late_old);
+        assert!(!store.claim_and_persist(&old));
+        assert_eq!(store.read_record().unwrap().access_token, "newer-old-token");
+        assert!(store.claim_and_persist(&new));
+        assert!(store.clear_if_owned(&old));
         assert_eq!(store.read_record().unwrap().access_token, "new-token");
-
-        store.clear_if_owned(&new);
-        assert!(!path.exists());
+        store.persist_rotation(&newer_old);
+        assert_eq!(store.read_record().unwrap().access_token, "new-token");
+        assert!(store.clear_if_owned(&new));
         let mut late_new = new;
         late_new.revision = 2;
-        late_new.access_token = "late-new-token".to_string();
         store.persist_rotation(&late_new);
         assert!(
-            !path.exists(),
-            "a rotation published after sign-out must not recreate auth.json"
+            store.read_record().is_none(),
+            "post-logout callback must not restore credentials"
         );
-        std::fs::remove_dir_all(root).unwrap();
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn explicit_sign_in_can_persist_after_an_api_origin_change() {
+        let (_root, database, original) = persisted_auth_fixture();
+        let old = auth_snapshot("old-user", "old-session", 3, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 1, "new-token");
+        assert!(original.claim_and_persist(&old));
+        let current = PersistedAuthStore::new(
+            Some(Arc::clone(&database)),
+            "https://new.example".to_owned(),
+        );
+        assert!(current.load().is_none());
+        assert!(current.claim_and_persist(&new));
+        current.retry_without_sdk().unwrap();
+        original.persist_rotation(&auth_snapshot("old-user", "old-session", 4, "late-token"));
+        assert!(original.clear_if_owned(&old));
+        let restored = PersistedAuthStore::new(
+            Some(Arc::clone(&database)),
+            "https://new.example".to_owned(),
+        )
+        .load()
+        .unwrap();
+        assert_eq!(restored.user_id, "new-user");
+        assert_eq!(restored.access_token, "new-token");
+        assert!(
+            database
+                .credentials("https://api.example")
+                .unwrap()
+                .is_none()
+        );
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn failed_origin_claim_retries_only_the_slot_it_observed() {
+        let (_root, database, original) = persisted_auth_fixture();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 2, "new-token");
+        assert!(original.claim_and_persist(&old));
+        let target = database.upsert_account("new-user", 1).unwrap();
+        let generation = Uuid::new_v4().to_string();
+        database
+            .begin_account_deletion(target, &generation, 2)
+            .unwrap();
+        let current = PersistedAuthStore::new(
+            Some(Arc::clone(&database)),
+            "https://new.example".to_owned(),
+        );
+        // The slot is observed successfully, but target-account admission
+        // rejects the actual write. Retry retains the old origin's exact CAS.
+        assert!(!current.claim_and_persist(&new));
+        assert!(current.retry_without_sdk().is_err());
+        database
+            .abort_account_deletion(target, &generation)
+            .unwrap();
+        current.retry_snapshot(&new).unwrap();
+        assert_eq!(current.read_record().unwrap().access_token, "new-token");
+        assert!(original.retry_snapshot(&old).is_err());
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn failed_origin_claim_cannot_retry_over_an_independent_replacement() {
+        let (_root, database, original) = persisted_auth_fixture();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 2, "new-token");
+        let independent = auth_snapshot("third-user", "third-session", 1, "third-token");
+        assert!(original.claim_and_persist(&old));
+        let target = database.upsert_account("new-user", 1).unwrap();
+        let generation = Uuid::new_v4().to_string();
+        database
+            .begin_account_deletion(target, &generation, 2)
+            .unwrap();
+        let current = PersistedAuthStore::new(
+            Some(Arc::clone(&database)),
+            "https://new.example".to_owned(),
+        );
+        assert!(!current.claim_and_persist(&new));
+        database
+            .abort_account_deletion(target, &generation)
+            .unwrap();
+        assert!(original.claim_and_persist(&independent));
+        assert!(current.retry_snapshot(&new).is_err());
+        current.persist_rotation(&new);
+        assert_eq!(original.read_record().unwrap().access_token, "third-token");
+        assert!(current.clear_if_owned(&new));
+        assert_eq!(original.read_record().unwrap().access_token, "third-token");
+        database.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirmed_deletion_allows_a_saved_sign_in_and_shutdown_before_collection() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        backend.service.begin_draining();
+        let database = backend.store.as_ref().unwrap();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 2, "new-token");
+        assert!(backend.persisted_auth.claim_and_persist(&old));
+        let account = database.account_id("old-user").unwrap().unwrap();
+        database
+            .create_task(
+                account,
+                &maple_agent::store::NewTask {
+                    uuid: Uuid::new_v4().to_string(),
+                    project_root: root.path().to_string_lossy().into_owned(),
+                    kind: maple_agent::store::TaskKind::Desktop,
+                    title: "retained history".into(),
+                    provisional: false,
+                    model: None,
+                    created_ms: 1,
+                },
+            )
+            .unwrap();
+        let generation = Uuid::new_v4().to_string();
+        database
+            .begin_account_deletion(account, &generation, 2)
+            .unwrap();
+        database
+            .confirm_account_deletion(account, &generation)
+            .unwrap();
+        backend.persisted_auth.forget_owner();
+        assert!(matches!(
+            database.collect_account_step(account),
+            Err(maple_agent::store::StoreError::Busy)
+        ));
+        backend.require_signed_out().unwrap();
+        assert!(backend.persisted_auth.claim_and_persist(&new));
+        backend.shutdown_host().await.unwrap();
+        let restored = PersistedAuthStore::new(Some(Arc::clone(database)), backend.api_url.clone())
+            .load()
+            .unwrap();
+        assert_eq!(restored.user_id, "new-user");
+        assert_eq!(restored.access_token, "new-token");
+        database.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_deletion_at_another_origin_prevents_installing_a_new_live_session() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        let database = backend.store.as_ref().unwrap();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let foreign =
+            PersistedAuthStore::new(Some(Arc::clone(database)), "https://old.example".into());
+        assert!(foreign.claim_and_persist(&old));
+        let account = database.account_id("old-user").unwrap().unwrap();
+        let generation = Uuid::new_v4().to_string();
+        database
+            .begin_account_deletion(account, &generation, 2)
+            .unwrap();
+        assert!(backend.pending_deletion_status().unwrap().is_none());
+        assert_eq!(
+            backend.require_signed_out().unwrap_err(),
+            deletion::PENDING_DELETION_MESSAGE
+        );
+        assert!(backend.persisted_auth.live_identity().is_none());
+        assert_eq!(
+            database
+                .pending_deletion_credentials(account, &generation, "https://old.example")
+                .unwrap()
+                .unwrap()
+                .owner
+                .session_id,
+            "old-session"
+        );
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn restored_auth_cannot_adopt_an_independent_new_owner() {
+        let (_root, database, original) = persisted_auth_fixture();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        assert!(original.claim_and_persist(&old));
+        let loaded = original.load().unwrap();
+        let replacement =
+            PersistedAuthStore::new(Some(Arc::clone(&database)), "https://api.example".into());
+        assert!(replacement.claim_and_persist(&auth_snapshot(
+            "new-user",
+            "new-session",
+            1,
+            "new-token"
+        )));
+        assert!(!original.persist_restored(
+            &auth_snapshot("old-user", "restored-session", 1, "restored-token"),
+            &loaded
+        ));
+        assert!(
+            original
+                .retry_snapshot(&auth_snapshot(
+                    "old-user",
+                    "restored-session",
+                    1,
+                    "restored-token"
+                ))
+                .is_err()
+        );
+        assert_eq!(replacement.read_record().unwrap().access_token, "new-token");
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn restored_auth_persists_a_new_sdk_session_using_only_its_loaded_owner() {
+        let (_root, database, store) = persisted_auth_fixture();
+        let old = auth_snapshot("fixture-user", "old-session", 3, "old-token");
+        assert!(store.claim_and_persist(&old));
+        let loaded = store.load().unwrap();
+        let restored = auth_snapshot("fixture-user", "restored-session", 1, "restored-token");
+        assert!(store.persist_restored(&restored, &loaded));
+        let saved = store.read_record().unwrap();
+        assert_eq!(saved.owner.session_id, "restored-session");
+        assert_eq!(saved.owner.revision, 1);
+        assert_eq!(saved.access_token, "restored-token");
+        database.close().unwrap();
     }
 
     #[test]
     fn persistence_reports_write_failure_and_successful_restore() {
-        let root = std::env::temp_dir().join(format!("maple-auth-persistence-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("auth.json");
-        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
-        let snapshot = auth_snapshot("fixture-user", "fixture-session", 1, "fixture-token");
-        std::fs::create_dir(&path).unwrap();
-        assert!(
-            !store.claim_and_persist(&snapshot),
-            "a directory cannot be replaced by credentials"
+        let root = tempfile::tempdir().unwrap();
+        let database = Arc::new(
+            maple_agent::store::Store::unavailable(
+                maple_agent::store::StorePaths::new(root.path()),
+                maple_agent::store::StoreState::NeedsSetup,
+            )
+            .unwrap(),
         );
+        let store =
+            PersistedAuthStore::new(Some(database.clone()), "https://api.example".to_owned());
+        let snapshot = auth_snapshot("fixture-user", "fixture-session", 1, "fixture-token");
+        assert!(!store.claim_and_persist(&snapshot));
         assert!(store.load().is_none());
-        std::fs::remove_dir(&path).unwrap();
+        assert!(
+            store.state.lock().unwrap().owner.is_none(),
+            "failed write cannot claim durable ownership"
+        );
+        database.initialize_plain().unwrap();
+        let mut jump = snapshot.clone();
+        jump.revision = 4;
+        store.persist_rotation(&jump);
+        assert!(
+            store.load().is_none(),
+            "a callback cannot claim a failed sign-in write"
+        );
         assert!(store.claim_and_persist(&snapshot));
-        let restored = PersistedAuthStore::new(path, "https://api.example".to_string())
-            .load()
-            .unwrap();
+        store.persist_rotation(&jump);
+        let restored =
+            PersistedAuthStore::new(Some(database.clone()), "https://api.example".to_owned())
+                .load()
+                .unwrap();
         assert_eq!(restored.user_id, snapshot.user_id);
+        assert_eq!(
+            restored.owner.revision, 4,
+            "persist the SDK revision, including jumps"
+        );
         assert_eq!(restored.access_token, snapshot.access_token);
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(!format!("{restored:?}").contains("fixture-token"));
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn explicit_retry_saves_the_live_replacement_after_a_failed_write() {
+        let (_root, database, store) = persisted_auth_fixture();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 4, "new-token");
+        assert!(store.claim_and_persist(&old));
+        database.close().unwrap();
+        assert!(!store.claim_and_persist(&new));
+        database.initialize_plain().unwrap();
+        assert!(
+            store.retry_without_sdk().is_err(),
+            "a durable old owner cannot stand in for the unsaved live session"
+        );
+        store.retry_snapshot(&new).unwrap();
+        assert!(store.retry_snapshot(&old).is_err());
+        let saved = store.read_record().unwrap();
+        assert_eq!(saved.user_id, "new-user");
+        assert_eq!(saved.owner.revision, 4);
+        assert_eq!(saved.access_token, "new-token");
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn exact_snapshot_retry_saves_a_failed_rotation_with_a_revision_jump() {
+        let (_root, database, store) = persisted_auth_fixture();
+        let original = auth_snapshot("fixture-user", "fixture-session", 1, "old-token");
+        let rotated = auth_snapshot("fixture-user", "fixture-session", 7, "rotated-token");
+        assert!(store.claim_and_persist(&original));
+        database.close().unwrap();
+        store.persist_rotation(&rotated);
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .unwrap()
+                .owner
+                .as_ref()
+                .unwrap()
+                .durable
+                .revision,
+            1,
+            "a failed write must retain the last durable CAS owner"
+        );
+        database.initialize_plain().unwrap();
+        assert_eq!(store.read_record().unwrap().access_token, "old-token");
+        store.retry_snapshot(&rotated).unwrap();
+        let saved = store.read_record().unwrap();
+        assert_eq!(saved.owner.revision, 7);
+        assert_eq!(saved.access_token, "rotated-token");
+        assert!(store.retry_snapshot(&original).is_err());
+        database.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_refuses_an_unsaved_live_replacement_until_exact_retry_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        let database = backend.store.as_ref().unwrap();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 4, "new-token");
+        assert!(backend.persisted_auth.claim_and_persist(&old));
+        database.close().unwrap();
+        assert!(!backend.persisted_auth.claim_and_persist(&new));
+        database.initialize_plain().unwrap();
+        backend.begin_store_drain();
+        assert!(backend.shutdown_host().await.is_err());
+        assert_eq!(database.state(), maple_agent::store::StoreState::Open);
+        assert_eq!(
+            backend.persisted_auth.saved_user_id().as_deref(),
+            Some("new-user")
+        );
+        assert_eq!(
+            backend.persisted_auth.read_record().unwrap().user_id,
+            "old-user"
+        );
+        backend.resume_store_admission();
+        backend.persisted_auth.retry_snapshot(&new).unwrap();
+        backend.shutdown_host().await.unwrap();
+        let saved = backend.persisted_auth.read_record().unwrap();
+        assert_eq!(saved.user_id, "new-user");
+        assert_eq!(saved.owner.revision, 4);
+        database.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_completes_a_retained_exact_logout_clear() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        let database = backend.store.as_ref().unwrap();
+        let snapshot = auth_snapshot("fixture-user", "fixture-session", 1, "fixture-token");
+        assert!(backend.persisted_auth.claim_and_persist(&snapshot));
+        database.close().unwrap();
+        assert!(!backend.persisted_auth.clear_if_owned(&snapshot));
+        database.initialize_plain().unwrap();
+        backend.shutdown_host().await.unwrap();
+        assert!(backend.persisted_auth.read_record().is_none());
+        assert!(
+            backend
+                .persisted_auth
+                .state
+                .lock()
+                .unwrap()
+                .pending_clear
+                .is_none()
+        );
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn explicit_retry_cannot_adopt_an_independent_replacement_owner() {
+        let (_root, database, store) = persisted_auth_fixture();
+        let old = auth_snapshot("old-user", "old-session", 1, "old-token");
+        let new = auth_snapshot("new-user", "new-session", 1, "new-token");
+        assert!(store.claim_and_persist(&old));
+        let saved = database
+            .credentials("https://api.example")
+            .unwrap()
+            .unwrap();
+        let account = database.upsert_account(&new.user_id, 1).unwrap();
+        database
+            .replace_credentials(
+                Some(&saved.owner),
+                account,
+                "https://api.example",
+                &new.session_id,
+                new.revision,
+                &PersistedAuthStore::tokens(&new),
+                1,
+            )
+            .unwrap();
+        assert!(store.retry_snapshot(&old).is_err());
+        assert_eq!(store.read_record().unwrap().user_id, "new-user");
+        database.close().unwrap();
+    }
+
+    #[test]
+    fn explicit_retry_finishes_only_the_failed_logout_owner() {
+        let (_root, database, store) = persisted_auth_fixture();
+        let snapshot = auth_snapshot("fixture-user", "fixture-session", 1, "fixture-token");
+        assert!(store.claim_and_persist(&snapshot));
+        database.close().unwrap();
+        assert!(!store.clear_if_owned(&snapshot));
+        database.initialize_plain().unwrap();
+        store.retry_without_sdk().unwrap();
+        assert!(store.read_record().is_none());
+        database.close().unwrap();
     }
 
     #[test]
     fn rejected_restore_clears_only_the_record_that_was_loaded() {
-        let root = std::env::temp_dir().join(format!(
-            "maple-persisted-auth-restore-race-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("auth.json");
-        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
+        let (_root, database, store) = persisted_auth_fixture();
         let old = auth_snapshot("old-user", "session-old", 1, "old-token");
         let new = auth_snapshot("new-user", "session-new", 1, "new-token");
-
-        store.claim_and_persist(&old);
+        assert!(store.claim_and_persist(&old));
         let loaded = store.load().unwrap();
-        store.claim_and_persist(&new);
-        store.clear_record_if_unchanged(&loaded);
+        assert!(store.claim_and_persist(&new));
+        assert!(store.clear_record_if_unchanged(&loaded));
         assert_eq!(store.read_record().unwrap().user_id, "new-user");
-
-        store.clear_if_owned(&new);
-        std::fs::remove_dir_all(root).unwrap();
+        // A logout snapshot may precede the final SDK rotation. Delete using
+        // the owner's latest durable revision under the adapter mutex.
+        let mut rotated = new.clone();
+        rotated.revision = 3;
+        store.persist_rotation(&rotated);
+        assert!(store.clear_if_owned(&new));
+        assert!(store.read_record().is_none());
+        database.close().unwrap();
     }
 
     #[test]
@@ -3196,95 +4131,20 @@ mod tests {
 
 #[cfg(test)]
 mod app_dir_tests {
-    use super::{APP_DIR_NAME, LEGACY_APP_DIR_NAME, adopt_legacy_app_dir};
-
     #[test]
-    fn legacy_app_dir_is_adopted_only_when_the_current_one_is_absent() {
-        let base = std::env::temp_dir().join(format!(
-            "maple-agent-adopt-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::UNIX_EPOCH
-                .elapsed()
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        let legacy = base.join(LEGACY_APP_DIR_NAME);
-        let root = base.join(APP_DIR_NAME);
-        std::fs::create_dir_all(legacy.join("logs")).unwrap();
-        std::fs::write(legacy.join("auth.json"), "saved").unwrap();
-
-        let note = adopt_legacy_app_dir(&root, true).expect("first start adopts the legacy dir");
-        assert!(note.starts_with("adopted "), "{note}");
+    fn versioned_store_paths_do_not_adopt_previous_data() {
+        let fixture = tempfile::tempdir().unwrap();
+        let previous = fixture.path().join("profile");
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::write(previous.join("auth.json"), b"previous sentinel").unwrap();
+        let paths = maple_agent::store::StorePaths::new(&previous);
+        assert_eq!(paths.root(), previous.join("store-v1"));
+        assert_eq!(paths.resources(), previous.join("store-v1/resources"));
+        assert_eq!(paths.logs(), previous.join("store-v1/logs"));
+        assert!(!paths.root().exists());
         assert_eq!(
-            std::fs::read_to_string(root.join("auth.json")).unwrap(),
-            "saved"
+            std::fs::read(previous.join("auth.json")).unwrap(),
+            b"previous sentinel"
         );
-        assert!(root.join("logs").is_dir());
-        assert!(!legacy.exists());
-
-        // Nothing to do once the current directory exists.
-        assert_eq!(adopt_legacy_app_dir(&root, true), None);
-
-        // A legacy directory that reappears next to a current one is left alone.
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("auth.json"), "stale").unwrap();
-        assert_eq!(adopt_legacy_app_dir(&root, true), None);
-        assert_eq!(
-            std::fs::read_to_string(root.join("auth.json")).unwrap(),
-            "saved"
-        );
-        assert!(legacy.join("auth.json").is_file());
-
-        // No legacy directory: nothing happens and nothing is created.
-        let fresh = base.join("fresh").join(APP_DIR_NAME);
-        std::fs::create_dir_all(fresh.parent().unwrap()).unwrap();
-        assert_eq!(adopt_legacy_app_dir(&fresh, true), None);
-        assert!(!fresh.exists());
-
-        std::fs::remove_dir_all(&base).unwrap();
-    }
-
-    #[test]
-    fn packaged_profiles_never_adopt_legacy_local_or_research_state() {
-        let base = std::env::temp_dir().join(format!(
-            "maple-agent-profile-isolation-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::UNIX_EPOCH
-                .elapsed()
-                .unwrap()
-                .as_nanos()
-        ));
-        for namespace in [
-            "maple-gpui",
-            "maple-agent",
-            "cloud.opensecret.maple",
-            "cloud.opensecret.maple.dev",
-        ] {
-            let path = base.join(namespace);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("auth.json"), namespace).unwrap();
-        }
-        for namespace in ["maple-agent-dev", "maple-agent-prod"] {
-            let root = base.join(namespace);
-            assert!(adopt_legacy_app_dir(&root, false).is_none());
-            assert!(!root.exists());
-            std::fs::create_dir_all(&root).unwrap();
-            std::fs::write(root.join("auth.json"), namespace).unwrap();
-        }
-        for namespace in [
-            "maple-gpui",
-            "maple-agent",
-            "cloud.opensecret.maple",
-            "cloud.opensecret.maple.dev",
-            "maple-agent-dev",
-            "maple-agent-prod",
-        ] {
-            assert_eq!(
-                std::fs::read_to_string(base.join(namespace).join("auth.json")).unwrap(),
-                namespace
-            );
-        }
-        assert_eq!(APP_DIR_NAME, crate::profile::DATA_NAMESPACE);
-        std::fs::remove_dir_all(base).unwrap();
     }
 }

@@ -28,6 +28,7 @@ enum Screen {
     /// Construction placeholder. `run` replaces it before the first paint
     /// with the chat screen (saved sign-in) or the login form.
     Restoring,
+    StoreGate(Entity<ui::store_gate::StoreGate>),
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
     Settings(Entity<SettingsScreen>),
@@ -83,6 +84,20 @@ impl RemoteComputer {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StoreAttentionKind {
+    Operation,
+    Persistence,
+}
+
+struct StoreAttention {
+    kind: StoreAttentionKind,
+    message: String,
+    retry: bool,
+    store_id: Option<String>,
+    epoch: u64,
+}
+
 struct MapleApp {
     backend: Arc<AgentBackend>,
     screen: Screen,
@@ -97,6 +112,23 @@ struct MapleApp {
     requested_navigation: Option<PendingNavigation>,
     computers_sync_pending: bool,
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
+    store_resident: Arc<std::sync::atomic::AtomicBool>,
+    store_load_epoch: u64,
+    store_ready: bool,
+    store_id: Option<String>,
+    store_notice: Option<String>,
+    store_notice_is_error: bool,
+    seen_store_notice_operation: Option<String>,
+    inline_password_completion: Option<String>,
+    mode_change_notice: Option<ModeChangeNotice>,
+    inline_mode_notice: Option<ModeChangeNotice>,
+    password_settings_refresh_pending: bool,
+    password_settings_refreshing: bool,
+    persistence_status: maple_agent::store::PersistenceStatus,
+    persistence_retrying: bool,
+    pending_store_attention: std::collections::VecDeque<StoreAttention>,
+    store_attention_open: bool,
+    restore_window_geometry: bool,
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     tray: Option<crate::tray::StatusIcon>,
     remote_bridges: std::cell::RefCell<Vec<gpui::Task<()>>>,
@@ -109,6 +141,459 @@ struct MapleApp {
 }
 
 impl MapleApp {
+    fn apply_store_completion_notice(
+        &mut self,
+        status: &DesktopStoreStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.store_id.is_some() && status.store_id.is_some() && self.store_id != status.store_id
+        {
+            // A local form can be queued while another client replaces the
+            // store. Never reattach its old pending edits to that generation.
+            crate::settings::discard_decrypted_cache();
+            self.inline_mode_notice = None;
+            self.inline_password_completion = None;
+            self.store_id = status.store_id.clone();
+            self.screen = Screen::Restoring;
+            if status.state == maple_agent::store::StoreState::Open {
+                self.clear_store_ui(cx);
+                self.load_open_store(cx);
+            } else {
+                self.show_store_state(status.state.clone(), cx);
+            }
+            return;
+        }
+        if self.store_id.is_none() {
+            self.store_id = status.store_id.clone();
+        }
+        self.apply_persistence_status(status.persistence_status.clone(), cx);
+        let pending_operation = match &self.screen {
+            Screen::Settings(settings) => settings
+                .read(cx)
+                .pending_password_operation_id(cx)
+                .map(str::to_owned),
+            _ => None,
+        };
+        let inline_recipient =
+            status.matches_pending_password_operation(pending_operation.as_deref());
+        let notice = status
+            .current_mode_notice()
+            .filter(|notice| self.inline_mode_notice.as_ref() != Some(*notice))
+            .cloned();
+        let defer_mode_notice = inline_recipient
+            && notice.as_ref().is_some_and(|notice| {
+                status
+                    .completion_notice
+                    .as_ref()
+                    .and_then(|completion| completion.mode_notice_id.as_deref())
+                    == Some(notice.notice_id.as_str())
+            });
+        if !defer_mode_notice && self.mode_change_notice != notice {
+            self.mode_change_notice = notice;
+            cx.notify();
+        }
+        if status.reconcile_password_completion_notice(
+            &mut self.seen_store_notice_operation,
+            &mut self.store_notice,
+            &mut self.store_notice_is_error,
+            inline_recipient,
+            self.inline_password_completion.as_deref(),
+        ) {
+            if let Some(message) = self.store_notice.clone() {
+                self.present_store_attention(message, StoreAttentionKind::Operation, false, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Operational feedback belongs to its form. If that recipient is gone,
+    /// use a proper window dialog for an attention-worthy result; never insert
+    /// operation messages into the application's page chrome.
+    fn present_store_attention(
+        &mut self,
+        message: String,
+        kind: StoreAttentionKind,
+        retry: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.screen {
+            Screen::StoreGate(gate)
+                if self.backend.store_state() != maple_agent::store::StoreState::Open =>
+            {
+                gate.update(cx, |gate, cx| gate.show_local_store_notice(message, cx));
+                return;
+            }
+            Screen::Settings(settings)
+                if settings.update(cx, |settings, cx| {
+                    settings.show_local_store_notice(message.clone(), cx)
+                }) =>
+            {
+                return;
+            }
+            _ => {}
+        }
+        // Preserve the latest result from each independent latch. Deduplication
+        // by the two kinds bounds this queue without one source hiding another.
+        let attention = StoreAttention {
+            kind,
+            message,
+            retry,
+            store_id: self.store_id.clone(),
+            epoch: self.store_load_epoch,
+        };
+        if let Some(pending) = self
+            .pending_store_attention
+            .iter_mut()
+            .find(|pending| pending.kind == kind)
+        {
+            *pending = attention;
+        } else {
+            self.pending_store_attention.push_back(attention);
+        }
+        cx.notify();
+    }
+
+    fn present_pending_store_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store_attention_open {
+            return;
+        }
+        let attention = loop {
+            let Some(attention) = self.pending_store_attention.pop_front() else {
+                return;
+            };
+            if self.attention_matches_current_store(&attention) {
+                break attention;
+            }
+        };
+        let prompt = window.prompt(
+            gpui::PromptLevel::Warning,
+            if attention.retry {
+                "Maple couldn't save local data"
+            } else {
+                "Local data needs attention"
+            },
+            Some(&attention.message),
+            if attention.retry {
+                &["Retry saving", "Keep viewing"]
+            } else {
+                &["OK"]
+            },
+            cx,
+        );
+        self.store_attention_open = true;
+        cx.spawn(async move |this, cx| {
+            let response = prompt.await;
+            let _ = this.update(cx, |this, cx| {
+                this.store_attention_open = false;
+                if this.attention_matches_current_store(&attention) {
+                    if response.is_err()
+                        && !this
+                            .pending_store_attention
+                            .iter()
+                            .any(|pending| pending.kind == attention.kind)
+                    {
+                        // Closing a window before delivery does not consume
+                        // the warning. A later foreground render can retry it.
+                        this.pending_store_attention.push_front(attention);
+                    } else if response == Ok(0) && attention.retry {
+                        this.retry_persistence(cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn attention_matches_current_store(&self, attention: &StoreAttention) -> bool {
+        if attention.store_id.is_some() {
+            attention.store_id == self.store_id
+        } else {
+            self.store_id.is_none() && attention.epoch == self.store_load_epoch
+        }
+    }
+
+    fn password_settings_finished(
+        &mut self,
+        event: &ui::store_gate::PasswordFormFinished,
+        cx: &mut Context<Self>,
+    ) {
+        if event.cancelled {
+            return;
+        }
+        if event.notice.is_none() {
+            if let Some(operation) = &event.completion_operation_id {
+                self.inline_password_completion = Some(operation.clone());
+                if self.seen_store_notice_operation.as_ref() == Some(operation)
+                    && !self.store_notice_is_error
+                {
+                    self.store_notice = None;
+                }
+            }
+            if event.completion_operation_id.is_some()
+                && let Some(notice) = &event.mode_notice
+                && self.store_id.as_deref() == Some(notice.store_id.as_str())
+            {
+                self.acknowledge_inline_mode_notice(notice.clone(), cx);
+            }
+        }
+        self.refresh_password_settings(cx);
+        cx.notify();
+    }
+
+    fn acknowledge_inline_mode_notice(&mut self, notice: ModeChangeNotice, cx: &mut Context<Self>) {
+        self.inline_mode_notice = Some(notice.clone());
+        if self.mode_change_notice.as_ref() == Some(&notice) {
+            self.mode_change_notice = None;
+        }
+        let backend = self.backend.clone();
+        let requested = notice.clone();
+        let acknowledgement = backend.clone().spawn(async move {
+            backend
+                .local_control::<bool>(
+                    "acknowledge_mode_change_notice",
+                    (&requested.store_id, &requested.notice_id),
+                )
+                .await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = acknowledgement.await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_inline_mode_notice_ack(notice, matches!(result, Ok(Ok(true))), cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_inline_mode_notice_ack(
+        &mut self,
+        notice: ModeChangeNotice,
+        acknowledged: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if acknowledged && let Screen::Settings(settings) = &self.screen {
+            settings.update(cx, |settings, cx| {
+                settings.record_mode_notice_ack(&notice, cx)
+            });
+        }
+        if !acknowledged && self.inline_mode_notice.as_ref() == Some(&notice) {
+            self.inline_mode_notice = None;
+            if self.store_id.as_deref() == Some(notice.store_id.as_str())
+                && self.backend.store_state() == maple_agent::store::StoreState::Open
+                && self
+                    .mode_change_notice
+                    .as_ref()
+                    .is_none_or(|current| current == &notice)
+            {
+                self.mode_change_notice = Some(notice);
+            }
+        }
+        // A failed stale acknowledgement never replaces a newer known notice.
+        cx.notify();
+    }
+
+    fn refresh_password_settings(&mut self, cx: &mut Context<Self>) {
+        self.password_settings_refresh_pending = true;
+        if self.password_settings_refreshing
+            || self.backend.store_state() != maple_agent::store::StoreState::Open
+        {
+            return;
+        }
+        self.password_settings_refresh_pending = false;
+        self.password_settings_refreshing = true;
+        let epoch = self.store_load_epoch;
+        let previous_store = self.store_id.clone();
+        let previous_account = self.user_id.clone();
+        let backend = self.backend.clone();
+        let load = backend.clone().spawn(async move {
+            let (settings, status) = tokio::join!(
+                backend.get_ui_settings(),
+                backend.local_control::<DesktopStoreStatus>("store_status", ())
+            );
+            settings.and_then(|settings| status.map(|status| (settings, status)))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = load.await;
+            let _ = this.update(cx, |this, cx| {
+                this.password_settings_refreshing = false;
+                if this.store_load_epoch != epoch || this.user_id != previous_account {
+                    return;
+                }
+                if let Ok(Ok((mut settings, status))) = result {
+                    if this.backend.store_state() != maple_agent::store::StoreState::Open
+                        || status.state != maple_agent::store::StoreState::Open
+                    {
+                        this.password_settings_refresh_pending = true;
+                        return;
+                    }
+                    if previous_store.is_some() && previous_store != status.store_id {
+                        this.apply_store_completion_notice(&status, cx);
+                        return;
+                    }
+                    this.store_id = status.store_id.clone();
+                    settings.store_password_mode = status.mode != "plain";
+                    crate::settings::attach_backend(this.backend.clone(), settings);
+                    this.apply_refreshed_password_settings(crate::settings::load_settings(), cx);
+                    this.apply_store_completion_notice(&status, cx);
+                    this.set_store_resident(status.keeps_resident(), cx);
+                    if let Screen::Settings(settings) = &this.screen {
+                        settings.update(cx, |settings, cx| settings.refresh_encryption_status(cx));
+                    }
+                    if let Some(chat) = &this.local_chat {
+                        chat.update(cx, |chat, cx| chat.end_store_maintenance(cx));
+                    }
+                    this.load_dictionary(epoch, cx);
+                    cx.notify();
+                } else {
+                    // Open may have reached the event stream after the reply,
+                    // or a connection may have changed during this refresh.
+                    this.password_settings_refresh_pending = true;
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn apply_refreshed_password_settings(
+        &mut self,
+        settings: crate::settings::AppSettings,
+        cx: &mut Context<Self>,
+    ) {
+        // Account presentation state has a separate owner API. A global
+        // settings refresh must not discard its hydrated nicknames.
+        let remote_sidebars = std::mem::take(&mut self.settings.remote_sidebars);
+        self.settings = settings;
+        self.settings.remote_sidebars = remote_sidebars;
+        if let Screen::Settings(screen) = &self.screen {
+            screen.update(cx, |screen, cx| {
+                screen.refresh_store_password_mode(self.settings.store_password_mode, cx)
+            });
+        }
+        // Parked and remote views can still emit notifications while Settings
+        // is open. Apply the authoritative mode before either resumes work.
+        for chat in self.local_chat.iter().chain(
+            self.remote_computers
+                .values()
+                .filter_map(|computer| computer.chat.as_ref()),
+        ) {
+            chat.update(cx, |chat, _| {
+                chat.apply_notification_settings(&self.settings)
+            });
+        }
+    }
+
+    fn verify_current_store_state(&mut self, cx: &mut Context<Self>) {
+        crate::settings::clear_decrypted_cache();
+        ui::spell::clear_user_words();
+        self.password_settings_refresh_pending = true;
+        let epoch = self.store_load_epoch;
+        let backend = self.backend.clone();
+        let query = backend.clone().spawn(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                backend.local_control::<DesktopStoreStatus>("store_status", ()),
+            )
+            .await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = query.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.store_load_epoch != epoch {
+                    return;
+                }
+                if let Ok(Ok(Ok(status))) = result {
+                    this.apply_store_completion_notice(&status, cx);
+                    if this.store_load_epoch == epoch {
+                        this.show_store_state(status.state, cx);
+                    }
+                } else {
+                    this.show_store_state(maple_agent::store::StoreState::Maintenance, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn apply_persistence_status(
+        &mut self,
+        status: maple_agent::store::PersistenceStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.store_id.is_some()
+            && status.store_id != self.store_id
+            && (status.store_id.is_some()
+                || self.backend.store_state() == maple_agent::store::StoreState::Open)
+        {
+            return;
+        }
+        if self.persistence_status.store_id == status.store_id
+            && self.persistence_status.revision > status.revision
+        {
+            return;
+        }
+        if self.persistence_status != status {
+            let new_failure = status
+                .failure
+                .as_ref()
+                .filter(|failure| {
+                    self.persistence_status
+                        .failure
+                        .as_ref()
+                        .is_none_or(|previous| {
+                            previous.store_id != failure.store_id
+                                || previous.reason != failure.reason
+                        })
+                })
+                .cloned();
+            self.persistence_status = status;
+            if let Screen::Settings(settings) = &self.screen {
+                settings.update(cx, |settings, cx| settings.refresh_encryption_status(cx));
+            }
+            if let Some(failure) = new_failure {
+                let open = self.backend.store_state() == maple_agent::store::StoreState::Open;
+                self.present_store_attention(
+                    persistence_feedback_message(&failure, open).into(),
+                    StoreAttentionKind::Persistence,
+                    open,
+                    cx,
+                );
+            }
+            cx.notify();
+        }
+    }
+
+    fn retry_persistence(&mut self, cx: &mut Context<Self>) {
+        if self.persistence_retrying
+            || self.backend.store_state() != maple_agent::store::StoreState::Open
+        {
+            return;
+        }
+        self.persistence_retrying = true;
+        let backend = self.backend.clone();
+        let retry = backend.clone().spawn(async move {
+            crate::settings::flush_pending().await?;
+            backend
+                .local_control::<()>("retry_store_persistence", ())
+                .await?;
+            backend
+                .local_control::<DesktopStoreStatus>("store_status", ())
+                .await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = retry.await;
+            let _ = this.update(cx, |this, cx| {
+                this.persistence_retrying = false;
+                if let Ok(Ok(status)) = result {
+                    this.apply_store_completion_notice(&status, cx);
+                }
+                // An error leaves the contextual save-failure latch visible.
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Forward a batch of backend service events to the chat screen when
     /// one exists, parked behind Settings included, so a run that ends
     /// meanwhile shows ended on return. One batch is one render, however
@@ -120,11 +605,43 @@ impl MapleApp {
     ) {
         let mut batch = Vec::new();
         for event in events {
-            if let maple_agent::agent::AgentServiceEvent::AccountChanged(user_id) = &event {
+            if let maple_agent::agent::AgentServiceEvent::PersistenceFailureChanged { status } =
+                &event
+            {
+                self.apply_persistence_status(status.clone(), cx);
+                // The local (possibly parked) chat owns the persistent Retry
+                // control beside its composer as well as the desktop alert.
+                batch.push(event);
+            } else if matches!(
+                &event,
+                maple_agent::agent::AgentServiceEvent::HostReconnected
+            ) {
+                // A restarted host has a new in-memory revision baseline.
+                self.persistence_status.revision = 0;
+                self.verify_current_store_state(cx);
+                batch.push(event);
+            } else if let maple_agent::agent::AgentServiceEvent::StoreStateChanged { state } =
+                &event
+            {
+                self.forward_service_events(std::mem::take(&mut batch), cx);
+                if *state == maple_agent::store::StoreState::Maintenance {
+                    self.pause_local_chat_for_store_maintenance(cx);
+                }
+                if *state == maple_agent::store::StoreState::Maintenance
+                    && matches!(&self.screen, Screen::Settings(_))
+                {
+                    self.verify_current_store_state(cx);
+                } else {
+                    self.show_store_state(state.clone(), cx);
+                }
+            } else if let maple_agent::agent::AgentServiceEvent::AccountChanged(user_id) = &event {
                 // Deliver the old account's queued frames only to its screen.
                 // A reconnect may discover a sign-out/account change while away.
                 self.forward_service_events(std::mem::take(&mut batch), cx);
-                if &self.user_id != user_id {
+                if self.store_ready
+                    && self.backend.store_state() == maple_agent::store::StoreState::Open
+                    && &self.user_id != user_id
+                {
                     match user_id {
                         Some(user_id) => self.open_chat(user_id.clone(), cx),
                         None => self.show_login(cx),
@@ -135,6 +652,242 @@ impl MapleApp {
             }
         }
         self.forward_service_events(batch, cx);
+    }
+
+    fn clear_store_ui(&mut self, cx: &mut Context<Self>) {
+        self.store_load_epoch = self.store_load_epoch.wrapping_add(1);
+        self.password_settings_refresh_pending = false;
+        self.store_ready = false;
+        crate::settings::clear_decrypted_cache();
+        ui::spell::clear_user_words();
+        self.settings = crate::settings::AppSettings::default();
+        ui::theme::apply_preference(ui::theme::Preference::parse(&self.settings.theme), cx);
+        ui::typography::apply(
+            ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family),
+            self.settings.chat_font_size,
+        );
+        cx.set_reduce_motion(self.settings.reduce_motion);
+        if let Err(error) = self
+            .shortcuts
+            .replace(&self.settings.shortcut_overrides, cx)
+        {
+            log::warn!("Could not reset locked-store shortcuts: {error}");
+        }
+        self.parked_chat = None;
+        self.local_chat = None;
+        self.remote_computers.clear();
+        self.requested_navigation = None;
+        self.selected_host = None;
+        self.user_id = None;
+    }
+
+    fn pause_local_chat_for_store_maintenance(&mut self, cx: &mut Context<Self>) {
+        if let Some(chat) = &self.local_chat {
+            chat.update(cx, |chat, cx| chat.begin_store_maintenance(cx));
+        }
+    }
+
+    fn show_store_state(&mut self, state: maple_agent::store::StoreState, cx: &mut Context<Self>) {
+        if state == maple_agent::store::StoreState::Open {
+            if !self.store_ready {
+                self.load_open_store(cx);
+            } else if self.password_settings_refresh_pending {
+                self.refresh_password_settings(cx);
+            }
+            return;
+        }
+        if state == maple_agent::store::StoreState::Maintenance
+            && matches!(&self.screen, Screen::Settings(settings) if settings.read(cx).password_operation_busy(cx))
+        {
+            self.pause_local_chat_for_store_maintenance(cx);
+            // This form owns the operation and already shows its progress.
+            // Encryption export preserves the generation and account data;
+            // locked/damaged/erased states still take the normal clearing path.
+            self.set_store_resident(true, cx);
+            self.password_settings_refresh_pending = true;
+            return;
+        }
+        self.clear_store_ui(cx);
+        self.set_store_resident(state == maple_agent::store::StoreState::Maintenance, cx);
+        let gate = cx.new(|cx| ui::store_gate::StoreGate::new(self.backend.clone(), state, cx));
+        cx.subscribe(
+            &gate,
+            |app, _, _event: &ui::store_gate::StoreGateChanged, cx| {
+                let backend = app.backend.clone();
+                let query = backend.clone().spawn(async move {
+                    backend
+                        .local_control::<DesktopStoreStatus>("store_status", ())
+                        .await
+                });
+                cx.spawn(async move |this, cx| {
+                    if let Ok(Ok(status)) = query.await {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_store_completion_notice(&status, cx);
+                            this.show_store_state(status.state, cx);
+                        });
+                    }
+                })
+                .detach();
+            },
+        )
+        .detach();
+        self.screen = Screen::StoreGate(gate);
+        cx.notify();
+    }
+
+    /// Settings bootstrap is a bounded host request. Dictionary pages load
+    /// separately; no full account/project/task snapshot blocks first paint.
+    fn load_open_store(&mut self, cx: &mut Context<Self>) {
+        self.store_load_epoch = self.store_load_epoch.wrapping_add(1);
+        let epoch = self.store_load_epoch;
+        self.screen = Screen::Restoring;
+        let backend = self.backend.clone();
+        let load = backend.clone().spawn(async move {
+            let (settings, status) = tokio::join!(
+                backend.get_ui_settings(),
+                backend.local_control::<DesktopStoreStatus>("store_status", ()),
+            );
+            settings.and_then(|settings| status.map(|status| (settings, status)))
+        });
+        cx.spawn(async move |this, cx| match load.await {
+            Ok(Ok((settings, status))) => {
+                let _ = this.update(cx, |this, cx| {
+                    if this.store_load_epoch != epoch
+                        || this.backend.store_state() != maple_agent::store::StoreState::Open
+                    {
+                        return;
+                    }
+                    if this.store_id.is_some() && this.store_id != status.store_id {
+                        crate::settings::discard_decrypted_cache();
+                        ui::spell::clear_user_words();
+                    }
+                    this.store_id = status.store_id.clone();
+                    this.apply_store_completion_notice(&status, cx);
+                    crate::settings::attach_backend(this.backend.clone(), settings);
+                    this.settings = crate::settings::load_settings();
+                    this.store_ready = true;
+                    if std::mem::replace(&mut this.restore_window_geometry, false)
+                        && let Some(saved) = this
+                            .settings
+                            .window
+                            .map(crate::settings::WindowState::clamped)
+                    {
+                        let root_id = cx.entity().entity_id();
+                        for handle in cx.windows() {
+                            let _ = handle.update(cx, |_, window, _| {
+                                if window
+                                    .root::<MapleApp>()
+                                    .flatten()
+                                    .is_some_and(|root| root.entity_id() == root_id)
+                                {
+                                    window.resize(size(px(saved.width), px(saved.height)));
+                                    if saved.maximized && !window.is_maximized() {
+                                        window.zoom_window();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    this.set_store_resident(status.keeps_resident(), cx);
+                    ui::theme::apply_preference(
+                        ui::theme::Preference::parse(&this.settings.theme),
+                        cx,
+                    );
+                    ui::typography::apply(
+                        ui::typography::ChatFontFamily::parse(&this.settings.chat_font_family),
+                        this.settings.chat_font_size,
+                    );
+                    cx.set_reduce_motion(this.settings.reduce_motion);
+                    if let Err(error) = this
+                        .shortcuts
+                        .replace(&this.settings.shortcut_overrides, cx)
+                    {
+                        log::warn!("Could not load stored shortcuts: {error}");
+                    }
+                    match this.backend.saved_user_id() {
+                        Some(user) => {
+                            this.open_chat(user, cx);
+                            let restore = this.backend.restore_in_background();
+                            cx.spawn(async move |this, cx| {
+                                if restore.await.ok()
+                                    == Some(crate::backend::RestoreOutcome::Rejected)
+                                {
+                                    let _ = this.update(cx, |this, cx| {
+                                        if this.store_load_epoch == epoch {
+                                            this.show_login(cx);
+                                        }
+                                    });
+                                }
+                            })
+                            .detach();
+                        }
+                        None => this.show_login(cx),
+                    }
+                    this.load_dictionary(epoch, cx);
+                });
+            }
+            result => {
+                log::warn!("Could not load Maple preferences: {result:?}");
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.store_load_epoch == epoch
+                        && this.backend.store_state() == maple_agent::store::StoreState::Open
+                    {
+                        this.load_open_store(cx);
+                    }
+                });
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn load_dictionary(&self, epoch: u64, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let load = backend.clone().spawn(async move {
+            let mut words = Vec::new();
+            let mut after = None;
+            loop {
+                let page = backend.dictionary(after, 200).await?;
+                words.extend(page.words);
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => return Ok::<_, String>(words),
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| match load.await {
+            Ok(Ok(words)) => {
+                let _ = this.update(cx, |this, _| {
+                    if this.store_load_epoch == epoch && this.store_ready {
+                        ui::spell::install_user_words(words);
+                    }
+                });
+            }
+            result => log::warn!("Could not load Maple dictionary: {result:?}"),
+        })
+        .detach();
+    }
+
+    fn set_store_resident(&mut self, resident: bool, cx: &mut Context<Self>) {
+        self.store_resident
+            .store(resident, std::sync::atomic::Ordering::Release);
+        self.update_tray();
+        cx.notify();
+    }
+
+    fn update_tray(&self) {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let Some(tray) = &self.tray {
+            tray.set_state(
+                self.remote_enabled
+                    .load(std::sync::atomic::Ordering::Acquire),
+                self.store_resident
+                    .load(std::sync::atomic::Ordering::Acquire),
+            );
+        }
     }
 
     fn forward_service_events(
@@ -167,6 +920,7 @@ impl MapleApp {
     /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
         self.user_id = None;
+        self.settings.remote_sidebars.clear();
         self.set_remote_enabled(false, cx);
         self.parked_chat = None;
         self.local_chat = None;
@@ -200,6 +954,7 @@ impl MapleApp {
             "startup: chat screen open at {} ms",
             crate::startup_elapsed()
         );
+        self.settings.remote_sidebars.clear();
         let backend = self.backend.clone();
         let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
         // The release check may have finished while the login screen was
@@ -215,6 +970,74 @@ impl MapleApp {
         self.requested_navigation = None;
         self.selected_host = None;
         self.subscribe_chat(&chat, cx);
+        self.load_remote_sidebars(cx);
+        cx.notify();
+    }
+
+    /// Nicknames and remote pins belong to this desktop's signed-in account,
+    /// even while its selected task is on another computer.
+    fn load_remote_sidebars(&self, cx: &mut Context<Self>) {
+        let (Some(account), Some(local_chat)) = (&self.user_id, &self.local_chat) else {
+            return;
+        };
+        let account = account.clone();
+        let owner = local_chat.entity_id();
+        let epoch = self.store_load_epoch;
+        let backend = self.backend.clone();
+        let requested_account = account.clone();
+        let load = backend
+            .clone()
+            .spawn(async move { backend.get_remote_sidebars(&requested_account).await });
+        cx.spawn(async move |this, cx| match load.await {
+            Ok(Ok(sidebars)) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.apply_remote_sidebars(epoch, &account, owner, sidebars, cx);
+                });
+            }
+            result => log::warn!("Could not load computer nicknames: {result:?}"),
+        })
+        .detach();
+    }
+
+    fn apply_remote_sidebars(
+        &mut self,
+        epoch: u64,
+        account: &str,
+        owner: gpui::EntityId,
+        mut sidebars: std::collections::HashMap<String, crate::settings::RemoteSidebarSettings>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.store_load_epoch != epoch
+            || !self.store_ready
+            || self.backend.store_state() != maple_agent::store::StoreState::Open
+            || self.user_id.as_deref() != Some(account)
+            || self
+                .local_chat
+                .as_ref()
+                .is_none_or(|chat| chat.entity_id() != owner)
+        {
+            return;
+        }
+        // The account projection starts empty on every attach. Entries already
+        // present were edited locally while this read was in flight; retain
+        // those names while taking the owner's independently stored pins.
+        for (key, current) in &self.settings.remote_sidebars {
+            sidebars.entry(key.clone()).or_default().display_name = current.display_name.clone();
+        }
+        self.settings.remote_sidebars = sidebars;
+        for (key, computer) in &mut self.remote_computers {
+            if let Some(sidebar) = self.settings.remote_sidebars.get(key)
+                && !sidebar.display_name.trim().is_empty()
+            {
+                computer.name = sidebar.display_name.clone();
+            }
+        }
+        if let Screen::Settings(screen) = &self.screen {
+            screen.update(cx, |screen, cx| {
+                screen.refresh_remote_sidebars(self.settings.remote_sidebars.clone(), cx);
+            });
+        }
+        self.sync_computers(cx);
         cx.notify();
     }
 
@@ -422,7 +1245,7 @@ impl MapleApp {
     fn complete_project_rename(
         &mut self,
         pending: PendingProjectRename,
-        result: Result<Vec<maple_agent::agent::RecentProjectRoot>, String>,
+        result: Result<maple_agent::agent::RecentProjectRoot, String>,
         cx: &mut Context<Self>,
     ) {
         // Never repopulate a removed computer, a new grant, or a replacement
@@ -436,8 +1259,8 @@ impl MapleApp {
                 && !chat.read(cx).connection_ended()
         });
         let result = match owner {
-            Some((owner, _)) => result.map(|roots| {
-                owner.update(cx, |chat, cx| chat.apply_project_names(roots, cx));
+            Some((owner, _)) => result.map(|root| {
+                owner.update(cx, |chat, cx| chat.apply_project_names(vec![root], cx));
                 // Publish the accepted name before removing the source's
                 // optimistic label, so it never flashes back to the old name.
                 self.sync_computers(cx);
@@ -513,10 +1336,7 @@ impl MapleApp {
         {
             return;
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if let Some(tray) = &self.tray {
-            tray.set_enabled(enabled);
-        }
+        self.update_tray();
         cx.notify();
     }
 
@@ -645,21 +1465,32 @@ impl MapleApp {
             },
         )
         .detach();
-        cx.subscribe(&screen, |app, _, event: &ui::remote::ComputerNamed, cx| {
-            app.settings
-                .remote_sidebars
-                .entry(event.key.clone())
-                .or_default()
-                .display_name = event.name.clone();
-            if let Some(computer) = app.remote_computers.get_mut(&event.key) {
-                computer.name = event.name.clone();
-                app.sync_computers(cx);
-            }
-        })
+        cx.subscribe(
+            &screen,
+            |app, emitter, event: &ui::remote::ComputerNamed, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
+                app.settings
+                    .remote_sidebars
+                    .entry(event.key.clone())
+                    .or_default()
+                    .display_name = event.name.clone();
+                if let Some(computer) = app.remote_computers.get_mut(&event.key) {
+                    computer.name = event.name.clone();
+                    app.sync_computers(cx);
+                }
+            },
+        )
         .detach();
         cx.subscribe(
             &screen,
-            |app, _, event: &ui::remote::ConnectComputer, cx| {
+            |app, emitter, event: &ui::remote::ConnectComputer, cx| {
+                if !app.is_current_settings_screen(&emitter) {
+                    return;
+                }
+                let settings = emitter.read(cx).settings_snapshot();
+                app.close_settings(settings, cx);
                 app.navigate(
                     Navigate {
                         computer: Some(event.0.clone()),
@@ -672,8 +1503,22 @@ impl MapleApp {
         .detach();
         cx.subscribe(
             &screen,
-            |app: &mut MapleApp, _emitter, event: &SettingsClosed, cx| {
-                app.close_settings(event.0.clone(), cx);
+            |app: &mut MapleApp, emitter, event: &SettingsClosed, cx| {
+                if app.is_current_settings_screen(&emitter) {
+                    app.close_settings(event.0.clone(), cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(&screen, |app: &mut MapleApp, emitter, event: &ui::store_gate::PasswordFormFinished, cx| {
+            if matches!(&app.screen, Screen::Settings(active) if active.entity_id() == emitter.entity_id()) {
+                app.password_settings_finished(event, cx);
+            }
+        }).detach();
+        cx.subscribe(
+            &screen,
+            |app, _, _: &ui::store_gate::RetryStorePersistence, cx| {
+                app.retry_persistence(cx);
             },
         )
         .detach();
@@ -716,6 +1561,13 @@ impl MapleApp {
 
     /// Wire per-chat events: sign-out and the settings gear.
     fn subscribe_chat(&mut self, chat: &Entity<ChatScreen>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            chat,
+            |app, _, _: &ui::store_gate::RetryStorePersistence, cx| {
+                app.retry_persistence(cx);
+            },
+        )
+        .detach();
         cx.subscribe(chat, |app, _, _: &NavigationChanged, cx| {
             app.schedule_computers_sync(cx)
         })
@@ -751,8 +1603,22 @@ impl MapleApp {
         .detach();
     }
 
+    fn is_current_settings_screen(&self, screen: &Entity<SettingsScreen>) -> bool {
+        matches!(&self.screen, Screen::Settings(active) if active.entity_id() == screen.entity_id())
+    }
+
     /// Restore the parked chat screen, applying any changed defaults.
-    fn close_settings(&mut self, updated: crate::settings::AppSettings, cx: &mut Context<Self>) {
+    fn close_settings(
+        &mut self,
+        mut updated: crate::settings::AppSettings,
+        cx: &mut Context<Self>,
+    ) {
+        // A close event can have been queued before the owner refreshed mode.
+        // Only the authoritative store snapshot may change this derived field.
+        updated.store_password_mode = self.settings.store_password_mode;
+        // A queued close may predate account-presentation hydration. Nickname
+        // edits are forwarded separately and must not be replaced by that copy.
+        updated.remote_sidebars = self.settings.remote_sidebars.clone();
         self.settings = updated;
         ui::theme::apply_preference(ui::theme::Preference::parse(&self.settings.theme), cx);
         ui::typography::apply(
@@ -817,6 +1683,7 @@ impl Render for MapleApp {
         FIRST_RENDER.call_once(|| {
             log::debug!("startup: first render at {} ms", crate::startup_elapsed());
         });
+        self.present_pending_store_attention(window, cx);
         remember_window_state(window);
         if ui::theme::resolve(window.appearance()) {
             // Every view reads the palette in render; make them all redo it.
@@ -836,12 +1703,172 @@ impl Render for MapleApp {
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
-            .child(match &self.screen {
-                Screen::Restoring => restoring_view().into_any_element(),
-                Screen::Login(login) => login.clone().into_any_element(),
-                Screen::Chat(chat) => chat.clone().into_any_element(),
-                Screen::Settings(screen) => screen.clone().into_any_element(),
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .debug_selector(|| "maple-page".to_string())
+                    .child(match &self.screen {
+                        Screen::Restoring => restoring_view().into_any_element(),
+                        Screen::StoreGate(gate) => gate.clone().into_any_element(),
+                        Screen::Login(login) => login.clone().into_any_element(),
+                        Screen::Chat(chat) => chat.clone().into_any_element(),
+                        Screen::Settings(screen) => screen.clone().into_any_element(),
+                    }),
+            )
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod native_quit;
+
+fn persistence_feedback_message(
+    failure: &maple_agent::store::PersistenceFailure,
+    open: bool,
+) -> &'static str {
+    if !open && failure.reason == maple_agent::store::PersistenceFailureReason::DiskFull {
+        "The disk is full and Maple could not open its local store. Free disk space, quit and reopen Maple, then unlock again if prompted."
+    } else {
+        failure.message()
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DesktopStoreStatus {
+    state: maple_agent::store::StoreState,
+    mode: String,
+    setup_operation_id: Option<String>,
+    store_id: Option<String>,
+    #[serde(default)]
+    completion_notice: Option<StoreCompletionNotice>,
+    #[serde(default)]
+    mode_change_notice: Option<ModeChangeNotice>,
+    #[serde(default)]
+    persistence_status: maple_agent::store::PersistenceStatus,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct StoreCompletionNotice {
+    operation_id: String,
+    message: String,
+    is_error: bool,
+    #[serde(default)]
+    requires_attention: bool,
+    #[serde(default)]
+    inline_password_success: bool,
+    #[serde(default)]
+    ui_operation_id: Option<String>,
+    #[serde(default)]
+    mode_notice_id: Option<String>,
+}
+type ModeChangeNotice = maple_agent::store::lifecycle::StoreModeNotice;
+impl DesktopStoreStatus {
+    fn matches_pending_password_operation(&self, pending: Option<&str>) -> bool {
+        pending.is_some()
+            && self.completion_notice.as_ref().is_some_and(|notice| {
+                notice.inline_password_success && notice.ui_operation_id.as_deref() == pending
             })
+    }
+    fn reconcile_password_completion_notice(
+        &self,
+        seen_operation: &mut Option<String>,
+        visible: &mut Option<String>,
+        visible_is_error: &mut bool,
+        busy_recipient: bool,
+        handled_operation: Option<&str>,
+    ) -> bool {
+        if let Some(notice) = &self.completion_notice
+            && notice.inline_password_success
+        {
+            if handled_operation == Some(notice.operation_id.as_str()) {
+                if seen_operation.as_deref() == Some(notice.operation_id.as_str()) {
+                    let changed = visible.take().is_some() || *visible_is_error;
+                    *visible_is_error = false;
+                    return changed;
+                }
+                if visible.is_none() {
+                    *seen_operation = Some(notice.operation_id.clone());
+                }
+                // A delayed status for our success cannot clear a different
+                // operation's current error or synchronization warning.
+                return false;
+            }
+            if busy_recipient {
+                // Defer, rather than consume: if the form or its reply is
+                // lost, the next poll without a recipient shows the fallback.
+                return false;
+            }
+        }
+        self.reconcile_completion_notice(seen_operation, visible, visible_is_error)
+    }
+    fn reconcile_completion_notice(
+        &self,
+        seen_operation: &mut Option<String>,
+        visible: &mut Option<String>,
+        visible_is_error: &mut bool,
+    ) -> bool {
+        if let Some(message) = self.fresh_completion_notice(seen_operation) {
+            *visible = Some(message);
+            *visible_is_error = self
+                .completion_notice
+                .as_ref()
+                .is_some_and(|notice| notice.is_error);
+            return true;
+        }
+        // Successful unlock intentionally has no completion notice. Clear only
+        // a previously displayed operational error when the host now reports
+        // Open without that failure latch. Durable mode notices and successful
+        // synchronization warnings are managed separately and remain visible.
+        if self.state == maple_agent::store::StoreState::Open
+            && self.completion_notice.is_none()
+            && *visible_is_error
+        {
+            *visible = None;
+            *visible_is_error = false;
+            return true;
+        }
+        false
+    }
+
+    fn current_mode_notice(&self) -> Option<&ModeChangeNotice> {
+        self.mode_change_notice.as_ref().filter(|notice| {
+            self.state == maple_agent::store::StoreState::Open
+                && self.store_id.as_deref() == Some(notice.store_id.as_str())
+        })
+    }
+
+    fn fresh_completion_notice(&self, seen_operation: &mut Option<String>) -> Option<String> {
+        let notice = self.completion_notice.as_ref()?;
+        if seen_operation.as_deref() == Some(notice.operation_id.as_str()) {
+            return None;
+        }
+        *seen_operation = Some(notice.operation_id.clone());
+        (notice.is_error || notice.requires_attention).then(|| notice.message.clone())
+    }
+
+    fn keeps_resident(&self) -> bool {
+        (self.mode == "password" && self.state == maple_agent::store::StoreState::Open)
+            || self.state == maple_agent::store::StoreState::Maintenance
+            || self.setup_operation_id.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct HostActivity {
+    acp_clients: usize,
+    running_tasks: usize,
+    remote_controllers: usize,
+    #[serde(default)]
+    background_tasks: usize,
+}
+impl HostActivity {
+    fn needs_confirmation(&self) -> bool {
+        self.acp_clients > 0
+            || self.running_tasks > 0
+            || self.remote_controllers > 0
+            || self.background_tasks > 0
     }
 }
 
@@ -849,128 +1876,381 @@ impl Render for MapleApp {
 struct DesktopLifecycle {
     backend: Arc<AgentBackend>,
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
+    store_resident: Arc<std::sync::atomic::AtomicBool>,
     can_background: bool,
     closing: std::rc::Rc<std::cell::Cell<bool>>,
-    quit_stop_attempted: std::rc::Rc<std::cell::Cell<bool>>,
+    quit_completed: std::rc::Rc<std::cell::Cell<bool>>,
+    quit_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    frontend_detached: std::rc::Rc<std::cell::Cell<bool>>,
 }
 impl gpui::Global for DesktopLifecycle {}
 
+/// Menu, keyboard, tray and AppKit all enter the same coordinator. The
+/// frontend remains alive until settings commit and the host releases owner.lock.
 fn quit_app(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    if let Some(startup) = cx
+        .try_global::<GuardedStartupFailure>()
+        .map(|state| state.0.clone())
+    {
+        startup.update(cx, |startup, cx| startup.request_close(cx));
+        return;
+    }
     let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
         cx.quit();
         return;
     };
-    if !state
-        .remote_enabled
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        cx.quit();
+    // Once a soft close has committed its intentional detach, finishing that
+    // frontend exit wins. It must never be reported as a completed host stop.
+    if state.frontend_detached.get() {
         return;
     }
+    state.quit_requested.set(true);
     if state.closing.replace(true) {
         return;
     }
-    let api = state.backend.api_url().to_owned();
-    let stop = state
-        .backend
-        .spawn(async move { crate::host::request_stop(&api).await });
-    cx.spawn(async move |cx| match stop.await {
-        Ok(Ok(())) => cx.update(|cx| {
-            state.quit_stop_attempted.set(true);
-            cx.quit();
-        }),
+    let backend = state.backend.clone();
+    let activity = backend.clone().spawn(async move {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            backend.local_control::<HostActivity>("host_status", ()),
+        )
+        .await
+        .map_err(|_| "The host did not answer its activity check".to_string())?
+    });
+    cx.spawn(async move |cx| match activity.await {
+        Ok(Ok(activity)) if activity.needs_confirmation() => {
+            cx.update(|cx| show_quit_prompt(QuitPromptKind::Confirm(activity), cx));
+        }
+        Ok(Ok(_)) => cx.update(|cx| drain_and_quit(state, cx)),
         result => {
-            state.closing.set(false);
-            log::warn!("Could not stop Maple host on Quit: {result:?}");
-            cx.update(show_quit_warning);
+            log::warn!("Could not check Maple host before Quit: {result:?}");
+            cx.update(|cx| show_quit_prompt(QuitPromptKind::UnknownActivity, cx));
         }
     })
     .detach();
 }
 
+fn drain_and_quit(state: DesktopLifecycle, cx: &mut App) {
+    // A locked startup window must not save its temporary/default geometry
+    // over the encrypted preferences it has not loaded.
+    if state.backend.store_state() == maple_agent::store::StoreState::Open {
+        persist_window_state();
+    }
+    let backend = state.backend.clone();
+    let stop = backend.clone().spawn(async move {
+        let flush_backend = backend.clone();
+        finish_quit_shutdown(
+            flush_frontend_state(&flush_backend),
+            crate::host::host_has_stopped(backend.api_url()),
+            crate::host::request_stop(backend.api_url()),
+        )
+        .await
+    });
+    cx.spawn(async move |cx| {
+        match stop.await {
+            Ok(Ok(())) => cx.update(|cx| {
+                state.quit_completed.set(true);
+                #[cfg(target_os = "macos")]
+                native_quit::complete(cx);
+                #[cfg(not(target_os = "macos"))]
+                cx.quit();
+            }),
+            result => {
+                state.closing.set(false);
+                cancel_native_quit();
+                log::warn!("Could not complete Maple host shutdown: {result:?}");
+                cx.update(|cx| show_quit_warning("Maple has not finished stopping. Local data may remain unlocked and tasks may still be active. Keep Maple open or retry Quit.".into(), cx));
+            }
+        }
+    }).detach();
+}
+
+/// Flush presentation edits before either an explicit host stop or an
+/// intentional frontend-only detach. Neither path may lose pending settings.
+async fn flush_frontend_state(backend: &Arc<AgentBackend>) -> Result<(), String> {
+    // A browser handoff holds the account writer while it waits. Cancellation
+    // deliberately bypasses that writer in the host.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        backend.local_control::<()>("cancel_oauth", ()),
+    )
+    .await
+    .map_err(|_| "Maple could not cancel sign-in before quitting".to_string())??;
+    crate::settings::flush_pending().await?;
+    if backend.store_state() == maple_agent::store::StoreState::Open {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            backend.flush_ui_settings(),
+        )
+        .await
+        .map_err(|_| "Maple could not save settings before quitting".to_string())??;
+    }
+    Ok(())
+}
+
+/// A plain, nonresident window close detaches this frontend. Other clients and
+/// the host's ordinary idle policy retain ownership of their work.
+fn detach_and_close(state: DesktopLifecycle, cx: &mut App) {
+    let backend = state.backend.clone();
+    let flush = backend
+        .clone()
+        .spawn(async move { flush_frontend_state(&backend).await });
+    cx.spawn(async move |cx| {
+        match flush.await {
+            Ok(Ok(())) => cx.update(|cx| {
+                #[cfg(target_os = "macos")]
+                let native_quit_pending = native_quit::is_pending();
+                #[cfg(not(target_os = "macos"))]
+                let native_quit_pending = false;
+                if state.quit_requested.get() || native_quit_pending {
+                    // Quit accepted during the save barrier takes priority
+                    // while this frontend is still attached to its host.
+                    state.closing.set(false);
+                    quit_app(cx);
+                    return;
+                }
+                // Commit on the UI thread, without an intervening await. A
+                // later Quit cannot turn this detach into a profile-wide stop.
+                state.frontend_detached.set(true);
+                let detach = state.backend.detach();
+                cx.spawn(async move |cx| {
+                    if let Err(error) = detach.await {
+                        log::warn!("Maple frontend detach ended before acknowledgement: {error}");
+                    }
+                    cx.update(|cx| {
+                        #[cfg(target_os = "macos")]
+                        native_quit::complete_frontend_detach(cx);
+                        #[cfg(not(target_os = "macos"))]
+                        cx.quit();
+                    });
+                })
+                .detach();
+            }),
+            result => {
+                state.closing.set(false);
+                cancel_native_quit();
+                log::warn!("Could not save Maple settings before closing its window: {result:?}");
+                cx.update(|cx| {
+                    show_quit_warning(
+                        "Maple could not save settings before closing. Keep Maple open and retry."
+                            .into(),
+                        cx,
+                    )
+                });
+            }
+        }
+    })
+    .detach();
+}
+
+/// A prior accepted Stop can finish after its ownership wait timed out. The
+/// frontend can still cache Open, so a retry's save probe may hit a disconnected
+/// socket. Only authoritative owner release lets that retry complete. Failed
+/// saves with a live or unverified owner never cause another Stop or discard.
+async fn finish_quit_shutdown<Flush, Stopped, Stop>(
+    flush: Flush,
+    stopped: Stopped,
+    stop: Stop,
+) -> Result<(), String>
+where
+    Flush: std::future::Future<Output = Result<(), String>>,
+    Stopped: std::future::Future<Output = Result<bool, String>>,
+    Stop: std::future::Future<Output = Result<(), String>>,
+{
+    match flush.await {
+        Ok(()) => stop.await,
+        Err(error) => match stopped.await {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(error),
+        },
+    }
+}
+
+fn cancel_native_quit() {
+    #[cfg(target_os = "macos")]
+    native_quit::cancel();
+}
+
+fn cancel_quit(cx: &mut App) {
+    if let Some(state) = cx.try_global::<DesktopLifecycle>() {
+        state.closing.set(false);
+        state.quit_requested.set(false);
+    }
+    cancel_native_quit();
+}
+
 /// A separate window also works when Quit comes from a tray with no open window.
-fn show_quit_warning(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(540.), px(230.)), cx);
+fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(560.), px(270.)), cx);
     if let Err(error) = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             ..Default::default()
         },
-        |_, cx| cx.new(|_| QuitWarning),
+        |window, cx| {
+            window.on_window_should_close(cx, |_, cx| {
+                cancel_quit(cx);
+                true
+            });
+            cx.new(|_| QuitPrompt { kind })
+        },
     ) {
+        cancel_quit(cx);
         log::error!("Could not show Quit confirmation: {error}");
     }
     cx.activate(true);
 }
 
-struct QuitWarning;
-impl Render for QuitWarning {
+fn show_quit_warning(message: String, cx: &mut App) {
+    show_quit_prompt(QuitPromptKind::Failed(message), cx);
+}
+
+enum QuitPromptKind {
+    Confirm(HostActivity),
+    UnknownActivity,
+    Failed(String),
+}
+struct QuitPrompt {
+    kind: QuitPromptKind,
+}
+impl Render for QuitPrompt {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().flex().flex_col().gap_4().p_6()
-            .bg(gpui::rgb(ui::theme::bg_app())).text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child("Maple could not stop its background host"))
-            .child("Remote access and running tasks may still be active. Keep Maple open to retry, or quit this window anyway.")
-            .child(div().flex().gap_4()
-                .child(ui::widgets::secondary_button("keep-maple-open").debug_selector(|| "keep-maple-open".to_string()).child("Keep open")
-                    .on_click(|_, window, _| window.remove_window()))
-                .child(ui::widgets::secondary_button("quit-maple-anyway").debug_selector(|| "quit-maple-anyway".to_string()).child("Quit anyway")
-                    .on_click(|_, _, cx| {
-                        // Do not repeat the failed stop in the app-quit callback.
-                        if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.quit_stop_attempted.set(true); }
-                        cx.quit();
-                    })))
+        let (title, message, retry) = match &self.kind {
+            QuitPromptKind::Confirm(activity) => (
+                "Stop this computer's Maple host?",
+                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks),
+                false,
+            ),
+            QuitPromptKind::Failed(message) => ("Maple is still open", message.clone(), true),
+            QuitPromptKind::UnknownActivity => (
+                "Stop this computer's Maple host?",
+                "The host could not report its activity. Quitting will attempt to stop any attached editors, tasks and remote connections, and wait for the host to release local data.".into(),
+                false,
+            ),
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_6()
+            .bg(gpui::rgb(ui::theme::bg_app()))
+            .text_color(gpui::rgb(ui::theme::text_primary()))
+            .child(div().text_lg().child(title))
+            .child(message)
+            .child(
+                div()
+                    .flex()
+                    .gap_4()
+                    .child(
+                        ui::widgets::secondary_button("keep-maple-open")
+                            .debug_selector(|| "keep-maple-open".to_string())
+                            .child("Keep open")
+                            .on_click(|_, window, cx| {
+                                cancel_quit(cx);
+                                window.remove_window();
+                            }),
+                    )
+                    .child(
+                        ui::widgets::secondary_button("retry-maple-quit")
+                            .debug_selector(|| "retry-maple-quit".to_string())
+                            .child(if retry { "Retry Quit" } else { "Quit Maple" })
+                            .on_click(move |_, window, cx| {
+                                window.remove_window();
+                                if retry {
+                                    quit_app(cx);
+                                } else if let Some(state) =
+                                    cx.try_global::<DesktopLifecycle>().cloned()
+                                {
+                                    drain_and_quit(state, cx);
+                                }
+                            }),
+                    ),
+            )
     }
 }
 
-/// The native close button and our Linux title bar share this policy.
+/// Check current host mode rather than a possibly stale event flag. Closing
+/// immediately after setting a password must hide the window, keeping its key
+/// owner resident, even before a polling update reaches the GUI.
 pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
-    persist_window_state();
     let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
         cx.quit();
         return;
     };
-    if !state
-        .remote_enabled
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        quit_app(cx);
+    if state.closing.replace(true) {
         return;
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = window;
-        cx.hide();
+    if state.backend.store_state() == maple_agent::store::StoreState::Open {
+        persist_window_state();
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if state.closing.replace(true) {
+    let backend = state.backend.clone();
+    let query = backend.clone().spawn(async move {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            backend.local_control::<DesktopStoreStatus>("store_status", ()),
+        )
+        .await
+        .map_err(|_| "The host did not answer its store status check".to_string())?
+    });
+    window.spawn(cx, async move |cx| {
+        let result = query.await;
+        let resident = match result {
+            Ok(Ok(status)) => {
+                state.store_resident.store(status.keeps_resident(), std::sync::atomic::Ordering::Release);
+                // Make the tray visible before removing the last window,
+                // including a close immediately after password setup.
+                let _ = cx.update(|window, cx| {
+                    if let Some(Some(root)) = window.root::<MapleApp>() {
+                        root.update(cx, |app, cx| {
+                            app.apply_store_completion_notice(&status, cx);
+                            app.update_tray();
+                        });
+                    }
+                });
+                state.store_resident.load(std::sync::atomic::Ordering::Acquire)
+                    || state.remote_enabled.load(std::sync::atomic::Ordering::Acquire)
+            }
+            result => {
+                state.closing.set(false);
+                log::warn!("Could not check Maple host before closing window: {result:?}");
+                let _ = cx.update(|_, cx| show_quit_warning("Maple could not check its local data state. Keep this window open and retry.".into(), cx));
+                return;
+            }
+        };
+        if !resident {
+            let _ = cx.update(|_, cx| detach_and_close(state, cx));
             return;
         }
-        let check = state.backend.spawn(async move {
-            #[cfg(target_os = "linux")]
-            {
-                state.can_background && crate::tray::usable().await
-            }
-            #[cfg(target_os = "windows")]
-            {
-                state.can_background
-            }
-        });
-        window.spawn(cx, async move |cx| {
+        #[cfg(target_os = "macos")]
+        {
+            state.closing.set(false);
+            let _ = cx.update(|_, cx| cx.hide());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let can_background = state.can_background;
+            let check = state.backend.spawn(async move {
+                #[cfg(target_os = "linux")]
+                { can_background && crate::tray::usable().await }
+                #[cfg(target_os = "windows")]
+                { can_background }
+            });
             let usable = check.await.unwrap_or(false);
+            state.closing.set(false);
             let prompt = cx.update(|window, cx| {
-                if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.closing.set(false); }
                 if usable { window.remove_window(); None } else {
-                    Some(window.prompt(gpui::PromptLevel::Warning, "Keep Maple open for remote access?",
-                        Some("This desktop has no available tray to reopen Maple. Quitting stops remote access and running tasks on this computer."),
+                    Some(window.prompt(gpui::PromptLevel::Warning, "Keep Maple open?",
+                        Some("This desktop has no available tray to reopen Maple. Keep this window open while Maple holds local data unlocked, or Quit Maple to stop its host."),
                         &["Keep open", "Quit Maple"], cx))
                 }
             }).ok().flatten();
             if let Some(prompt) = prompt && prompt.await == Ok(1) {
                 let _ = cx.update(|_, cx| quit_app(cx));
             }
-        }).detach();
-    }
+        }
+    }).detach();
 }
 
 fn install_close_behavior(
@@ -1040,7 +2320,7 @@ fn window_state_for(bounds: WindowBounds) -> Option<crate::settings::WindowState
     })
 }
 
-/// Write the last seen window state to settings.json.
+/// Queue the last seen window state for the host-owned settings store.
 fn persist_window_state() {
     let state = WINDOW_STATE.lock().ok().and_then(|slot| *slot);
     if let Some(state) = state {
@@ -1075,13 +2355,103 @@ fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
 struct StartupError {
     message: String,
     stopping: bool,
+    retry_backend: Option<Arc<AgentBackend>>,
+    requires_completed_stop: bool,
 }
+
+/// A native-hook startup failure must keep its newly owned host's stop proof
+/// as the authority for Close and application Quit, independent of residency.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct GuardedStartupFailure(Entity<StartupError>);
+#[cfg(target_os = "macos")]
+impl gpui::Global for GuardedStartupFailure {}
+
 impl StartupError {
     fn new(message: String) -> Self {
         Self {
             message,
             stopping: false,
+            retry_backend: None,
+            requires_completed_stop: false,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn requiring_host_stop(message: String, backend: Arc<AgentBackend>) -> Self {
+        Self {
+            message,
+            stopping: false,
+            retry_backend: Some(backend),
+            requires_completed_stop: true,
+        }
+    }
+
+    fn request_close(&mut self, cx: &mut Context<Self>) {
+        if !self.close_is_allowed() {
+            self.retry_required_stop(true, cx);
+        } else {
+            cx.quit();
+        }
+    }
+
+    fn close_is_allowed(&self) -> bool {
+        !self.requires_completed_stop
+    }
+
+    fn finish_required_stop(&mut self, result: Result<(), String>) -> bool {
+        self.stopping = false;
+        match result {
+            Ok(()) => {
+                self.requires_completed_stop = false;
+                self.retry_backend = None;
+                self.message =
+                    "The Maple host has stopped. You can close Maple and try starting it again."
+                        .into();
+                true
+            }
+            Err(error) => {
+                self.message = format!(
+                    "Maple could not finish stopping its host: {error}. Keep this window open and retry stopping the host before relaunching Maple."
+                );
+                false
+            }
+        }
+    }
+
+    fn retry_required_stop(&mut self, quit_when_stopped: bool, cx: &mut Context<Self>) {
+        if !self.requires_completed_stop || self.stopping {
+            return;
+        }
+        let Some(backend) = self.retry_backend.clone() else {
+            // Losing the retry handle is not evidence that the owner lock was
+            // released. Keep the window and its completed-stop guard intact.
+            self.message = "Maple cannot retry stopping its host. Keep this process open until the host has been stopped.".into();
+            cx.notify();
+            return;
+        };
+        self.stopping = true;
+        let stop_backend = backend.clone();
+        let stop =
+            backend.spawn(async move { crate::host::request_stop(stop_backend.api_url()).await });
+        cx.spawn(async move |this, cx| {
+            let result = stop
+                .await
+                .unwrap_or_else(|_| Err("The host stop request did not finish".into()));
+            let _ = this.update(cx, |this, cx| {
+                if this.finish_required_stop(result) {
+                    if let Some(state) = cx.try_global::<DesktopLifecycle>() {
+                        state.quit_completed.set(true);
+                    }
+                    if quit_when_stopped {
+                        cx.quit();
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
     fn stop_old_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.stopping {
@@ -1136,7 +2506,7 @@ impl Render for StartupError {
             .child(div().text_lg().child("Maple could not start"))
             .child(self.message.clone())
             .when(
-                self.message.contains("Incompatible Maple host or profile"),
+                !self.requires_completed_stop && self.message.contains("Incompatible Maple host or profile"),
                 |view| {
                     view.child(
                         ui::widgets::secondary_button("stop-incompatible-host")
@@ -1151,7 +2521,14 @@ impl Render for StartupError {
                     )
                 },
             )
-            .child(
+            .when(self.requires_completed_stop, |view| {
+                view.child(div().text_sm().child("Keep Maple open until its host has finished stopping. Local data may remain unlocked while it is still running."))
+                    .child(ui::widgets::secondary_button("retry-startup-host-stop")
+                        .child(if self.stopping { "Stopping host…" } else { "Retry stopping host" })
+                        .when(self.stopping, |button| button.opacity(0.5))
+                        .on_click(cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx))))
+            })
+            .when(self.close_is_allowed(), |view| view.child(
                 div()
                     .id("close-startup-error")
                     .cursor_pointer()
@@ -1160,8 +2537,8 @@ impl Render for StartupError {
                     .rounded_md()
                     .bg(gpui::rgb(ui::theme::bg_elevated()))
                     .child("Close")
-                    .on_click(|_, _, cx| cx.quit()),
-            )
+                    .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+            ))
     }
 }
 
@@ -1202,19 +2579,9 @@ pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
     log::debug!("startup: logging ready at {} ms", crate::startup_elapsed());
 
-    // One read of settings.json for the whole startup: the backend, the
-    // theme, the window geometry, and the root view all take it from here.
-    // Name the resolved file so a launcher with its own XDG_CONFIG_HOME
-    // makes itself visible: settings that look unsaved usually live in a
-    // different root than the one this launch reads.
+    // The frontend starts with defaults until the host's bounded settings
+    // snapshot arrives. Locked startup never reads saved application data.
     let startup_settings = crate::settings::load_settings();
-    log::debug!(
-        "startup: settings loaded from {} at {} ms",
-        crate::backend::app_config_root()
-            .join("settings.json")
-            .display(),
-        crate::startup_elapsed()
-    );
     let backend = match AgentBackend::new(
         crate::configured_api_url(),
         startup_settings.effective_harness_instructions(),
@@ -1315,33 +2682,60 @@ pub fn run() {
                 WindowBounds::Windowed(bounds)
             };
             let remote_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let store_resident = Arc::new(std::sync::atomic::AtomicBool::new(false));
             cx.set_global(DesktopLifecycle {
                 backend: backend.clone(),
                 remote_enabled: remote_enabled.clone(),
+                store_resident: store_resident.clone(),
                 can_background: false,
                 closing: Default::default(),
-                quit_stop_attempted: Default::default(),
+                quit_completed: Default::default(),
+                quit_requested: Default::default(),
+                frontend_detached: Default::default(),
             });
-            let quit_remote_enabled = remote_enabled.clone();
-            let quit_backend = backend.clone();
-            cx.on_app_quit(move |cx| {
-                let stop_attempted = cx
-                    .try_global::<DesktopLifecycle>()
-                    .is_some_and(|state| state.quit_stop_attempted.get());
-                let backend = quit_backend.clone();
-                let remote_enabled = quit_remote_enabled.clone();
+            #[cfg(target_os = "macos")]
+            if let Err(error) = native_quit::install(cx) {
+                // This view has no encryption controls and cannot close or
+                // take the ordinary Quit path until request_stop proves EOF
+                // and owner-lock release. The drain stays off the UI thread.
+                log::error!("{error}");
+                let startup = cx.new(|_| StartupError::requiring_host_stop(error, backend.clone()));
+                cx.set_global(GuardedStartupFailure(startup.clone()));
+                let view = startup.clone();
+                let bounds = Bounds::centered(None, size(px(620.), px(320.)), cx);
+                let opened = cx.open_window(
+                    main_window_options(WindowBounds::Windowed(bounds)),
+                    move |window, cx| {
+                        let closing = view.clone();
+                        window.on_window_should_close(cx, move |_, cx| {
+                            closing.update(cx, |startup, cx| startup.request_close(cx));
+                            false
+                        });
+                        view
+                    },
+                );
+                let quit_after_stop = opened.is_err();
+                if let Err(error) = opened {
+                    log::error!("Could not show the guarded startup error: {error}");
+                }
+                startup.update(cx, |startup, cx| {
+                    startup.retry_required_stop(quit_after_stop, cx)
+                });
+                cx.activate(true);
+                return;
+            }
+            cx.on_app_quit(|cx| {
+                // Host-stop Quit and a saved frontend-only detach complete
+                // before AppKit/GPUI gets here. This callback is diagnostic
+                // only: GPUI allows 200 ms, too little to own either operation.
+                let expected = cx.try_global::<DesktopLifecycle>().is_some_and(|state| {
+                    state.quit_completed.get() || state.frontend_detached.get()
+                });
                 async move {
-                    persist_window_state();
-                    if stop_attempted {
-                        return;
-                    }
-                    if remote_enabled.load(std::sync::atomic::Ordering::Acquire) {
-                        let api = backend.api_url().to_owned();
-                        let _ = backend
-                            .spawn(async move { crate::host::request_stop(&api).await })
-                            .await;
-                    } else {
-                        let _ = backend.detach().await;
+                    if !expected {
+                        log::warn!(
+                            "Maple frontend terminated outside completed Quit or intentional detach"
+                        );
                     }
                 }
             })
@@ -1355,6 +2749,7 @@ pub fn run() {
                 }
             };
             let root_enabled = remote_enabled.clone();
+            let root_resident = store_resident.clone();
             let root_backend = backend.clone();
             let root_settings = startup_settings.clone();
             let window = cx
@@ -1371,6 +2766,23 @@ pub fn run() {
                         requested_navigation: None,
                         computers_sync_pending: false,
                         remote_enabled: root_enabled,
+                        store_resident: root_resident,
+                        store_load_epoch: 0,
+                        store_ready: false,
+                        store_id: None,
+                        store_notice: None,
+                        store_notice_is_error: false,
+                        seen_store_notice_operation: None,
+                        inline_password_completion: None,
+                        mode_change_notice: None,
+                        inline_mode_notice: None,
+                        password_settings_refresh_pending: false,
+                        password_settings_refreshing: false,
+                        persistence_status: maple_agent::store::PersistenceStatus::default(),
+                        persistence_retrying: false,
+                        pending_store_attention: Default::default(),
+                        store_attention_open: false,
+                        restore_window_geometry: true,
                         #[cfg(any(target_os = "linux", target_os = "windows"))]
                         tray,
                         remote_bridges: std::cell::RefCell::new(Vec::new()),
@@ -1381,44 +2793,11 @@ pub fn run() {
                 })
                 .expect("failed to open main window");
             log::debug!("startup: window open at {} ms", crate::startup_elapsed());
-            // Saved credentials are trusted at once: the chat screen opens
-            // with the account's local task list while the server validates
-            // the credentials in the background. Only a definitive rejection
-            // returns to the login form; offline the local history stays
-            // readable and the runtime start reports the connection error.
-            {
-                let root_window = window;
-                match backend.saved_user_id() {
-                    Some(user_id) => {
-                        let restore = backend.restore_in_background();
-                        root_window
-                            .update(cx, |app: &mut MapleApp, _window, cx| {
-                                app.open_chat(user_id, cx);
-                            })
-                            .ok();
-                        cx.spawn(async move |cx| {
-                            let outcome = restore.await.ok();
-                            log::debug!(
-                                "startup: credential validation done at {} ms ({outcome:?})",
-                                crate::startup_elapsed()
-                            );
-                            if outcome == Some(crate::backend::RestoreOutcome::Rejected) {
-                                root_window
-                                    .update(cx, |app: &mut MapleApp, _window, cx| {
-                                        app.show_login(cx);
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .detach();
-                    }
-                    None => {
-                        root_window
-                            .update(cx, |app: &mut MapleApp, _window, cx| app.show_login(cx))
-                            .ok();
-                    }
-                }
-            }
+            window
+                .update(cx, |app: &mut MapleApp, _window, cx| {
+                    app.show_store_state(backend.store_state(), cx);
+                })
+                .ok();
             // Ask for a newer release off the UI thread; the banner shows
             // in the chat when one exists.
             if crate::update::enabled() {
@@ -1464,12 +2843,27 @@ pub fn run() {
                     let account = status_root.update(cx, |app, _| app.user_id.clone());
                     let backend = status_backend.clone();
                     let task = status_backend.spawn(async move {
-                        backend
-                            .remote_setting::<crate::remote::manager::Status>("remote_status", ())
-                            .await
+                        tokio::join!(
+                            backend.remote_setting::<crate::remote::manager::Status>(
+                                "remote_status",
+                                ()
+                            ),
+                            backend.local_control::<DesktopStoreStatus>("store_status", ()),
+                        )
                     });
-                    if let Ok(Ok(status)) = task.await {
+                    if let Ok((remote, store)) = task.await {
                         status_root.update(cx, |app, cx| {
+                            if let Ok(store) = store {
+                                app.apply_store_completion_notice(&store, cx);
+                                app.set_store_resident(store.keeps_resident(), cx);
+                                if store.state == maple_agent::store::StoreState::Open
+                                    && app.password_settings_refresh_pending
+                                    && !app.password_settings_refreshing
+                                {
+                                    app.refresh_password_settings(cx);
+                                }
+                            }
+                            let Ok(status) = remote else { return };
                             if app.user_id == account && account.is_some() {
                                 if let Screen::Settings(settings) = &app.screen {
                                     settings.update(cx, |settings, cx| {
@@ -1555,7 +2949,83 @@ pub fn run() {
 }
 
 #[cfg(test)]
+mod maintenance_tests;
+#[cfg(test)]
+mod remote_sidebar_tests;
+
+#[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn quit_retry_accepts_disconnected_flush_only_after_verified_owner_release() {
+        let stop_calls = std::cell::Cell::new(0);
+        let result = super::finish_quit_shutdown(
+            async { Err("The host disconnected".to_string()) },
+            async { Ok(true) },
+            async {
+                stop_calls.set(stop_calls.get() + 1);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(stop_calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_save_keeps_live_or_unverified_owner_and_never_requests_stop() {
+        for stopped in [Ok(false), Err("Ownership is unknown".to_string())] {
+            let stop_calls = std::cell::Cell::new(0);
+            let result = super::finish_quit_shutdown(
+                async { Err("Unsaved source remains in the host".to_string()) },
+                async { stopped },
+                async {
+                    stop_calls.set(stop_calls.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+            assert_eq!(result.unwrap_err(), "Unsaved source remains in the host");
+            assert_eq!(stop_calls.get(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_flush_still_requires_completed_stop() {
+        let stop_calls = std::cell::Cell::new(0);
+        let stopped_probes = std::cell::Cell::new(0);
+        let result = super::finish_quit_shutdown(
+            async { Ok(()) },
+            async {
+                stopped_probes.set(stopped_probes.get() + 1);
+                Ok(false)
+            },
+            async {
+                stop_calls.set(stop_calls.get() + 1);
+                Err("The owner is still draining".to_string())
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "The owner is still draining");
+        assert_eq!(stop_calls.get(), 1);
+        assert_eq!(stopped_probes.get(), 0);
+    }
+
+    #[test]
+    fn disk_full_guidance_keeps_unsaved_open_sessions_alive_and_allows_restart_after_failed_open() {
+        let failure = maple_agent::store::PersistenceFailure {
+            store_id: Some("fixture-generation".into()),
+            revision: 1,
+            reason: maple_agent::store::PersistenceFailureReason::DiskFull,
+        };
+        let open = super::persistence_feedback_message(&failure, true);
+        assert!(open.contains("Keep Maple open"));
+        assert!(open.contains("retry saving"));
+        assert!(!open.contains("quit and reopen"));
+        let unopened = super::persistence_feedback_message(&failure, false);
+        assert!(unopened.contains("quit and reopen Maple"));
+        assert!(unopened.contains("unlock again if prompted"));
+    }
+
     #[test]
     fn computer_connection_retries_are_independent_and_not_started_twice() {
         let now = std::time::Instant::now();
@@ -1583,6 +3053,260 @@ mod tests {
         assert!(other.should_connect(now));
     }
 
+    #[test]
+    fn password_and_incomplete_setup_remain_resident_when_window_closes() {
+        use maple_agent::store::StoreState;
+        let mut status = super::DesktopStoreStatus {
+            state: StoreState::Open,
+            mode: "password".into(),
+            setup_operation_id: None,
+            store_id: Some("generation".into()),
+            completion_notice: None,
+            mode_change_notice: None,
+            persistence_status: maple_agent::store::PersistenceStatus::default(),
+        };
+        assert!(status.keeps_resident());
+        status.state = StoreState::Locked;
+        assert!(!status.keeps_resident());
+        status.mode = "plain".into();
+        status.state = StoreState::Maintenance;
+        assert!(status.keeps_resident());
+        status.state = StoreState::NeedsSetup;
+        status.setup_operation_id = Some("incomplete-rekey".into());
+        assert!(status.keeps_resident());
+        status.setup_operation_id = None;
+        status.state = StoreState::Open;
+        assert!(!status.keeps_resident());
+    }
+
+    #[test]
+    fn attention_notice_survives_form_loss_and_is_presented_once_per_operation() {
+        let mut status: super::DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state": {"state": "open"},
+            "mode": "password",
+            "completion_notice": {
+                "operation_id": "first-operation",
+                "message": "Keep both passwords until synchronization finishes.",
+                "is_error": false, "requires_attention": true
+            }
+        }))
+        .unwrap();
+        let mut seen = None;
+        assert_eq!(
+            status.fresh_completion_notice(&mut seen).as_deref(),
+            Some("Keep both passwords until synchronization finishes.")
+        );
+        // Dismissing the visible string must not make the host's next poll
+        // redisplay its still-latched copy.
+        assert!(status.fresh_completion_notice(&mut seen).is_none());
+        status.completion_notice = None;
+        assert!(status.fresh_completion_notice(&mut seen).is_none());
+        status.completion_notice = Some(super::StoreCompletionNotice {
+            operation_id: "second-operation".into(),
+            message: "The operation could not finish.".into(),
+            is_error: true,
+            inline_password_success: false,
+            requires_attention: true,
+            ui_operation_id: None,
+            mode_notice_id: None,
+        });
+        assert_eq!(
+            status.fresh_completion_notice(&mut seen).as_deref(),
+            Some("The operation could not finish.")
+        );
+    }
+
+    #[test]
+    fn store_status_without_completion_notice_remains_compatible() {
+        let status: super::DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state": {"state": "open"}, "mode": "plain"
+        }))
+        .unwrap();
+        assert!(status.completion_notice.is_none());
+        assert!(status.current_mode_notice().is_none());
+    }
+
+    #[test]
+    fn routine_success_never_becomes_a_global_dialog_even_if_its_form_is_gone() {
+        let status: super::DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state":{"state":"open"},"mode":"password",
+            "completion_notice":{"operation_id":"completed","message":"Encryption enabled.","is_error":false,
+                "inline_password_success":true,"requires_attention":false,"ui_operation_id":"mine","mode_notice_id":"durable"}
+        })).unwrap();
+        assert!(status.matches_pending_password_operation(Some("mine")));
+        assert!(!status.matches_pending_password_operation(Some("another-client")));
+        let (mut seen, mut visible, mut error) = (None, None, false);
+        assert!(!status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut error,
+            true,
+            None
+        ));
+        assert!(seen.is_none());
+        assert!(!status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut error,
+            false,
+            None
+        ));
+        assert_eq!(seen.as_deref(), Some("completed"));
+        assert!(visible.is_none());
+        assert!(!error);
+        seen = Some("newer-error".into());
+        visible = Some("Saving still needs attention.".into());
+        error = true;
+        assert!(!status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut error,
+            false,
+            Some("completed")
+        ));
+        assert_eq!(visible.as_deref(), Some("Saving still needs attention."));
+        assert!(error);
+    }
+
+    #[test]
+    fn reset_setup_and_recovery_successes_are_not_fallback_dialogs() {
+        for message in [
+            "Maple local data is ready.",
+            "Local data was erased. Choose how to set up Maple.",
+            "The local store repair finished.",
+            "Readable local data was saved. The damaged copy was kept.",
+        ] {
+            let status: super::DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+                "state":{"state":"open"},"mode":"plain",
+                "completion_notice":{"operation_id":"routine","message":message,"is_error":false,"requires_attention":false}
+            })).unwrap();
+            let mut seen = None;
+            assert!(status.fresh_completion_notice(&mut seen).is_none());
+            assert_eq!(seen.as_deref(), Some("routine"));
+        }
+    }
+
+    #[test]
+    fn successful_unlock_clears_prior_error_and_preserves_durable_and_current_notices() {
+        let mut status: super::DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state": {"state": "locked"}, "mode": "password", "store_id": "current",
+            "completion_notice": {
+                "operation_id": "wrong-password",
+                "message": "That password didn't unlock Maple.", "is_error": true
+            },
+            "mode_change_notice": {
+                "store_id": "current", "notice_id": "saved-mode-change",
+                "message": "An unlock password was set on this computer."
+            }
+        }))
+        .unwrap();
+        let mut seen = None;
+        let mut visible = None;
+        let mut is_error = false;
+        assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+        assert_eq!(
+            visible.as_deref(),
+            Some("That password didn't unlock Maple.")
+        );
+        assert!(is_error);
+
+        // A successful unlock can arrive from another local client. Its Open
+        // status has no volatile completion notice, but keeps the durable one.
+        status.state = maple_agent::store::StoreState::Open;
+        status.completion_notice = None;
+        assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+        assert!(visible.is_none());
+        assert!(!is_error);
+        assert_eq!(
+            status.current_mode_notice().unwrap().notice_id,
+            "saved-mode-change"
+        );
+
+        // Failure of a later operation while already Open remains visible as
+        // long as that actual failed result remains the host's current latch.
+        status.completion_notice = Some(super::StoreCompletionNotice {
+            operation_id: "failed-remove".into(),
+            message: "The current password was incorrect.".into(),
+            is_error: true,
+            inline_password_success: false,
+            requires_attention: true,
+            ui_operation_id: None,
+            mode_notice_id: None,
+        });
+        assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+        assert!(!status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+        assert_eq!(
+            visible.as_deref(),
+            Some("The current password was incorrect.")
+        );
+        assert!(is_error);
+
+        // A committed operation's synchronization warning is not an obsolete
+        // unlock error and must survive a status with no volatile result.
+        status.completion_notice = Some(super::StoreCompletionNotice {
+            operation_id: "committed-with-warning".into(),
+            message: "Keep both passwords until synchronization finishes.".into(),
+            is_error: false,
+            inline_password_success: false,
+            requires_attention: true,
+            ui_operation_id: None,
+            mode_notice_id: None,
+        });
+        assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+        status.completion_notice = None;
+        assert!(!status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+        assert_eq!(
+            visible.as_deref(),
+            Some("Keep both passwords until synchronization finishes.")
+        );
+    }
+
+    #[test]
+    fn durable_mode_notice_survives_new_frontend_and_rejects_other_generation() {
+        let input = serde_json::json!({
+            "state": {"state": "open"}, "mode": "password", "store_id": "current",
+            "mode_change_notice": {
+                "store_id": "current", "notice_id": "committed-change",
+                "message": "Encryption is on for this computer."
+            }
+        });
+        let first: super::DesktopStoreStatus = serde_json::from_value(input.clone()).unwrap();
+        let mut restarted: super::DesktopStoreStatus = serde_json::from_value(input).unwrap();
+        assert_eq!(first.current_mode_notice(), restarted.current_mode_notice());
+        assert!(restarted.current_mode_notice().is_some());
+        restarted.store_id = Some("replacement".into());
+        assert!(restarted.current_mode_notice().is_none());
+        restarted.store_id = Some("current".into());
+        restarted.state = maple_agent::store::StoreState::Locked;
+        assert!(restarted.current_mode_notice().is_none());
+    }
+
+    #[test]
+    fn guarded_startup_error_requires_verified_stop_before_close() {
+        let mut startup = super::StartupError::new("Native startup hook failed".into());
+        startup.requires_completed_stop = true;
+        startup.stopping = true;
+        assert!(!startup.close_is_allowed());
+        assert!(!startup.finish_required_stop(Err("Fixture stop timeout".into())));
+        assert!(!startup.stopping);
+        assert!(!startup.close_is_allowed());
+        assert!(startup.requires_completed_stop);
+        assert!(startup.message.contains("Keep this window open"));
+        startup.stopping = true;
+        assert!(!startup.close_is_allowed());
+        assert!(startup.finish_required_stop(Ok(())));
+        assert!(startup.close_is_allowed());
+        assert!(!startup.requires_completed_stop);
+        assert!(!startup.stopping);
+    }
+
+    #[test]
+    fn incompatible_existing_host_error_keeps_ordinary_close() {
+        let startup = super::StartupError::new("Incompatible Maple host or profile".into());
+        assert!(startup.close_is_allowed());
+        assert!(startup.retry_backend.is_none());
+    }
+
     use super::*;
 
     fn project_roots(name: &str) -> Vec<maple_agent::agent::RecentProjectRoot> {
@@ -1595,17 +3319,32 @@ mod tests {
         }]
     }
 
-    fn project_shell(cx: &mut gpui::TestAppContext) -> Entity<MapleApp> {
-        cx.executor().allow_parking();
+    pub(super) fn project_shell(cx: &mut gpui::TestAppContext) -> Entity<MapleApp> {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        project_shell_locked(cx, &settings)
+    }
+
+    fn project_shell_locked(
+        cx: &mut gpui::TestAppContext,
+        settings: &parking_lot::MutexGuard<'_, ()>,
+    ) -> Entity<MapleApp> {
         let backend =
             Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        project_shell_with_backend(cx, backend, settings)
+    }
+
+    pub(super) fn project_shell_with_backend(
+        cx: &mut gpui::TestAppContext,
+        backend: Arc<AgentBackend>,
+        _settings: &parking_lot::MutexGuard<'_, ()>,
+    ) -> Entity<MapleApp> {
+        cx.executor().allow_parking();
         let mut chat = |name: &str| {
             cx.new(|cx| {
-                let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
                 let mut chat = ChatScreen::new_without_start(backend.clone(), "user".into(), cx);
                 let mut roots = project_roots(name);
                 roots[0].name_revision = 0;
-                chat.apply_project_names(roots, cx);
+                chat.seed_projects_for_test(roots, cx);
                 chat
             })
         };
@@ -1648,6 +3387,23 @@ mod tests {
                 requested_navigation: None,
                 computers_sync_pending: false,
                 remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                store_resident: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                store_load_epoch: 0,
+                store_ready: true,
+                store_id: None,
+                store_notice: None,
+                store_notice_is_error: false,
+                seen_store_notice_operation: None,
+                inline_password_completion: None,
+                mode_change_notice: None,
+                inline_mode_notice: None,
+                password_settings_refresh_pending: false,
+                password_settings_refreshing: false,
+                persistence_status: Default::default(),
+                persistence_retrying: false,
+                pending_store_attention: Default::default(),
+                store_attention_open: false,
+                restore_window_geometry: false,
                 #[cfg(any(target_os = "linux", target_os = "windows"))]
                 tray: None,
                 remote_bridges: Default::default(),
@@ -1656,6 +3412,428 @@ mod tests {
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
             }
         })
+    }
+
+    fn password_settings_shell_locked(
+        cx: &mut gpui::TestAppContext,
+        busy: bool,
+        settings: &parking_lot::MutexGuard<'_, ()>,
+    ) -> Entity<MapleApp> {
+        let app = project_shell_locked(cx, settings);
+        install_password_settings_shell(app, cx, busy)
+    }
+
+    pub(super) fn password_settings_shell_with_backend(
+        cx: &mut gpui::TestAppContext,
+        busy: bool,
+        backend: Arc<AgentBackend>,
+        settings: &parking_lot::MutexGuard<'_, ()>,
+    ) -> Entity<MapleApp> {
+        let app = project_shell_with_backend(cx, backend, settings);
+        install_password_settings_shell(app, cx, busy)
+    }
+
+    fn install_password_settings_shell(
+        app: Entity<MapleApp>,
+        cx: &mut gpui::TestAppContext,
+        busy: bool,
+    ) -> Entity<MapleApp> {
+        let backend = app.read_with(cx, |app, _cx| app.backend.clone());
+        let form = cx.new(|cx| {
+            ui::store_gate::PasswordForm::new(
+                backend.clone(),
+                ui::store_gate::PasswordAction::Set,
+                Vec::new(),
+                cx,
+            )
+        });
+        form.update(cx, |form, _| form.set_busy_for_test(busy));
+        let settings = cx.new(|cx| {
+            SettingsScreen::new(
+                backend.clone(),
+                backend.clone(),
+                "user".into(),
+                crate::settings::AppSettings::default(),
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: Vec::new(),
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::Advanced,
+                cx,
+            )
+        });
+        settings.update(cx, |settings, _| {
+            settings.set_password_form_for_test(Some(form))
+        });
+        app.update(cx, |app, _| {
+            app.store_id = Some("original".into());
+            app.screen = Screen::Settings(settings);
+            app.parked_chat = app.local_chat.clone();
+        });
+        app
+    }
+
+    fn active_settings(
+        app: &Entity<MapleApp>,
+        cx: &mut gpui::TestAppContext,
+    ) -> Entity<SettingsScreen> {
+        app.read_with(cx, |app, _| match &app.screen {
+            Screen::Settings(screen) => screen.clone(),
+            _ => panic!("expected the active settings screen"),
+        })
+    }
+
+    fn assert_chat_notification_policy(app: &MapleApp, details: bool, cx: &Context<MapleApp>) {
+        let chats = app.local_chat.iter().chain(
+            app.remote_computers
+                .values()
+                .filter_map(|computer| computer.chat.as_ref()),
+        );
+        let mut checked = 0;
+        for chat in chats {
+            assert_eq!(
+                chat.read(cx).notification_preferences_for_test(),
+                (true, details)
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 3,
+            "local and both existing remote views must update"
+        );
+    }
+
+    #[gpui::test]
+    fn password_mode_refresh_updates_notifications_before_back_and_rejects_stale_mode(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        for (initial_password_mode, password_mode, opt_in) in [
+            (false, true, false),
+            (true, false, false),
+            (false, true, true),
+        ] {
+            app.update(cx, |app, cx| {
+                app.apply_refreshed_password_settings(
+                    crate::settings::AppSettings {
+                        desktop_notifications: true,
+                        store_password_mode: initial_password_mode,
+                        password_notification_details: opt_in,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                app.show_settings(Section::Advanced, cx);
+            });
+            let screen = active_settings(&app, cx);
+            let stale_close = screen.read_with(cx, |screen, _| screen.settings_snapshot());
+            app.update(cx, |app, cx| {
+                let mut refreshed = app.settings.clone();
+                refreshed.store_password_mode = password_mode;
+                app.apply_refreshed_password_settings(refreshed, cx);
+                let snapshot = screen.read(cx).settings_snapshot();
+                assert_eq!(snapshot.store_password_mode, password_mode);
+                assert_eq!(snapshot.password_notification_details, opt_in);
+                assert_chat_notification_policy(app, !password_mode || opt_in, cx);
+            });
+            // Exercise the real SettingsClosed subscription with a snapshot
+            // captured before the authoritative mode changed.
+            screen.update(cx, |_, cx| cx.emit(SettingsClosed(stale_close)));
+            cx.run_until_parked();
+            app.update(cx, |app, cx| {
+                assert!(matches!(app.screen, Screen::Chat(_)));
+                assert_eq!(app.settings.store_password_mode, password_mode);
+                assert_eq!(app.settings.password_notification_details, opt_in);
+                assert_chat_notification_policy(app, !password_mode || opt_in, cx);
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn connecting_from_settings_keeps_the_refreshed_notification_policy(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        app.update(cx, |app, cx| {
+            app.settings.store_password_mode = false;
+            app.settings.desktop_notifications = true;
+            app.show_settings(Section::Remote, cx);
+            let mut refreshed = app.settings.clone();
+            refreshed.store_password_mode = true;
+            app.apply_refreshed_password_settings(refreshed, cx);
+        });
+        let screen = active_settings(&app, cx);
+        screen.update(cx, |_, cx| {
+            cx.emit(ui::remote::ConnectComputer("east".into()));
+        });
+        cx.run_until_parked();
+        app.update(cx, |app, cx| {
+            assert!(matches!(app.screen, Screen::Chat(_)));
+            assert_eq!(app.selected_host.as_deref(), Some("east"));
+            assert!(app.settings.store_password_mode);
+            assert_chat_notification_policy(app, false, cx);
+        });
+    }
+
+    #[gpui::test]
+    fn retired_settings_events_cannot_replace_the_active_screen_or_notification_mode(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        app.update(cx, |app, cx| {
+            app.settings.store_password_mode = false;
+            app.settings.desktop_notifications = true;
+            app.show_settings(Section::General, cx);
+        });
+        let retired = active_settings(&app, cx);
+        let stale = retired.read_with(cx, |screen, _| screen.settings_snapshot());
+        retired.update(cx, |_, cx| cx.emit(SettingsClosed(stale.clone())));
+        cx.run_until_parked();
+        app.update(cx, |app, cx| {
+            app.show_settings(Section::Advanced, cx);
+            let mut refreshed = app.settings.clone();
+            refreshed.store_password_mode = true;
+            app.apply_refreshed_password_settings(refreshed, cx);
+        });
+        let current = active_settings(&app, cx);
+        retired.update(cx, |_, cx| {
+            cx.emit(SettingsClosed(stale));
+            cx.emit(ui::remote::ConnectComputer("east".into()));
+        });
+        cx.run_until_parked();
+        app.update(cx, |app, cx| {
+            assert!(app.is_current_settings_screen(&current));
+            assert!(app.settings.store_password_mode);
+            assert!(app.selected_host.is_none());
+            assert_chat_notification_policy(app, false, cx);
+        });
+    }
+
+    #[gpui::test]
+    fn operation_notices_never_insert_rows_above_the_active_page(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        let (_host, cx) = cx.add_window_view(|window, _cx| {
+            window.activate_window();
+            AppHost(app.clone())
+        });
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        let original = cx.debug_bounds("maple-page").expect("active page");
+        app.update(cx, |app, cx| {
+            app.store_notice = Some("Maple local data is ready.".into());
+            app.mode_change_notice = Some(ModeChangeNotice {
+                store_id: "fixture".into(),
+                notice_id: "change".into(),
+                message: "Encryption is on.".into(),
+            });
+            app.persistence_status.failure = Some(maple_agent::store::PersistenceFailure {
+                store_id: Some("fixture".into()),
+                revision: 1,
+                reason: maple_agent::store::PersistenceFailureReason::DiskFull,
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.debug_bounds("maple-page"), Some(original));
+    }
+
+    #[gpui::test]
+    fn unhandled_attention_waits_for_a_live_window_and_uses_a_dialog(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let status = serde_json::from_value(serde_json::json!({
+                "state":{"state":"open"}, "mode":"password", "store_id":"fixture",
+                "completion_notice":{"operation_id":"pending-sync", "message":"Keep both passwords until synchronization finishes.",
+                    "is_error":false,"requires_attention":true}
+            })).unwrap();
+            app.apply_store_completion_notice(&status, cx);
+            app.present_store_attention(
+                "Recent changes could not be saved.".into(),
+                StoreAttentionKind::Persistence, true, cx,
+            );
+            app.present_store_attention(
+                "The disk is full. Keep Maple open and retry saving.".into(),
+                StoreAttentionKind::Persistence, true, cx,
+            );
+            assert_eq!(app.pending_store_attention.len(), 2);
+            assert!(!app.store_attention_open);
+        });
+        assert!(!cx.has_pending_prompt());
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        let (title, detail) = cx.pending_prompt().expect("local-data dialog");
+        assert_eq!(title, "Local data needs attention");
+        assert!(detail.contains("both passwords"));
+        cx.simulate_prompt_answer("OK");
+        cx.run_until_parked();
+        let (title, detail) = cx
+            .pending_prompt()
+            .expect("independent save-failure dialog");
+        assert_eq!(title, "Maple couldn't save local data");
+        assert!(detail.contains("disk is full"));
+        cx.simulate_prompt_answer("Keep viewing");
+        cx.run_until_parked();
+        app.update(cx, |app, _| {
+            assert!(app.pending_store_attention.is_empty());
+            assert!(!app.store_attention_open);
+        });
+    }
+
+    #[gpui::test]
+    fn live_save_failures_reach_the_local_composer_after_returning_to_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        app.update(cx, |app, _| app.store_id = Some("fixture".into()));
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        app.update(cx, |app, cx| {
+            app.handle_service_events(
+                vec![
+                    maple_agent::agent::AgentServiceEvent::PersistenceFailureChanged {
+                        status: maple_agent::store::PersistenceStatus {
+                            store_id: Some("fixture".into()),
+                            revision: 1,
+                            failure: Some(maple_agent::store::PersistenceFailure {
+                                store_id: Some("fixture".into()),
+                                revision: 1,
+                                reason: maple_agent::store::PersistenceFailureReason::DiskFull,
+                            }),
+                        },
+                    },
+                ],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Keep viewing");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-persistence-feedback").is_some());
+        assert!(cx.debug_bounds("retry-local-store-persistence").is_some());
+        app.update(cx, |app, cx| {
+            app.handle_service_events(
+                vec![
+                    maple_agent::agent::AgentServiceEvent::PersistenceFailureChanged {
+                        status: maple_agent::store::PersistenceStatus {
+                            store_id: Some("fixture".into()),
+                            revision: 2,
+                            failure: None,
+                        },
+                    },
+                ],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-persistence-feedback").is_none());
+    }
+
+    #[gpui::test]
+    fn verified_maintenance_and_open_keep_the_busy_settings_form(cx: &mut gpui::TestAppContext) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = password_settings_shell_locked(cx, true, &settings);
+        app.update(cx, |app, cx| {
+            let epoch = app.store_load_epoch;
+            app.show_store_state(maple_agent::store::StoreState::Maintenance, cx);
+            assert!(matches!(app.screen, Screen::Settings(_)));
+            assert_eq!(app.store_load_epoch, epoch);
+            app.show_store_state(maple_agent::store::StoreState::Open, cx);
+            assert!(matches!(app.screen, Screen::Settings(_)));
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn maintenance_after_form_completion_waits_for_authoritative_status(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = password_settings_shell_locked(cx, false, &settings);
+        app.update(cx, |app, cx| {
+            app.handle_service_events(
+                vec![maple_agent::agent::AgentServiceEvent::StoreStateChanged {
+                    state: maple_agent::store::StoreState::Maintenance,
+                }],
+                cx,
+            );
+            assert!(matches!(app.screen, Screen::Settings(_)));
+            assert!(app.password_settings_refresh_pending);
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn replacement_generation_retires_busy_settings_and_parked_account_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = password_settings_shell_locked(cx, true, &settings);
+        app.update(cx, |app, cx| {
+            let epoch = app.store_load_epoch;
+            let status = serde_json::from_value(serde_json::json!({"state":{"state":"locked"},"mode":"password","store_id":"replacement"})).unwrap();
+            app.apply_store_completion_notice(&status, cx);
+            assert!(matches!(app.screen, Screen::StoreGate(_)));
+            assert!(app.store_load_epoch > epoch);
+            assert!(app.user_id.is_none());
+            assert!(app.parked_chat.is_none());
+            let replacement_epoch = app.store_load_epoch;
+            app.apply_store_completion_notice(&status, cx);
+            assert_eq!(app.store_load_epoch, replacement_epoch);
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn stale_inline_acknowledgement_cannot_replace_a_newer_security_notice(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = project_shell(cx);
+        app.update(cx, |app, cx| {
+            let old = ModeChangeNotice {
+                store_id: "original".into(),
+                notice_id: "old".into(),
+                message: "Old change".into(),
+            };
+            let newer = ModeChangeNotice {
+                notice_id: "newer".into(),
+                message: "Newer change".into(),
+                ..old.clone()
+            };
+            app.store_id = Some("original".into());
+            app.inline_mode_notice = Some(old.clone());
+            app.mode_change_notice = Some(newer.clone());
+            app.finish_inline_mode_notice_ack(old, false, cx);
+            assert_eq!(app.mode_change_notice, Some(newer));
+            assert!(app.inline_mode_notice.is_none());
+        });
     }
 
     fn rename_attempt(app: &MapleApp, computer: Option<&str>) -> PendingProjectRename {
@@ -1701,7 +3879,7 @@ mod tests {
             let active_id = active.entity_id();
             let navigation = active.read(cx).navigation_generation();
             let pending = rename_attempt(app, Some("east"));
-            app.complete_project_rename(pending, Ok(project_roots("Renamed east")), cx);
+            app.complete_project_rename(pending, Ok(project_roots("Renamed east").into_iter().next().unwrap()), cx);
             assert_eq!(label(app, Some("east"), cx), "Renamed east");
             assert_eq!(label(app, Some("west"), cx), "West name");
             assert_eq!(label(app, None, cx), "Local name");
@@ -1713,7 +3891,7 @@ mod tests {
             app.screen = Screen::Chat(east.clone());
             app.selected_host = Some("east".into());
             let pending = rename_attempt(app, None);
-            app.complete_project_rename(pending, Ok(project_roots("Renamed local")), cx);
+            app.complete_project_rename(pending, Ok(project_roots("Renamed local").into_iter().next().unwrap()), cx);
             assert_eq!(label(app, None, cx), "Renamed local");
             assert_eq!(label(app, Some("east"), cx), "Renamed east");
             assert!(matches!(&app.screen, Screen::Chat(chat) if chat.entity_id() == east.entity_id()));
@@ -1733,23 +3911,39 @@ mod tests {
         app.update(cx, |app, cx| {
             let pending = rename_attempt(app, Some("east"));
             app.remote_computers.get_mut("east").unwrap().grant = [3; 16];
-            app.complete_project_rename(pending, Ok(project_roots("Old grant")), cx);
+            app.complete_project_rename(
+                pending,
+                Ok(project_roots("Old grant").into_iter().next().unwrap()),
+                cx,
+            );
             assert_eq!(label(app, Some("east"), cx), "East name");
 
             let pending = rename_attempt(app, Some("east"));
             let west = app.remote_computers["west"].chat.clone();
             app.remote_computers.get_mut("east").unwrap().chat = west;
-            app.complete_project_rename(pending, Ok(project_roots("Old owner")), cx);
+            app.complete_project_rename(
+                pending,
+                Ok(project_roots("Old owner").into_iter().next().unwrap()),
+                cx,
+            );
             assert_eq!(label(app, Some("east"), cx), "West name");
 
             let pending = rename_attempt(app, Some("east"));
             app.remote_computers.remove("east");
-            app.complete_project_rename(pending, Ok(project_roots("Unpaired")), cx);
+            app.complete_project_rename(
+                pending,
+                Ok(project_roots("Unpaired").into_iter().next().unwrap()),
+                cx,
+            );
             assert!(!app.remote_computers.contains_key("east"));
 
             let pending = rename_attempt(app, None);
             app.user_id = Some("another-account".into());
-            app.complete_project_rename(pending, Ok(project_roots("Old account")), cx);
+            app.complete_project_rename(
+                pending,
+                Ok(project_roots("Old account").into_iter().next().unwrap()),
+                cx,
+            );
             assert_eq!(label(app, None, cx), "Local name");
         });
     }
@@ -1794,11 +3988,12 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         assert!(cx.windows().is_empty());
-        cx.update(show_quit_warning);
+        cx.update(|cx| show_quit_warning("A host drain is still pending.".into(), cx));
         assert_eq!(cx.windows().len(), 1);
         let mut view = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
         view.run_until_parked();
-        assert!(view.debug_bounds("quit-maple-anyway").is_some());
+        assert!(view.debug_bounds("retry-maple-quit").is_some());
+        assert!(view.debug_bounds("quit-maple-anyway").is_none());
         let keep = view.debug_bounds("keep-maple-open").unwrap();
         view.simulate_click(keep.center(), gpui::Modifiers::default());
         view.run_until_parked();
