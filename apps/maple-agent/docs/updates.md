@@ -99,9 +99,10 @@ Before enabling the feed, prepare and review these concrete operations:
    commit only the two reviewed public keys in `release-profiles.json`. Rebuild
    the initial `0.0.1` package with those pins. Test keys must never become Prod
    pins. Key rotation is a separately reviewed release operation.
-2. Protect `agent-desktop-signing` for trusted master builds and supply its five
-   Apple signing/notarization secrets. Keep Research's `desktop-signing`
-   environment and its credentials/policies unchanged.
+2. Reuse the existing `desktop-signing` environment and its five Apple
+   signing/notarization secrets for the trusted master Agent packaging job. No
+   new app-signing environment, Apple credentials or BWS migration is required;
+   keep the existing environment's credentials and policies unchanged.
 3. Provision the Agent R2 bucket and Worker. Bind only the Agent bucket. Create
    the two HTTPS routes for `/agent/stable/*` and
    `/download/agent/stable/*` as an owner operation. Keep routes out of routine

@@ -153,7 +153,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
             self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
         jobs = config["jobs"]
         signed = jobs["macos"]
-        self.assertEqual(signed["environment"], "agent-desktop-signing")
+        self.assertEqual(signed["environment"], "desktop-signing")
         self.assertEqual(signed["runs-on"], "macos-26")
         condition = " ".join(signed["if"].split())
         self.assertIn(self.MASTER_GUARD, condition)

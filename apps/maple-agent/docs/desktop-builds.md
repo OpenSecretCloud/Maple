@@ -134,9 +134,9 @@ nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh dist/
 ```
 
 Use `prod` for the production service profile. Official macOS signing is run
-only by the trusted CI job using the separate `agent-desktop-signing` GitHub
-environment. Application compilation runs on a separate runner; the trusted
-updater scanner compiles before the job step receiving Apple credentials. Linux
+only by the trusted master CI job, reusing the existing `desktop-signing` GitHub
+environment and its five Apple secrets. Application compilation runs on a
+separate runner; the trusted updater scanner compiles before the job step receiving Apple credentials. Linux
 packaging needs no Apple credentials.
 
 ## Distribution and update boundaries
@@ -148,7 +148,7 @@ The client accepts only its signed Agent product/channel/target manifest, with
 keys embedded in the selected Prod profile. Empty production keys disable update
 traffic until owner setup is complete. See [updater activation](updates.md).
 
-Configure `agent-desktop-signing` and its master-only protection before merging
-the workflow's environment change. Keep Research's signing environment, updater
-key, publication workflow and compatibility URLs intact. No Research install is
+No new app-signing environment or Apple credential migration is needed. Keep the
+existing `desktop-signing` credentials and policies, Research updater key,
+publication workflow and compatibility URLs intact. No Research install is
 replaced, overwritten or migrated by Agent packaging or publication.
