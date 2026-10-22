@@ -23,6 +23,7 @@ OUTPUTS = (
     "proxy",
     "opensecret",
     "updates",
+    "agent_updates",
     "repo",
 )
 ALL_OUTPUTS = frozenset(OUTPUTS)
@@ -95,6 +96,7 @@ BACKEND_INERT_FILES = frozenset(
 )
 
 UPDATES_PREFIX = "services/updates/"
+AGENT_UPDATES_PREFIX = "services/agent-updates/"
 
 REPO_PREFIXES = (".github/", "scripts/ci/")
 REPO_FILES = frozenset({"flake.nix", "flake.lock"})
@@ -161,6 +163,10 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset()
     if path.startswith(UPDATES_PREFIX):
         return frozenset({"updates"})
+    if path.startswith(AGENT_UPDATES_PREFIX + ".githooks/"):
+        return frozenset()
+    if path.startswith(AGENT_UPDATES_PREFIX):
+        return frozenset({"agent_updates"})
 
     if path in REPO_FILES or path.startswith(REPO_PREFIXES):
         return frozenset({"repo"})

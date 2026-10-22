@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "maple-agent-updates",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-24",
+  "workers_dev": false,
+  "preview_urls": false,
+  // Deliberately undeployable placeholder. Approve and configure the existing
+  // private bucket before deployment. Routes are owner-managed, never deployed.
+  "r2_buckets": [
+    {
+      "binding": "AGENT_RELEASES",
+      "bucket_name": "REQUIRES-OWNER-APPROVED-AGENT-BUCKET",
+    },
+  ],
+}

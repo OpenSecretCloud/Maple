@@ -9,7 +9,8 @@ root. For everyday setup, use the owning component guide and skill.
 `./setup-hooks.sh` installs `.githooks/pre-commit`. It classifies staged paths
 with `scripts/ci/hook_change_detection.py` and runs each affected component's
 own `.githooks/pre-commit` inside that component's Nix flake, so the tools match
-CI: the root `.#ci` shell for Research, Auth, `services/updates/`, and repository
+CI: the root `.#ci` shell for Research, Auth, `services/updates/`, the independent
+Agent delivery checks in `scripts/ci/agent-updates.sh`, and repository
 checks; the component flakes for `apps/maple-agent/`, `sdk/`, `proxy/`, and
 `services/opensecret?submodules=1`. Without Nix it runs the same commands from
 `PATH` and warns that results may differ. It runs each selected component's format, lint, type-check, and unit-test gates;

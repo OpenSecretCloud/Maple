@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Unit tests for the pre-commit hook component selector."""
 
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from hook_change_detection import OUTPUTS, classify_paths
@@ -38,6 +43,7 @@ class HookChangeDetectionTests(unittest.TestCase):
             "services/opensecret/AGENTS.md",
             "services/opensecret/.githooks/pre-commit",
             "services/updates/.githooks/pre-commit",
+            "services/agent-updates/.githooks/pre-commit",
             "services/opensecret/docs/nitro-deploy.md",
             "services/opensecret/pcrProd.json",
             "scripts/prepare-frontend-deps.sh",
@@ -91,6 +97,17 @@ class HookChangeDetectionTests(unittest.TestCase):
         self.assert_selects(["services/opensecret/nix/eif.nix"])
         self.assert_selects(["services/updates/src/index.ts"], "updates")
 
+    def test_agent_updates_component_is_isolated_from_research(self) -> None:
+        for path in (
+            "services/agent-updates/src/worker.ts",
+            "services/agent-updates/publisher/publisher.py",
+            "services/agent-updates/publisher/test_publisher.py",
+            "services/agent-updates/bun.lock",
+            "services/agent-updates/wrangler.jsonc",
+        ):
+            with self.subTest(path=path):
+                self.assert_selects([path], "agent_updates")
+
     def test_shared_crates_do_not_fan_out_to_consumers(self) -> None:
         self.assert_selects(["proxy/src/proxy.rs", "sdk/rust/src/client.rs"], "proxy", "sdk_rust")
         self.assert_selects(
@@ -106,6 +123,54 @@ class HookChangeDetectionTests(unittest.TestCase):
 
     def test_unknown_root_selects_everything(self) -> None:
         self.assert_selects(["newservice/main.rs"], *OUTPUTS)
+
+
+class AgentUpdatesHookTests(unittest.TestCase):
+    def test_service_paths_run_the_bash_ci_entrypoint_in_the_root_shell(self) -> None:
+        source = Path(__file__).resolve().parents[2]
+        for use_nix in (True, False):
+            with self.subTest(nix=use_nix), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "repository with spaces"
+                root.mkdir()
+                for relative in (
+                    ".githooks/pre-commit", ".githooks/lib/common.sh",
+                    "scripts/ci/hook_change_detection.py",
+                ):
+                    destination = root / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source / relative, destination)
+                script = root / "scripts/ci/agent-updates.sh"
+                script.write_text(
+                    '#!/usr/bin/env bash\nset -euo pipefail\n'
+                    'selected=("$MAPLE_HOOK_SELECTED")\n'
+                    'printf "%s\\n%s\\n%s\\n" "${selected[0]}" "$PWD" '
+                    '"$MAPLE_HOOK_IN_NIX" > hook-result\n'
+                )
+                tools = root / "tools"
+                tools.mkdir()
+                nix = tools / "nix"
+                nix.write_text(
+                    '#!/bin/sh\n'
+                    '[ "$1" = develop ] && [ "$2" = --no-update-lock-file ] '
+                    '&& [ "$3" = ".#ci" ] && [ "$4" = -c ] || exit 70\n'
+                    'shift 4\nexec "$@"\n'
+                )
+                nix.chmod(0o755)
+                changed = root / "services/agent-updates/src/worker.ts"
+                changed.parent.mkdir(parents=True)
+                changed.write_text("export default {};\n")
+                environment = {key: value for key, value in os.environ.items()
+                               if not key.startswith(("GIT_", "MAPLE_HOOK_"))}
+                environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
+                environment["MAPLE_HOOK_NO_NIX"] = "0" if use_nix else "1"
+                subprocess.run(["git", "init", "-q"], cwd=root, env=environment, check=True)
+                subprocess.run(["git", "add", str(changed)], cwd=root, env=environment, check=True)
+                subprocess.run(["sh", ".githooks/pre-commit"], cwd=root, env=environment,
+                               check=True, capture_output=True, text=True)
+                selected, directory, in_nix = (root / "hook-result").read_text().splitlines()
+                self.assertEqual(selected.strip(), "agent_updates")
+                self.assertEqual(Path(directory).resolve(), root.resolve())
+                self.assertEqual(in_nix, "1" if use_nix else "0")
 
 
 if __name__ == "__main__":

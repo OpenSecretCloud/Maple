@@ -36,10 +36,12 @@ ENVIRONMENTS = {
         "AZURE_SUBSCRIPTION_ID", "AZURE_TENANT_ID",
     },
     "zapstore-publishing": {"ZAPSTORE_SIGN_WITH"},
+    "agent-update-signing": {"AGENT_UPDATE_SIGNING_KEY"},
 }
 SIGNING_SECRETS = set.union(*ENVIRONMENTS.values())
 CONSUMERS = {
     "agent-desktop-build.yml": {"macos": "desktop-signing"},
+    "agent-updates-publish.yml": {"sign": "agent-update-signing"},
     "desktop-build.yml": {
         "build-macos": "desktop-signing", "build-linux": "desktop-signing",
         "build-windows": "windows-signing",
@@ -56,7 +58,12 @@ CONSUMERS = {
         "build-android": "android-signing", "build-ios": "apple-signing",
     },
     "zapstore-publish.yml": {"publish": "zapstore-publishing"},
-    "signing-credentials-check.yml": {name: name for name in ENVIRONMENTS},
+    "signing-credentials-check.yml": {
+        name: name for name in (
+            "desktop-signing", "apple-signing", "android-signing",
+            "windows-signing", "zapstore-publishing",
+        )
+    },
 }
 
 
@@ -282,6 +289,20 @@ class SigningWorkflowTests(unittest.TestCase):
             with self.subTest(environment=environment), self.assertRaises(ValueError):
                 check_boundary({**reference, "environment": environment})
         check_boundary({**reference, "environment": "apple-signing"})
+
+    def test_agent_update_key_is_exclusive_to_its_publisher_signing_job(self):
+        consumers = []
+        for name, config in workflows().items():
+            for job_name, job in config["jobs"].items():
+                if "AGENT_UPDATE_SIGNING_KEY" in signing_references(job):
+                    consumers.append((name, job_name))
+        self.assertEqual(consumers, [("agent-updates-publish.yml", "sign")])
+        reference = {"steps": [{"env": {"KEY": "${{ secrets.AGENT_UPDATE_SIGNING_KEY }}"}}]}
+        for environment in (None, "desktop-signing", "agent-updates-production",
+                            "${{ inputs.environment }}"):
+            with self.subTest(environment=environment), self.assertRaises(ValueError):
+                check_boundary({**reference, "environment": environment})
+        check_boundary({**reference, "environment": "agent-update-signing"})
 
 
 if __name__ == "__main__":
