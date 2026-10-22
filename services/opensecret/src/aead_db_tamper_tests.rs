@@ -26,7 +26,7 @@ use crate::{
     web::responses::{
         handlers::{ResponseTerminal, StorageMessage},
         storage::StorageTaskOutcome,
-        storage_task,
+        storage_task, ConversationItemConverter, MessageContent,
     },
     AppMode, AppState, AppStateBuilder, Error,
 };
@@ -1741,6 +1741,110 @@ async fn db_response_storage_write_failure_never_acknowledges_completion() {
     let _ = app_state.db.delete_user(&user);
 }
 
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_conversation_item_lookup_matches_list_and_stays_in_its_conversation() {
+    let Some(database_url) = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").ok() else {
+        eprintln!("skipping: AEAD_TAMPER_TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let app_state = build_local_test_app_state(database_url).await;
+    let project = first_active_project(&app_state);
+    let marker = Uuid::new_v4();
+    let owner = create_response_transaction_test_user(&app_state, project.id, marker, "owner");
+    let other = create_response_transaction_test_user(&app_state, project.id, marker, "other");
+    let user_key = SecretKey::from_slice(&[0x42; 32]).expect("valid test key");
+
+    let conversation = insert_response_transaction_test_conversation(&app_state, owner.uuid);
+    let sibling_conversation =
+        insert_response_transaction_test_conversation(&app_state, owner.uuid);
+    let other_conversation = insert_response_transaction_test_conversation(&app_state, other.uuid);
+    let items =
+        insert_conversation_item_of_each_type(&app_state, &user_key, owner.uuid, conversation)
+            .await;
+    let sibling_items = insert_conversation_item_of_each_type(
+        &app_state,
+        &user_key,
+        owner.uuid,
+        sibling_conversation,
+    )
+    .await;
+    let other_items = insert_conversation_item_of_each_type(
+        &app_state,
+        &user_key,
+        other.uuid,
+        other_conversation,
+    )
+    .await;
+
+    // The list endpoint's projection is the reference for every item type.
+    let listed = app_state
+        .db
+        .get_conversation_context_messages(conversation, 100, None, "asc")
+        .expect("conversation items should list");
+    assert_eq!(listed.len(), items.len());
+    for (fixture, listed_item) in items.iter().zip(&listed) {
+        assert_eq!(listed_item.uuid, fixture.uuid);
+        assert_eq!(listed_item.message_type, fixture.message_type);
+
+        let fetched = app_state
+            .db
+            .get_conversation_item(conversation, fixture.uuid)
+            .expect("conversation item lookup should query")
+            .expect("conversation item should be found");
+        assert_eq!(
+            format!("{fetched:?}"),
+            format!("{listed_item:?}"),
+            "{} lookup must return the same row as the list query",
+            fixture.message_type
+        );
+
+        let item = serde_json::to_value(
+            ConversationItemConverter::message_to_item(&fetched, &user_key)
+                .expect("fetched conversation item should convert"),
+        )
+        .expect("conversation item should serialize");
+        assert_eq!(item["type"], fixture.item_type);
+        assert_eq!(item["id"], serde_json::json!(fixture.uuid));
+        assert!(
+            item.to_string().contains(fixture.text),
+            "{} item should carry its decrypted content",
+            fixture.message_type
+        );
+    }
+
+    assert!(app_state
+        .db
+        .get_conversation_item(conversation, Uuid::new_v4())
+        .expect("missing item lookup should query")
+        .is_none());
+    for (conversation_id, fixtures) in [
+        (sibling_conversation, &sibling_items),
+        (other_conversation, &other_items),
+    ] {
+        for fixture in fixtures {
+            assert!(app_state
+                .db
+                .get_conversation_item(conversation_id, fixture.uuid)
+                .expect("own conversation lookup should query")
+                .is_some());
+            assert!(
+                app_state
+                    .db
+                    .get_conversation_item(conversation, fixture.uuid)
+                    .expect("cross-conversation lookup should query")
+                    .is_none(),
+                "{} item from another conversation must not be returned",
+                fixture.message_type
+            );
+        }
+    }
+
+    let _ = app_state.db.delete_user(&owner);
+    let _ = app_state.db.delete_user(&other);
+}
+
 fn create_response_transaction_test_user(
     app_state: &AppState,
     project_id: i32,
@@ -1871,6 +1975,139 @@ fn assert_response_transaction_row_counts(
         expected,
         "response transaction row counts"
     );
+}
+
+struct ConversationItemFixture {
+    uuid: Uuid,
+    message_type: &'static str,
+    item_type: &'static str,
+    text: &'static str,
+}
+
+/// Inserts one encrypted item of each conversation item type, in list order.
+async fn insert_conversation_item_of_each_type(
+    app_state: &AppState,
+    user_key: &SecretKey,
+    user_id: Uuid,
+    conversation_id: i64,
+) -> Vec<ConversationItemFixture> {
+    let user_content = serde_json::to_string(&MessageContent::Text("lookup user text".into()))
+        .expect("user content should serialize");
+    let user_content_enc = encrypt_with_key(user_key, user_content.as_bytes()).await;
+    let assistant_content_enc = encrypt_with_key(user_key, b"lookup assistant text").await;
+    let arguments_enc = encrypt_with_key(user_key, b"lookup tool arguments").await;
+    let output_enc = encrypt_with_key(user_key, b"lookup tool output").await;
+    let reasoning_content_enc = encrypt_with_key(user_key, b"lookup reasoning text").await;
+
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+
+    let response = response_transaction_test_response(Uuid::new_v4(), user_id, conversation_id)
+        .insert(conn)
+        .expect("item lookup test response should insert");
+    let user_message = NewUserMessage {
+        uuid: Uuid::new_v4(),
+        conversation_id,
+        response_id: Some(response.id),
+        user_id,
+        content_enc: user_content_enc,
+        prompt_tokens: 3,
+    }
+    .insert(conn)
+    .expect("item lookup test user message should insert");
+    // Later items follow the user message so the list order is deterministic.
+    let after_user_message =
+        |offset: i64| user_message.created_at + chrono::Duration::microseconds(offset);
+    let assistant_message = NewAssistantMessage {
+        uuid: Uuid::new_v4(),
+        conversation_id,
+        response_id: Some(response.id),
+        user_id,
+        content_enc: Some(assistant_content_enc),
+        completion_tokens: 3,
+        status: "completed".to_string(),
+        finish_reason: Some("stop".to_string()),
+        created_at: after_user_message(1),
+    }
+    .insert(conn)
+    .expect("item lookup test assistant message should insert");
+    let tool_call = NewToolCall {
+        uuid: Uuid::new_v4(),
+        conversation_id,
+        response_id: Some(response.id),
+        user_id,
+        name: "item_lookup_test_tool".to_string(),
+        arguments_enc: Some(arguments_enc),
+        argument_tokens: 3,
+        status: "completed".to_string(),
+        created_at: after_user_message(2),
+    }
+    .insert(conn)
+    .expect("item lookup test tool call should insert");
+    let tool_output = NewToolOutput {
+        uuid: Uuid::new_v4(),
+        conversation_id,
+        response_id: Some(response.id),
+        user_id,
+        tool_call_fk: tool_call.id,
+        output_enc,
+        output_tokens: 3,
+        status: "completed".to_string(),
+        error: None,
+        created_at: after_user_message(3),
+    }
+    .insert(conn)
+    .expect("item lookup test tool output should insert");
+    let reasoning_item = NewReasoningItem {
+        uuid: Uuid::new_v4(),
+        conversation_id,
+        response_id: Some(response.id),
+        assistant_message_id: Some(assistant_message.id),
+        user_id,
+        content_enc: Some(reasoning_content_enc),
+        summary_enc: None,
+        reasoning_tokens: 3,
+        status: "completed".to_string(),
+        created_at: after_user_message(4),
+    }
+    .insert(conn)
+    .expect("item lookup test reasoning item should insert");
+
+    vec![
+        ConversationItemFixture {
+            uuid: user_message.uuid,
+            message_type: "user",
+            item_type: "message",
+            text: "lookup user text",
+        },
+        ConversationItemFixture {
+            uuid: assistant_message.uuid,
+            message_type: "assistant",
+            item_type: "message",
+            text: "lookup assistant text",
+        },
+        ConversationItemFixture {
+            uuid: tool_call.uuid,
+            message_type: "tool_call",
+            item_type: "function_call",
+            text: "lookup tool arguments",
+        },
+        ConversationItemFixture {
+            uuid: tool_output.uuid,
+            message_type: "tool_output",
+            item_type: "function_call_output",
+            text: "lookup tool output",
+        },
+        ConversationItemFixture {
+            uuid: reasoning_item.uuid,
+            message_type: "reasoning",
+            item_type: "reasoning",
+            text: "lookup reasoning text",
+        },
+    ]
 }
 
 async fn build_local_test_app_state(database_url: String) -> AppState {

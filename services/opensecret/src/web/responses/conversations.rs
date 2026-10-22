@@ -647,29 +647,15 @@ async fn get_conversation_item(
 ) -> Result<Response, ApiError> {
     let ctx = ConversationContext::load(&state, conversation_id, &user, &auth_context).await?;
 
-    // Get all messages from the conversation
-    // For this single item lookup, we fetch all messages (no pagination)
-    // TODO: Optimize this to fetch only the specific item
-    let raw_messages = state
+    // Fetch only the requested item, scoped to the authorized conversation
+    let raw_message = state
         .db
-        .get_conversation_context_messages(
-            ctx.conversation.id,
-            i64::MAX, // No limit for single item lookup
-            None,     // No cursor
-            "asc",    // Default order
-        )
-        .map_err(error_mapping::map_message_error)?;
+        .get_conversation_item(ctx.conversation.id, item_id)
+        .map_err(error_mapping::map_message_error)?
+        .ok_or(ApiError::NotFound)?;
 
-    // Find the specific item and convert using centralized converter
-    for msg in raw_messages {
-        if msg.uuid == item_id {
-            let item = ConversationItemConverter::message_to_item(&msg, &ctx.user_key)?;
-            return encrypt_response(&state, &session_id, &item).await;
-        }
-    }
-
-    // Item not found
-    Err(ApiError::NotFound)
+    let item = ConversationItemConverter::message_to_item(&raw_message, &ctx.user_key)?;
+    encrypt_response(&state, &session_id, &item).await
 }
 
 /// GET /v1/conversations - List all conversations (OpenSecret custom extension)
