@@ -16,6 +16,7 @@ import tempfile
 import tarfile
 import unittest
 from test_macos_build_info import macho
+from test_third_party_notices import notice_fixture
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -476,6 +477,19 @@ class NativeSigningBoundaryTests(unittest.TestCase):
     ]
 
     def run_packager(self, unsigned=False, failure="", signal=False, search_list=None):
+        component = self.directory / "fixture-component"
+        notice_fixture(component, "aarch64-apple-darwin")
+        # Nix sources are read-only. Copy bytes into this mutable fixture rather
+        # than preserving modes that would prevent a second packaging attempt.
+        for name in ("macos-release-app.sh", "release-info.py", "macos-build-info.py"):
+            shutil.copyfile(SCRIPTS / name, component / "scripts" / name)
+        shutil.copyfile(SCRIPTS.parent / "release-profiles.json", component / "release-profiles.json")
+        (component / "app/packaging").mkdir(exist_ok=True)
+        (component / "app/macos").mkdir(exist_ok=True)
+        shutil.copyfile(SCRIPTS.parent / "app/macos/Info.plist", component / "app/macos/Info.plist")
+        shutil.copyfile(SCRIPTS.parent / "app/packaging/macos-entitlements.plist", component / "app/packaging/macos-entitlements.plist")
+        for icon in ("maple-agent.icns", "maple-agent-dev.icns"):
+            shutil.copyfile(SCRIPTS.parent / "app/packaging" / icon, component / "app/packaging" / icon)
         binary = self.directory / "maple-agent"
         # Static-only fixture cannot be launched. Successful signing packaging
         # proves the keychain-bearing path never executes artifact code.
@@ -514,7 +528,7 @@ else:
         wrapper = self.directory / "mock-packager.sh"
         wrapper.write_text(f"""#!/usr/bin/env bash
 set -euo pipefail
-source {shlex.quote(str(SCRIPTS / 'macos-release-app.sh'))}
+source {shlex.quote(str(component / 'scripts/macos-release-app.sh'))}
 uname() {{ if [[ "$1" == -s ]]; then echo Darwin; else echo arm64; fi; }}
 macos_embed_dylibs() {{ :; }}
 macos_native() {{
@@ -667,7 +681,7 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assertEqual(main_sign[main_sign.index("--sign") + 1], "-")
         self.assertEqual(main_sign[main_sign.index("--options") + 1], "0")
         self.assertEqual(main_sign[main_sign.index("--entitlements") + 1],
-                         str(SCRIPTS.parent / "app/packaging/macos-entitlements.plist"))
+                         str(self.directory / "fixture-component/app/packaging/macos-entitlements.plist"))
 
     def test_rejected_notary_response_and_signing_failure_cleanup(self):
         for failure in ("notary", "codesign"):

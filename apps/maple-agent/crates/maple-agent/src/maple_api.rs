@@ -94,11 +94,30 @@ pub struct MapleApiKey {
 }
 
 /// A freshly created API key. `key` is shown once and never again.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct MapleApiKeyCreated {
     pub name: String,
     pub key: String,
     pub created_at: String,
+}
+
+impl<'de> Deserialize<'de> for MapleApiKeyCreated {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            name: String,
+            // If a later field fails decoding, the partially decoded key must
+            // be wiped before serde discards the incomplete response.
+            key: zeroize::Zeroizing<String>,
+            created_at: String,
+        }
+        let mut wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            name: wire.name,
+            key: std::mem::take(&mut *wire.key),
+            created_at: wire.created_at,
+        })
+    }
 }
 
 /// An account-management call that failed. The HTTP status is kept so the
@@ -1126,6 +1145,24 @@ impl MapleApiAuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_key_created_requires_the_complete_shape_before_releasing_its_key() {
+        let error = serde_json::from_str::<MapleApiKeyCreated>(
+            r#"{"name":"fixture","key":"partial-api-key-fixture"}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("created_at"));
+        assert!(!error.to_string().contains("partial-api-key-fixture"));
+        let mut complete = serde_json::from_str::<MapleApiKeyCreated>(
+            r#"{"name":"fixture","key":"complete-api-key-fixture","created_at":"2026-10-21T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(complete.name, "fixture");
+        assert_eq!(complete.key, "complete-api-key-fixture");
+        assert_eq!(complete.created_at, "2026-10-21T00:00:00Z");
+        zeroize::Zeroize::zeroize(&mut complete.key);
+    }
 
     #[test]
     fn only_refused_credentials_count_as_rejection() {

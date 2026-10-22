@@ -4,10 +4,13 @@
 use super::SharedRuntimeStart;
 use super::config::{AgentAcpConfig, AgentAcpStats};
 use super::convert::acp_session_config_options;
+use super::observer::ObserverMailbox;
 use super::transport::AcpOutboundTracker;
+#[cfg(test)]
+use crate::agent::AgentSessionSummary;
 use crate::agent::{
-    AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle, AgentSessionSummary,
-    AgentSurfaceLease, CatalogEntry,
+    AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle, AgentSurfaceLease,
+    CatalogEntry,
 };
 
 use agent_client_protocol::schema::v1::{McpServer, SessionConfigOption, SessionId};
@@ -34,6 +37,10 @@ pub(super) struct AcpConnectionContext {
     pub(super) stats: Arc<AgentAcpStats>,
     pub(super) sessions: Mutex<HashMap<String, AcpSession>>,
     pub(super) session_operations: Mutex<HashMap<String, Arc<AcpSessionOperation>>>,
+    pub(super) observer_slots: Arc<tokio::sync::Semaphore>,
+    pub(super) elicitation_slots: Arc<tokio::sync::Semaphore>,
+    #[cfg(test)]
+    pub(super) observer_dispatches: std::sync::atomic::AtomicUsize,
     pub(super) prompt_states: Mutex<HashMap<String, AcpPromptState>>,
     pub(super) owned_runs: Mutex<HashMap<String, String>>,
     pub(super) observing: AtomicBool,
@@ -110,7 +117,9 @@ impl Drop for UnpublishedAcpSession {
 pub(super) struct AcpSessionOperation {
     pub(super) gate: Arc<Mutex<()>>,
     /// Live observers wait for initial history replay, never for a whole turn.
-    pub(super) replay_gate: Mutex<()>,
+    pub(super) replay_gate: Arc<Mutex<()>>,
+    pub(super) observer: ObserverMailbox,
+    pub(super) replaying: AtomicBool,
     pub(super) cancellation: CancellationToken,
 }
 
@@ -118,7 +127,9 @@ impl AcpSessionOperation {
     pub(super) fn new(connection_lifetime: &CancellationToken) -> Arc<Self> {
         Arc::new(Self {
             gate: Arc::new(Mutex::new(())),
-            replay_gate: Mutex::new(()),
+            replay_gate: Arc::new(Mutex::new(())),
+            observer: ObserverMailbox::new(),
+            replaying: AtomicBool::new(true),
             cancellation: connection_lifetime.child_token(),
         })
     }
@@ -243,6 +254,7 @@ pub(super) fn canonical_session_id_text(
 
 /// The task a caller asked to load. Every task loads: all of them run with
 /// every tool call allowed.
+#[cfg(test)]
 pub(super) fn find_acp_session<'a>(
     sessions: &'a [AgentSessionSummary],
     session_id: &str,

@@ -84,6 +84,16 @@ impl FakeServer {
         Self { url, state, task }
     }
 
+    /// Offer a tool that returns its `text` argument as image data unchanged,
+    /// including noncanonical or invalid data from a third-party server.
+    pub(crate) fn add_image_tool(&self) {
+        self.state
+            .tools
+            .lock()
+            .unwrap()
+            .push(tool("image", "Returns image data unchanged"));
+    }
+
     fn seen<T>(&self, read: impl FnOnce(&Seen) -> T) -> T {
         read(&self.state.seen.lock().unwrap())
     }
@@ -218,6 +228,17 @@ async fn handle(
                     text_result(arguments["text"].as_str().unwrap_or_default(), false),
                 )),
                 "fail" => json_response(result(&id, text_result("it broke", true))),
+                "image" => json_response(result(
+                    &id,
+                    json!({
+                        "content": [{
+                            "type": "image",
+                            "data": arguments["text"].as_str().unwrap_or_default(),
+                            "mimeType": "image/png"
+                        }],
+                        "isError": false
+                    }),
+                )),
                 "slow" => {
                     tokio::time::sleep(std::time::Duration::from_secs(600)).await;
                     StatusCode::GATEWAY_TIMEOUT.into_response()

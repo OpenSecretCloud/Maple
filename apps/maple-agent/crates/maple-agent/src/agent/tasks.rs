@@ -1,29 +1,28 @@
 //! Tasks: create, list, read, rename, settle, archive and delete.
 //!
-//! A task is a row in the account's index and, once it has run, a Pi
-//! session file. Everything here works whether or not the account's runtime
+//! A task is an account-authorized row in the host-owned store and, once it
+//! has run, an append-only Pi source tree with materialized history rows. Everything here works whether or not the account's runtime
 //! runs, except creating a task, which starts in the runtime's project.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
-use pi_coding_agent::store::JsonlStore;
 
 use super::config::{
-    account_attachment_store, ensure_session_project_root_is_visible, load_agent_config_inner,
-    normalize_project_root, path_string,
+    ensure_session_project_root_is_visible, load_project_config_inner, normalize_project_root,
+    path_string,
 };
 use super::mcp::{
     normalize_mcp_servers, servers_for_new_task, servers_with_project_defaults, set_chosen_servers,
 };
 use super::runtime::AgentRuntime;
 use super::store::{TaskKind, TaskRow};
-use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into, session_timeline};
+use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into};
 use super::{
     AgentCreateSessionRequest, AgentRenameSessionRequest, AgentRuntimeHandle, AgentServiceEvent,
     AgentSessionDetail, AgentSessionSummary, AgentSetSessionWebRequest, AgentTaskState,
-    AgentTimelineItem, emit_agent_event,
+    emit_agent_event,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -94,6 +93,143 @@ fn session_id_argument(session_id: &str) -> Result<String, String> {
 }
 
 impl AgentRuntimeHandle {
+    #[cfg(feature = "acp")]
+    pub(crate) fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
+    /// ACP captures a private immutable replay before writing any history.
+    /// Raw SQLite access and every scratch lifetime remain owned by store/.
+    #[cfg(feature = "acp")]
+    pub(crate) fn history_replay_source(
+        &self,
+    ) -> Result<(crate::store::AccountId, Arc<crate::store::Store>), String> {
+        self.verify_generation_now()?;
+        let tasks = self.store()?;
+        Ok((tasks.account(), Arc::clone(tasks.store())))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_persistence(
+        &self,
+    ) -> Result<(Arc<crate::store::Store>, crate::store::AccountId), String> {
+        let tasks = self.store()?;
+        Ok((Arc::clone(tasks.store()), tasks.account()))
+    }
+
+    /// Summary-only navigation. Readers never instantiate a Pi session or load
+    /// source entries, task settings, or the cached context base.
+    pub async fn list_tasks_page(
+        &self,
+        query: crate::store::NavigationTaskQuery,
+        transport: crate::store::PageTransport,
+    ) -> Result<crate::store::NavigationTaskPage, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .list_task_summaries(tasks.account(), &query, transport)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Task navigation worker failed".to_string())?
+    }
+
+    pub async fn task_summary(&self, task: String) -> Result<crate::store::TaskSummary, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        tokio::task::spawn_blocking(move || {
+            let mut reply = tasks
+                .store()
+                .get_task_summaries(tasks.account(), &[task], crate::store::PageTransport::Local)
+                .map_err(|error| error.to_string())?;
+            reply
+                .tasks
+                .pop()
+                .ok_or_else(|| "The requested Agent task was not found".to_string())
+        })
+        .await
+        .map_err(|_| "Task summary worker failed".to_string())?
+    }
+
+    pub async fn task_facts(&self, task: String) -> Result<crate::store::TaskFactsReply, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .task_facts(tasks.account(), &task)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Task facts worker failed".to_string())?
+    }
+
+    pub async fn open_task_page(
+        &self,
+        request: crate::store::OpenTaskPageRequest,
+        transport: crate::store::PageTransport,
+    ) -> Result<crate::store::OpenTaskPage, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .open_task_page(tasks.account(), &request, transport)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Task page worker failed".to_string())?
+    }
+
+    pub async fn history_forward_page(
+        &self,
+        request: crate::store::HistoryPageRequest,
+        transport: crate::store::PageTransport,
+    ) -> Result<crate::store::HistoryPage, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .history_forward_page(tasks.account(), &request, transport)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Task history worker failed".to_string())?
+    }
+
+    pub async fn history_before_page(
+        &self,
+        request: crate::store::HistoryPageRequest,
+        transport: crate::store::PageTransport,
+    ) -> Result<crate::store::HistoryPage, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .history_before_page(tasks.account(), &request, transport)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "Task history worker failed".to_string())?
+    }
+
+    /// A per-replay bounded row cache. Keep it only while the caller is
+    /// authorized; dropping it wipes reconstructed payload allocations.
+    pub async fn history_row_reader(
+        &self,
+    ) -> Result<(crate::store::AccountId, crate::store::RowReader), String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        Ok((
+            tasks.account(),
+            crate::store::RowReader::new(Arc::clone(tasks.store())),
+        ))
+    }
+
     /// Create a task in the requested project, or the runtime's.
     pub async fn create_session(
         &self,
@@ -142,7 +278,7 @@ impl AgentRuntimeHandle {
         let (config, mcp_servers) = {
             let _settings = self.lock_settings().await;
             self.verify_generation().await?;
-            let config = load_agent_config_inner(self.paths(), &self.user_id)
+            let config = load_project_config_inner(self.paths(), &self.user_id, &root)
                 .map_err(|error| error.to_string())?;
             let mut servers = normalize_mcp_servers(config.mcp_servers.clone())?;
             if request.mcp_server_names.is_none() {
@@ -243,24 +379,28 @@ impl AgentRuntimeHandle {
             let before = runtime
                 .as_ref()
                 .and_then(|runtime| runtime.runs.snapshot_marker(&session_id));
-            let loaded = match &runtime {
-                Some(runtime) => runtime.loaded_session(&session_id).await,
-                None => None,
-            };
-            let mut timeline = match loaded {
-                Some(session) => session.with_session(session_timeline),
-                None => {
-                    let path = store.session_path(&session_id);
-                    tokio::task::spawn_blocking(move || stored_timeline(&path))
-                        .await
-                        .map_err(|error| format!("Failed to load Agent task: {error}"))??
-                }
-            };
+            // History reads use the committed projection regardless of whether
+            // Pi is loaded. Viewing a task never builds its model context.
+            let (history_store, history_id) = (Arc::clone(&store), session_id.clone());
+            let mut timeline =
+                tokio::task::spawn_blocking(move || history_store.timeline(&history_id))
+                    .await
+                    .map_err(|error| format!("Failed to load Agent task: {error}"))??;
 
-            let (after, revision, live) = runtime
+            let (after, revision, live, has_more) = runtime
                 .as_ref()
-                .map(|runtime| runtime.runs.live_snapshot(&session_id))
+                .map(|runtime| {
+                    runtime
+                        .runs
+                        .live_snapshot_page(&session_id, 500, 4 * 1024 * 1024)
+                })
                 .unwrap_or_default();
+            if has_more {
+                return Err(
+                    "The active task exceeds the live replay limit; reload after its turn finishes"
+                        .into(),
+                );
+            }
             if before != after {
                 continue;
             }
@@ -304,20 +444,17 @@ impl AgentRuntimeHandle {
             Some(runtime) => runtime.loaded_session(session_id).await,
             None => None,
         };
-        let tokens = match loaded {
-            Some(session) => return Ok(session.context_usage().and_then(|usage| usage.tokens)),
-            None => {
-                let store = self.store()?;
-                if store.get(session_id)?.is_none() {
-                    return Err(format!("Failed to find Agent task {session_id}"));
-                }
-                let path = store.session_path(session_id);
-                tokio::task::spawn_blocking(move || stored_context_tokens(&path))
-                    .await
-                    .map_err(|error| format!("Failed to read the Agent task: {error}"))??
-            }
-        };
-        Ok(Some(tokens).filter(|tokens| *tokens > 0))
+        if let Some(session) = loaded {
+            return Ok(session.context_usage().and_then(|usage| usage.tokens));
+        }
+        let store = self.store()?;
+        if store.get(session_id)?.is_none() {
+            return Err(format!("Failed to find Agent task {session_id}"));
+        }
+        let id = session_id.to_string();
+        tokio::task::spawn_blocking(move || store.context_tokens(&id))
+            .await
+            .map_err(|error| format!("Failed to read the Agent task: {error}"))?
     }
 
     /// The task's current title, or `None` when it does not exist.
@@ -374,27 +511,35 @@ impl AgentRuntimeHandle {
     ) -> Result<AgentSessionSummary, String> {
         self.ensure_accepting_new_work()?;
         let session_id = session_id_argument(&session_id)?;
-        if state != AgentTaskState::Active
-            && let Some(runtime) = self.current_runtime().await?
-            && runtime.runs.is_running(&session_id)
-        {
-            return Err(format!(
-                "Stop the running agent before {} this task",
-                state.gerund()
-            ));
-        }
+        let runtime = self.current_runtime().await?;
         self.verify_generation().await?;
         let store = self.store()?;
-        let current = store
-            .get(&session_id)?
-            .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
-        if current.state == state {
-            return Ok(current.summary());
-        }
-        let row = store
-            .update(&session_id, |row| row.state = state)?
-            .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
-        let summary = row.summary();
+        let task = session_id.clone();
+        let summary = tokio::task::spawn_blocking(move || {
+            let action = || {
+                store
+                    .update(&task, |row| row.state = state)?
+                    .map(|row| row.summary())
+                    .ok_or_else(|| format!("Failed to load Agent task: {task} was not found"))
+            };
+            if state != AgentTaskState::Active
+                && let Some(runtime) = runtime
+            {
+                runtime
+                    .maintenance_while_idle(&task, action)
+                    .map_err(|error| {
+                        if error == "The task is running; its model cannot change" {
+                            "Stop the running agent before changing this task's state".to_owned()
+                        } else {
+                            error
+                        }
+                    })
+            } else {
+                action()
+            }
+        })
+        .await
+        .map_err(|_| "Task state worker did not complete".to_owned())??;
         emit_agent_event(
             &self.service.host.events,
             AgentServiceEvent::SessionUpdated {
@@ -404,6 +549,91 @@ impl AgentRuntimeHandle {
             },
         );
         Ok(summary)
+    }
+
+    /// Explicitly archive every task before hiding its project. Each scan and
+    /// write batch is bounded; normal and autonomous run admission share the
+    /// final check for every batch. A retry resumes already completed progress.
+    pub async fn archive_project_root(
+        &self,
+        path: String,
+        fallback: Option<String>,
+    ) -> Result<(), String> {
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let path = path.trim().to_owned();
+        if !super::config::structurally_valid_project_root(&path) {
+            return Err("Project path must be an absolute folder path".into());
+        }
+        let _lifecycle = self.service.state.lifecycle.lock().await;
+        let runtime = self.current_runtime().await?;
+        if let Some(runtime) = &runtime {
+            runtime.maintenance_while_all_idle(|| Ok(()))?;
+        }
+        let tasks = self.store()?;
+        let mut total = 0usize;
+        for _ in 0..3 {
+            let mut cursor = None;
+            let mut changed = 0usize;
+            loop {
+                self.verify_generation().await?;
+                self.ensure_accepting_new_work()?;
+                let (tasks, path, after, guard, events) = (
+                    tasks.clone(),
+                    path.clone(),
+                    cursor,
+                    runtime.clone(),
+                    self.service.host.events.clone(),
+                );
+                let result = tokio::task::spawn_blocking(move || {
+                    let batch = tasks
+                        .store()
+                        .archive_project_candidates(tasks.account(), &path, after.as_ref(), 200)
+                        .map_err(|error| error.to_string())?;
+                    let action = || {
+                        let mut count = 0;
+                        for task in batch.task_ids {
+                            if let Some(row) =
+                                tasks.update(&task, |row| row.state = AgentTaskState::Archived)?
+                            {
+                                emit_agent_event(
+                                    &events,
+                                    AgentServiceEvent::SessionUpdated {
+                                        session_id: task,
+                                        run_id: None,
+                                        session: row.summary(),
+                                    },
+                                );
+                                count += 1;
+                            }
+                        }
+                        Ok::<_, String>((batch.next, count))
+                    };
+                    if let Some(runtime) = guard {
+                        runtime.maintenance_while_all_idle(action)
+                    } else {
+                        action()
+                    }
+                })
+                .await
+                .map_err(|_| "Project archive worker did not complete".to_owned())?;
+                let (next,count)=result.map_err(|error|format!("Project archive stopped after {total} tasks: {error}. Retry after agents are idle."))?;
+                total += count;
+                changed += count;
+                cursor = next;
+                if cursor.is_none() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            if changed == 0 {
+                self.remove_project_root(path, fallback).await?;
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "Project changed while archiving. {total} tasks were archived; retry to finish."
+        ))
     }
 
     /// Turn the web tools on or off for one task, from its next turn.
@@ -430,16 +660,34 @@ impl AgentRuntimeHandle {
             if runtime.runs.is_running(&session_id) {
                 return Err("Stop the running agent before deleting this task".to_string());
             }
-            runtime.unload_task(&session_id).await;
+            runtime.unload_task(&session_id).await?;
             // Its external agents end with it, before its history goes.
             runtime.external_agents.shutdown_session(&session_id).await;
             runtime.runs.clear_queue(&session_id);
             runtime.failures.clear(&session_id);
         }
-        let attachments = account_attachment_store(self.paths(), &self.user_id)?;
-        let deleted = self
-            .store()?
-            .delete(&session_id, || attachments.delete_session(&session_id))?;
+        let store = self.store()?;
+        let delete_id = session_id.clone();
+        let service = self.service.clone();
+        let scope = Arc::clone(&self.account_scope);
+        let generation = self.generation;
+        let deleted = tokio::task::spawn_blocking(move || {
+            // Re-read the current runtime under the service lifecycle gate.
+            // A run can register while async unload/extension shutdown waits;
+            // only the same admission lock may grant the final durable hide.
+            super::maintenance::while_task_idle(&service.state, store.account(), &delete_id, || {
+                Ok(if service.generation(&scope) != generation {
+                    Err("Agent Mode data changed while this operation was waiting".to_string())
+                } else {
+                    store.delete(&delete_id)
+                })
+            }).map_err(|error| match error {
+                crate::store::StoreError::Busy => "The task became active while deletion was waiting. Stop its work and try again.".to_string(),
+                other => other.to_string(),
+            })?
+        })
+            .await
+            .map_err(|error| format!("Failed to delete the Agent task: {error}"))??;
         if !deleted {
             return Err(format!("Failed to find Agent task {session_id}"));
         }
@@ -456,8 +704,12 @@ impl AgentRuntimeHandle {
         if self.store()?.get(&session_id)?.is_none() {
             return Err(format!("Failed to find Agent task {session_id}"));
         }
-        let store = account_attachment_store(self.paths(), &self.user_id)?;
-        tokio::task::spawn_blocking(move || store.read(&session_id, &attachment_id))
+        let tasks = self.store()?;
+        let attachments = super::attachments::AgentAttachmentStore::new(
+            Arc::clone(tasks.store()),
+            tasks.account(),
+        );
+        tokio::task::spawn_blocking(move || attachments.read(&session_id, &attachment_id))
             .await
             .map_err(|error| format!("Agent image attachment task failed: {error}"))?
     }
@@ -501,41 +753,6 @@ impl AgentRuntimeHandle {
             );
         }
         Ok(())
-    }
-}
-
-/// The context size of a task's session file, as Pi estimates it; zero when
-/// it has none yet.
-fn stored_context_tokens(path: &Path) -> Result<u64, String> {
-    match JsonlStore::load(path) {
-        Ok(Some((header, entries))) => {
-            let manager = pi_coding_agent::session::SessionManager::open(
-                header,
-                entries,
-                Box::new(pi_coding_agent::store::MemoryStore),
-            );
-            Ok(pi_coding_agent::compaction::estimate_context_tokens(
-                &manager.projection().messages,
-            ))
-        }
-        Ok(None) => Ok(0),
-        Err(error) => Err(format!("Failed to read the Agent task's history: {error}")),
-    }
-}
-
-/// The transcript of a task's session file; empty when it has none yet.
-fn stored_timeline(path: &Path) -> Result<Vec<AgentTimelineItem>, String> {
-    match JsonlStore::load(path) {
-        Ok(Some((header, entries))) => {
-            let manager = pi_coding_agent::session::SessionManager::open(
-                header,
-                entries,
-                Box::new(pi_coding_agent::store::MemoryStore),
-            );
-            Ok(session_timeline(&manager))
-        }
-        Ok(None) => Ok(Vec::new()),
-        Err(error) => Err(format!("Failed to read the Agent task's history: {error}")),
     }
 }
 

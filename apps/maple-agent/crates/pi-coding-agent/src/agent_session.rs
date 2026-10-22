@@ -32,7 +32,7 @@ use serde_json::Value;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::bash_executor::{BashResult, OnChunk, execute_bash_with_operations};
+use crate::bash_executor::{BashResult, OnChunk, execute_bash_with_operations_in};
 use crate::compaction::{
     CompactionPreparation, CompactionResult, Summarizer, SummaryRetry, compact,
     estimate_projected_context_tokens, estimate_tokens, prepare_compaction, should_compact,
@@ -502,6 +502,8 @@ pub(crate) struct SessionCore {
     models: ModelRegistry,
     ui: Arc<dyn ExtensionUi>,
     cwd: PathBuf,
+    /// The host's task-owned overflow directory, also used by user `!` commands.
+    output_dir: Option<PathBuf>,
     settings: Mutex<Settings>,
     settings_file: Option<PathBuf>,
     resources: Mutex<Resources>,
@@ -780,11 +782,12 @@ impl AgentSession {
         let session_start = std::mem::take(&mut options.session_start);
         let projection = options.session.projection();
         let has_messages = !projection.messages.is_empty();
-        let has_thinking_entry = options
-            .session
-            .branch()
-            .iter()
-            .any(|entry| matches!(entry.kind, EntryKind::ThinkingLevelChange { .. }));
+        let has_thinking_entry = options.session.has_context_base()
+            || options
+                .session
+                .branch()
+                .iter()
+                .any(|entry| matches!(entry.kind, EntryKind::ThinkingLevelChange { .. }));
         let models = options.models.clone();
         let model = projection
             .model
@@ -841,6 +844,11 @@ impl AgentSession {
                 extension: Arc::from("builtin"),
             };
             let mut tool_options = options.tool_options;
+            let output_dir = tool_options
+                .bash
+                .output_dir
+                .clone()
+                .or_else(|| tool_options.output_dir.clone());
             tool_options.bash.shell_path = tool_options.bash.shell_path.or_else(|| {
                 options
                     .settings
@@ -893,6 +901,7 @@ impl AgentSession {
                 models: models.clone(),
                 ui: options.ui,
                 cwd: options.cwd,
+                output_dir,
                 settings: Mutex::new(options.settings),
                 settings_file: options.settings_file,
                 resources: Mutex::new(options.resources),
@@ -1319,6 +1328,16 @@ impl AgentSession {
         read(&lock(&self.core.session))
     }
 
+    /// Retry pending source-history writes before the host unloads this session.
+    /// A failure keeps the tree in memory and must prevent eviction or shutdown.
+    pub fn flush(&self) -> std::io::Result<()> {
+        lock(&self.core.session).flush()
+    }
+
+    pub fn has_unpersisted(&self) -> bool {
+        lock(&self.core.session).has_unpersisted()
+    }
+
     /// The system prompt the transcript declares.
     pub fn system_prompt(&self) -> String {
         self.core.agent.system_prompt()
@@ -1548,11 +1567,12 @@ impl AgentSession {
         let key = core.next_bash.fetch_add(1, Ordering::Relaxed);
         lock(&core.bash_runs).push((key, cancel.clone()));
         let _running = BashRunGuard { core, key };
-        let result = execute_bash_with_operations(
+        let result = execute_bash_with_operations_in(
             &resolved,
             &core.cwd,
             operations.as_ref(),
             &file_prefix,
+            core.output_dir.as_deref(),
             Some(on_chunk),
             cancel,
         )

@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from test_third_party_notices import notice_fixture
+
 
 spec = importlib.util.spec_from_file_location(
     "linux_release_appimage", Path(__file__).with_name("linux-release-appimage.py")
@@ -107,6 +109,7 @@ class AppImageTests(unittest.TestCase):
             requires=("GLIBC_2.42",),
         )
         self.component = self.root / "component"
+        notice_fixture(self.component)
         icons = self.component / "app/packaging"
         icons.mkdir(parents=True)
         (icons / "maple-agent.png").write_bytes(b"prod-icon")
@@ -280,7 +283,7 @@ class AppImageTests(unittest.TestCase):
             else:
                 shutil.copytree(source.parent / "MapleAgent.AppDir", destination)
 
-        with mock.patch.dict(os.environ, variables), mock.patch.object(packaging, "run", tool_run), mock.patch.object(packaging, "extract_appimage", extract), mock.patch.object(packaging.sys, "argv", ["helper", str(self.binary), str(output)]), mock.patch("builtins.print"):
+        with mock.patch.dict(os.environ, variables), mock.patch.object(packaging, "run", tool_run), mock.patch.object(packaging, "extract_appimage", extract), mock.patch.object(packaging.sys, "argv", ["helper", str(self.binary), str(output)]), mock.patch.object(packaging, "__file__", str(self.component / "scripts/linux-release-appimage.py")), mock.patch("builtins.print"):
             packaging.main()
             self.assertEqual(os.environ["SOURCE_DATE_EPOCH"], "12345")
         self.assertEqual(len(squashfs_calls), 1)

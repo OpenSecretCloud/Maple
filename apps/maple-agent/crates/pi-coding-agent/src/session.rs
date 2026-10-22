@@ -39,6 +39,20 @@ pub struct SessionHeader {
     pub parent_session: Option<String>,
 }
 
+/// State immediately before the first entry of a partially loaded branch.
+///
+/// These are facts, not session entries: they seed projection without entering the
+/// persistence retry slice. A compaction in the loaded tail supplies its own complete
+/// system message and replaces `system_message`, so the prompt is never replayed twice.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SessionBase {
+    pub model: Option<(String, String)>,
+    pub thinking_level: ThinkingLevel,
+    pub session_name: Option<String>,
+    pub system_message: Option<SystemMessage>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEntry {
@@ -155,6 +169,7 @@ impl From<io::Error> for SessionError {
 /// One entry's contribution to the model context.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectedEntry {
+    /// The source id, or an empty string for a partial load's system-state snapshot.
     pub entry_id: String,
     pub is_compaction: bool,
     /// Empty for state-only entries and omitted ones.
@@ -318,8 +333,19 @@ pub fn context_entries<'a>(path: &[&'a SessionEntry]) -> Vec<&'a SessionEntry> {
 
 /// Project a branch path into its model context.
 pub fn project(path: &[&SessionEntry]) -> SessionProjection {
-    let mut thinking_level = ThinkingLevel::Off;
-    let mut model = None;
+    project_from_base(path, None)
+}
+
+/// Project a loaded branch using the typed facts immediately before its boundary.
+/// The latest compaction supplies the prompt when present; otherwise the base prompt
+/// is replayed before the loaded messages. The snapshot never becomes a stored entry.
+pub fn project_with_base(path: &[&SessionEntry], base: &SessionBase) -> SessionProjection {
+    project_from_base(path, Some(base))
+}
+
+fn project_from_base(path: &[&SessionEntry], base: Option<&SessionBase>) -> SessionProjection {
+    let mut thinking_level = base.map_or(ThinkingLevel::Off, |base| base.thinking_level);
+    let mut model = base.and_then(|base| base.model.clone());
     for entry in path {
         match &entry.kind {
             EntryKind::ThinkingLevelChange {
@@ -336,7 +362,7 @@ pub fn project(path: &[&SessionEntry]) -> SessionProjection {
     }
     let entries = context_entries(path);
     let edits = ContextEdits::of(&entries);
-    let projected: Vec<ProjectedEntry> = entries
+    let mut projected: Vec<ProjectedEntry> = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
@@ -354,6 +380,20 @@ pub fn project(path: &[&SessionEntry]) -> SessionProjection {
             }
         })
         .collect();
+    if !path
+        .iter()
+        .any(|entry| matches!(entry.kind, EntryKind::Compaction { .. }))
+        && let Some(system) = base.and_then(|base| base.system_message.as_ref())
+    {
+        projected.insert(
+            0,
+            ProjectedEntry {
+                entry_id: String::new(),
+                is_compaction: false,
+                messages: vec![SessionMessage::Llm(Message::System(system.clone()))],
+            },
+        );
+    }
     SessionProjection {
         messages: projected
             .iter()
@@ -435,8 +475,15 @@ pub struct SessionManager {
     /// `labelTimestampsById`.
     label_times: HashMap<String, Timestamp>,
     leaf: Option<String>,
+    base: SessionBase,
+    /// The first loaded entry. A new root created with `reset_leaf` does not inherit
+    /// facts from the omitted prefix of a different branch.
+    base_root: Option<String>,
     store: Box<dyn SessionStore>,
+    /// Whether this store has completed its first conversation write.
     flushed: bool,
+    persisted_len: usize,
+    needs_rewrite: bool,
     persist_error: Option<io::Error>,
 }
 
@@ -522,12 +569,32 @@ impl SessionManager {
         Self::from_parts(header, entries, store, true)
     }
 
+    /// A stored branch loaded from a context boundary, leaving its older entries in
+    /// the store. `base` records facts immediately before that boundary, and original
+    /// parent ids are retained. The tail must contain all entries needed by the latest
+    /// compaction and its context edits.
+    ///
+    /// The store must preserve the unloaded prefix when `write_all` retries this tail;
+    /// a replacing store such as `JsonlStore` must instead use a complete `open` load.
+    pub fn open_partial(
+        header: SessionHeader,
+        base: SessionBase,
+        entries_from_boundary: Vec<SessionEntry>,
+        store: Box<dyn SessionStore>,
+    ) -> Self {
+        let mut manager = Self::from_parts(header, entries_from_boundary, store, true);
+        manager.base_root = manager.entries.first().map(|entry| entry.id.clone());
+        manager.base = base;
+        manager
+    }
+
     fn from_parts(
         header: SessionHeader,
         entries: Vec<SessionEntry>,
         store: Box<dyn SessionStore>,
         flushed: bool,
     ) -> Self {
+        let persisted_len = if flushed { entries.len() } else { 0 };
         let mut manager = Self {
             header,
             entries,
@@ -535,8 +602,12 @@ impl SessionManager {
             labels: HashMap::new(),
             label_times: HashMap::new(),
             leaf: None,
+            base: SessionBase::default(),
+            base_root: None,
             store,
             flushed,
+            persisted_len,
+            needs_rewrite: !flushed,
             persist_error: None,
         };
         manager.rebuild_index();
@@ -589,6 +660,7 @@ impl SessionManager {
     /// `exportSessionToJsonl` does: a header with the session's id and folder and the
     /// time now, then the branch's entries, each the parent of the next.
     pub fn export_branch(&self, path: &Path) -> io::Result<()> {
+        self.require_complete_history()?;
         let header = SessionHeader {
             version: SESSION_VERSION,
             id: self.header.id.clone(),
@@ -646,7 +718,8 @@ impl SessionManager {
                     Some(name.as_deref().filter(|name| !name.trim().is_empty()))
                 }
                 _ => None,
-            })?
+            })
+            .unwrap_or(self.base.session_name.as_deref())
     }
 
     /// A storage failure since the last call. The tree in memory stays correct either way.
@@ -654,29 +727,74 @@ impl SessionManager {
         self.persist_error.take()
     }
 
-    fn persist(&mut self) {
-        let result = if self.flushed {
-            match self.entries.last() {
-                Some(entry) => self.store.append(entry),
-                None => Ok(()),
-            }
-        } else if self.entries.iter().any(is_conversation) {
-            self.store.write_all(&self.header, &self.entries)
+    /// Whether entries in memory still need a successful store write. Consuming a
+    /// persistence error does not clear this state. State-only entries before the
+    /// first conversation are deliberately provisional and do not block eviction.
+    pub fn has_unpersisted(&self) -> bool {
+        self.persisted_len < self.entries.len()
+            && (self.flushed || self.entries.iter().any(is_conversation))
+    }
+
+    /// Retry pending writes without adding an entry. A failure leaves the same retry
+    /// slice available and never makes the session safe to evict. The lazy first-write
+    /// rule still applies: a state-only session is not written before a conversation.
+    pub fn flush(&mut self) -> io::Result<()> {
+        if !self.has_unpersisted() {
+            return Ok(());
+        }
+        if !self.flushed && !self.entries.iter().any(is_conversation) {
+            return Ok(());
+        }
+        let result = if self.needs_rewrite || self.entries.len() != self.persisted_len + 1 {
+            self.store.write_all_with_base(
+                &self.header,
+                self.base_root.as_ref().map(|_| &self.base),
+                &self.entries,
+            )
         } else {
-            return;
+            let entry = self.entries.last().expect("pending entry");
+            let context_base = if let EntryKind::Compaction {
+                first_kept_entry_id,
+                ..
+            } = &entry.kind
+            {
+                // A missing kept id means the compaction keeps no older entries, as
+                // context_entries also interprets it. The boundary is the compaction.
+                Some(
+                    self.base_before(first_kept_entry_id)
+                        .or_else(|_| self.base_before(&entry.id))
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+                )
+            } else {
+                None
+            };
+            self.store.append_with_context(entry, context_base.as_ref())
         };
         match result {
-            Ok(()) => self.flushed = true,
+            Ok(()) => {
+                self.flushed = true;
+                self.persisted_len = self.entries.len();
+                self.needs_rewrite = false;
+                Ok(())
+            }
             Err(error) => {
-                // Write everything again next time, so a failed write leaves no gap.
-                self.flushed = false;
-                self.persist_error = Some(error);
+                self.needs_rewrite = true;
+                Err(error)
             }
         }
     }
 
+    fn persist(&mut self) {
+        if let Err(error) = self.flush() {
+            self.persist_error = Some(error);
+        }
+    }
+
     fn fresh_id(&self) -> String {
-        new_entry_id(|candidate| self.index.contains_key(candidate))
+        new_entry_id(|candidate| {
+            self.index.contains_key(candidate)
+                || self.store.contains_entry(candidate).unwrap_or(false)
+        })
     }
 
     fn append(&mut self, kind: EntryKind) -> String {
@@ -882,7 +1000,63 @@ impl SessionManager {
     }
 
     pub fn projection(&self) -> SessionProjection {
-        project(&self.branch())
+        let branch = self.branch();
+        project_from_base(&branch, self.base_for_branch(&branch))
+    }
+
+    /// Whether the active branch inherits resolved facts from an unloaded prefix.
+    pub fn has_context_base(&self) -> bool {
+        self.base_for_branch(&self.branch()).is_some()
+    }
+
+    fn base_for_branch(&self, branch: &[&SessionEntry]) -> Option<&SessionBase> {
+        self.base_root.as_deref().and_then(|root| {
+            branch
+                .first()
+                .filter(|entry| entry.id == root)
+                .map(|_| &self.base)
+        })
+    }
+
+    /// Snapshot the typed facts immediately before `entry_id`, without manufacturing
+    /// entries. Hosts persist this with the compaction boundary, in the same transaction.
+    /// The id must be part of the loaded active branch.
+    pub fn base_before(&self, entry_id: &str) -> Result<SessionBase, SessionError> {
+        if !self.index.contains_key(entry_id) {
+            return Err(SessionError::NotFound(entry_id.into()));
+        }
+        let branch = self.branch();
+        let position = branch
+            .iter()
+            .position(|entry| entry.id == entry_id)
+            .ok_or_else(|| SessionError::NotOnBranch(entry_id.into()))?;
+        let inherited = self.base_for_branch(&branch);
+        let prefix = &branch[..position];
+        let projection = project_from_base(prefix, inherited);
+        // Session names, unlike model context, follow append order across branches.
+        let before = &self.entries[..self.index[entry_id]];
+        let session_name = before
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.kind {
+                EntryKind::SessionInfo { name } => {
+                    Some(name.clone().filter(|name| !name.trim().is_empty()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| self.base.session_name.clone());
+        let system_message = current_system_message(
+            projection
+                .messages
+                .iter()
+                .filter_map(AgentMessage::as_message),
+        );
+        Ok(SessionBase {
+            model: projection.model,
+            thinking_level: projection.thinking_level,
+            session_name,
+            system_message,
+        })
     }
 
     /// The whole tree, children ordered oldest first.
@@ -936,12 +1110,18 @@ impl SessionManager {
     /// The current branch alone, in memory: where drafts are tried before they are
     /// added, as Pi previews a boundary's entries.
     pub(crate) fn branch_copy(&self) -> SessionManager {
-        Self::from_parts(
+        let branch = self.branch();
+        let mut copy = Self::from_parts(
             self.header.clone(),
-            self.branch().into_iter().cloned().collect(),
+            branch.iter().map(|entry| (*entry).clone()).collect(),
             Box::new(MemoryStore),
             true,
-        )
+        );
+        if let Some(base) = self.base_for_branch(&branch) {
+            copy.base = base.clone();
+            copy.base_root = copy.entries.first().map(|entry| entry.id.clone());
+        }
+        copy
     }
 
     /// [`Self::fork`] into a file of its own in `dir`, named as [`Self::create_in`]
@@ -959,6 +1139,7 @@ impl SessionManager {
         leaf_id: Option<&str>,
         dir: Option<&Path>,
     ) -> Result<SessionManager, SessionError> {
+        self.require_complete_history()?;
         let mut copy = Self::from_parts(
             self.header.clone(),
             self.entries.clone(),
@@ -978,6 +1159,7 @@ impl SessionManager {
         parent_session: Option<String>,
         store_for: impl FnOnce(&SessionHeader) -> Box<dyn SessionStore>,
     ) -> Result<(), SessionError> {
+        self.require_complete_history()?;
         if let Some(leaf_id) = leaf_id
             && !self.index.contains_key(leaf_id)
         {
@@ -1043,8 +1225,22 @@ impl SessionManager {
         self.entries = entries;
         self.store = store_for(&self.header);
         self.flushed = false;
+        self.persisted_len = 0;
+        self.needs_rewrite = true;
+        self.base = SessionBase::default();
+        self.base_root = None;
         self.rebuild_index();
         self.persist();
+        Ok(())
+    }
+
+    fn require_complete_history(&self) -> io::Result<()> {
+        if self.base_root.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This operation requires a complete session load; reload the full history first",
+            ));
+        }
         Ok(())
     }
 }
@@ -1431,5 +1627,807 @@ mod tests {
         session.append_message(assistant("hi"));
         let (_, entries) = JsonlStore::load(&path).unwrap().unwrap();
         assert_eq!(entries, session.entries());
+    }
+
+    #[test]
+    fn flush_retries_failed_writes_after_the_error_was_consumed() {
+        let failing = Arc::new(AtomicBool::new(false));
+        let stored = Arc::new(Mutex::new(Vec::new()));
+        let mut session = SessionManager::create(
+            "/work",
+            Box::new(FlakyStore {
+                failing: failing.clone(),
+                stored: stored.clone(),
+            }),
+        );
+        assert!(!session.has_unpersisted());
+        session.append_message(user("first"));
+        assert!(!session.has_unpersisted());
+        failing.store(true, Ordering::SeqCst);
+        session.append_message(assistant("second"));
+        assert!(session.take_persist_error().is_some());
+        assert!(session.has_unpersisted());
+        assert!(session.flush().is_err());
+        assert!(session.has_unpersisted());
+        failing.store(false, Ordering::SeqCst);
+        session.flush().unwrap();
+        assert!(!session.has_unpersisted());
+        let expected: Vec<_> = session
+            .entries()
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect();
+        assert_eq!(*stored.lock().unwrap(), expected);
+        session.flush().unwrap();
+        assert_eq!(*stored.lock().unwrap(), expected);
+    }
+
+    #[test]
+    fn explicit_flush_keeps_the_lazy_first_conversation_contract() {
+        let stored = Arc::new(Mutex::new(Vec::new()));
+        let mut session = SessionManager::create(
+            "/work",
+            Box::new(FlakyStore {
+                failing: Arc::new(AtomicBool::new(false)),
+                stored: stored.clone(),
+            }),
+        );
+        session.append_model_change("provider", "model");
+        session.append_session_info(Some("pending".into()));
+        assert!(!session.has_unpersisted());
+        session.flush().unwrap();
+        assert!(stored.lock().unwrap().is_empty());
+        assert!(!session.has_unpersisted());
+        session.append_message(user("start"));
+        assert!(!session.has_unpersisted());
+        assert_eq!(stored.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn fresh_ids_consult_store_history_outside_the_loaded_index() {
+        struct ClaimingStore(Arc<Mutex<Vec<String>>>);
+        impl SessionStore for ClaimingStore {
+            fn write_all(&mut self, _: &SessionHeader, _: &[SessionEntry]) -> io::Result<()> {
+                Ok(())
+            }
+            fn append(&mut self, _: &SessionEntry) -> io::Result<()> {
+                Ok(())
+            }
+            fn contains_entry(&self, id: &str) -> io::Result<bool> {
+                let mut queried = self.0.lock().unwrap();
+                queried.push(id.into());
+                Ok(queried.len() <= 32)
+            }
+        }
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let session = SessionManager::create("/work", Box::new(ClaimingStore(queries.clone())));
+        let id = session.fresh_id();
+        let queries = queries.lock().unwrap();
+        assert_eq!(queries.len(), 33);
+        assert!(queries[..32].iter().all(|claimed| claimed != &id));
+        assert_eq!(queries.last(), Some(&id));
+    }
+
+    #[test]
+    fn a_store_id_lookup_error_does_not_block_entry_creation() {
+        struct UnavailableStore;
+        impl SessionStore for UnavailableStore {
+            fn write_all(&mut self, _: &SessionHeader, _: &[SessionEntry]) -> io::Result<()> {
+                Ok(())
+            }
+            fn append(&mut self, _: &SessionEntry) -> io::Result<()> {
+                Ok(())
+            }
+            fn contains_entry(&self, _: &str) -> io::Result<bool> {
+                Err(io::Error::other("reader unavailable"))
+            }
+        }
+        let mut session = SessionManager::create("/work", Box::new(UnavailableStore));
+        assert_eq!(session.append_message(user("kept")).len(), 8);
+        assert!(!session.has_unpersisted());
+    }
+
+    #[test]
+    fn partial_retry_sends_only_real_tail_entries_and_keeps_the_stored_prefix() {
+        struct RetainingStore {
+            stored: Arc<Mutex<Vec<SessionEntry>>>,
+            retries: Arc<Mutex<Vec<Vec<SessionEntry>>>>,
+            retry_initial_bases: Arc<Mutex<Vec<Option<SessionBase>>>>,
+            failing: Arc<AtomicBool>,
+        }
+        impl SessionStore for RetainingStore {
+            fn write_all(&mut self, _: &SessionHeader, entries: &[SessionEntry]) -> io::Result<()> {
+                self.retries.lock().unwrap().push(entries.to_vec());
+                if self.failing.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("full"));
+                }
+                let mut stored = self.stored.lock().unwrap();
+                for entry in entries {
+                    if !stored.iter().any(|old| old.id == entry.id) {
+                        stored.push(entry.clone());
+                    }
+                }
+                Ok(())
+            }
+            fn write_all_with_base(
+                &mut self,
+                header: &SessionHeader,
+                initial_base: Option<&SessionBase>,
+                entries: &[SessionEntry],
+            ) -> io::Result<()> {
+                self.retry_initial_bases
+                    .lock()
+                    .unwrap()
+                    .push(initial_base.cloned());
+                self.write_all(header, entries)
+            }
+            fn append(&mut self, entry: &SessionEntry) -> io::Result<()> {
+                if self.failing.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("full"));
+                }
+                self.stored.lock().unwrap().push(entry.clone());
+                Ok(())
+            }
+            fn contains_entry(&self, id: &str) -> io::Result<bool> {
+                Ok(self
+                    .stored
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.id == id))
+            }
+        }
+        let mut original = SessionManager::in_memory("/work");
+        original.append_model_change("original", "model");
+        original.append_thinking_level_change(ThinkingLevel::High);
+        original.append_message(user("omitted prefix"));
+        let boundary = original.append_message(user("kept tail"));
+        original.append_compaction(
+            "prefix summary".into(),
+            Some(boundary.clone()),
+            100,
+            None,
+            None,
+            false,
+        );
+        let base = original.base_before(&boundary).unwrap();
+        let tail = original.entries()[3..].to_vec();
+        let prefix = original.entries()[..3].to_vec();
+        let stored = Arc::new(Mutex::new(original.entries().to_vec()));
+        let retries = Arc::new(Mutex::new(Vec::new()));
+        let retry_initial_bases = Arc::new(Mutex::new(Vec::new()));
+        let failing = Arc::new(AtomicBool::new(true));
+        let mut partial = SessionManager::open_partial(
+            original.header().clone(),
+            base.clone(),
+            tail.clone(),
+            Box::new(RetainingStore {
+                stored: stored.clone(),
+                retries: retries.clone(),
+                retry_initial_bases: retry_initial_bases.clone(),
+                failing: failing.clone(),
+            }),
+        );
+        partial.append_message(assistant("not yet written"));
+        assert!(partial.take_persist_error().is_some());
+        assert!(partial.has_unpersisted());
+        assert!(partial.flush().is_err());
+        failing.store(false, Ordering::SeqCst);
+        partial.flush().unwrap();
+        assert!(!partial.has_unpersisted());
+        let stored = stored.lock().unwrap();
+        assert_eq!(&stored[..3], prefix);
+        assert_eq!(&stored[3..], partial.entries());
+        assert_eq!(retries.lock().unwrap().len(), 2);
+        assert_eq!(
+            *retry_initial_bases.lock().unwrap(),
+            vec![Some(base.clone()), Some(base)]
+        );
+        for retry in retries.lock().unwrap().iter() {
+            assert_eq!(&retry[..tail.len()], tail);
+            assert_eq!(retry.len(), tail.len() + 1);
+            assert!(retry.iter().all(|entry| !entry.id.is_empty()));
+        }
+    }
+
+    #[test]
+    fn jsonl_id_lookup_tracks_replacements_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ids.jsonl");
+        let mut store = JsonlStore::new(&path);
+        assert!(!store.contains_entry("missing").unwrap());
+        let mut session = SessionManager::in_memory("/work");
+        session.append_message(user("first"));
+        store
+            .write_all(session.header(), session.entries())
+            .unwrap();
+        let first = session.entries()[0].id.clone();
+        assert!(store.contains_entry(&first).unwrap());
+        session.append_message(user("second"));
+        let second = session.entries()[1].clone();
+        store.append(&second).unwrap();
+        assert!(store.contains_entry(&second.id).unwrap());
+        store.write_all(session.header(), &[]).unwrap();
+        assert!(!store.contains_entry(&first).unwrap());
+        assert!(!store.contains_entry(&second.id).unwrap());
+    }
+
+    fn partial_fixture_header() -> SessionHeader {
+        SessionHeader {
+            version: SESSION_VERSION,
+            id: "partial-fixture".into(),
+            timestamp: 1,
+            cwd: "/work/partial-fixture".into(),
+            parent_session: None,
+        }
+    }
+
+    fn partial_fixture_open(entries: Vec<SessionEntry>) -> SessionManager {
+        SessionManager::open(partial_fixture_header(), entries, Box::new(MemoryStore))
+    }
+
+    fn partial_fixture_push(entries: &mut Vec<SessionEntry>, mut kind: EntryKind) -> String {
+        let id = format!("entry-{:04}", entries.len());
+        let timestamp = entries.len() as i64 + 10;
+        if let EntryKind::Message { message } = &mut kind {
+            match message {
+                SessionMessage::Llm(Message::System(message)) => message.timestamp = timestamp,
+                SessionMessage::Llm(Message::User(message)) => message.timestamp = timestamp,
+                SessionMessage::Llm(Message::Assistant(message)) => message.timestamp = timestamp,
+                _ => {}
+            }
+        }
+        entries.push(SessionEntry {
+            id: id.clone(),
+            parent_id: entries.last().map(|entry| entry.id.clone()),
+            timestamp,
+            kind,
+        });
+        id
+    }
+
+    fn partial_fixture_message(entries: &mut Vec<SessionEntry>, message: SessionMessage) -> String {
+        partial_fixture_push(entries, EntryKind::Message { message })
+    }
+
+    fn partial_fixture_reply(text: &str, context_tokens: u64, model: &str) -> SessionMessage {
+        let mut message = assistant(text);
+        if let SessionMessage::Llm(Message::Assistant(reply)) = &mut message {
+            reply.provider = "fixture-provider".into();
+            reply.model = model.into();
+            reply.usage.total_tokens = context_tokens;
+        }
+        message
+    }
+
+    fn partial_fixture_system(session: &SessionManager) -> Option<SystemMessage> {
+        let projection = session.projection();
+        current_system_message(
+            projection
+                .messages
+                .iter()
+                .filter_map(AgentMessage::as_message),
+        )
+    }
+
+    fn partial_fixture_compact(entries: &mut Vec<SessionEntry>, first_kept: &str, summary: &str) {
+        let mut system_message = partial_fixture_system(&partial_fixture_open(entries.clone()));
+        if let Some(system) = &mut system_message {
+            system.timestamp = entries.len() as i64 + 10;
+        }
+        partial_fixture_push(
+            entries,
+            EntryKind::Compaction {
+                summary: summary.into(),
+                first_kept_entry_id: first_kept.into(),
+                tokens_before: 900_000,
+                details: Some(json!({ "fixture": summary })),
+                usage: None,
+                from_extension: false,
+                system_message,
+            },
+        );
+    }
+
+    fn assert_partial_fixture_equal(full: &SessionManager, partial: &SessionManager) {
+        let full_projection = full.projection();
+        let partial_projection = partial.projection();
+        let conversations = |projection: &SessionProjection| -> Vec<SessionMessage> {
+            projection
+                .messages
+                .iter()
+                .filter(|message| !matches!(message.as_message(), Some(Message::System(_))))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            conversations(&partial_projection),
+            conversations(&full_projection)
+        );
+        assert_eq!(
+            partial_fixture_system(partial),
+            partial_fixture_system(full)
+        );
+        assert_eq!(partial_projection.model, full_projection.model);
+        assert_eq!(
+            partial_projection.thinking_level,
+            full_projection.thinking_level
+        );
+        assert_eq!(partial.session_name(), full.session_name());
+        assert_eq!(
+            crate::compaction::estimate_projected_context_tokens(
+                &partial_projection,
+                &partial.branch()
+            ),
+            crate::compaction::estimate_projected_context_tokens(&full_projection, &full.branch()),
+        );
+        assert_eq!(partial.leaf_id(), full.leaf_id());
+    }
+
+    /// Old prefixes deliberately include changing prompt sections, tool definitions,
+    /// model choices, names (including cleared names), and reasoning state. The first
+    /// kept boundary is state-only in two cases, which catches snapshots taken after
+    /// the boundary instead of immediately before it.
+    fn partial_fixture_history(
+        prefix_turns: usize,
+        boundary_kind: usize,
+    ) -> (Vec<SessionEntry>, Vec<usize>) {
+        let mut entries = Vec::new();
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::ModelChange {
+                provider: "initial-provider".into(),
+                model_id: "initial-model".into(),
+            },
+        );
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::ThinkingLevelChange {
+                thinking_level: ThinkingLevel::High,
+            },
+        );
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::SessionInfo {
+                name: Some("initial name".into()),
+            },
+        );
+        let mut system = SystemMessage {
+            content: "initial instructions".into(),
+            tools_added: vec![
+                pi_ai::Tool::new(
+                    "read",
+                    "initial reader",
+                    json!({"type":"object","properties":{}}),
+                ),
+                pi_ai::Tool::new(
+                    "write",
+                    "initial writer",
+                    json!({"type":"object","properties":{}}),
+                ),
+            ],
+            ..SystemMessage::default()
+        };
+        system
+            .sections
+            .insert("project".into(), Some("old project".into()));
+        system
+            .sections
+            .insert("temporary".into(), Some("remove me".into()));
+        partial_fixture_message(&mut entries, SessionMessage::Llm(Message::System(system)));
+        for turn in 0..prefix_turns {
+            partial_fixture_push(
+                &mut entries,
+                EntryKind::ModelChange {
+                    provider: format!("provider-{turn}"),
+                    model_id: format!("model-{turn}"),
+                },
+            );
+            partial_fixture_push(
+                &mut entries,
+                EntryKind::ThinkingLevelChange {
+                    thinking_level: ThinkingLevel::ALL[turn % ThinkingLevel::ALL.len()],
+                },
+            );
+            partial_fixture_push(
+                &mut entries,
+                EntryKind::SessionInfo {
+                    name: (turn % 3 != 0).then(|| format!("name-{turn}")),
+                },
+            );
+            let mut update = SystemMessage {
+                content: format!("added instruction {turn}"),
+                ..SystemMessage::default()
+            };
+            update
+                .sections
+                .insert("project".into(), Some(format!("project-{turn}")));
+            update.sections.insert("temporary".into(), None);
+            update.tools_added.push(pi_ai::Tool::new(
+                "read",
+                format!("reader-{turn}"),
+                json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            ));
+            partial_fixture_message(&mut entries, SessionMessage::Llm(Message::System(update)));
+            partial_fixture_message(&mut entries, user(&format!("discarded question {turn}")));
+            partial_fixture_message(
+                &mut entries,
+                partial_fixture_reply(
+                    "discarded answer",
+                    700_000 + turn as u64,
+                    &format!("answered-{turn}"),
+                ),
+            );
+        }
+
+        let first_cut = entries.len();
+        let first_kept = partial_fixture_push(
+            &mut entries,
+            match boundary_kind {
+                0 => EntryKind::Message {
+                    message: user("first kept question"),
+                },
+                1 => EntryKind::ModelChange {
+                    provider: "boundary-provider".into(),
+                    model_id: "boundary-model".into(),
+                },
+                _ => EntryKind::ThinkingLevelChange {
+                    thinking_level: ThinkingLevel::Max,
+                },
+            },
+        );
+        let edited = partial_fixture_message(&mut entries, user("kept input to edit"));
+        partial_fixture_message(
+            &mut entries,
+            partial_fixture_reply("kept answer", 500_000, "kept-model"),
+        );
+        partial_fixture_compact(&mut entries, &first_kept, "first compaction");
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::ContextEdit {
+                target_id: edited,
+                replacement: Some(vec![Content::text("short edited input")]),
+            },
+        );
+        partial_fixture_message(&mut entries, user("next turn"));
+
+        let second_cut = entries.len();
+        let second_kept = partial_fixture_push(
+            &mut entries,
+            EntryKind::SessionInfo {
+                // Test both inherited names and explicit clears after the snapshot.
+                name: if prefix_turns.is_multiple_of(2) {
+                    None
+                } else {
+                    Some("second-compaction name".into())
+                },
+            },
+        );
+        partial_fixture_message(&mut entries, user("second kept question"));
+        partial_fixture_message(
+            &mut entries,
+            partial_fixture_reply("second kept answer", 800_000, "second-kept-model"),
+        );
+        let mut update = SystemMessage {
+            content: "post-boundary instructions".into(),
+            tools_removed: vec![pi_ai::ToolReference {
+                name: "write".into(),
+            }],
+            ..SystemMessage::default()
+        };
+        update
+            .sections
+            .insert("project".into(), Some("current project".into()));
+        update.tools_added.push(pi_ai::Tool::new(
+            "search",
+            "search current project",
+            json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        ));
+        partial_fixture_message(&mut entries, SessionMessage::Llm(Message::System(update)));
+        partial_fixture_compact(&mut entries, &second_kept, "second compaction");
+        partial_fixture_message(
+            &mut entries,
+            partial_fixture_reply("fresh measured answer", 41_000, "latest-model"),
+        );
+        partial_fixture_message(&mut entries, user("tail"));
+        (entries, vec![first_cut, second_cut])
+    }
+
+    #[test]
+    fn partial_sessions_match_full_replay_across_prefix_sizes_and_repeated_compactions() {
+        for prefix_turns in [0, 1, 2, 3, 7, 16, 31] {
+            for boundary_kind in 0..3 {
+                let (entries, cuts) = partial_fixture_history(prefix_turns, boundary_kind);
+                for end in [cuts[1], entries.len()] {
+                    let entries = &entries[..end];
+                    let full = partial_fixture_open(entries.to_vec());
+                    for cut in cuts.iter().copied().filter(|cut| *cut < end) {
+                        let boundary = &entries[cut];
+                        let base = full.base_before(&boundary.id).unwrap();
+                        let prefix = partial_fixture_open(entries[..cut].to_vec());
+                        assert_eq!(base.model, prefix.projection().model);
+                        assert_eq!(base.thinking_level, prefix.projection().thinking_level);
+                        assert_eq!(base.session_name.as_deref(), prefix.session_name());
+                        assert_eq!(base.system_message, partial_fixture_system(&prefix));
+                        let tail = entries[cut..].to_vec();
+                        let partial = SessionManager::open_partial(
+                            partial_fixture_header(),
+                            base,
+                            tail.clone(),
+                            Box::new(MemoryStore),
+                        );
+                        assert_eq!(partial.entries(), tail);
+                        assert_eq!(
+                            partial.entries()[0].parent_id,
+                            Some(entries[cut - 1].id.clone())
+                        );
+                        assert!(partial.entry(&entries[cut - 1].id).is_none());
+                        assert_partial_fixture_equal(&full, &partial);
+                        // AgentSession uses a branch copy for boundary previews. It must
+                        // carry the base without converting it into synthetic entries.
+                        let copy = partial.branch_copy();
+                        assert_eq!(copy.entries(), partial.entries());
+                        assert_partial_fixture_equal(&full, &copy);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_partial_session_inherits_state_when_the_kept_tail_never_reselects_it() {
+        let mut entries = Vec::new();
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::ModelChange {
+                provider: "inherited-provider".into(),
+                model_id: "inherited-model".into(),
+            },
+        );
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::ThinkingLevelChange {
+                thinking_level: ThinkingLevel::Xhigh,
+            },
+        );
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::SessionInfo {
+                name: Some("inherited name".into()),
+            },
+        );
+        partial_fixture_message(
+            &mut entries,
+            SessionMessage::Llm(Message::System(SystemMessage {
+                content: "inherited prompt".into(),
+                tools_added: vec![pi_ai::Tool::new(
+                    "read",
+                    "reader",
+                    json!({"type":"object","properties":{}}),
+                )],
+                ..SystemMessage::default()
+            })),
+        );
+        let cut = entries.len();
+        let first_kept = partial_fixture_message(&mut entries, user("kept question"));
+        partial_fixture_compact(&mut entries, &first_kept, "summarized prefix");
+        partial_fixture_message(&mut entries, user("next question"));
+        let full = partial_fixture_open(entries.clone());
+        let partial = SessionManager::open_partial(
+            partial_fixture_header(),
+            full.base_before(&first_kept).unwrap(),
+            entries[cut..].to_vec(),
+            Box::new(MemoryStore),
+        );
+        assert_eq!(
+            partial.projection().model,
+            Some(("inherited-provider".into(), "inherited-model".into()))
+        );
+        assert_eq!(partial.projection().thinking_level, ThinkingLevel::Xhigh);
+        assert_eq!(partial.session_name(), Some("inherited name"));
+        assert_partial_fixture_equal(&full, &partial);
+        // Further bounded snapshots must start from the inherited base, too.
+        let leaf = full.leaf_id().unwrap();
+        assert_eq!(
+            serde_json::to_value(partial.base_before(leaf).unwrap()).unwrap(),
+            serde_json::to_value(full.base_before(leaf).unwrap()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_partial_session_invalidates_old_usage_after_an_edit_and_trusts_new_usage() {
+        let (mut entries, cuts) = partial_fixture_history(7, 1);
+        let edited_id = entries
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.kind {
+                EntryKind::Message {
+                    message: SessionMessage::Llm(Message::User(_)),
+                } => Some(entry.id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        partial_fixture_push(
+            &mut entries,
+            EntryKind::ContextEdit {
+                target_id: edited_id,
+                replacement: Some(vec![Content::text("edited tail")]),
+            },
+        );
+        let mut full = partial_fixture_open(entries.clone());
+        let cut = *cuts.last().unwrap();
+        let mut partial = SessionManager::open_partial(
+            partial_fixture_header(),
+            full.base_before(&entries[cut].id).unwrap(),
+            entries[cut..].to_vec(),
+            Box::new(MemoryStore),
+        );
+        assert_partial_fixture_equal(&full, &partial);
+        assert!(
+            crate::compaction::estimate_projected_context_tokens(
+                &partial.projection(),
+                &partial.branch()
+            ) < 1_000
+        );
+        let fresh = partial_fixture_reply("new measured answer", 12_345, "measured-model");
+        // Clone the same message: its timestamp and usage are part of the comparison.
+        full.append_message(fresh.clone());
+        partial.append_message(fresh);
+        let projection = partial.projection();
+        assert_eq!(
+            crate::compaction::estimate_projected_context_tokens(&projection, &partial.branch()),
+            12_345
+        );
+        // Appended IDs differ, so compare only effective state, not leaf identity.
+        assert_eq!(partial.projection().messages, full.projection().messages);
+        assert_eq!(partial.projection().model, full.projection().model);
+        assert_eq!(
+            partial_fixture_system(&partial),
+            partial_fixture_system(&full)
+        );
+    }
+
+    #[test]
+    fn partial_snapshot_excludes_boundary_state_and_roundtrips_without_entries() {
+        let (entries, cuts) = partial_fixture_history(2, 1);
+        let full = partial_fixture_open(entries.clone());
+        let first_cut = cuts[0];
+        let base = full.base_before(&entries[first_cut].id).unwrap();
+        assert_ne!(
+            base.model,
+            Some(("boundary-provider".into(), "boundary-model".into()))
+        );
+        let encoded = serde_json::to_vec(&base).unwrap();
+        let decoded: SessionBase = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.model, base.model);
+        assert_eq!(decoded.thinking_level, base.thinking_level);
+        assert_eq!(decoded.session_name, base.session_name);
+        assert_eq!(decoded.system_message, base.system_message);
+        assert!(matches!(
+            full.base_before("missing-entry"),
+            Err(SessionError::NotFound(_))
+        ));
+
+        let default: SessionBase = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.model, None);
+        assert_eq!(default.thinking_level, ThinkingLevel::Off);
+        assert_eq!(default.session_name, None);
+        assert_eq!(default.system_message, None);
+        let partial = SessionManager::open_partial(
+            partial_fixture_header(),
+            default,
+            entries.clone(),
+            Box::new(MemoryStore),
+        );
+        assert_eq!(partial.entries(), entries);
+        assert_partial_fixture_equal(&full, &partial);
+    }
+
+    #[test]
+    fn compaction_append_passes_its_preboundary_state_to_the_store_atomically() {
+        #[derive(Default)]
+        struct ContextCapture {
+            append_bases: Mutex<Vec<Option<SessionBase>>>,
+            retry_bases: Mutex<Vec<Option<SessionBase>>>,
+        }
+        struct CaptureStore(Arc<ContextCapture>);
+        impl SessionStore for CaptureStore {
+            fn write_all(&mut self, _: &SessionHeader, _: &[SessionEntry]) -> io::Result<()> {
+                Ok(())
+            }
+            fn append(&mut self, _: &SessionEntry) -> io::Result<()> {
+                Ok(())
+            }
+            fn append_with_context(
+                &mut self,
+                _: &SessionEntry,
+                base: Option<&SessionBase>,
+            ) -> io::Result<()> {
+                self.0.append_bases.lock().unwrap().push(base.cloned());
+                Ok(())
+            }
+            fn write_all_with_base(
+                &mut self,
+                _: &SessionHeader,
+                base: Option<&SessionBase>,
+                _: &[SessionEntry],
+            ) -> io::Result<()> {
+                self.0.retry_bases.lock().unwrap().push(base.cloned());
+                Ok(())
+            }
+        }
+        let captured = Arc::new(ContextCapture::default());
+        let mut session = SessionManager::create("/work", Box::new(CaptureStore(captured.clone())));
+        session.append_model_change("selected-provider", "selected-model");
+        session.append_thinking_level_change(ThinkingLevel::High);
+        session.append_session_info(Some("saved name".into()));
+        session.append_message(SessionMessage::Llm(Message::System(SystemMessage {
+            content: "full prompt".into(),
+            ..SystemMessage::default()
+        })));
+        session.append_message(user("old question"));
+        let boundary = session.append_model_change("kept-provider", "kept-model");
+        session.append_message(user("kept question"));
+        let expected = session.base_before(&boundary).unwrap();
+        session.append_compaction("summary".into(), Some(boundary), 100, None, None, false);
+        assert_eq!(
+            captured.append_bases.lock().unwrap().last(),
+            Some(&Some(expected.clone()))
+        );
+        assert_eq!(
+            expected.model,
+            Some(("selected-provider".into(), "selected-model".into()))
+        );
+        assert_eq!(expected.session_name.as_deref(), Some("saved name"));
+        assert_eq!(
+            expected.system_message.as_ref().unwrap().content,
+            "full prompt"
+        );
+        assert_eq!(*captured.retry_bases.lock().unwrap(), vec![None]);
+
+        // A new compaction that keeps no preceding entries snapshots right before
+        // itself. It does not accidentally reuse the older compaction boundary.
+        let expected = SessionBase {
+            model: session.projection().model,
+            thinking_level: session.projection().thinking_level,
+            session_name: session.session_name().map(str::to_owned),
+            system_message: partial_fixture_system(&session),
+        };
+        session.append_compaction("all summarized".into(), None, 100, None, None, false);
+        assert_eq!(
+            captured.append_bases.lock().unwrap().last(),
+            Some(&Some(expected))
+        );
+    }
+
+    #[test]
+    fn partial_export_and_fork_require_a_complete_reload_and_reset_starts_a_new_context() {
+        let (entries, cuts) = partial_fixture_history(2, 1);
+        let full = partial_fixture_open(entries.clone());
+        let cut = cuts[1];
+        let base = full.base_before(&entries[cut].id).unwrap();
+        let mut partial = SessionManager::open_partial(
+            full.header().clone(),
+            base,
+            entries[cut..].to_vec(),
+            Box::new(MemoryStore),
+        );
+        let leaf = partial.leaf_id().unwrap().to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("incomplete.jsonl");
+        assert_eq!(
+            partial.export_branch(&path).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert!(!path.exists());
+        assert!(partial.branched(Some(&leaf), None).is_err());
+        assert!(partial.fork(Some(&leaf), Box::new(MemoryStore)).is_err());
+        partial.reset_leaf();
+        partial.append_message(user("a fresh root"));
+        let projection = partial.projection();
+        assert_eq!(projection.model, None);
+        assert_eq!(projection.thinking_level, ThinkingLevel::Off);
+        assert_eq!(texts(&partial), ["a fresh root"]);
+        assert!(partial_fixture_system(&partial).is_none());
     }
 }

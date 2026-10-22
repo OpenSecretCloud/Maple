@@ -523,3 +523,35 @@ async fn wait_for(path: &Path) {
     .await
     .expect("the command starts");
 }
+
+#[tokio::test]
+async fn global_tool_output_directory_reaches_the_shell_accumulator() {
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let chunks = lines(3000, |line| format!("line-{line}\n"));
+    let mut options = crate::tools::ToolsOptions {
+        output_dir: Some(dir.path().to_path_buf()),
+        ..crate::tools::ToolsOptions::default()
+    };
+    options.bash = scripted(chunks, Ok(Some(0)));
+    let registered =
+        crate::tools::create_tool("bash", dir.path(), &options, &context(), true).unwrap();
+    let result = registered
+        .tool
+        .execute(ToolInvocation {
+            call_id: "call".into(),
+            args: json!({"command":"fixture"}),
+            cancel: CancellationToken::new(),
+            updates: ToolUpdates::none(),
+        })
+        .await
+        .unwrap();
+    let details = result.details.unwrap();
+    let path = PathBuf::from(details["fullOutputPath"].as_str().unwrap());
+    assert_eq!(path.parent(), Some(dir.path()));
+    assert_eq!(fs::read_to_string(path).unwrap().lines().count(), 3000);
+}

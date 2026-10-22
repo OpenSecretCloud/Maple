@@ -51,7 +51,7 @@ pub use image::{
 };
 pub use ls::{LS_SNIPPET, LocalLsOperations, LsOperations, LsTool, LsToolOptions};
 pub use mutation_queue::with_file_mutation_queue;
-pub use output::{OutputAccumulator, OutputSnapshot, write_output_file};
+pub use output::{OutputAccumulator, OutputSnapshot, write_output_file, write_output_file_in};
 pub use path_utils::{expand_path, resolve_read_path, resolve_to_cwd};
 pub use read::{
     LocalReadOperations, READ_GUIDELINES, READ_SNIPPET, ReadOperations, ReadTool, ReadToolOptions,
@@ -96,6 +96,9 @@ pub const ALL_TOOL_NAMES: [&str; 8] = [
 /// How the built-in tools are set up.
 #[derive(Clone, Default)]
 pub struct ToolsOptions {
+    /// A private host-owned directory for full tool output. `None` keeps the
+    /// standalone temporary-file behavior; a failed explicit path has no fallback.
+    pub output_dir: Option<PathBuf>,
     pub read: ReadToolOptions,
     pub bash: BashToolOptions,
     pub powershell: PowerShellToolOptions,
@@ -243,12 +246,20 @@ pub fn create_tool(
             active,
         ),
         "bash" => {
-            let tool = ShellTool::bash(cwd, options.bash.clone(), context);
+            let mut shell_options = options.bash.clone();
+            shell_options.output_dir = shell_options
+                .output_dir
+                .or_else(|| options.output_dir.clone());
+            let tool = ShellTool::bash(cwd, shell_options, context);
             let guidelines = tool.guidelines();
             registered(tool, BASH_SNIPPET, guidelines, active)
         }
         "powershell" => {
-            let tool = ShellTool::powershell(cwd, options.powershell.clone(), context);
+            let mut shell_options = options.powershell.clone();
+            shell_options.output_dir = shell_options
+                .output_dir
+                .or_else(|| options.output_dir.clone());
+            let tool = ShellTool::powershell(cwd, shell_options, context);
             let guidelines = tool.guidelines();
             registered(tool, POWERSHELL_SNIPPET, guidelines, active)
         }

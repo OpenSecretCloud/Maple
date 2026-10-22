@@ -2,18 +2,27 @@
 //! summaries from the title model, and the attachment images the
 //! runtime stores out of band.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{Context, SharedString};
 use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
 use super::transcript::{attachment_refs, has_tool_input, tool_output_markdown};
+use crate::backend::{AgentBackend, ReadAttachmentRequest, StoreToolSummaryRequest};
 use crate::ui::chat::images::image_format_from_bytes;
 
 /// A thinking block shorter than this reads faster than its summary;
 /// skip the model call.
 const THINKING_SUMMARY_MIN_CHARS: usize = 200;
+const ATTACHMENT_CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_CACHED_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CACHED_ATTACHMENTS: usize = 64;
+const MAX_ATTACHMENT_READS: usize = 4;
+const ATTACHMENT_OVERDRAW_ROWS: usize = 5;
+const INITIAL_ATTACHMENT_ROWS: usize = 20;
 
 /// The text a summary request describes: the output of a tool call, the
 /// text of a thinking block.
@@ -142,7 +151,7 @@ impl ChatScreen {
         let user_id = self.user_id.clone();
         let generation = self.summary_generation;
         self.pending_summaries += 1;
-        let store_id = item_id.clone();
+        let persisted = item.persisted.clone();
         self.call(
             async move {
                 let summary = if thinking {
@@ -154,19 +163,23 @@ impl ChatScreen {
                         .summarize_tool_call(&user_id, &session_id, tool_name, input, output)
                         .await?
                 };
-                if let Some(summary) = &summary {
-                    let summary = summary.clone();
-                    let store = backend.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(error) = store.store_tool_summary_blocking(
+                if let (Some(summary), Some(row)) = (&summary, persisted) {
+                    // A legacy item id can repeat. Persist only through the
+                    // exact durable occurrence; live-only summaries stay here.
+                    if let Err(error) = backend
+                        .save_tool_summary(
                             &user_id,
-                            &session_id,
-                            &store_id,
-                            &summary,
-                        ) {
-                            log::warn!("Cannot store tool summary: {error}");
-                        }
-                    });
+                            StoreToolSummaryRequest {
+                                task: row.task_id,
+                                rows_epoch: row.rows_epoch,
+                                row_seq: row.row_seq,
+                                summary: summary.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        log::warn!("Cannot store tool summary: {error}");
+                    }
                 }
                 Ok::<_, String>(summary)
             },
@@ -216,16 +229,54 @@ impl ChatScreen {
         }
     }
 
-    /// Fetch the images behind sent attachments that are not decoded yet.
-    /// Each id is requested once; the result re-measures the rows that
-    /// show it. Scans the whole timeline: for a loaded snapshot only.
+    /// Prime only the tail before layout. Scroll events request the actual
+    /// viewport and a small overdraw, including newly prepended history.
     pub(super) fn load_attachment_images(&mut self, cx: &mut Context<Self>) {
-        let wanted: Vec<String> = self
-            .timeline
+        self.request_attachment_rows(
+            self.timeline.len().saturating_sub(INITIAL_ATTACHMENT_ROWS),
+            self.timeline.len(),
+            cx,
+        );
+    }
+
+    pub(super) fn request_visible_attachment_images(
+        &mut self,
+        start: usize,
+        end: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let start = start
+            .saturating_sub(ATTACHMENT_OVERDRAW_ROWS)
+            .min(self.timeline.len());
+        let end = end
+            .saturating_add(ATTACHMENT_OVERDRAW_ROWS)
+            .min(self.timeline.len());
+        self.request_attachment_rows(start, end.max(start), cx);
+    }
+
+    fn request_attachment_rows(&mut self, start: usize, end: usize, cx: &mut Context<Self>) {
+        self.attachment_viewport = start..end;
+        let visible: HashSet<String> = self.timeline[start..end]
             .iter()
             .flat_map(attachment_refs)
             .map(|(id, _)| id.to_string())
-            .filter(|id| !self.attachment_requests.contains(id))
+            .collect();
+        // A fast scroll must not leave a backlog downloading distant pages.
+        // Reads already in flight keep their slots until their completion.
+        let requested = &mut self.attachment_requests;
+        self.attachment_queue.retain(|id| {
+            if visible.contains(id) {
+                true
+            } else {
+                requested.remove(id);
+                false
+            }
+        });
+        let wanted: Vec<String> = visible
+            .into_iter()
+            .filter(|id| {
+                !self.attachment_images.contains_key(id) && !self.attachment_requests.contains(id)
+            })
             .collect();
         self.request_attachments(wanted, cx);
     }
@@ -237,57 +288,208 @@ impl ChatScreen {
         item: &AgentTimelineItem,
         cx: &mut Context<Self>,
     ) {
+        // New tail rows are useful only while following the tail. Repaints of
+        // older rows wait until the viewport reaches them.
+        if !self.list_state.is_following_tail() {
+            let Some(&(index, _)) = self.timeline_index.get(&item.id) else {
+                return;
+            };
+            if !self.attachment_viewport.contains(&index) {
+                return;
+            }
+        }
         let wanted: Vec<String> = attachment_refs(item)
             .map(|(id, _)| id.to_string())
-            .filter(|id| !self.attachment_requests.contains(id))
+            .filter(|id| {
+                !self.attachment_images.contains_key(id) && !self.attachment_requests.contains(id)
+            })
             .collect();
         self.request_attachments(wanted, cx);
     }
 
     fn request_attachments(&mut self, wanted: Vec<String>, cx: &mut Context<Self>) {
+        for id in wanted {
+            if self.attachment_requests.insert(id.clone()) {
+                self.attachment_queue.push_back(id);
+            }
+        }
+        self.drain_attachment_queue(cx);
+    }
+
+    fn drain_attachment_queue(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        for id in wanted {
-            self.attachment_requests.insert(id.clone());
+        while self.pending_attachments < MAX_ATTACHMENT_READS {
+            let Some(id) = self.attachment_queue.pop_front() else {
+                break;
+            };
+            if self.attachment_images.contains_key(&id) {
+                continue;
+            }
+            self.pending_attachments += 1;
             let backend = self.backend.clone();
             let user_id = self.user_id.clone();
             let session = session_id.clone();
             let attachment_id = id.clone();
+            let generation = self.selection_generation;
+            let target = session_id.clone();
             self.call(
                 async move {
-                    backend
-                        .read_image_attachment(&user_id, &session, &attachment_id)
-                        .await
+                    read_attachment_image(backend, user_id, session, attachment_id).await
                 },
                 cx,
-                move |this, result, cx| match result {
-                    Ok(bytes) => this.insert_attachment_image(&id, bytes, cx),
-                    Err(message) => log::debug!("attachment {id} not loaded: {message}"),
+                move |this, result, cx| {
+                    this.pending_attachments = this.pending_attachments.saturating_sub(1);
+                    if this.selection_generation == generation && this.is_selected(&target) {
+                        match result {
+                            Ok(image) => this.insert_attachment_image(&id, image, cx),
+                            Err(message) => log::debug!("attachment {id} not loaded: {message}"),
+                        }
+                    }
+                    // Stale reads still occupied a slot; their completion can
+                    // now admit a request for the task currently on screen.
+                    this.drain_attachment_queue(cx);
                 },
             );
         }
     }
 
-    fn insert_attachment_image(&mut self, id: &str, bytes: Vec<u8>, cx: &mut Context<Self>) {
-        let Some(format) = image_format_from_bytes(&bytes) else {
-            return;
-        };
-        self.attachment_images.insert(
-            id.to_string(),
-            Arc::new(gpui::Image::from_bytes(format, bytes)),
-        );
-        // Rows that show this image change height; tell the list.
-        let rows: Vec<usize> = self
-            .timeline
+    fn insert_attachment_image(
+        &mut self,
+        id: &str,
+        image: Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        let start = self.attachment_viewport.start.min(self.timeline.len());
+        let end = self
+            .attachment_viewport
+            .end
+            .max(start)
+            .min(self.timeline.len());
+        let visible: HashSet<String> = self.timeline[start..end]
             .iter()
-            .enumerate()
-            .filter(|(_, item)| attachment_refs(item).any(|(candidate, _)| candidate == id))
-            .map(|(index, _)| index)
+            .flat_map(attachment_refs)
+            .map(|(id, _)| id.to_string())
+            .collect();
+        self.attachment_images.remove(id);
+        let mut cached: usize = self
+            .attachment_images
+            .values()
+            .map(|image| image.bytes.capacity())
+            .sum();
+        let mut evictions: Vec<String> = self
+            .attachment_images
+            .keys()
+            .filter(|id| !visible.contains(*id))
+            .cloned()
+            .collect();
+        evictions.extend(
+            self.attachment_images
+                .keys()
+                .filter(|id| visible.contains(*id))
+                .cloned(),
+        );
+        let mut changed = HashSet::from([id.to_string()]);
+        for candidate in evictions {
+            if cached.saturating_add(image.bytes.capacity()) <= MAX_CACHED_ATTACHMENT_BYTES
+                && self.attachment_images.len() < MAX_CACHED_ATTACHMENTS
+            {
+                break;
+            }
+            if let Some(evicted) = self.attachment_images.remove(&candidate) {
+                cached = cached.saturating_sub(evicted.bytes.capacity());
+                self.attachment_requests.remove(&candidate);
+                changed.insert(candidate);
+            }
+        }
+        self.attachment_images.insert(id.to_string(), image);
+        // Re-measure only rows at the viewport; an offscreen evicted image is
+        // requested and measured when that row becomes visible again.
+        let rows: Vec<usize> = (start..end)
+            .filter(|&index| {
+                attachment_refs(&self.timeline[index])
+                    .any(|(candidate, _)| changed.contains(candidate))
+            })
             .collect();
         for index in rows {
             self.remeasure_item(index);
         }
         cx.notify();
     }
+}
+
+async fn read_attachment_image(
+    backend: Arc<AgentBackend>,
+    user: String,
+    task: String,
+    attachment: String,
+) -> Result<Arc<gpui::Image>, String> {
+    let mut bytes = Vec::new();
+    let mut expected = None;
+    let mut mime = None;
+    loop {
+        let reply = backend
+            .read_attachment(
+                &user,
+                ReadAttachmentRequest {
+                    task: task.clone(),
+                    attachment: attachment.clone(),
+                    offset: bytes.len() as u64,
+                    len: ATTACHMENT_CHUNK_BYTES,
+                },
+            )
+            .await?;
+        let size =
+            usize::try_from(reply.size).map_err(|_| "Attachment size is invalid".to_string())?;
+        if size == 0 || size > MAX_ATTACHMENT_BYTES {
+            return Err("Attachment exceeds the image size limit".into());
+        }
+        if expected.is_some_and(|expected| expected != size)
+            || mime.as_ref().is_some_and(|mime| mime != &reply.mime)
+        {
+            return Err("Attachment changed while loading".into());
+        }
+        if !matches!(
+            reply.mime.as_str(),
+            "image/png" | "image/jpeg" | "image/webp"
+        ) {
+            return Err("Attachment is not a supported image".into());
+        }
+        if expected.is_none() {
+            bytes
+                .try_reserve_exact(size)
+                .map_err(|_| "Attachment could not be allocated".to_string())?;
+        }
+        expected = Some(size);
+        mime = Some(reply.mime);
+        if reply.data.len() > ATTACHMENT_CHUNK_BYTES.div_ceil(3) * 4 {
+            return Err("Attachment range exceeds its size limit".into());
+        }
+        let chunk = tokio::task::spawn_blocking(move || {
+            STANDARD
+                .decode(reply.data)
+                .map_err(|_| "Attachment encoding is invalid".to_string())
+        })
+        .await
+        .map_err(|_| "Attachment decoding did not complete".to_string())??;
+        if chunk.is_empty()
+            || chunk.len() > ATTACHMENT_CHUNK_BYTES
+            || bytes.len().saturating_add(chunk.len()) > size
+        {
+            return Err("Attachment range is incomplete".into());
+        }
+        bytes.extend(chunk);
+        if bytes.len() == size {
+            break;
+        }
+    }
+    tokio::task::spawn_blocking(move || {
+        bytes.shrink_to_fit();
+        let format = image_format_from_bytes(&bytes)
+            .ok_or_else(|| "Attachment is not a supported image".to_string())?;
+        Ok::<_, String>(Arc::new(gpui::Image::from_bytes(format, bytes)))
+    })
+    .await
+    .map_err(|_| "Image preparation did not complete".to_string())?
 }

@@ -26,6 +26,7 @@ pub struct OutputAccumulator {
     max_bytes: usize,
     max_rolling_bytes: usize,
     file_prefix: String,
+    output_dir: Option<PathBuf>,
     /// Bytes of an incomplete character at the end of the last chunk.
     pending: Vec<u8>,
     raw_chunks: Vec<Vec<u8>>,
@@ -49,12 +50,33 @@ impl OutputAccumulator {
         Self::with_limits(file_prefix, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
     }
 
+    /// Keep overflow in the host's directory. `None` preserves standalone Pi's
+    /// temporary-file behavior; an invalid explicit directory never falls back.
+    pub fn new_with_output_dir(file_prefix: &str, output_dir: Option<PathBuf>) -> Self {
+        Self::with_limits_in(
+            file_prefix,
+            DEFAULT_MAX_LINES,
+            DEFAULT_MAX_BYTES,
+            output_dir,
+        )
+    }
+
     pub fn with_limits(file_prefix: &str, max_lines: usize, max_bytes: usize) -> Self {
+        Self::with_limits_in(file_prefix, max_lines, max_bytes, None)
+    }
+
+    pub fn with_limits_in(
+        file_prefix: &str,
+        max_lines: usize,
+        max_bytes: usize,
+        output_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             max_lines,
             max_bytes,
             max_rolling_bytes: (max_bytes * 2).max(1),
             file_prefix: file_prefix.to_string(),
+            output_dir,
             pending: Vec::new(),
             raw_chunks: Vec::new(),
             tail_text: String::new(),
@@ -207,7 +229,12 @@ impl OutputAccumulator {
         if self.file_path.is_some() {
             return;
         }
-        match create_output_file(&self.file_prefix, ".log") {
+        let created = match self.output_dir.as_deref() {
+            Some(dir) => validate_output_directory(dir)
+                .and_then(|()| create_output_file_in(dir, &self.file_prefix, ".log")),
+            None => create_output_file(&self.file_prefix, ".log"),
+        };
+        match created {
             Ok((path, file)) => {
                 self.file_path = Some(path);
                 self.file = Some(BufWriter::new(file));
@@ -281,6 +308,23 @@ pub(crate) fn create_output_file(prefix: &str, extension: &str) -> io::Result<(P
 /// the dot.
 pub fn write_output_file(prefix: &str, extension: &str, data: &[u8]) -> io::Result<PathBuf> {
     let (path, mut file) = create_output_file(prefix, extension)?;
+    write_created_output(path, &mut file, data)
+}
+
+/// Save overflow in a host-owned private directory. It must already exist; a
+/// missing, linked or shared directory fails instead of spilling somewhere else.
+pub fn write_output_file_in(
+    dir: &Path,
+    prefix: &str,
+    extension: &str,
+    data: &[u8],
+) -> io::Result<PathBuf> {
+    validate_output_directory(dir)?;
+    let (path, mut file) = create_output_file_in(dir, prefix, extension)?;
+    write_created_output(path, &mut file, data)
+}
+
+fn write_created_output(path: PathBuf, file: &mut File, data: &[u8]) -> io::Result<PathBuf> {
     if let Err(error) = file.write_all(data).and_then(|()| file.flush()) {
         let _ = std::fs::remove_file(&path);
         return Err(error);
@@ -288,7 +332,49 @@ pub fn write_output_file(prefix: &str, extension: &str, data: &[u8]) -> io::Resu
     Ok(path)
 }
 
+fn validate_output_directory(dir: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Output directory is not private",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Output directory is not private",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Output directory is a reparse point",
+            ));
+        }
+        // The host creates this directory with its owner-only inheritable DACL.
+        // New files inherit that DACL without introducing a platform dependency.
+    }
+    Ok(())
+}
+
 fn create_output_file_in(dir: &Path, prefix: &str, extension: &str) -> io::Result<(PathBuf, File)> {
+    if prefix.is_empty()
+        || prefix.contains(['/', '\\', ':', '\0'])
+        || extension.contains(['/', '\\', ':', '\0'])
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid output file name",
+        ));
+    }
     loop {
         let path = dir.join(format!(
             "{prefix}-{:016x}{extension}",
@@ -299,7 +385,9 @@ fn create_output_file_in(dir: &Path, prefix: &str, extension: &str) -> io::Resul
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
         match options.open(&path) {
             Ok(file) => return Ok((path, file)),
@@ -388,5 +476,64 @@ mod tests {
             let mode = std::fs::metadata(&first).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn explicit_output_directory_keeps_streaming_and_written_output_together() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut output =
+            OutputAccumulator::with_limits_in("stream", 2, 8, Some(dir.path().to_path_buf()));
+        output.append(b"first\nsecond\nthird\n");
+        output.finish();
+        let snapshot = output.snapshot(true);
+        output.close_file().unwrap();
+        let path = snapshot.full_output_path.unwrap();
+        assert_eq!(path.parent(), Some(dir.path()));
+        assert_eq!(std::fs::read(path).unwrap(), b"first\nsecond\nthird\n");
+        let path = write_output_file_in(dir.path(), "resource", ".bin", b"binary").unwrap();
+        assert_eq!(path.parent(), Some(dir.path()));
+        assert_eq!(std::fs::read(path).unwrap(), b"binary");
+    }
+
+    #[test]
+    fn a_failed_explicit_output_directory_never_falls_back_to_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let missing = dir.path().join("missing");
+        let mut output = OutputAccumulator::with_limits_in("stream", 2, 8, Some(missing.clone()));
+        output.append(b"first\nsecond\nthird\n");
+        output.finish();
+        let snapshot = output.snapshot(true);
+        assert!(snapshot.truncation.truncated);
+        assert!(snapshot.full_output_path.is_none());
+        assert!(output.close_file().is_err());
+        assert!(!missing.exists());
+        assert!(write_output_file_in(&missing, "resource", ".bin", b"binary").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(write_output_file_in(dir.path(), "../escape", ".log", b"no").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_output_rejects_linked_and_shared_directories() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link");
+        symlink(dir.path(), &link).unwrap();
+        assert!(write_output_file_in(&link, "out", ".log", b"no").is_err());
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(write_output_file_in(&shared, "out", ".log", b"no").is_err());
+        assert_eq!(std::fs::read_dir(shared).unwrap().count(), 0);
     }
 }
