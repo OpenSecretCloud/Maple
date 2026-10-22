@@ -2,8 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// Keep the checked-in production config undeployable before owner setup, while
-// still bundling and validating code using Wrangler's actual dry-run path.
+// Keep local validation independent of the owner-provisioned production bucket.
+// Bundle and validate code using Wrangler's actual dry-run path.
 // This checked-in config uses whole-line comments and trailing commas only.
 // Unsupported JSONC syntax fails closed instead of weakening deployment guards.
 const config: unknown = JSON.parse(

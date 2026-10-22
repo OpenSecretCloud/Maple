@@ -5,9 +5,11 @@ Independent Agent Worker and R2 publisher. Research's `services/updates/`,
 are unchanged. This code creates no Cloudflare resources and starts no releases.
 See [publisher tooling](publisher/README.md) for exact commands and retry behavior.
 
-The checked-in bucket binding is deliberately a placeholder. There is no deploy
-script or automatic deployment workflow. `workers_dev` and preview URLs are off;
-routine configuration must never contain `route`, `routes` or a Custom Domain.
+The checked-in binding names the owner-provisioned private `maple-agent-updates`
+bucket. This is configuration, not evidence of Worker deployment or activated
+delivery. There is no deploy script or automatic deployment workflow.
+`workers_dev` and preview URLs are off; routine configuration must never contain
+`route`, `routes` or a Custom Domain. Local checks use a separate fixture bucket.
 
 ## Local verification
 
@@ -98,7 +100,7 @@ The owner must prepare and approve these inputs before activating delivery:
   `https://updates.trymaple.ai/download/agent/stable/*`, separately owner-managed.
   Confirm zone/account/proxied DNS, HTTP redirects and edge allowlisting first.
 
-Agent-specific workflow inputs are explicit and initially absent. Reuse the
+Agent-specific workflow inputs are explicit. Reuse the
 existing BWS access credential; no new machine accounts or access tokens are
 required by this workflow:
 

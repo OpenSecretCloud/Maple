@@ -160,7 +160,7 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         self.assertNotIn("assets", config)
         self.assertNotIn("env", config)
         self.assertEqual(config["r2_buckets"], [{
-            "binding": "AGENT_RELEASES", "bucket_name": "REQUIRES-OWNER-APPROVED-AGENT-BUCKET",
+            "binding": "AGENT_RELEASES", "bucket_name": "maple-agent-updates",
         }])
         # Keep an accidental deploy out of the ordinary package commands.
         package = json.loads((ROOT / "services/agent-updates/package.json").read_text())
