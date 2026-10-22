@@ -1,10 +1,12 @@
 //! Text input, ported from the gpui 0.2.2 `input` example and adapted for
 //! Maple: neutral theming, optional password masking, an Enter-key hook for
 //! form submit and composer send, and an optional multi-line mode that wraps
-//! text and grows with its content (Shift+Enter inserts a newline).
+//! text and grows with its content (Shift+Enter inserts a newline). In the
+//! chat composer that newline also continues a Markdown list.
 
 mod bounds;
 mod code;
+mod list_continuation;
 pub mod vim;
 pub(crate) mod vim_actions;
 
@@ -904,6 +906,41 @@ impl TextInput {
         } else {
             self.redo_last(cx);
         }
+    }
+
+    /// Shift+Enter inserts a newline. The chat composer continues a Markdown
+    /// list on that newline; every other field keeps a plain line break.
+    fn insert_shifted_newline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composer
+            && let Some(edit) = list_continuation::edit(
+                &self.content,
+                self.selected_range.start,
+                self.selected_range.end,
+            )
+        {
+            let kind = if edit.range.is_empty() {
+                InsertEditKind::Text
+            } else {
+                InsertEditKind::SelectionReplacement
+            };
+            if self
+                .vim_mode()
+                .is_some_and(|mode| mode != VimMode::Disabled)
+            {
+                let before = self.content.to_string();
+                self.replace_range_with_kind(edit.range, &edit.replacement, kind, cx);
+                if self.content.as_ref() != before {
+                    return;
+                }
+            } else {
+                // An empty-item exit deletes the marker. That must stay its
+                // own undo step instead of folding into earlier backspaces.
+                self.last_edit = None;
+                self.replace_range_standard(edit.range, &edit.replacement, cx);
+                return;
+            }
+        }
+        self.replace_text_in_range(None, "\n", window, cx);
     }
 
     fn enter_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3131,7 +3168,7 @@ impl Render for TextInput {
                 }
                 let is_enter = event.keystroke.key == "enter" && this.marked_range.is_none();
                 if is_enter && no_modifiers && event.keystroke.modifiers.shift && this.multiline {
-                    this.replace_text_in_range(None, "\n", window, cx);
+                    this.insert_shifted_newline(window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -3768,6 +3805,115 @@ mod tests {
             cx.update(|_window, app| input.read(app).vim_mode()),
             Some(VimMode::Visual)
         );
+    }
+
+    #[gpui::test]
+    fn composer_shift_enter_continues_markdown_lists(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let submitted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let submitted_for_handler = submitted.clone();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            TextInput::new("", cx)
+                .composer_vim(false)
+                .multiline(8)
+                .on_enter(move |text, _window, _cx| {
+                    submitted_for_handler.borrow_mut().push(text);
+                })
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        cx.update(|_window, app| input.update(app, |input, cx| input.set_text("- first", cx)));
+        cx.simulate_keystrokes("shift-enter");
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "- first\n- ");
+            assert_eq!(input.selected_range, 10..10);
+        });
+        cx.update(|_window, app| input.update(app, |input, cx| input.undo_last(cx)));
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "- first");
+            assert_eq!(input.selected_range, 7..7);
+        });
+        cx.update(|_window, app| input.update(app, |input, cx| input.redo_last(cx)));
+        cx.update(|_window, app| assert_eq!(input.read(app).text_ref(), "- first\n- "));
+
+        cx.update(|_window, app| {
+            input.update(app, |input, cx| {
+                input.set_text("- item", cx);
+                input.selected_range = 2..2;
+            })
+        });
+        cx.simulate_keystrokes("shift-enter");
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "- \n- item");
+            assert_eq!(input.selected_range, 5..5);
+        });
+
+        cx.update(|_window, app| input.update(app, |input, cx| input.set_text("First\n  - ", cx)));
+        cx.simulate_keystrokes("shift-enter");
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "First\n  ");
+            assert_eq!(input.selected_range, 8..8);
+        });
+
+        cx.update(|_window, app| input.update(app, |input, cx| input.set_text("- first", cx)));
+        cx.simulate_keystrokes("enter");
+        assert_eq!(submitted.borrow().as_slice(), &["- first"]);
+        cx.update(|_window, app| assert_eq!(input.read(app).text_ref(), "- first"));
+
+        cx.update(|_window, app| input.update(app, |input, cx| input.set_text("```\n- code", cx)));
+        cx.simulate_keystrokes("shift-enter");
+        cx.update(|_window, app| assert_eq!(input.read(app).text_ref(), "```\n- code\n"));
+
+        cx.update(|_window, app| input.update(app, |input, cx| input.set_text("-not a list", cx)));
+        cx.simulate_keystrokes("shift-enter");
+        cx.update(|_window, app| assert_eq!(input.read(app).text_ref(), "-not a list\n"));
+    }
+
+    #[gpui::test]
+    fn list_continuation_stays_on_the_composer_newline(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let plain = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).multiline(4);
+            input.set_text("- first", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: plain.clone(),
+        });
+        let focus = cx.update(|_window, app| plain.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+        cx.simulate_keystrokes("shift-enter");
+        cx.update(|_window, app| assert_eq!(plain.read(app).text_ref(), "- first\n"));
+
+        let composer = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).composer_vim(true).multiline(8);
+            input.set_text("- first", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: composer.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| composer.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+        cx.simulate_keystrokes("A shift-enter");
+        cx.update(|_window, app| assert_eq!(composer.read(app).text_ref(), "- first\n- "));
+
+        cx.update(|_window, app| composer.update(app, |input, cx| input.set_text("  - ", cx)));
+        cx.simulate_keystrokes("A shift-enter");
+        cx.update(|_window, app| assert_eq!(composer.read(app).text_ref(), "  "));
     }
 
     #[gpui::test]
