@@ -984,6 +984,9 @@ mod tests {
         assert_eq!(controller.snapshot().state, State::RestartRequired);
         assert!(controller.0.service.get().is_none());
     }
+    // This exercises macOS installation permissions with the macOS-only signed
+    // fixture. Linux discovery requires its own artifact/download inventory.
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn permission_failure_switches_to_signed_manual_download_before_host_stop() {
         let controller = Controller::new(true);
