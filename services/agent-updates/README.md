@@ -123,6 +123,10 @@ An unadvertised signed `0.0.1` to `0.0.2` rehearsal through real packages, feed,
 keys and UI is required before invitations. Include Linux only after its own
 packaged launch/update/relaunch gates pass. This service does not prove those
 client gates or authorize a deploy/publication.
+The separately authorized bucket rehearsal must also demonstrate identical
+retries under its actual release-prefix lock policy, differing-byte refusal,
+missing-object repair and conditional pointer-race rejection. Mock storage and
+request-signature tests do not establish those live R2 properties.
 
 Pointer rollback changes discovery, not installed apps. Install-time client
 revalidation is required. Freeze/replay protection is limited in v1; a compromised

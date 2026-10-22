@@ -12,6 +12,8 @@ on:
       - "scripts/ci/agent-updates.sh"
       - "scripts/ci/test_agent_updates_workflows.py"
       - "scripts/ci/_common.sh"
+      - "apps/maple-agent/scripts/release-info.py"
+      - "apps/maple-agent/release-profiles.json"
       - "flake.nix"
       - "flake.lock"
   pull_request:
@@ -21,6 +23,8 @@ on:
       - "scripts/ci/agent-updates.sh"
       - "scripts/ci/test_agent_updates_workflows.py"
       - "scripts/ci/_common.sh"
+      - "apps/maple-agent/scripts/release-info.py"
+      - "apps/maple-agent/release-profiles.json"
       - "flake.nix"
       - "flake.lock"
 

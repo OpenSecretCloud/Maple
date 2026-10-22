@@ -536,6 +536,56 @@ class PublicationTests(unittest.TestCase):
             self.release_key("agent.app.tar.gz"), self.release_key("agent.dmg"),
         } <= {call[1] for call in self.store.calls if call[0] == "same"})
 
+    def test_identical_locked_release_retry_never_attempts_an_overwrite(self):
+        self.reserve()
+        self.publish()
+        self.store.calls.clear()
+        original_put = self.store.put
+
+        def locked_put(key, data, **kwargs):
+            if key in self.store.objects:
+                raise publisher.StoreError(403)
+            return original_put(key, data, **kwargs)
+
+        with patch.object(self.store, "put", side_effect=locked_put):
+            publisher.reserve(self.bundle, self.store)
+            self.assertEqual(self.publish(), "already-published")
+            self.assertFalse(any(call[0] == "put" for call in self.store.calls))
+            missing = self.release_key("agent.app.tar.gz")
+            del self.store.objects[missing]
+            self.assertEqual(self.publish(), "already-published")
+            self.assertEqual([call[1] for call in self.store.calls if call[0] == "put"], [missing])
+        self.assertEqual(self.store.revisions["stable/latest.json"], 1)
+
+    def test_immutable_create_race_reuses_only_identical_bytes(self):
+        key, data = self.release_key("race.bin"), b"release fixture"
+        original_put = self.store.put
+        for winning in (data, b"different content"):
+            with self.subTest(winning=winning):
+                self.store.objects.pop(key, None)
+                def racing_put(name, value, **kwargs):
+                    self.store.set(name, winning)
+                    return original_put(name, value, **kwargs)
+                with patch.object(self.store, "put", side_effect=racing_put):
+                    if winning == data:
+                        publisher.immutable_put(self.store, key, data)
+                    else:
+                        with self.assertRaisesRegex(publisher.PublishError, "immutable object differs"):
+                            publisher.immutable_put(self.store, key, data)
+                self.assertEqual(self.store.objects[key], winning)
+
+    def test_immutable_transport_or_authorization_failure_never_becomes_success(self):
+        for status in (403, 409, 500):
+            with self.subTest(status=status), patch.object(self.store, "put", side_effect=publisher.StoreError(status)):
+                with self.assertRaises(publisher.StoreError) as error:
+                    publisher.immutable_put(self.store, self.release_key("missing.bin"), b"fixture")
+                self.assertEqual(error.exception.status, status)
+        with patch.object(self.store, "same", side_effect=publisher.StoreError(403)), \
+                patch.object(self.store, "put") as write:
+            with self.assertRaises(publisher.StoreError):
+                publisher.immutable_put(self.store, self.release_key("missing.bin"), b"fixture")
+            write.assert_not_called()
+
     def test_identical_pointer_repairs_missing_artifact_without_rewriting_pointer(self):
         self.reserve()
         self.publish()

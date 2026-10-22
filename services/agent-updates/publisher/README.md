@@ -36,6 +36,9 @@ is insufficient, while an unrelated Dev failure does not block a qualified Prod
 package. The latest job inventory retains successful producer jobs when only
 failed consumers were rerun. `prepare` repeats this check and verifies every final downloaded file's
 GitHub attestation against the exact source SHA, master ref and signer workflow.
+The self-hosted-runner denial applies to the job generating that attestation.
+Final package attestations are generated on GitHub-hosted jobs; their input
+binaries are compiled on the workflow's Blacksmith runners.
 Package metadata, public Prod profile, inventory, notarization results and streaming
 checksums are validated before copying the binary payloads into the bundle. The
 macOS archive's bounded regular `Info.plist` member is read without extraction to
@@ -63,8 +66,10 @@ reservation and snapshots the current feed's ETag. It creates immutable payloads
 and the bounded private audit sidecars, verifies each by reading its content back,
 then creates the complete signed `stable/releases/V/manifest.json` and promotes
 `stable/latest.json` using `If-Match` (or `If-None-Match: *` for the first release).
-Existing immutable content is streamed and reused only if its bytes match. A
-partially uploaded release resumes without replacing completed objects. A
+Existing immutable content is streamed and reused only if its bytes match,
+before attempting a write against a possibly locked release object. Missing
+objects still use create-only writes; a competing creation must match exactly.
+A partially uploaded release resumes without replacing completed objects. A
 concurrent pointer change stops promotion. Re-running an already published exact
 release verifies the objects, repairs missing objects with create-only writes and
 leaves the pointer unchanged; a different envelope at the same or lower version is
@@ -109,7 +114,15 @@ nix develop --no-update-lock-file .#ci -c python3 -m unittest discover \
 The fake-store tests cover interrupted writes, reservation/envelope reuse,
 immutable conflicts, pointer races and already-published recovery. Their synthetic
 signatures exercise envelope plumbing without making a cryptographic claim.
-The pinned-shell minisign tests verify the shared public wire fixture, generate
+The pinned-shell minisign tests verify the shared public wire fixture and an
+existing signed pointer using raw or commented public-key files and pinned-key
+rotation, including an identical publication retry and missing-object repair. They generate
 disposable offline keys only inside a private temporary directory, sign a reserved
 manifest, and exercise verification, tampering and deterministic signing retries.
+Mock-transport tests exercise fixed-time SigV4 vectors, signed conditional headers,
+bounded reads, streamed uploads and hashes, HTTP failures and redirect refusal.
+These offline checks do not establish the configured R2 bucket's behavior. Before
+activation, its rehearsal must include locked-prefix identical reservation and
+publication retries, a different-byte immutable conflict, missing-object repair,
+and a competing pointer promotion that leaves the competing bytes unchanged.
 No production credentials, resources or live release are used by these tests.

@@ -51,6 +51,10 @@ AUTH_PREFIX = "apps/maple-auth/"
 
 AGENT_PREFIX = "apps/maple-agent/"
 AGENT_INERT_PREFIXES = ("docs/", ".githooks/")
+AGENT_PUBLICATION_INPUTS = frozenset({
+    "apps/maple-agent/scripts/release-info.py",
+    "apps/maple-agent/release-profiles.json",
+})
 
 SDK_TS_PREFIXES = ("sdk/src/",)
 SDK_TS_FILES = frozenset(
@@ -135,6 +139,8 @@ def classify_path(path: str) -> frozenset[str]:
         relative = path.removeprefix(AGENT_PREFIX)
         if relative.startswith(AGENT_INERT_PREFIXES):
             return frozenset()
+        if path in AGENT_PUBLICATION_INPUTS:
+            return frozenset({"agent", "agent_updates"})
         return frozenset({"agent"})
 
     if path in SDK_SHARED_FILES:

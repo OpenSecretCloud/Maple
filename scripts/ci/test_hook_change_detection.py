@@ -77,6 +77,11 @@ class HookChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_selects([path], "agent")
 
+    def test_agent_publication_inputs_select_both_consumers_without_research(self) -> None:
+        for path in ("apps/maple-agent/scripts/release-info.py", "apps/maple-agent/release-profiles.json"):
+            with self.subTest(path=path):
+                self.assert_selects([path], "agent", "agent_updates")
+
     def test_sdk_components(self) -> None:
         self.assert_selects(["sdk/rust/src/client.rs"], "sdk_rust")
         self.assert_selects(["sdk/rust/tests/crypto.rs"], "sdk_rust")
