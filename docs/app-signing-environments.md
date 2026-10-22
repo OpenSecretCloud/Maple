@@ -71,6 +71,14 @@ merged, remove this environment's required reviewer while retaining its exact
 setting, not a new approval for each release. See the
 [updater rollout checks](../services/updates/README.md).
 
+The independent Agent publisher reuses `updates-production` for manual trusted-master
+reservation, signing and publication, with Agent-specific BWS item-ID variables
+and an existing BWS access credential stored as `AGENT_UPDATES_BWS_ACCESS_TOKEN`.
+The pinned action passes outputs only to the consuming step, without exporting
+them to subsequent steps. This shared access does not isolate the environment's
+secret context or narrow the BWS credential's grants. Agent serialization, keys
+and bucket remain independent; Research's workflow and configuration are unchanged.
+
 `apple-signing` remains automatic for now because Maple Dev and production iOS
 share its credentials. Gating this environment would also interrupt the
 automatic Maple Dev TestFlight lane, potentially at both its build and upload
