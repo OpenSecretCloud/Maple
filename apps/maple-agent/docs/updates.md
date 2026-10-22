@@ -30,8 +30,21 @@ the new installed version starts successfully and validates its receipt. This
 is crash recovery retention, not automatic rollback or permission to install an
 older signed version.
 
-Read-only locations, disk images and translocated bundles offer a manual
-download. Linux currently offers manual installation: the AppImage self-launch
+After replacement commits, the old process retires its backend and enters
+**Restart required** before asking the platform to relaunch. If the restart
+helper cannot start, **Restart Maple** retries only that committed application
+path; Quit remains available so the user can reopen the installed update.
+Checks, downloads, a second installation and new backend work cannot resume in
+the old process. A relaunch failure never triggers an automatic downgrade.
+
+Read-only locations, disk images, translocated bundles and accounts lacking
+replacement permission offer a manual download before active tasks stop. The
+installation lock uses one shared inode for the canonical application, readable
+by other Mac accounts; separate profile locks do not replace that exclusion.
+Permissions are rechecked before host shutdown and replacement can still fail
+safely if the filesystem changes afterward.
+
+Linux currently offers manual installation: the AppImage self-launch
 repair is a prerequisite, and does not by itself prove safe replacement and
 relaunch. Enabling Linux automatic installation requires the packaged gates
 below. Unsupported architectures do not install another architecture's payload.
@@ -123,6 +136,11 @@ Workflow and configuration changes also require the root pinned
 `nix flake check --no-update-lock-file`. Focused core and installer tests cover
 signature, schema, anti-rollback, interrupted downloads, saved-state tampering,
 archive/path attacks, staging integrity, replacement receipts and lock exclusion.
+Prod macOS packaging also runs the real installer archive scanner against each
+produced unsigned PR or signed master `.app.tar.gz`, binding the scanned bytes to
+the package checksum before final upload/attestation. BSDtar host metadata is
+explicitly omitted during creation; signed file contents and existing native
+signature/notarization checks remain intact.
 They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
 

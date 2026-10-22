@@ -38,9 +38,15 @@ binary and checks its embedded profile and source commit against the run's
 checkout before the signing step receives Apple credentials. It reads a dedicated
 Mach-O JSON section without executing artifact code, including before signing.
 No app binary runs anywhere on the signing runner. Packaging does not restore a
-Cargo cache or compile Rust; this keeps compilation's disk use
-separate from bundling and notarization. PR previews use the same prebuilt
-verification on runners without signing credentials. Runtime metadata, duplicate
+Cargo cache or compile the application. For Prod, the packaging runner first
+compiles a small updater-only scanner from its trusted checkout, before the step
+receiving Apple credentials. After packaging, that tool reads the actual
+`.app.tar.gz` through the installer's archive scanner, without extracting or
+executing the app, and checks its SHA-256 against the package checksums before
+final artifact upload or attestation. The same gate covers unsigned Prod PR
+packages. Dev uses a different bundle root and has no production updater.
+PR previews use the same prebuilt verification on runners without signing
+credentials. Runtime metadata, duplicate
 Swift runtime, and real GPUI window/first-render checks run only in credential-free
 verification. GUI startup uses empty temporary state and does not sign in.
 
@@ -70,6 +76,13 @@ archive; drag the chosen Agent app into Applications. Both Agent profiles can
 coexist with Maple Research. Linux packages contain an AppImage; make it
 executable and launch it. Each artifact also contains public build information,
 a package manifest, and checksums.
+
+Native BSDtar creation explicitly disables xattrs, file flags, ACLs and macOS
+metadata, while preserving signed file bytes, public modes and symlink targets.
+`COPYFILE_DISABLE` alone does not suppress all PAX host metadata. Normal native
+format support remains enabled for required long paths; unsupported metadata is
+rejected by the real installer scanner. Existing extracted-archive codesign,
+notarization, Gatekeeper and DMG comparison checks remain required.
 
 Every final master package file, including its public metadata and checksums,
 receives GitHub build provenance. The trusted macOS signing job mints provenance
@@ -112,11 +125,19 @@ nix develop --no-update-lock-file . -c ./scripts/package-release.sh dev --unsign
 nix develop --no-update-lock-file . -c ./scripts/verify-release.sh dev dist/dev --unsigned
 ```
 
+For a produced Prod updater archive, compile the trusted data-only scanner and
+validate the exact package directory (add `--unsigned` for PR packages):
+
+```sh
+nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
+nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh dist/prod --unsigned
+```
+
 Use `prod` for the production service profile. Official macOS signing is run
 only by the trusted CI job using the separate `agent-desktop-signing` GitHub
-environment. Cargo and native compilation run before that job step receives
-Apple credentials, on a separate runner. Linux packaging needs no Apple
-credentials.
+environment. Application compilation runs on a separate runner; the trusted
+updater scanner compiles before the job step receiving Apple credentials. Linux
+packaging needs no Apple credentials.
 
 ## Distribution and update boundaries
 

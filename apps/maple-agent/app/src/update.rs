@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
@@ -28,6 +28,7 @@ pub enum State {
     Downloading,
     Ready,
     Installing,
+    RestartRequired,
     Error,
 }
 
@@ -37,6 +38,7 @@ pub enum UpdateAction {
     Download,
     ManualDownload,
     Restart,
+    Relaunch,
     Later,
     AutomaticDownloads(bool),
 }
@@ -97,7 +99,42 @@ fn disabled_reason(profile: &str, keys: &[&str], hard_off: bool) -> Option<&'sta
 struct Service {
     updater: Arc<Updater>,
     installed_path: PathBuf,
-    manual_only: bool,
+    manual_only: AtomicBool,
+}
+impl Service {
+    fn manual_only(&self) -> bool {
+        self.manual_only.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InstallationFailure {
+    message: String,
+    manual: bool,
+    recover_host: bool,
+}
+impl From<maple_agent_updater::installer::InstallError> for InstallationFailure {
+    fn from(error: maple_agent_updater::installer::InstallError) -> Self {
+        Self {
+            manual: error.requires_manual_installation(),
+            message: error.to_string(),
+            recover_host: false,
+        }
+    }
+}
+impl From<String> for InstallationFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            manual: false,
+            recover_host: false,
+        }
+    }
+}
+impl From<&str> for InstallationFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
 }
 #[derive(Default)]
 struct ReleaseState {
@@ -114,6 +151,13 @@ struct Inner {
     snapshots: watch::Sender<Snapshot>,
     automatic: AtomicBool,
     cancel: CancellationToken,
+    installed: OnceLock<CommittedInstallation>,
+}
+struct CommittedInstallation {
+    path: PathBuf,
+    // The GPUI helper waits for this PID to exit. Keep old-client admission
+    // fenced until OS exit closes the files, then the new process can start.
+    _host_fence: Option<std::mem::ManuallyDrop<crate::host::HostUpdateFence>>,
 }
 
 /// One controller per desktop process. The operation mutex covers each complete
@@ -131,6 +175,7 @@ impl Controller {
             snapshots,
             automatic: AtomicBool::new(automatic_downloads),
             cancel: CancellationToken::new(),
+            installed: OnceLock::new(),
         }))
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -140,11 +185,62 @@ impl Controller {
     pub(crate) fn set_test_state(&self, state: State) {
         self.publish(Snapshot::new(state, "Test update state"));
     }
+    #[cfg(test)]
+    pub(crate) fn set_test_installed(&self, path: PathBuf) {
+        self.installed(path, "0.0.2", None);
+    }
+    #[cfg(test)]
+    pub(crate) fn set_test_installed_with_fence(
+        &self,
+        path: PathBuf,
+        fence: crate::host::HostUpdateFence,
+    ) {
+        self.installed(path, "0.0.2", Some(fence));
+    }
     pub fn subscribe(&self) -> watch::Receiver<Snapshot> {
         self.0.snapshots.subscribe()
     }
     pub fn shutdown(&self) {
         self.0.cancel.cancel();
+    }
+    /// Once replacement commits, this process can only finish its restart.
+    /// GPUI's restart API cannot report helper-spawn failure, so retain an
+    /// accurate retryable state even when the old window remains open.
+    pub fn restart_path(&self) -> Option<PathBuf> {
+        self.0
+            .installed
+            .get()
+            .map(|installed| installed.path.clone())
+    }
+    fn installed(
+        &self,
+        path: PathBuf,
+        version: &str,
+        host_fence: Option<crate::host::HostUpdateFence>,
+    ) {
+        // Exactly one committed update can occur in this process. Deliberately
+        // leave its two lock descriptors open until OS exit, even if GPUI drops
+        // its final controller Arc during teardown before the PID disappears.
+        // Pending old-client startup must remain fenced during that interval.
+        if let Err(rejected) = self.0.installed.set(CommittedInstallation {
+            path,
+            _host_fence: host_fence.map(std::mem::ManuallyDrop::new),
+        }) {
+            if let Some(fence) = rejected._host_fence {
+                drop(std::mem::ManuallyDrop::into_inner(fence));
+            }
+            return;
+        }
+        self.0.cancel.cancel();
+        let mut snapshot = Snapshot::new(
+            State::RestartRequired,
+            format!("v{version} is installed. Restart Maple to finish, or quit and reopen it."),
+        );
+        snapshot.version = Some(version.to_owned());
+        snapshot.primary = Some(UpdateAction::Relaunch);
+        snapshot.primary_label = "Restart Maple";
+        snapshot.show_banner = true;
+        self.publish(snapshot);
     }
     /// Best effort on graceful exit. Keep the authenticated downloaded payload
     /// for restoration, but remove the derived same-volume staging bundle.
@@ -163,6 +259,9 @@ impl Controller {
         }
     }
     fn publish(&self, snapshot: Snapshot) {
+        if self.restart_path().is_some() && snapshot.state != State::RestartRequired {
+            return;
+        }
         self.0.snapshots.send_if_modified(|current| {
             if *current == snapshot {
                 false
@@ -179,7 +278,19 @@ impl Controller {
         checking.manual_download_url = previous.manual_download_url;
         self.publish(checking);
     }
+    fn recheck_failed(&self, previous: Snapshot) {
+        if previous.state == State::Ready {
+            let mut ready = previous;
+            ready.label = "The downloaded update is ready. Could not check for updates; restarting will verify it again before installation.".into();
+            self.publish(ready);
+        } else {
+            self.fail("Could not check for updates. Your current app is still available.");
+        }
+    }
     fn fail(&self, message: impl Into<String>) {
+        if self.restart_path().is_some() {
+            return;
+        }
         let previous = self.snapshot();
         let mut snapshot = Snapshot::new(State::Error, message);
         snapshot.version = previous.version;
@@ -232,6 +343,9 @@ impl Controller {
         };
         tokio::select! { _ = self.0.cancel.cancelled() => return, _ = startup => {} }
         loop {
+            if self.restart_path().is_some() {
+                return;
+            }
             let delay = Duration::from_secs(3300 + rand::random::<u64>() % 601);
             tokio::select! {
                 _ = self.0.cancel.cancelled() => return,
@@ -241,7 +355,7 @@ impl Controller {
         }
     }
     pub async fn check(&self) {
-        if self.0.cancel.is_cancelled() {
+        if self.0.cancel.is_cancelled() || self.restart_path().is_some() {
             return;
         }
         let Ok(_operation) = self.0.operation.try_lock() else {
@@ -253,6 +367,7 @@ impl Controller {
         if self.snapshot().state == State::Disabled {
             return;
         }
+        let previous = self.snapshot();
         self.begin_check();
         let service = match self.service().await {
             Ok(service) => service,
@@ -279,9 +394,7 @@ impl Controller {
                 self.publish(snapshot);
             }
             Ok(CheckOutcome::Available(release)) => self.accept_release(service, *release).await,
-            Err(_) => {
-                self.fail("Could not check for updates. Your current app is still available.")
-            }
+            Err(_) => self.recheck_failed(previous),
         }
     }
     async fn accept_release(&self, service: &Service, release: VerifiedRelease) {
@@ -304,19 +417,19 @@ impl Controller {
         if let Some(staging) = previous_staging {
             discard_preparation_with_lock(staging, previous_lock).await;
         }
-        if let Some(prepared) = prepared.filter(|_| !service.manual_only) {
+        if let Some(prepared) = prepared.filter(|_| !service.manual_only()) {
             match self.stage_prepared(prepared).await {
                 Ok(()) => self.release_snapshot(service, &release, State::Ready).await,
-                Err(error) => self.fail(error),
+                Err(error) => self.installation_failed(service, &release, error).await,
             }
-        } else if self.0.automatic.load(Ordering::Relaxed) && !service.manual_only {
+        } else if self.0.automatic.load(Ordering::Relaxed) && !service.manual_only() {
             self.download_inner(service, release).await;
         } else {
             self.release_snapshot(service, &release, State::Available)
                 .await;
         }
     }
-    async fn stage_prepared(&self, prepared: PreparedUpdate) -> Result<(), String> {
+    async fn stage_prepared(&self, prepared: PreparedUpdate) -> Result<(), InstallationFailure> {
         // A restored Ready flag is never trusted. Extract/check the signed
         // package before offering Restart, then check it again at installation.
         let mut releases = self.0.releases.lock().await;
@@ -328,7 +441,7 @@ impl Controller {
                 Some(lock) => lock,
                 None => {
                     maple_agent_updater::installer::acquire_install_lock(&prepared.installed_path)
-                        .map_err(|e| e.to_string())?
+                        .map_err(InstallationFailure::from)?
                 }
             };
             if let Some(previous) = previous {
@@ -336,13 +449,13 @@ impl Controller {
                     Ok(()) => return Ok((previous, lock)),
                     Err(error) => {
                         let _ = maple_agent_updater::installer::discard_preparation(&previous);
-                        return Err(error.to_string());
+                        return Err(error.into());
                     }
                 }
             }
-            let installation =
-                maple_agent_updater::installer::prepare(&prepared).map_err(|e| e.to_string())?;
-            Ok((installation, lock))
+            let installation = maple_agent_updater::installer::prepare(&prepared)
+                .map_err(InstallationFailure::from)?;
+            Ok::<_, InstallationFailure>((installation, lock))
         })
         .await
         .map_err(|_| "Could not prepare the update".to_string())??;
@@ -351,6 +464,26 @@ impl Controller {
         releases.install_lock = Some(lock);
         Ok(())
     }
+    async fn installation_failed(
+        &self,
+        service: &Service,
+        release: &VerifiedRelease,
+        error: InstallationFailure,
+    ) {
+        if error.manual {
+            service.manual_only.store(true, Ordering::Release);
+            self.release_snapshot(service, release, State::Available)
+                .await;
+            let mut snapshot = self.snapshot();
+            snapshot.label = format!(
+                "{} Download v{} to install manually.",
+                error.message, release.manifest.version
+            );
+            self.publish(snapshot);
+        } else {
+            self.fail(error.message);
+        }
+    }
     async fn release_snapshot(&self, service: &Service, release: &VerifiedRelease, state: State) {
         let version = release.manifest.version.clone();
         let mut snapshot = Snapshot::new(
@@ -358,7 +491,7 @@ impl Controller {
             match state {
                 State::Ready => format!("v{version} is ready to install"),
                 State::Downloading => format!("Downloading v{version}…"),
-                _ if service.manual_only => {
+                _ if service.manual_only() => {
                     format!("v{version} is available for manual installation")
                 }
                 _ => format!("v{version} is available"),
@@ -370,7 +503,7 @@ impl Controller {
             snapshot.primary = Some(UpdateAction::Restart);
             snapshot.primary_label = "Restart to Update";
         } else if state == State::Available {
-            snapshot.primary = Some(if service.manual_only {
+            snapshot.primary = Some(if service.manual_only() {
                 UpdateAction::ManualDownload
             } else {
                 UpdateAction::Download
@@ -382,7 +515,7 @@ impl Controller {
         self.publish(snapshot);
     }
     pub async fn download(&self) {
-        if self.0.cancel.is_cancelled() {
+        if self.0.cancel.is_cancelled() || self.restart_path().is_some() {
             return;
         }
         let Ok(_operation) = self.0.operation.try_lock() else {
@@ -401,7 +534,7 @@ impl Controller {
         }
     }
     async fn download_inner(&self, service: &Service, release: VerifiedRelease) {
-        if service.manual_only {
+        if service.manual_only() {
             self.release_snapshot(service, &release, State::Available)
                 .await;
             return;
@@ -413,7 +546,7 @@ impl Controller {
                 self.0.releases.lock().await.prepared = Some(prepared.clone());
                 match self.stage_prepared(prepared).await {
                     Ok(()) => self.release_snapshot(service, &release, State::Ready).await,
-                    Err(error) => self.fail(error),
+                    Err(error) => self.installation_failed(service, &release, error).await,
                 }
             }
             Err(_) => {
@@ -435,20 +568,43 @@ impl Controller {
     }
     /// Called only after the desktop's explicit task-stop confirmation. Returns
     /// the verified installed path for GPUI's deliberate restart handoff.
-    pub async fn install(&self, api_url: String) -> Result<Option<PathBuf>, String> {
+    pub async fn install(
+        &self,
+        backend: Arc<crate::backend::AgentBackend>,
+    ) -> Result<Option<PathBuf>, String> {
+        if let Some(path) = self.restart_path() {
+            return Ok(Some(path));
+        }
         if self.0.cancel.is_cancelled() {
             return Ok(None);
         }
         let Ok(_operation) = self.0.operation.try_lock() else {
             return Ok(None);
         };
-        let result = self.install_inner(api_url).await;
-        if let Err(error) = &result {
-            self.fail(error.clone());
+        let result = self.install_inner(backend).await;
+        if let Some(path) = self.restart_path() {
+            return Ok(Some(path));
         }
-        result
+        if let Err(error) = &result {
+            if let Some(service) = self.0.service.get() {
+                let release = self.0.releases.lock().await.release.clone();
+                if let Some(release) = release {
+                    self.installation_failed(service, &release, error.clone())
+                        .await;
+                } else {
+                    self.fail(error.message.clone());
+                }
+            } else {
+                self.fail(error.message.clone());
+            }
+        }
+        result.map_err(|error| error.message)
     }
-    async fn install_inner(&self, api_url: String) -> Result<Option<PathBuf>, String> {
+    async fn install_inner(
+        &self,
+        backend: Arc<crate::backend::AgentBackend>,
+    ) -> Result<Option<PathBuf>, InstallationFailure> {
+        let api_url = backend.api_url().to_owned();
         let service = self.service().await?;
         let prepared = self
             .0
@@ -472,7 +628,7 @@ impl Controller {
             let lock = match saved_lock {
                 Some(lock) => lock,
                 None => maple_agent_updater::installer::acquire_install_lock(&installed_path)
-                    .map_err(|e| e.to_string())?,
+                    .map_err(InstallationFailure::from)?,
             };
             let preparation = match saved {
                 Some(preparation) => {
@@ -480,15 +636,14 @@ impl Controller {
                         maple_agent_updater::installer::revalidate(&preparation, &staging)
                     {
                         let _ = maple_agent_updater::installer::discard_preparation(&preparation);
-                        return Err(error.to_string());
+                        return Err(error.into());
                     }
                     preparation
                 }
-                None => {
-                    maple_agent_updater::installer::prepare(&staging).map_err(|e| e.to_string())?
-                }
+                None => maple_agent_updater::installer::prepare(&staging)
+                    .map_err(InstallationFailure::from)?,
             };
-            Ok::<_, String>((lock, preparation))
+            Ok::<_, InstallationFailure>((lock, preparation))
         })
         .await
         .map_err(|_| "Could not prepare installation".to_string())??;
@@ -531,39 +686,74 @@ impl Controller {
             }
         }
         let recovery_api = api_url.clone();
+        let installed_version = prepared.release.manifest.version.clone();
+        let controller = self.clone();
         let updater = service.updater.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _lock = lock;
-            let result = crate::host::with_update_fence(&api_url, || {
-                updater.with_commit_guard(&prepared, || {
+            // Refresh effective permissions after the asynchronous discovery
+            // check, before stopping a healthy host or closing admission.
+            if let Err(error) = maple_agent_updater::installer::preflight_installation(&prepared.installed_path) {
+                let _ = maple_agent_updater::installer::discard_preparation(&preparation);
+                return Err(InstallationFailure::from(error));
+            }
+            let manual_failure = std::cell::Cell::new(false);
+            let mut host_fence = match crate::host::acquire_update_fence(&api_url) {
+                Ok(fence) => Some(fence),
+                Err(message) => {
+                    let _ = maple_agent_updater::installer::discard_preparation(&preparation);
+                    return Err(InstallationFailure { message, manual: false, recover_host: true });
+                }
+            };
+            let result = updater.with_commit_guard(&prepared, || {
                 // replace performs the final payload/tree/codesign checks
                 // while both process fences and the commit guard are held.
-                let installed = maple_agent_updater::installer::replace(&preparation, &prepared).map_err(|e| e.to_string())?;
+                let installed = maple_agent_updater::installer::replace(&preparation, &prepared).map_err(|error| {
+                    manual_failure.set(error.requires_manual_installation());
+                    error.to_string()
+                })?;
                 if installed.durability_warning {
                     log::warn!("The update was installed; filesystem synchronization did not complete. Restarting the installed application.");
                 }
+                // Retire old-process RPC admission and retain host ownership
+                // until this PID exits, including if the restart helper fails.
+                backend.retire_after_update();
+                controller.installed(installed.installed_path.clone(), &installed_version, host_fence.take());
                 Ok(installed.installed_path)
-                }).map_err(|error| error.to_string())
-            });
+            }).map_err(|error| error.to_string());
+            drop(host_fence);
             if result.is_err() {
                 let _ = maple_agent_updater::installer::discard_preparation(&preparation);
             }
-            result
+            result.map_err(|message| InstallationFailure { message, manual: manual_failure.get(), recover_host: true })
         }).await.map_err(|_| "Installation did not complete; retry or reinstall Maple".to_string())?;
         match result {
             Ok(path) => Ok(Some(path)),
             Err(error) => {
+                if !error.recover_host {
+                    return Err(error);
+                }
                 // An Err is guaranteed to precede the atomic swap. The host
                 // fence and application lock have both dropped before recovery.
                 if crate::host::recover_after_failed_update(&recovery_api)
                     .await
                     .is_err()
                 {
-                    return Err(format!(
-                        "{error}. Quit and reopen Maple to restore its host."
-                    ));
+                    return Err(InstallationFailure {
+                        message: format!(
+                            "{}. Quit and reopen Maple to restore its host.",
+                            error.message
+                        ),
+                        ..error
+                    });
                 }
-                Err(error)
+                Err(InstallationFailure {
+                    message: format!(
+                        "{}. Quit and reopen Maple before continuing work.",
+                        error.message
+                    ),
+                    ..error
+                })
             }
         }
     }
@@ -627,7 +817,7 @@ fn build_service() -> Result<Service, String> {
             Updater::new(config).map_err(|_| "Invalid packaged update configuration")?,
         ),
         installed_path,
-        manual_only,
+        manual_only: AtomicBool::new(manual_only),
     })
 }
 
@@ -706,19 +896,23 @@ mod tests {
         );
     }
     #[test]
-    fn failed_recheck_keeps_the_verified_manual_download_offer() {
+    fn failed_recheck_retains_ready_restart_and_manual_offer() {
         let controller = Controller::new(false);
         let mut downloading = Snapshot::new(State::Ready, "v0.0.2 is ready to install");
         downloading.version = Some("0.0.2".into());
         downloading.manual_download_url =
             Some("https://updates.trymaple.ai/agent/stable/releases/0.0.2/Maple.dmg".into());
-        controller.publish(downloading);
+        downloading.primary = Some(UpdateAction::Restart);
+        downloading.primary_label = "Restart to Update";
+        downloading.show_banner = true;
+        controller.publish(downloading.clone());
         controller.begin_check();
         assert_eq!(controller.snapshot().state, State::Checking);
-        controller.fail("Could not check for updates");
+        controller.recheck_failed(downloading);
         let snapshot = controller.snapshot();
-        assert_eq!(snapshot.state, State::Error);
-        assert_eq!(snapshot.primary, Some(UpdateAction::Check));
+        assert_eq!(snapshot.state, State::Ready);
+        assert_eq!(snapshot.primary, Some(UpdateAction::Restart));
+        assert!(snapshot.label.contains("verify it again"));
         assert!(snapshot.manual_download_url.is_some());
         assert!(snapshot.show_banner);
     }
@@ -742,7 +936,13 @@ mod tests {
         controller.download().await;
         assert!(
             controller
-                .install("https://unused.invalid".into())
+                .install(Arc::new(
+                    crate::backend::AgentBackend::for_test(
+                        "http://127.0.0.1:9".into(),
+                        String::new()
+                    )
+                    .unwrap()
+                ))
                 .await
                 .unwrap()
                 .is_none()
@@ -759,5 +959,85 @@ mod tests {
         controller.check().await;
         assert_eq!(controller.snapshot().state, State::Disabled);
         assert!(controller.0.service.get().is_none());
+    }
+    #[tokio::test]
+    async fn committed_update_remains_restartable_without_reinstall_or_network() {
+        let controller = Controller::new(true);
+        let path = PathBuf::from("/Applications/Maple Agent.app");
+        controller.set_test_installed(path.clone());
+        assert_eq!(controller.snapshot().state, State::RestartRequired);
+        assert_eq!(controller.snapshot().primary, Some(UpdateAction::Relaunch));
+        assert!(!controller.snapshot().busy());
+        controller.fail("A late pre-restart callback failed");
+        controller.check().await;
+        controller.download().await;
+        controller.clone().run().await;
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .unwrap(),
+        );
+        assert_eq!(
+            controller.install(backend).await.unwrap(),
+            Some(path.clone())
+        );
+        assert_eq!(controller.restart_path(), Some(path));
+        assert_eq!(controller.snapshot().state, State::RestartRequired);
+        assert!(controller.0.service.get().is_none());
+    }
+    #[tokio::test]
+    async fn permission_failure_switches_to_signed_manual_download_before_host_stop() {
+        let controller = Controller::new(true);
+        let temp = tempfile::tempdir().unwrap();
+        let installed = temp.path().join("Maple Agent.app");
+        std::fs::create_dir_all(&installed).unwrap();
+        let feed: maple_agent_updater::Url = "https://updates.trymaple.ai/agent/stable/latest.json"
+            .parse()
+            .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            &feed,
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
+        let service = Service {
+            updater: Arc::new(
+                Updater::new(Config {
+                    feed_url: feed,
+                    public_keys: vec![key],
+                    current_version: "0.0.1".parse().unwrap(),
+                    target: Target::DarwinAarch64,
+                    installed_path: installed.clone(),
+                    state_dir: temp.path().join("updates"),
+                })
+                .unwrap(),
+            ),
+            installed_path: installed,
+            manual_only: AtomicBool::new(false),
+        };
+        let error = InstallationFailure::from(maple_agent_updater::installer::InstallError::Io(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        ));
+        assert!(
+            !error.recover_host,
+            "known permission failures must precede host shutdown"
+        );
+        controller
+            .installation_failed(&service, &release, error)
+            .await;
+        let snapshot = controller.snapshot();
+        assert!(service.manual_only());
+        assert_eq!(snapshot.state, State::Available);
+        assert_eq!(snapshot.primary, Some(UpdateAction::ManualDownload));
+        assert!(
+            snapshot
+                .manual_download_url
+                .unwrap()
+                .ends_with("/Maple-Agent.dmg")
+        );
+        assert!(snapshot.label.contains("install manually"));
+        assert!(controller.restart_path().is_none());
     }
 }

@@ -845,41 +845,42 @@ pub fn stop(api_url: &str) -> Result<(), String> {
     })
 }
 
-/// Run an already verified replacement while this profile cannot start a host.
+/// Holds this profile's startup admission and host ownership through replacement
+/// and the old desktop's entire restart handoff, including helper-spawn failure.
+/// The new process acquires these normally after the old process exits.
+#[cfg(feature = "desktop")]
+pub struct HostUpdateFence {
+    // Release ownership before admission if a pre-commit attempt fails.
+    _ownership: std::fs::File,
+    _startup: std::fs::File,
+}
+
+/// Stop the current host and reserve this profile against queued/direct starts.
 ///
 /// Call from a blocking task, never the UI or an async executor thread. The caller
 /// also owns the application-path installation lock and revalidates staging in
-/// `replace`. File guards live until replacement finishes, including when the
-/// async caller drops its blocking-task handle. Normal host startup already owns
+/// `replace`. Retain the returned guards after commit until process exit; drop
+/// them before recovering from a pre-commit failure. Normal host startup owns
 /// `startup.lock` while waiting for the child's handshake; the child must not try
 /// to acquire that same lock a second time.
 #[cfg(feature = "desktop")]
-pub fn with_update_fence<T>(
-    api_url: &str,
-    replace: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
+pub fn acquire_update_fence(api_url: &str) -> Result<HostUpdateFence, String> {
     let endpoint = ipc::Endpoint::new(api_url)?;
-    with_update_fence_endpoint(
-        &endpoint,
-        Duration::from_secs(45),
-        || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|_| "Could not prepare update shutdown".to_string())?;
-            runtime.block_on(request_stop_endpoint(&endpoint))
-        },
-        replace,
-    )
+    acquire_update_fence_endpoint(&endpoint, Duration::from_secs(45), || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "Could not prepare update shutdown".to_string())?;
+        runtime.block_on(request_stop_endpoint(&endpoint))
+    })
 }
 
 #[cfg(feature = "desktop")]
-fn with_update_fence_endpoint<T>(
+fn acquire_update_fence_endpoint(
     endpoint: &ipc::Endpoint,
     timeout: Duration,
     stop: impl FnOnce() -> Result<(), String>,
-    replace: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
+) -> Result<HostUpdateFence, String> {
     let startup = endpoint.lock("startup.lock")?;
     wait_update_lock(&startup, timeout, "Another Maple host is starting")?;
     stop()?;
@@ -888,12 +889,21 @@ fn with_update_fence_endpoint<T>(
     // and prevents direct `host serve` attempts during the file replacement.
     let ownership = endpoint.lock("host.lock")?;
     wait_update_lock(&ownership, timeout, "Maple host is still shutting down")?;
-    let result = replace();
-    // The new process must acquire these locks normally after the transaction.
-    // Keep this order explicit: never release admission before replacement.
-    drop(ownership);
-    drop(startup);
-    result
+    Ok(HostUpdateFence {
+        _ownership: ownership,
+        _startup: startup,
+    })
+}
+
+#[cfg(all(test, feature = "desktop"))]
+fn with_update_fence_endpoint<T>(
+    endpoint: &ipc::Endpoint,
+    timeout: Duration,
+    stop: impl FnOnce() -> Result<(), String>,
+    replace: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _fence = acquire_update_fence_endpoint(endpoint, timeout, stop)?;
+    replace()
 }
 
 #[cfg(feature = "desktop")]
@@ -915,6 +925,62 @@ fn wait_update_lock(file: &std::fs::File, timeout: Duration, busy: &str) -> Resu
 mod update_install_tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn committed_restart_fence_survives_the_last_controller_handle() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let fence =
+            acquire_update_fence_endpoint(&endpoint, Duration::from_secs(2), || Ok(())).unwrap();
+        let controller = crate::update::Controller::new(true);
+        controller.set_test_installed_with_fence(directory.path().join("Maple Agent.app"), fence);
+        let last_handle = controller.clone();
+        drop(controller);
+        drop(last_handle);
+        // The committed handoff intentionally leaves these two descriptors
+        // to OS process-exit cleanup, even when GPUI tears down every handle.
+        for name in ["startup.lock", "host.lock"] {
+            assert!(matches!(
+                endpoint.lock(name).unwrap().try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_restart_fence_blocks_queued_and_direct_starts_until_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let fence =
+            acquire_update_fence_endpoint(&endpoint, Duration::from_secs(2), || Ok(())).unwrap();
+        let direct = endpoint.lock("host.lock").unwrap();
+        let queued = endpoint.lock("startup.lock").unwrap();
+        let (started, startup_waiting) = std::sync::mpsc::channel();
+        let (admitted, admission) = std::sync::mpsc::channel();
+        let client = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            wait_update_lock(
+                &queued,
+                Duration::from_secs(2),
+                "restart fence did not release",
+            )
+            .unwrap();
+            admitted.send(()).unwrap();
+        });
+        startup_waiting
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(admission.recv_timeout(Duration::from_millis(40)).is_err());
+        assert!(matches!(
+            direct.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        // Simulate the old desktop exiting after a failed relaunch handoff.
+        drop(fence);
+        admission.recv_timeout(Duration::from_secs(1)).unwrap();
+        direct.try_lock().unwrap();
+        client.join().unwrap();
+    }
 
     #[test]
     fn update_waits_for_drain_and_holds_startup_and_ownership_during_replacement() {

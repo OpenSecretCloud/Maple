@@ -25,6 +25,52 @@ release_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_info)
 
 
+class NativeArchiveMetadataTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "requires native macOS BSDtar metadata")
+    def test_native_release_tar_omits_host_metadata_and_preserves_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "Maple Agent.app"
+            executable = app / "Contents/MacOS/maple-agent"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"public executable bytes\n")
+            executable.chmod(0o755)
+            ticket = app / "Contents/CodeResources"
+            ticket.write_bytes(b"stapled ticket file bytes")
+            ticket.chmod(0o644)
+            signature = app / "Contents/_CodeSignature/CodeResources"
+            signature.parent.mkdir()
+            signature.write_bytes(b"signed resource manifest bytes")
+            signature.chmod(0o644)
+            link = app / "Contents/current"
+            link.symlink_to("MacOS/maple-agent")
+            subprocess.run(["/usr/bin/xattr", "-w", "com.maple.archive-fixture", "host-only metadata", str(executable)], check=True)
+            subprocess.run(["/bin/chmod", "+a", "everyone allow read", str(executable)], check=True)
+            subprocess.run(["/usr/bin/chflags", "hidden", str(executable)], check=True)
+            self.assertIn("com.maple.archive-fixture", subprocess.check_output(["/usr/bin/xattr", str(executable)], text=True).splitlines())
+            archive = root / "actual.app.tar.gz"
+            result = subprocess.run([
+                "/bin/bash", "-c", 'source "$1"; macos_archive_app "$2" "$3" "$4"',
+                "native-release-archive-test", str(SCRIPTS / "macos-release-app.sh"),
+                str(root), "Maple Agent", str(archive),
+            ], check=True, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0)
+            with tarfile.open(archive) as contents:
+                for member in contents:
+                    self.assertFalse(any("xattr" in key.lower() or "acl" in key.lower() or "fflags" in key.lower() for key in member.pax_headers), member.pax_headers)
+                    self.assertFalse(Path(member.name).name.startswith("._"), member.name)
+            output = root / "roundtrip"
+            output.mkdir()
+            subprocess.run(["/usr/bin/tar", "-xf", str(archive), "-C", str(output)], check=True)
+            extracted = output / app.name
+            for original in (executable, ticket, signature):
+                copy = extracted / original.relative_to(app)
+                self.assertEqual(copy.read_bytes(), original.read_bytes())
+                self.assertEqual(copy.stat().st_mode & 0o777, original.stat().st_mode & 0o777)
+            self.assertEqual(os.readlink(extracted / link.relative_to(app)), "MacOS/maple-agent")
+            self.assertNotIn("com.maple.archive-fixture", subprocess.check_output(["/usr/bin/xattr", str(extracted / executable.relative_to(app))], text=True).splitlines())
+
+
 class NativeGatekeeperTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "requires native macOS Gatekeeper")
     def test_native_gatekeeper_resolves_without_path_lookup(self):
@@ -496,7 +542,15 @@ PY
             fi
             touch "${{@:$#}}" ;;
         /bin/df) echo 'Filesystem Size Used Avail Capacity Mounted on' ;;
-        tar) command tar "$@" ;;
+        tar)
+            # The mocked native boundary may run on Linux; actual BSDtar
+            # metadata behavior has a separate native macOS regression.
+            local args=() argument
+            for argument in "$@"; do
+                case "$argument" in --no-xattrs|--no-fflags|--no-acls|--no-mac-metadata) ;;
+                    *) args+=("$argument") ;; esac
+            done
+            command tar "${{args[@]}}" ;;
         *) echo 'unexpected native tool' >&2; return 1 ;;
     esac
 }}
@@ -545,6 +599,8 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         result, calls = self.run_packager()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_secrets_not_returned(result)
+        archive = next(call for call in calls if call[0] == "tar")
+        self.assertEqual(archive[1:5], ["--no-xattrs", "--no-fflags", "--no-acls", "--no-mac-metadata"])
         signs = [call for call in calls if call[0] == "codesign" and "--force" in call]
         self.assertTrue(signs[0][-1].endswith("libswiftFixture.dylib"))
         self.assertTrue(signs[1][-1].endswith(".app"))

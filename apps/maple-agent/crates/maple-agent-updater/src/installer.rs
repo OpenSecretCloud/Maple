@@ -22,6 +22,8 @@ use crate::{Artifact, PreparedUpdate, Target};
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
+use std::os::macos::fs::MetadataExt as _;
+#[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
@@ -50,6 +52,18 @@ pub enum InstallError {
     CodeSignature,
     #[error("The update could not be installed: {0}")]
     Io(#[from] io::Error),
+}
+
+impl InstallError {
+    /// These failures describe an installation this account cannot replace.
+    /// Keep them typed until the controller offers a verified manual download.
+    pub fn requires_manual_installation(&self) -> bool {
+        match self {
+            Self::NotifyOnly(_) => true,
+            Self::Io(error) => permission_error(error),
+            _ => false,
+        }
+    }
 }
 
 type Result<T> = std::result::Result<T, InstallError>;
@@ -89,6 +103,16 @@ pub struct InstallLock {
     _file: File,
 }
 
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        // BSD flock follows the open file description. A transient fork before
+        // exec may retain that description even though the descriptor has
+        // CLOEXEC. End this guard's authority explicitly rather than waiting
+        // for an inherited descriptor's last close.
+        let _ = FileExt::unlock(&self._file);
+    }
+}
+
 /// Find a supported installation from the real executable, never a saved path.
 /// AppImage updates remain notify-only until the packaged Linux launch gate.
 pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Result<PathBuf> {
@@ -104,11 +128,7 @@ pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Res
             .ok_or(InstallError::NotifyOnly(
                 "run the installed application bundle",
             ))?;
-        validate_destination(app)?;
-        let _probe = tempfile::Builder::new()
-            .prefix(".maple-agent-write-probe-")
-            .tempfile_in(app.parent().unwrap())
-            .map_err(destination_error)?;
+        preflight_installation(app)?;
         Ok(app.to_owned())
     }
     #[cfg(not(target_os = "macos"))]
@@ -120,35 +140,158 @@ pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Res
     }
 }
 
+/// Check replacement eligibility before offering Restart and again before
+/// stopping the host. This is a preflight, not authority: permissions may still
+/// change, and callers must handle a failed atomic replacement safely.
+pub fn preflight_installation(installed: &Path) -> Result<()> {
+    ensure_supported()?;
+    validate_destination(installed)?;
+    let parent = installed.parent().unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        // Darwin's extended access rights check effective ACLs and delete
+        // authorization without requiring ownership or write access to the
+        // bundle's contents. A root-owned app can still be replaceable.
+        const DELETE_OK: libc::c_int = 1 << 12;
+        const ADD_SUBDIRECTORY_REMOVE_CHILD_SEARCH: libc::c_int = (1 << 13) | (1 << 14) | (1 << 11);
+        replacement_access(installed, DELETE_OK)?;
+        replacement_access(parent, ADD_SUBDIRECTORY_REMOVE_CHILD_SEARCH)?;
+        // SF_NOUNLINK is public in Darwin's sys/stat.h but not in libc.
+        const SF_NOUNLINK: u32 = 0x0010_0000;
+        const NO_RENAME_FLAGS: u32 = libc::UF_IMMUTABLE
+            | libc::UF_APPEND
+            | libc::SF_IMMUTABLE
+            | libc::SF_APPEND
+            | SF_NOUNLINK;
+        if fs::symlink_metadata(installed)?.st_flags() & NO_RENAME_FLAGS != 0 {
+            return Err(InstallError::NotifyOnly(
+                "this application's file flags prevent replacement; install the update manually",
+            ));
+        }
+    }
+    let _probe = tempfile::Builder::new()
+        .prefix(".maple-agent-write-probe-")
+        .tempfile_in(parent)
+        .map_err(destination_error)?;
+    // Discover legacy locks owned privately by another account before any
+    // running tasks are stopped. Opening alone does not contend with Ready.
+    let _lock = open_install_lock(installed)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn replacement_access(path: &Path, rights: libc::c_int) -> Result<()> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| InstallError::Invalid("invalid installation path"))?;
+    // Extended access bits are defined in Darwin's sys/unistd.h. AT_EACCESS
+    // uses the same credentials as the subsequent renamex_np operation.
+    if unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), rights, libc::AT_EACCESS) } != 0 {
+        return Err(destination_error(io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
     validate_destination(installed)?;
-    let parent = installed
-        .parent()
-        .ok_or(InstallError::Invalid("missing installation parent"))?;
-    let digest = hex::encode(Sha256::digest(installed.as_os_str().as_encoded_bytes()));
-    let path = parent.join(format!(".maple-agent-install-{digest}.lock"));
-    let file = open_regular(&path, true, false)?;
-    validate_private_file(&file)?;
+    let file = open_install_lock(installed)?;
     file.try_lock_exclusive().map_err(|e| {
         if e.kind() == io::ErrorKind::WouldBlock {
             InstallError::Busy
         } else {
-            e.into()
+            destination_error(e)
         }
     })?;
+    validate_install_lock_path(installed, &file)?;
     Ok(InstallLock { _file: file })
+}
+
+fn install_lock_path(installed: &Path) -> Result<PathBuf> {
+    let parent = installed
+        .parent()
+        .ok_or(InstallError::Invalid("missing installation parent"))?;
+    let digest = hex::encode(Sha256::digest(installed.as_os_str().as_encoded_bytes()));
+    Ok(parent.join(format!(".maple-agent-install-{digest}.lock")))
+}
+
+fn open_install_lock(installed: &Path) -> Result<File> {
+    let path = install_lock_path(installed)?;
+    let mut create = OpenOptions::new();
+    create.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    create
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let file = match create.open(&path) {
+        Ok(file) => {
+            // The process umask may be private; all accounts using this app
+            // need to open the same inode. No account needs to write its bytes.
+            #[cfg(unix)]
+            file.set_permissions(fs::Permissions::from_mode(0o644))?;
+            file
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let mut open = OpenOptions::new();
+            open.read(true);
+            #[cfg(unix)]
+            open.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+            open.open(&path).map_err(destination_error)?
+        }
+        Err(error) => return Err(destination_error(error)),
+    };
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata()?;
+        if metadata.is_file()
+            && metadata.nlink() == 1
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o7777 == 0o600
+        {
+            // Upgrade the original private lock in place. Replacing its inode
+            // would allow an already-running updater to escape serialization.
+            file.set_permissions(fs::Permissions::from_mode(0o644))?;
+        }
+    }
+    validate_install_lock_path(installed, &file)?;
+    Ok(file)
+}
+
+fn validate_install_lock_path(installed: &Path, file: &File) -> Result<()> {
+    let metadata = file.metadata()?;
+    let path_metadata = fs::symlink_metadata(install_lock_path(installed)?)?;
+    if !metadata.is_file() || !path_metadata.is_file() {
+        return Err(InstallError::NotifyOnly(
+            "the shared updater lock is not a regular file; install the update manually",
+        ));
+    }
+    #[cfg(unix)]
+    if metadata.nlink() != 1
+        || metadata.mode() & 0o7022 != 0
+        || metadata.dev() != path_metadata.dev()
+        || metadata.ino() != path_metadata.ino()
+    {
+        return Err(InstallError::NotifyOnly(
+            "the shared updater lock changed or has unsafe permissions; install the update manually",
+        ));
+    }
+    Ok(())
 }
 
 /// The caller retains the application lock for this preparation's entire
 /// lifetime, including while Ready, until it is installed or discarded.
 pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
-    ensure_supported()?;
+    preflight_installation(&update.installed_path)?;
     prepare_inner(update, Verifier::Native)
 }
 
 pub fn revalidate(preparation: &InstallPreparation, update: &PreparedUpdate) -> Result<()> {
-    ensure_supported()?;
+    preflight_installation(&update.installed_path)?;
     revalidate_inner(preparation, update, Verifier::Native)
+}
+
+/// Apply the updater's exact archive acceptance rules to a production release
+/// payload in CI, without extracting or trusting any archive entry.
+pub fn validate_archive(payload: &Path) -> Result<()> {
+    scan_archive(payload, None).map(|_| ())
 }
 
 /// Remove a withdrawn/cancelled preparation before replacement. Once an install
@@ -488,13 +631,21 @@ fn validate_destination(installed: &Path) -> Result<()> {
 }
 
 fn destination_error(error: io::Error) -> InstallError {
-    if error.kind() == io::ErrorKind::PermissionDenied
-        || matches!(error.raw_os_error(), Some(libc::EROFS | libc::EPERM))
-    {
-        InstallError::NotifyOnly("the application directory is not writable")
+    if permission_error(&error) {
+        InstallError::NotifyOnly(
+            "this account cannot replace the application; install the update manually",
+        )
     } else {
         error.into()
     }
+}
+
+fn permission_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied
+        || matches!(
+            error.raw_os_error(),
+            Some(libc::EACCES | libc::EROFS | libc::EPERM)
+        )
 }
 
 fn validate_staging(installed: &Path, root: &Path) -> Result<()> {
@@ -543,24 +694,6 @@ fn open_regular(path: &Path, create: bool, exclusive: bool) -> Result<File> {
         return Err(InstallError::Invalid("expected a regular file"));
     }
     Ok(file)
-}
-
-fn validate_private_file(file: &File) -> Result<()> {
-    #[cfg(not(unix))]
-    let _ = file;
-    #[cfg(unix)]
-    {
-        let metadata = file.metadata()?;
-        if metadata.nlink() != 1
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(InstallError::Invalid(
-                "private file permissions or ownership changed",
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn verify_payload(path: &Path, artifact: &Artifact) -> Result<()> {
@@ -1592,6 +1725,175 @@ mod tests {
         ));
         drop(first);
         assert!(acquire_install_lock(&installed).is_ok());
+    }
+
+    #[test]
+    fn shared_read_only_lock_excludes_installers_without_owner_only_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        let lock = acquire_install_lock(&installed).unwrap();
+        let path = install_lock_path(&installed).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o644);
+        drop(lock);
+
+        // A different account opens this same shared inode read-only. flock
+        // still grants exclusive locks on that descriptor, on macOS and Linux.
+        let read_only = OpenOptions::new().read(true).open(&path).unwrap();
+        FileExt::try_lock_exclusive(&read_only).unwrap();
+        assert!(matches!(
+            acquire_install_lock(&installed),
+            Err(InstallError::Busy)
+        ));
+        FileExt::unlock(&read_only).unwrap();
+        drop(read_only);
+        assert!(acquire_install_lock(&installed).is_ok());
+    }
+
+    #[test]
+    fn dropping_install_guard_unlocks_while_an_inherited_description_remains_open() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        let first = acquire_install_lock(&installed).unwrap();
+        // dup and fork share the same open file description. Retaining this
+        // duplicate models a child between fork and exec without forking from
+        // the multithreaded test harness.
+        let inherited = first._file.try_clone().unwrap();
+        assert!(matches!(
+            acquire_install_lock(&installed),
+            Err(InstallError::Busy)
+        ));
+        drop(first);
+        let second = acquire_install_lock(&installed)
+            .expect("the guard releases ownership even before an inherited descriptor closes");
+        drop(inherited);
+        assert!(matches!(
+            acquire_install_lock(&installed),
+            Err(InstallError::Busy)
+        ));
+        drop(second);
+        assert!(acquire_install_lock(&installed).is_ok());
+    }
+
+    #[test]
+    fn migrates_owned_private_install_lock_without_replacing_or_unlocking_it() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        let path = install_lock_path(&installed).unwrap();
+        let original = open_regular(&path, true, true).unwrap();
+        original
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        FileExt::try_lock_exclusive(&original).unwrap();
+        let inode = original.metadata().unwrap().ino();
+        assert!(matches!(
+            acquire_install_lock(&installed),
+            Err(InstallError::Busy)
+        ));
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.ino(), inode);
+        assert_eq!(metadata.mode() & 0o777, 0o644);
+        // This fixture is a raw File, not an InstallLock guard. Explicitly
+        // release it before close, including when concurrent native commands
+        // temporarily inherited its open description before their exec.
+        FileExt::unlock(&original).unwrap();
+        drop(original);
+        acquire_install_lock(&installed).expect("the released migrated lock can be reacquired");
+    }
+
+    #[test]
+    fn shared_install_lock_rejects_writable_links_and_replaced_inodes() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        let path = install_lock_path(&installed).unwrap();
+        let file = open_install_lock(&installed).unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o666))
+            .unwrap();
+        assert!(matches!(
+            acquire_install_lock(&installed),
+            Err(InstallError::NotifyOnly(_))
+        ));
+        file.set_permissions(fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let alias = root.path().join("lock-alias");
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(validate_install_lock_path(&installed, &file).is_err());
+        fs::remove_file(alias).unwrap();
+        fs::remove_file(&path).unwrap();
+        let _replacement = open_install_lock(&installed).unwrap();
+        assert!(validate_install_lock_path(&installed, &file).is_err());
+    }
+
+    #[test]
+    fn permission_failures_require_manual_installation_without_hiding_busy_or_integrity_errors() {
+        for code in [libc::EACCES, libc::EPERM, libc::EROFS] {
+            assert!(
+                InstallError::Io(io::Error::from_raw_os_error(code)).requires_manual_installation()
+            );
+        }
+        assert!(InstallError::NotifyOnly("manual").requires_manual_installation());
+        assert!(!InstallError::Busy.requires_manual_installation());
+        assert!(!InstallError::CodeSignature.requires_manual_installation());
+        assert!(!InstallError::Invalid("changed payload").requires_manual_installation());
+        assert!(
+            !InstallError::Io(io::Error::from_raw_os_error(libc::ENOSPC))
+                .requires_manual_installation()
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn native_replacement_preflight_accepts_a_supported_bundle_and_detects_delete_acl() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        preflight_installation(&installed).unwrap();
+        let status = std::process::Command::new("/bin/chmod")
+            .args(["+a", "everyone deny delete"])
+            .arg(&installed)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let result = preflight_installation(&installed);
+        let cleared = std::process::Command::new("/bin/chmod")
+            .arg("-N")
+            .arg(&installed)
+            .status()
+            .unwrap();
+        assert!(cleared.success(), "restore the fixture's deletability");
+        assert!(matches!(result, Err(InstallError::NotifyOnly(_))));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn native_replacement_preflight_rejects_immutable_app_flags() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        preflight_installation(&installed).unwrap();
+        let status = std::process::Command::new("/usr/bin/chflags")
+            .arg("uchg")
+            .arg(&installed)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let result = preflight_installation(&installed);
+        let cleared = std::process::Command::new("/usr/bin/chflags")
+            .arg("nouchg")
+            .arg(&installed)
+            .status()
+            .unwrap();
+        assert!(cleared.success(), "restore the fixture's deletability");
+        assert!(matches!(result, Err(InstallError::NotifyOnly(_))));
     }
 
     #[test]

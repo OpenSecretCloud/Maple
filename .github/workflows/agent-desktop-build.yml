@@ -164,6 +164,9 @@ jobs:
           path: apps/maple-agent/target/release
       - name: Verify prebuilt profile and source before signing
         run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Build trusted installer archive scanner
+        if: ${{ matrix.variant == 'prod' }}
+        run: nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
       - name: Sign and notarize Agent packages
         run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE"
         env:
@@ -172,6 +175,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Scan actual Prod updater archive with installer parser
+        if: ${{ matrix.variant == 'prod' }}
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh "dist/$MAPLE_RELEASE_PROFILE"
       - name: Attest final macOS packages
         uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
         with:
@@ -221,8 +227,14 @@ jobs:
           path: apps/maple-agent/target/release
       - name: Verify prebuilt profile and source
         run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Build trusted installer archive scanner
+        if: ${{ matrix.variant == 'prod' }}
+        run: nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
       - name: Package unsigned Agent preview
         run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE" --unsigned
+      - name: Scan actual Prod updater archive with installer parser
+        if: ${{ matrix.variant == 'prod' }}
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh "dist/$MAPLE_RELEASE_PROFILE" --unsigned
       - name: Verify unsigned package profile and hashes
         run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" --unsigned
       - name: Upload Agent packages
