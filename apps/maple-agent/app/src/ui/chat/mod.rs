@@ -687,7 +687,7 @@ pub struct ChatScreen {
     /// First line of each queued message, for the chips.
     queue_previews: Vec<SharedString>,
     /// A newer release, until the banner is dismissed.
-    update: Option<crate::update::UpdateInfo>,
+    update: crate::update::Snapshot,
     queue_busy: bool,
     queue_edit: Option<QueueEdit>,
     /// Slash commands from the installed skills of the current project root.
@@ -1329,7 +1329,7 @@ impl ChatScreen {
             queue_previews: Vec::new(),
             queue_busy: false,
             queue_edit: None,
-            update: None,
+            update: crate::update::Snapshot::initial(),
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -3563,15 +3563,19 @@ impl ChatScreen {
         cx.notify();
     }
 
-    pub fn set_update(&mut self, info: crate::update::UpdateInfo, cx: &mut Context<Self>) {
-        self.update = Some(info);
-        cx.notify();
+    pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
+        if self.update != snapshot {
+            self.update = snapshot;
+            cx.notify();
+        }
     }
 
-    /// Banner for a newer release, with a link to its page.
     fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let info = self.update.as_ref()?;
-        let url = info.url.clone();
+        let snapshot = &self.update;
+        if !snapshot.show_banner {
+            return None;
+        }
+        let action = snapshot.primary;
         Some(
             div()
                 .flex()
@@ -3586,42 +3590,35 @@ impl ChatScreen {
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child(icon("arrow-up", px(14.), theme::accent()))
+                .child(div().flex_1().child(snapshot.label.clone()))
+                .when_some(action, |row, action| {
+                    row.child(
+                        div()
+                            .id("update-primary")
+                            .px_2()
+                            .py_0p5()
+                            .rounded(theme::RADIUS_SM)
+                            .text_color(gpui::rgb(theme::accent()))
+                            .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(crate::update::UpdateRequested(action));
+                            }))
+                            .child(snapshot.primary_label),
+                    )
+                })
                 .child(
                     div()
-                        .flex_1()
-                        .child(format!("Maple v{} is available", info.version)),
-                )
-                .child(
-                    div()
-                        .id("update-open")
+                        .id("update-later")
                         .px_2()
                         .py_0p5()
                         .rounded(theme::RADIUS_SM)
-                        .text_color(gpui::rgb(theme::accent()))
                         .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                            if let Err(error) = webbrowser::open(&url) {
-                                this.notice =
-                                    Some(format!("Could not open browser: {error}").into());
-                            }
-                            cx.notify();
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(crate::update::UpdateRequested(
+                                crate::update::UpdateAction::Later,
+                            ));
                         }))
-                        .child("Download"),
-                )
-                .child(
-                    div()
-                        .id("update-dismiss")
-                        .size_5()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(theme::RADIUS_SM)
-                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.update = None;
-                            cx.notify();
-                        }))
-                        .child(icon("x", px(12.), theme::text_secondary())),
+                        .child("Later"),
                 ),
         )
     }
@@ -6160,6 +6157,7 @@ impl ChatScreen {
     }
 }
 
+impl EventEmitter<crate::update::UpdateRequested> for ChatScreen {}
 impl EventEmitter<LoggedOut> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}

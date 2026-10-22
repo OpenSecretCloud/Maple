@@ -21,6 +21,15 @@ macos_embed_dylibs() {
     python3 "$component/scripts/macos-release-dylibs.py" "$binary" "$app"
 }
 
+macos_archive_app() {
+    local staging="$1" app_name="$2" archive="$3"
+    # COPYFILE_DISABLE alone still permits BSDtar PAX xattrs and file flags.
+    # Keep signed file bytes, public modes and links, but omit host metadata the
+    # installer's fail-closed archive scanner intentionally rejects.
+    COPYFILE_DISABLE=1 macos_native tar --no-xattrs --no-fflags --no-acls --no-mac-metadata \
+        -czf "$archive" -C "$staging" "$app_name.app"
+}
+
 macos_release_cleanup() {
     local status=$?
     trap - EXIT INT TERM HUP
@@ -247,7 +256,7 @@ print(-(-total//(1024*1024)))' "$image_root")"
         macos_native xcrun stapler validate "$output_dir/$basename.dmg"
         macos_native spctl --assess --type open --context context:primary-signature --verbose=2 "$output_dir/$basename.dmg"
     fi
-    COPYFILE_DISABLE=1 macos_native tar -czf "$output_dir/$basename.app.tar.gz" -C "$macos_release_staging" "$app_name.app"
+    macos_archive_app "$macos_release_staging" "$app_name" "$output_dir/$basename.app.tar.gz"
     chmod 0644 "$output_dir/$basename.dmg" "$output_dir/$basename.app.tar.gz"
 }
 

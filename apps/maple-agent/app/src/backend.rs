@@ -18,9 +18,14 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{
     collections::HashMap,
     future::Future,
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 use tokio::{runtime::Runtime, sync::mpsc};
+
+const RETIRED_AFTER_UPDATE: &str = "Maple has been updated. Quit and reopen Maple to continue.";
 
 pub struct AgentBackend {
     runtime: tokio::runtime::Handle,
@@ -29,6 +34,7 @@ pub struct AgentBackend {
     api_url: String,
     controller: Option<Arc<AgentBackend>>,
     remote_host: Option<String>,
+    retired_after_update: Arc<AtomicBool>,
     subscription_sequence: AtomicU64,
 }
 
@@ -265,6 +271,7 @@ impl AgentBackend {
             api_url,
             controller: None,
             remote_host: None,
+            retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
         })
     }
@@ -279,6 +286,7 @@ impl AgentBackend {
             api_url: "http://127.0.0.1:1".into(),
             controller: None,
             remote_host: None,
+            retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
         }
     }
@@ -294,21 +302,61 @@ impl AgentBackend {
             api_url,
             controller: None,
             remote_host: None,
+            retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
         })
     }
 
     pub async fn remote(self: &Arc<Self>, peer: String) -> Result<Arc<Self>, String> {
-        let client = RemoteClient::connect_remote(&self.api_url, peer.clone()).await?;
+        self.with_remote_connection(peer.clone(), || async {
+            RemoteClient::connect_remote(&self.api_url, peer)
+                .await
+                .map(|client| BackendClient::Host(Box::new(client)))
+        })
+        .await
+    }
+
+    async fn with_remote_connection<F>(
+        self: &Arc<Self>,
+        peer: String,
+        connect: impl FnOnce() -> F,
+    ) -> Result<Arc<Self>, String>
+    where
+        F: Future<Output = Result<BackendClient, String>>,
+    {
+        self.ensure_active()?;
+        let client = connect().await?;
+        self.ensure_active()?;
         Ok(Arc::new(Self {
             runtime: self.runtime.clone(),
             owned_runtime: None,
-            client: BackendClient::Host(Box::new(client)),
+            client,
             api_url: self.api_url.clone(),
             controller: Some(self.clone()),
             remote_host: Some(peer),
+            retired_after_update: self.retired_after_update.clone(),
             subscription_sequence: AtomicU64::new(0),
         }))
+    }
+
+    /// Once the installed application has been replaced, this process must not
+    /// submit work even if the desktop's restart helper fails. Remote views and
+    /// their local controller share this terminal gate; cleanup can still spawn.
+    pub fn retire_after_update(&self) {
+        self.retired_after_update.store(true, Ordering::Release);
+    }
+
+    #[cfg(feature = "desktop")]
+    pub(crate) fn is_retired_after_update(&self) -> bool {
+        self.retired_after_update.load(Ordering::Acquire)
+    }
+
+    fn ensure_active(&self) -> Result<(), String> {
+        if self.retired_after_update.load(Ordering::Acquire) {
+            Err(RETIRED_AFTER_UPDATE.into())
+        } else {
+            Ok(())
+        }
     }
     pub fn remote_host(&self) -> Option<&str> {
         self.remote_host.as_deref()
@@ -329,6 +377,7 @@ impl AgentBackend {
         method: &str,
         params: impl Serialize,
     ) -> Result<R, String> {
+        self.ensure_active()?;
         // Speech, account UI and each viewer's remote-sidebar preferences
         // belong to the controller.
         // All task operations use the selected host's separate connection.
@@ -373,6 +422,7 @@ impl AgentBackend {
         request: AgentSendMessageRequest,
         id: String,
     ) -> Result<String, String> {
+        self.ensure_active()?;
         match &self.client {
             BackendClient::Host(client) => {
                 client
@@ -397,6 +447,7 @@ impl AgentBackend {
         self.runtime.spawn(future)
     }
     pub async fn take_events(&self) -> Option<mpsc::Receiver<AgentServiceEvent>> {
+        self.ensure_active().ok()?;
         match &self.client {
             BackendClient::Host(client) => client.take_events().await,
             #[cfg(test)]
@@ -428,6 +479,9 @@ impl AgentBackend {
     pub fn detach(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let backend = self.clone();
         self.spawn(async move {
+            if backend.ensure_active().is_err() {
+                return;
+            }
             match &backend.client {
                 BackendClient::Host(client) => client.detach().await,
                 #[cfg(test)]
@@ -475,6 +529,7 @@ impl AgentBackend {
         });
     }
     pub fn begin_integration_setup(&self, id: &str) -> Result<AgentIntegrationPermissions, String> {
+        self.ensure_active()?;
         if self.remote_host.is_some() {
             return Err("Open Maple on the execution computer to grant native permissions.".into());
         }
@@ -643,6 +698,134 @@ pub(crate) async fn dispatch_remote_inner(
 mod tests {
     use super::*;
 
+    fn fixture() -> Arc<AgentBackend> {
+        Arc::new(AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap())
+    }
+
+    fn in_process_client(controller: &AgentBackend) -> BackendClient {
+        let _runtime = controller.runtime.enter();
+        let mut backend = LocalBackend::new(controller.api_url.clone(), String::new()).unwrap();
+        backend.ui_fixture = true;
+        BackendClient::InProcess(Box::new(backend))
+    }
+
+    #[test]
+    fn retired_frontend_rejects_rpc_send_and_native_permissions_but_can_run_cleanup() {
+        struct MustNotSerialize;
+        impl Serialize for MustNotSerialize {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                panic!("retired requests must not reach serialization or dispatch")
+            }
+        }
+
+        let backend = fixture();
+        let runtime = backend.runtime_handle();
+        runtime
+            .block_on(backend.call::<()>("cancel_oauth", ()))
+            .unwrap();
+        backend.retire_after_update();
+        backend.retire_after_update();
+        runtime.block_on(async {
+            assert_eq!(
+                backend.call::<()>("cancel_oauth", MustNotSerialize).await,
+                Err(RETIRED_AFTER_UPDATE.into())
+            );
+            assert_eq!(
+                backend
+                    .send_message_identified(
+                        "fixture-user",
+                        AgentSendMessageRequest {
+                            session_id: "fixture-session".into(),
+                            text: "must not be dispatched".into(),
+                            model: None,
+                            context_limit: None,
+                            vision_capable: false,
+                            steer: false,
+                            queue_id: None,
+                            attachments: Vec::new(),
+                        },
+                        "fixture-send".into(),
+                    )
+                    .await,
+                Err(RETIRED_AFTER_UPDATE.into())
+            );
+            assert_eq!(
+                backend.begin_integration_setup("fixture-integration").err(),
+                Some(RETIRED_AFTER_UPDATE.into())
+            );
+            assert!(backend.take_events().await.is_none());
+            assert_eq!(
+                backend.spawn(async { "cleanup completed" }).await.unwrap(),
+                "cleanup completed"
+            );
+        });
+    }
+
+    #[test]
+    fn remote_and_controller_share_terminal_update_retirement() {
+        let controller = fixture();
+        let runtime = controller.runtime_handle();
+        runtime.block_on(async {
+            let remote = controller
+                .with_remote_connection("fixture-peer".into(), || async {
+                    Ok(in_process_client(&controller))
+                })
+                .await
+                .unwrap();
+            let other_remote = controller
+                .with_remote_connection("other-fixture-peer".into(), || async {
+                    Ok(in_process_client(&controller))
+                })
+                .await
+                .unwrap();
+            remote.call::<()>("cancel_oauth", ()).await.unwrap();
+            remote.retire_after_update();
+            for backend in [&controller, &remote, &other_remote] {
+                assert_eq!(
+                    backend.call::<()>("cancel_oauth", ()).await,
+                    Err(RETIRED_AFTER_UPDATE.into())
+                );
+                // Controller-routed operations must be denied too.
+                assert_eq!(
+                    backend.account("fixture-user").await.err(),
+                    Some(RETIRED_AFTER_UPDATE.into())
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn retirement_rejects_remote_connection_before_connect_and_after_pending_connect() {
+        let controller = fixture();
+        let runtime = controller.runtime_handle();
+        runtime.block_on(async {
+            let client = in_process_client(&controller);
+            let result = controller
+                .with_remote_connection("fixture-peer".into(), || async {
+                    // Simulate installation committing while connection setup
+                    // is in flight. No active remote facade may be published.
+                    controller.retire_after_update();
+                    Ok(client)
+                })
+                .await;
+            assert_eq!(result.err(), Some(RETIRED_AFTER_UPDATE.into()));
+
+            let connected = AtomicBool::new(false);
+            let result = controller
+                .with_remote_connection("fixture-peer".into(), || async {
+                    connected.store(true, Ordering::Relaxed);
+                    Err("connection must not be attempted".into())
+                })
+                .await;
+            assert_eq!(result.err(), Some(RETIRED_AFTER_UPDATE.into()));
+            assert!(!connected.load(Ordering::Relaxed));
+            assert_eq!(
+                controller.remote("fixture-peer".into()).await.err(),
+                Some(RETIRED_AFTER_UPDATE.into())
+            );
+        });
+    }
+
     #[tokio::test]
     async fn remote_sidebar_preferences_stay_in_the_controller_store() {
         fn store(root: &std::path::Path) -> Arc<maple_agent::store::Store> {
@@ -662,6 +845,7 @@ mod tests {
                 api_url: "http://127.0.0.1:1".into(),
                 controller: None,
                 remote_host: None,
+                retired_after_update: Arc::new(AtomicBool::new(false)),
                 subscription_sequence: AtomicU64::new(0),
             }
         }

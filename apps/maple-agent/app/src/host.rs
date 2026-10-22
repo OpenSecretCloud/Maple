@@ -615,6 +615,17 @@ fn spawn_host() -> Result<(), String> {
     Ok(())
 }
 
+/// Restore host availability after an update failed before committing its swap.
+/// This explicit recovery never replays work; ordinary reconnect loops still
+/// cannot undo a deliberate host stop. Call only after the update fence drops.
+#[cfg(feature = "desktop")]
+pub async fn recover_after_failed_update(api_url: &str) -> Result<(), String> {
+    let endpoint = ipc::Endpoint::new(api_url)?;
+    let (connection, _) = connect(&endpoint, ConnectionMode::Client, true).await?;
+    drop(connection);
+    Ok(())
+}
+
 pub fn run(api_url: String) -> Result<(), String> {
     let endpoint = ipc::Endpoint::new(&api_url)?;
     let _previous_owner = endpoint.previous_owner_guard()?;
@@ -2164,6 +2175,325 @@ pub fn stop(api_url: &str) -> Result<(), String> {
         let endpoint = ipc::Endpoint::new(api_url)?;
         request_stop_endpoint(&endpoint).await
     })
+}
+
+/// Holds this profile's startup admission and host ownership through replacement
+/// and the old desktop's entire restart handoff, including helper-spawn failure.
+/// The new process acquires these normally after the old process exits.
+#[cfg(feature = "desktop")]
+pub struct HostUpdateFence {
+    // Release ownership before admission if a pre-commit attempt fails.
+    _ownership: std::fs::File,
+    _startup: std::fs::File,
+}
+
+/// Stop the current host and reserve this profile against queued/direct starts.
+///
+/// Call from a blocking task, never the UI or an async executor thread. The caller
+/// also owns the application-path installation lock and revalidates staging in
+/// `replace`. Retain the returned guards after commit until process exit; drop
+/// them before recovering from a pre-commit failure. Normal host startup owns
+/// `startup.lock` while waiting for the child's handshake; the child must not try
+/// to acquire that same lock a second time.
+#[cfg(feature = "desktop")]
+pub fn acquire_update_fence(api_url: &str) -> Result<HostUpdateFence, String> {
+    let endpoint = ipc::Endpoint::new(api_url)?;
+    acquire_update_fence_endpoint(&endpoint, Duration::from_secs(45), || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "Could not prepare update shutdown".to_string())?;
+        runtime.block_on(request_stop_endpoint(&endpoint))
+    })
+}
+
+#[cfg(feature = "desktop")]
+fn acquire_update_fence_endpoint(
+    endpoint: &ipc::Endpoint,
+    timeout: Duration,
+    stop: impl FnOnce() -> Result<(), String>,
+) -> Result<HostUpdateFence, String> {
+    let startup = endpoint.lock("startup.lock")?;
+    wait_update_lock(&startup, timeout, "Another Maple host is starting")?;
+    stop()?;
+    // Stop acknowledgement and even socket EOF can precede the host's final
+    // drop of ownership. Acquiring ownership proves the drain has completed
+    // and prevents direct `host serve` attempts during the file replacement.
+    let ownership = endpoint.ownership_lock()?;
+    wait_update_lock(&ownership, timeout, "Maple host is still shutting down")?;
+    Ok(HostUpdateFence {
+        _ownership: ownership,
+        _startup: startup,
+    })
+}
+
+#[cfg(all(test, feature = "desktop"))]
+fn with_update_fence_endpoint<T>(
+    endpoint: &ipc::Endpoint,
+    timeout: Duration,
+    stop: impl FnOnce() -> Result<(), String>,
+    replace: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _fence = acquire_update_fence_endpoint(endpoint, timeout, stop)?;
+    replace()
+}
+
+#[cfg(feature = "desktop")]
+fn wait_update_lock(file: &std::fs::File, timeout: Duration, busy: &str) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Err(busy.to_string()),
+            Err(_) => return Err("Could not acquire Maple update ownership".into()),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod update_install_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[tokio::test]
+    async fn durable_store_shutdown_failure_prevents_update_and_preserves_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(LocalBackend::isolated_for_test(root.path()));
+        let store = backend.store().unwrap().clone();
+        store
+            .set_app_setting("update-sentinel", &serde_json::json!(true), 1)
+            .unwrap();
+        let endpoint = ipc::Endpoint::for_test(store.paths().root().to_path_buf());
+        let ownership = endpoint.ownership_lock().unwrap();
+        ownership.lock().unwrap();
+        let ownership = Arc::new(std::sync::Mutex::new(Some(ownership)));
+        let owner = Arc::new(OwnerContext::new(Some(&store)));
+        let receipts = Arc::new(receipts::Receipts::new(store.clone()));
+        let (events, _) = broadcast::channel(16);
+        let remote = Arc::new(crate::remote::manager::Manager::new(
+            backend.clone(),
+            events.clone(),
+            receipts,
+        ));
+        // Exercise a real late durable-close failure through the existing SQL
+        // fixture boundary; no raw SQLite handle or production test hook.
+        let spills = maple_agent::store::spill::SpillRoot::new(store.paths()).unwrap();
+        spills
+            .task_dir("00000000-0000-0000-0000-000000000001")
+            .unwrap();
+        std::fs::remove_dir_all(spills.path()).unwrap();
+        std::fs::write(spills.path(), b"invalid spill fixture").unwrap();
+        let replaced = Arc::new(AtomicBool::new(false));
+        let attempt = || {
+            let (endpoint, backend, owner, remote, events, ownership, replaced) = (
+                endpoint.clone(),
+                backend.clone(),
+                owner.clone(),
+                remote.clone(),
+                events.clone(),
+                ownership.clone(),
+                replaced.clone(),
+            );
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                with_update_fence_endpoint(
+                    &endpoint,
+                    Duration::from_secs(2),
+                    || {
+                        runtime.block_on(owner.shutdown(&backend, &remote, &events))?;
+                        drop(ownership.lock().unwrap().take());
+                        Ok(())
+                    },
+                    || {
+                        assert!(matches!(
+                            endpoint.ownership_lock().unwrap().try_lock(),
+                            Err(std::fs::TryLockError::WouldBlock)
+                        ));
+                        // The previous inode is no longer the authoritative fence.
+                        endpoint.lock("host.lock").unwrap().try_lock().unwrap();
+                        replaced.store(true, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+            })
+        };
+        assert!(attempt().await.unwrap().is_err());
+        assert!(!replaced.load(Ordering::SeqCst));
+        assert!(matches!(
+            endpoint.ownership_lock().unwrap().try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        assert_eq!(store.state(), StoreState::Open);
+        assert_eq!(
+            store.app_setting("update-sentinel").unwrap(),
+            Some(serde_json::json!(true))
+        );
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+
+        std::fs::remove_file(spills.path()).unwrap();
+        attempt().await.unwrap().unwrap();
+        assert!(replaced.load(Ordering::SeqCst));
+        store.initialize_plain().unwrap();
+        assert_eq!(
+            store.app_setting("update-sentinel").unwrap(),
+            Some(serde_json::json!(true))
+        );
+        store.close_for_shutdown().unwrap();
+    }
+
+    #[test]
+    fn committed_restart_fence_survives_the_last_controller_handle() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let fence =
+            acquire_update_fence_endpoint(&endpoint, Duration::from_secs(2), || Ok(())).unwrap();
+        let controller = crate::update::Controller::new(true);
+        controller.set_test_installed_with_fence(directory.path().join("Maple Agent.app"), fence);
+        let last_handle = controller.clone();
+        drop(controller);
+        drop(last_handle);
+        // The committed handoff intentionally leaves these two descriptors
+        // to OS process-exit cleanup, even when GPUI tears down every handle.
+        for lock in [
+            endpoint.lock("startup.lock").unwrap(),
+            endpoint.ownership_lock().unwrap(),
+        ] {
+            assert!(matches!(
+                lock.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_restart_fence_blocks_queued_and_direct_starts_until_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let fence =
+            acquire_update_fence_endpoint(&endpoint, Duration::from_secs(2), || Ok(())).unwrap();
+        let direct = endpoint.ownership_lock().unwrap();
+        let queued = endpoint.lock("startup.lock").unwrap();
+        let (started, startup_waiting) = std::sync::mpsc::channel();
+        let (admitted, admission) = std::sync::mpsc::channel();
+        let client = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            wait_update_lock(
+                &queued,
+                Duration::from_secs(2),
+                "restart fence did not release",
+            )
+            .unwrap();
+            admitted.send(()).unwrap();
+        });
+        startup_waiting
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(admission.recv_timeout(Duration::from_millis(40)).is_err());
+        assert!(matches!(
+            direct.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        // Simulate the old desktop exiting after a failed relaunch handoff.
+        drop(fence);
+        admission.recv_timeout(Duration::from_secs(1)).unwrap();
+        direct.try_lock().unwrap();
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn update_waits_for_drain_and_holds_startup_and_ownership_during_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let old_host = endpoint.ownership_lock().unwrap();
+        old_host.lock().unwrap();
+        let queued_start = endpoint.lock("startup.lock").unwrap();
+        let direct_start = endpoint.ownership_lock().unwrap();
+        let result = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_secs(2),
+            || {
+                assert!(matches!(
+                    queued_start.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                drop(old_host);
+                Ok(())
+            },
+            || {
+                assert!(matches!(
+                    queued_start.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                assert!(matches!(
+                    direct_start.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                Ok(42)
+            },
+        )
+        .unwrap();
+        assert_eq!(result, 42);
+        queued_start.try_lock().unwrap();
+        direct_start.try_lock().unwrap();
+    }
+
+    #[test]
+    fn shutdown_failure_never_replaces_and_releases_startup_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let replaced = AtomicBool::new(false);
+        let result = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_millis(30),
+            || Err("stop failed".into()),
+            || {
+                replaced.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "stop failed");
+        assert!(!replaced.load(Ordering::SeqCst));
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+    }
+
+    #[test]
+    fn stop_acknowledgement_does_not_bypass_a_host_that_keeps_ownership() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let old_host = endpoint.ownership_lock().unwrap();
+        old_host.lock().unwrap();
+        let replaced = AtomicBool::new(false);
+        let result = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_millis(30),
+            || Ok(()),
+            || {
+                replaced.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert!(result.unwrap_err().contains("shutting down"));
+        assert!(!replaced.load(Ordering::SeqCst));
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+    }
+
+    #[test]
+    fn replacement_failure_releases_both_locks_for_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let result: Result<(), String> = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_millis(30),
+            || Ok(()),
+            || Err("replacement failed".into()),
+        );
+        assert_eq!(result.unwrap_err(), "replacement failed");
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        endpoint.ownership_lock().unwrap().try_lock().unwrap();
+    }
 }
 
 #[cfg(feature = "acp")]

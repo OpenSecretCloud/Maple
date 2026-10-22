@@ -20,6 +20,7 @@ enum HostCommand {
     Finish(Result<Value, String>, StoreState, &'static str),
     State(StoreState),
     ReleaseFlush,
+    AutomaticDownloads(bool),
 }
 
 struct FixtureHost {
@@ -128,6 +129,7 @@ impl FixtureHost {
                 let mut pending = None;
                 let mut running = runtime_survives;
                 let mut pending_flush = None;
+                let mut automatic_downloads = true;
                 loop {
                     tokio::select! {
                         command = control.recv() => {
@@ -140,6 +142,7 @@ impl FixtureHost {
                                     if protocol::write(&mut output, &protocol::Message::Response { id, result }).await.is_err() { break; }
                                 }
                                 HostCommand::State(next) => state = next,
+                                HostCommand::AutomaticDownloads(enabled) => automatic_downloads = enabled,
                                 HostCommand::ReleaseFlush => {
                                     let id = pending_flush.take().expect("a deferred settings flush");
                                     if protocol::write(&mut output, &protocol::Message::Response { id, result: Ok(Value::Null) }).await.is_err() { break; }
@@ -165,7 +168,13 @@ impl FixtureHost {
                             let result = match request.method.as_str() {
                                 "host_status" => Ok(json!({"acp_clients":1,"running_tasks":0,"remote_controllers":0,"background_tasks":0})),
                                 "store_status" => Ok(json!({"state":state,"mode":mode,"store_id":store_id,"connection_rebind_required":false,"password_settings_available":true})),
-                                "get_ui_settings" => Ok(serde_json::to_value(crate::settings::AppSettings::default()).unwrap()),
+                                "get_ui_settings" => {
+                                    let settings = crate::settings::AppSettings {
+                                        automatic_update_downloads: automatic_downloads,
+                                        ..Default::default()
+                                    };
+                                    Ok(serde_json::to_value(settings).unwrap())
+                                },
                                 "dictionary" => Ok(json!({"words":[],"next":null})),
                                 "navigation_bootstrap" => Ok(serde_json::to_value(crate::backend::NavigationBootstrap {
                                     runtime_status: runtime_status(running), project_root: runtime_status(running).project_root,
@@ -713,6 +722,7 @@ fn rejection_before_runtime_shutdown_clears_barrier_without_restarting(
 fn close_lifecycle(host: &FixtureHost) -> DesktopLifecycle {
     DesktopLifecycle {
         backend: host.backend.clone(),
+        updater: crate::update::Controller::new(false),
         remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         store_resident: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         can_background: false,
@@ -721,6 +731,119 @@ fn close_lifecycle(host: &FixtureHost) -> DesktopLifecycle {
         quit_requested: Default::default(),
         frontend_detached: Default::default(),
     }
+}
+
+#[gpui::test]
+fn updater_bootstrap_waits_for_open_store_and_uses_saved_download_preference(
+    cx: &mut gpui::TestAppContext,
+) {
+    let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+    let host = FixtureHost::new();
+    let app = shell(&host, cx, false, &settings);
+    let updater = crate::update::Controller::new(false);
+    updater.set_auto_download(true);
+    app.update(cx, |app, _| app.updater = updater.clone());
+    let cx = window(&app, cx);
+    host.commands
+        .send(HostCommand::State(StoreState::Locked))
+        .unwrap();
+    wait(cx, "locked store gate", |cx| {
+        app.update(cx, |app, _| matches!(app.screen, Screen::StoreGate(_)))
+    });
+    assert_eq!(updater.startup_policy_for_test(), (false, false));
+    host.commands
+        .send(HostCommand::AutomaticDownloads(false))
+        .unwrap();
+    host.commands
+        .send(HostCommand::State(StoreState::Open))
+        .unwrap();
+    wait(cx, "verified settings bootstrap", |cx| {
+        app.update(cx, |app, _| app.store_ready) && updater.startup_policy_for_test().0
+    });
+    assert!(!updater.startup_policy_for_test().1);
+    assert!(host.count("get_ui_settings") > 0);
+    updater.shutdown();
+    drop(host);
+    settle(cx);
+}
+
+#[gpui::test]
+fn pending_quit_cannot_finish_an_update_installation(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
+    let backend =
+        Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+    let updater = crate::update::Controller::new(false);
+    cx.update(|cx| {
+        cx.set_global(DesktopLifecycle {
+            backend,
+            updater: updater.clone(),
+            remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            store_resident: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            can_background: true,
+            closing: Default::default(),
+            quit_completed: Default::default(),
+            quit_requested: Default::default(),
+            frontend_detached: Default::default(),
+        });
+        updater.set_test_state(crate::update::State::Ready);
+        assert!(may_finish_quit(cx));
+        updater.set_test_state(crate::update::State::Installing);
+        assert!(!may_finish_quit(cx));
+        assert!(!cx.global::<DesktopLifecycle>().quit_completed.get());
+        updater.set_test_state(crate::update::State::Error);
+        assert!(may_finish_quit(cx));
+    });
+}
+
+#[gpui::test]
+fn committed_restart_retry_quit_and_close_do_not_contact_the_retired_host(
+    cx: &mut gpui::TestAppContext,
+) {
+    let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+    let host = FixtureHost::with_close_outcome(false, true, "plain", false);
+    let app = shell(&host, cx, false, &settings);
+    let lifecycle = close_lifecycle(&host);
+    let path = PathBuf::from("/Applications/Maple Agent.app");
+    lifecycle.backend.retire_after_update();
+    lifecycle.updater.set_test_installed(path.clone());
+    app.update(cx, |app, cx| {
+        app.updater = lifecycle.updater.clone();
+        cx.set_global(lifecycle.clone());
+    });
+    for _ in 0..2 {
+        let mut restarted = cx.expect_restart();
+        cx.update(|cx| restart_installed_update(path.clone(), cx));
+        assert_eq!(restarted.try_recv().unwrap(), Some(Some(path.clone())));
+    }
+    let cx = window(&app, cx);
+    host.requests.lock().unwrap().clear();
+    cx.update(close_window);
+    cx.update(|_, cx| quit_app(cx));
+    settle(cx);
+    assert!(lifecycle.quit_completed.get());
+    assert!(!lifecycle.closing.get());
+    assert!(!lifecycle.frontend_detached.get());
+    for method in [
+        "store_status",
+        "host_status",
+        "flush_ui_settings",
+        "cancel_oauth",
+        "detach",
+    ] {
+        assert_eq!(
+            host.count(method),
+            0,
+            "terminal update must bypass {method}"
+        );
+    }
+    assert_eq!(
+        lifecycle.updater.snapshot().state,
+        crate::update::State::RestartRequired
+    );
+    #[cfg(target_os = "macos")]
+    native_quit::reset_frontend_detach_for_test();
+    drop(host);
+    settle(cx);
 }
 
 #[gpui::test]

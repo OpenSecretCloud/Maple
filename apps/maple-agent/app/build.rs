@@ -68,6 +68,8 @@ fn main() {
         "git_revision": revision,
         "source_sha": source_sha,
         "update_tag_prefix": profile.update_tag_prefix,
+        "update_feed_url": profile.update_feed_url,
+        "update_public_keys": profile.update_public_keys,
         "prerelease": profile.prerelease,
     });
     // GPUI unifies serde_json's preserve_order feature in desktop builds.

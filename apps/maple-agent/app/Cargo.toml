@@ -38,6 +38,7 @@ proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http"]
 dirs = "6"
 maple-agent = { path = "../crates/maple-agent", default-features = false }
 maple-billing = { path = "../crates/maple-billing" }
+maple-agent-updater = { path = "../crates/maple-agent-updater" }
 # gpui is pinned to the Zed commit that gpui-libghostty (the embedded
 # terminal Ben is preparing) builds against, so the two agree on one gpui
 # once the terminal lands. crates.io 0.2.2 is older than this commit.

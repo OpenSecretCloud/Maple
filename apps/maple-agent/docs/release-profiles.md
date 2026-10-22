@@ -27,7 +27,8 @@ redirected through an inherited environment variable. This Agent profile does
 not change Research's Auth entry or the backend's default provider callbacks.
 
 Packaged builds ignore inherited `MAPLE_API_URL`, `MAPLE_BILLING_API_URL`,
-`MAPLE_CLIENT_ID`, and `MAPLE_UPDATE_REPO` overrides. A build fails if a supplied
+`MAPLE_CLIENT_ID` overrides. The updater feed and trusted keys are also immutable;
+`MAPLE_UPDATE_REPO` is no longer supported. A build fails if a supplied
 `VITE_OPEN_SECRET_PCR_ENVIRONMENT` disagrees with its profile; the runtime crate
 bakes the required trust selection even when that variable is absent. Unknown
 or empty `MAPLE_RELEASE_PROFILE` values also fail the build.
@@ -49,15 +50,30 @@ Debug. Release packaging accepts only Dev or Prod metadata.
 environment, initializing a GUI/backend, logging, or accessing state. Fields
 are `profile`, `display_name`, `bundle_id`, `data_namespace`, `api_url`,
 `billing_api_url`, `web_url`, `auth_origin`, `client_id`, `pcr_environment`, `version`, `git_revision`,
-`source_sha`, `update_tag_prefix`, and `prerelease`. `git_revision` is the short
+`source_sha`, `update_tag_prefix`, `prerelease`, `update_feed_url`, and
+`update_public_keys`. `git_revision` is the short
 revision with a possible `-dirty` suffix; `source_sha` is the full source commit.
 Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.
 
-Update discovery remains a manual release-page banner. Prod accepts only
-non-draft GitHub stable releases tagged `maple-agent-vMAJOR.MINOR.PATCH`. Dev
-accepts only non-draft GitHub prereleases tagged
-`maple-agent-dev-vMAJOR.MINOR.PATCH`. Both reject SemVer prerelease/build
-suffixes, Research tags, and the other Agent channel. Packaged builds pin
-`MaplePrivacyLabs/Maple`; unpackaged builds retain validated repository
-overrides and the Prod tag namespace. `MAPLE_DISABLE_UPDATE_CHECK=1` remains
-available for every profile. No update is downloaded or installed.
+Packaged Prod builds use only the compiled Agent stable feed at
+`https://updates.trymaple.ai/agent/stable/latest.json`. The profile pins the
+reviewed primary and backup public keys, enabling packaged Prod discovery after
+launch. Publication remains disabled pending owner service setup; invitations
+still require the signed update rehearsal. An empty-key profile reports
+**Updates not configured** and
+makes no update requests. Active trust requires two distinct public keys; the
+backup supports planned rotation and does not revoke a compromised accepted
+primary.
+
+Dev and unpackaged builds contain no updater feed or keys. No runtime override
+can opt either into production updating. `MAPLE_DISABLE_UPDATE_CHECK=1` remains
+a hard off for every profile. Release tag prefixes still identify packaging
+channels; they are not the updater's source of authority.
+
+Configured Prod checks after launch and approximately hourly, verifies signed
+metadata and package contents, and downloads automatically by default. Users
+can turn automatic downloads off and download explicitly. Installation waits
+for **Restart to Update** and a warning that tasks and remote access stop.
+Read-only/translocated apps and the currently gated Linux updater offer manual
+download links from signed metadata. See [updater development and activation](updates.md) for
+verification, recovery and the separate production activation boundary.

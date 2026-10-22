@@ -51,6 +51,9 @@ pub struct AppSettings {
     /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
+    /// Background downloads are optional; installation always needs confirmation.
+    #[serde(default = "default_automatic_update_downloads")]
+    pub automatic_update_downloads: bool,
     /// Explicit permission to send task titles and questions to the operating
     /// system's notification history while the local store uses a password.
     #[serde(default)]
@@ -205,6 +208,10 @@ fn default_desktop_notifications() -> bool {
     true
 }
 
+fn default_automatic_update_downloads() -> bool {
+    true
+}
+
 fn default_store_password_mode() -> bool {
     true
 }
@@ -227,6 +234,7 @@ impl Default for AppSettings {
             project_names: std::collections::HashMap::new(),
             remote_sidebars: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
+            automatic_update_downloads: default_automatic_update_downloads(),
             password_notification_details: false,
             store_password_mode: default_store_password_mode(),
             reduce_motion: false,
@@ -905,6 +913,17 @@ mod tests {
     }
 
     #[test]
+    fn existing_settings_files_default_automatic_update_downloads_to_on() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"theme":"dark","desktop_notifications":false}"#)
+                .expect("deserialize settings from before automatic downloads");
+        assert!(settings.automatic_update_downloads);
+        assert_eq!(settings.theme, "dark");
+        assert!(!settings.desktop_notifications);
+        assert!(AppSettings::default().automatic_update_downloads);
+    }
+
+    #[test]
     fn existing_settings_files_default_chat_reading_to_system_14() {
         let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
         let object = json.as_object_mut().expect("settings object");
@@ -926,6 +945,7 @@ mod tests {
         install_test_store(store.clone());
         update_settings_in_background(|settings| settings.tts_voice = "neutral_male".into());
         update_settings_in_background(|settings| settings.tts_speed = 1.5);
+        update_settings_in_background(|settings| settings.automatic_update_downloads = false);
         update_settings_in_background(|settings| {
             settings
                 .shortcut_overrides
@@ -935,6 +955,7 @@ mod tests {
         let reloaded = load_host_settings(&store, None).unwrap();
         assert_eq!(reloaded.tts_voice, "neutral_male");
         assert!((reloaded.tts_speed - 1.5).abs() < 0.01);
+        assert!(!reloaded.automatic_update_downloads);
         assert_eq!(
             reloaded.shortcut_overrides.get("chat.new_task"),
             Some(&None)

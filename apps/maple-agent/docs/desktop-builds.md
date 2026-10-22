@@ -19,10 +19,10 @@ startup in an Ubuntu 24.04 container with no Nix installation and no network
 access. Each master run completes independently; newer PR updates cancel older
 previews.
 
-| Profile | Application | macOS bundle ID | Configuration/data namespace | Update tags |
+| Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
-| Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | `maple-agent-dev-vX.Y.Z`, prerelease |
-| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | `maple-agent-vX.Y.Z`, stable |
+| Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
+| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed with primary/backup pins; publication separately gated |
 
 The binary embeds its profile, hosted API/client/billing settings, and PCR
 environment. `--build-info` prints the public build identity as JSON without
@@ -38,9 +38,15 @@ binary and checks its embedded profile and source commit against the run's
 checkout before the signing step receives Apple credentials. It reads a dedicated
 Mach-O JSON section without executing artifact code, including before signing.
 No app binary runs anywhere on the signing runner. Packaging does not restore a
-Cargo cache or compile Rust; this keeps compilation's disk use
-separate from bundling and notarization. PR previews use the same prebuilt
-verification on runners without signing credentials. Runtime metadata, duplicate
+Cargo cache or compile the application. For Prod, the packaging runner first
+compiles a small updater-only scanner from its trusted checkout, before the step
+receiving Apple credentials. After packaging, that tool reads the actual
+`.app.tar.gz` through the installer's archive scanner, without extracting or
+executing the app, and checks its SHA-256 against the package checksums before
+final artifact upload or attestation. The same gate covers unsigned Prod PR
+packages. Dev uses a different bundle root and has no production updater.
+PR previews use the same prebuilt verification on runners without signing
+credentials. Runtime metadata, duplicate
 Swift runtime, and real GPUI window/first-render checks run only in credential-free
 verification. GUI startup uses empty temporary state and does not sign in.
 
@@ -70,6 +76,13 @@ archive; drag the chosen Agent app into Applications. Both Agent profiles can
 coexist with Maple Research. Linux packages contain an AppImage; make it
 executable and launch it. Each artifact also contains public build information,
 a package manifest, and checksums.
+
+Native BSDtar creation explicitly disables xattrs, file flags, ACLs and macOS
+metadata, while preserving signed file bytes, public modes and symlink targets.
+`COPYFILE_DISABLE` alone does not suppress all PAX host metadata. Normal native
+format support remains enabled for required long paths; unsupported metadata is
+rejected by the real installer scanner. Existing extracted-archive codesign,
+notarization, Gatekeeper and DMG comparison checks remain required.
 
 Every final master package file, including its public metadata and checksums,
 receives GitHub build provenance. The trusted macOS signing job mints provenance
@@ -116,21 +129,33 @@ nix develop --no-update-lock-file . -c ./scripts/package-release.sh dev --unsign
 nix develop --no-update-lock-file . -c ./scripts/verify-release.sh dev dist/dev --unsigned
 ```
 
+For a produced Prod updater archive, compile the trusted data-only scanner and
+validate the exact package directory (add `--unsigned` for PR packages):
+
+```sh
+nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
+nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh dist/prod --unsigned
+```
+
 Use `prod` for the production service profile. Official macOS signing is run
-only by the trusted CI job using the existing `desktop-signing` GitHub
-environment. Cargo and native compilation run before that job step receives
-Apple credentials, on a separate runner. Linux packaging needs no Apple
-credentials.
+only by the trusted master CI job, reusing the existing `desktop-signing` GitHub
+environment and its five Apple secrets. Application compilation runs on a
+separate runner; the trusted updater scanner compiles before the job step receiving Apple credentials. Linux
+packaging needs no Apple credentials.
 
 ## Distribution and update boundaries
 
-These builds are Actions downloads. They do not create GitHub Releases or
-advance an updater feed. The application discovers only releases in its own
-profile's tag namespace and opens their release page for a manual download;
-it does not install an update. Dev and Prod reject each other's releases, and
-Research's bare `vX.Y.Z` releases are excluded.
+These builds remain Actions downloads and do not advance an updater feed.
+The independent Agent publisher promotes only verified Prod artifacts into the
+Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
+The client accepts only its signed Agent product/channel/target manifest, with
+the primary and backup keys embedded in the Prod profile. Packaged Prod builds
+check that feed; publication remains disabled pending owner service setup, and
+invitations still require the signed update rehearsal. An empty-key profile
+still disables updater traffic. See
+[updater activation](updates.md).
 
-A future Agent publisher must use namespaced tags and `make_latest: false`,
-preserving Research's repository-wide latest release. Release publication and
-any Research-to-Agent migration require their own explicit authorization. No
-Research install is replaced, overwritten, or migrated by this workflow.
+No new app-signing environment or Apple credential migration is needed. Keep the
+existing `desktop-signing` credentials and policies, Research updater key,
+publication workflow and compatibility URLs intact. No Research install is
+replaced, overwritten or migrated by Agent packaging or publication.

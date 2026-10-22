@@ -6,7 +6,7 @@ Branch protection on `master` alone does not protect repository-level secrets.
 
 | Environment | Credentials | Jobs |
 | --- | --- | --- |
-| `desktop-signing` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`, `KEYCHAIN_PASSWORD` | macOS/Linux master and release builds |
+| `desktop-signing` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`, `KEYCHAIN_PASSWORD` | Research macOS/Linux master and release builds; Agent macOS Dev/Prod packages from trusted master |
 | `apple-signing` | `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_PRIVATE_KEY`, `APPLE_TEAM_ID` | Shared production iOS and Maple Dev builds and TestFlight submission |
 | `android-signing` | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Android master and release builds |
 | `windows-signing` | `AZURE_*` signing configuration and both `TAURI_SIGNING_PRIVATE_KEY*` secrets | Windows master and release builds |
@@ -26,16 +26,24 @@ Pages/updater deployments. The same environments also serve owner-controlled
 `v*` release tags, so their signing jobs likewise have no separate approval prompt.
 Creating a release and controlling its distribution remain separate boundaries.
 
-`Maple Agent Desktop Builds` also uses the existing `desktop-signing` environment
-for its trusted `master` macOS Dev/Prod jobs. The same Developer ID publisher
-signs distinct Agent bundle identities; it does not replace Research's identity.
+`Maple Agent Desktop Builds` reuses the existing `desktop-signing` environment
+and its five `APPLE_*` secrets for trusted `master` macOS Dev/Prod packaging.
+No new Apple credentials, environment, BWS retrieval, or credential migration is
+required. Keep that environment's existing secrets and policies unchanged. The
+Agent packaging step references only those Apple secrets; sharing the environment
+does not isolate it from other credentials authorized to that job's trusted code.
+Agent update manifests use an independent Agent key, separate from Research's
+Tauri key. The same Developer ID publisher signs distinct Agent bundle identities;
+it does not replace Research's identity.
 Agent contributor packaging, Linux compilation, and macOS compilation receive
 no Apple or updater signing secrets. A fresh macOS packaging job downloads the
 binary from the same workflow run and validates its profile and embedded source
 revision against the exact checkout by reading a dedicated Mach-O metadata
 section. It never executes artifact code, including
-before the Apple credential step, and does not restore compilation caches or run
-Cargo. App launches and Swift runtime checks run only on verifiers without Apple
+before the Apple credential step, and does not restore compilation caches or
+compile the application. The trusted updater-only archive scanner compiles before
+the step receiving Apple credentials. App launches and Swift runtime checks run
+only on verifiers without Apple
 or updater signing secrets. Agent builds upload separately named Actions artifacts.
 
 The macOS signing job has `contents: read`, `id-token: write`, and

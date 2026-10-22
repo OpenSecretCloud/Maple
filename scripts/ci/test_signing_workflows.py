@@ -61,6 +61,7 @@ CONSUMERS = {
         "build-android": "android-signing", "build-ios": "apple-signing",
     },
     "zapstore-publish.yml": {"publish": "zapstore-publishing"},
+    # Preserve the original credential diagnostics and Research environments.
     "signing-credentials-check.yml": {
         name: name for name in (
             "desktop-signing", "apple-signing", "android-signing",

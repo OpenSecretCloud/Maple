@@ -395,8 +395,12 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 steps = job["steps"]
                 self.assertFalse(any("rust-cache@" in step.get("uses", "") for step in steps))
                 self.assertFalse(any("build-release.sh" in step.get("run", "") for step in steps))
-                for step in steps:
-                    self.assertNotRegex(step.get("run", ""), r"\bcargo\b")
+                scanner_builds = [i for i, step in enumerate(steps) if "cargo" in step.get("run", "")]
+                self.assertEqual(len(scanner_builds), 1)
+                scanner_build = scanner_builds[0]
+                self.assertEqual(steps[scanner_build]["run"], "nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive")
+                self.assertEqual(steps[scanner_build]["if"], "${{ matrix.variant == 'prod' }}")
+                self.assertNotIn("env", steps[scanner_build], "scanner compilation must receive no signing credentials")
                 download = next(i for i, step in enumerate(steps)
                                 if step.get("uses", "").startswith("actions/download-artifact@"))
                 self.assertEqual(steps[download]["with"], {
@@ -406,6 +410,17 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                               if "./scripts/verify-prebuilt-release.sh" in step.get("run", ""))
                 package = next(i for i, step in enumerate(steps)
                                if "./scripts/package-release.sh" in step.get("run", ""))
+                scanner = next(i for i, step in enumerate(steps)
+                               if "./scripts/verify-updater-archive.sh" in step.get("run", ""))
+                self.assertLess(scanner_build, package)
+                self.assertGreater(scanner, package)
+                self.assertEqual(steps[scanner]["if"], "${{ matrix.variant == 'prod' }}")
+                self.assertNotIn("env", steps[scanner], "archive data inspection must receive no signing credentials")
+                self.assertIn('"dist/$MAPLE_RELEASE_PROFILE"', steps[scanner]["run"])
+                self.assertEqual("--unsigned" in steps[scanner]["run"], name == "macos-unsigned")
+                for index, step in enumerate(steps):
+                    if step.get("uses", "").startswith(("actions/upload-artifact@", "actions/attest@")):
+                        self.assertLess(scanner, index, "actual archive must pass the installer parser before publication")
                 self.assertGreater(verify, download)
                 self.assertGreater(package, verify)
                 self.assertNotIn("env", steps[verify])

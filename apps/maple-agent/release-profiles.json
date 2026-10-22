@@ -10,6 +10,8 @@
     "client_id": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
     "pcr_environment": "development",
     "update_tag_prefix": "maple-agent-dev-v",
+    "update_feed_url": null,
+    "update_public_keys": [],
     "prerelease": true
   },
   "prod": {
@@ -23,6 +25,11 @@
     "client_id": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
     "pcr_environment": "production",
     "update_tag_prefix": "maple-agent-v",
+    "update_feed_url": "https://updates.trymaple.ai/agent/stable/latest.json",
+    "update_public_keys": [
+      "RWSEawHGDqhs8hlPvW08LCDXexMVkxqCtKhorNHTVpgMmYlls07md+mc",
+      "RWR3nhVL8nlVmwQBTSKl/dl6a0V3eseG260Be3/aYVb4+K8MgBfyOyN4"
+    ],
     "prerelease": false
   }
 }

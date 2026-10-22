@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic identity, artifact-integrity and native-signing boundary tests."""
 
+import base64
 import importlib.util
 import io
 import json
@@ -23,6 +24,52 @@ SCRIPTS = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("release_info", SCRIPTS / "release-info.py")
 release_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_info)
+
+
+class NativeArchiveMetadataTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "requires native macOS BSDtar metadata")
+    def test_native_release_tar_omits_host_metadata_and_preserves_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "Maple Agent.app"
+            executable = app / "Contents/MacOS/maple-agent"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"public executable bytes\n")
+            executable.chmod(0o755)
+            ticket = app / "Contents/CodeResources"
+            ticket.write_bytes(b"stapled ticket file bytes")
+            ticket.chmod(0o644)
+            signature = app / "Contents/_CodeSignature/CodeResources"
+            signature.parent.mkdir()
+            signature.write_bytes(b"signed resource manifest bytes")
+            signature.chmod(0o644)
+            link = app / "Contents/current"
+            link.symlink_to("MacOS/maple-agent")
+            subprocess.run(["/usr/bin/xattr", "-w", "com.maple.archive-fixture", "host-only metadata", str(executable)], check=True)
+            subprocess.run(["/bin/chmod", "+a", "everyone allow read", str(executable)], check=True)
+            subprocess.run(["/usr/bin/chflags", "hidden", str(executable)], check=True)
+            self.assertIn("com.maple.archive-fixture", subprocess.check_output(["/usr/bin/xattr", str(executable)], text=True).splitlines())
+            archive = root / "actual.app.tar.gz"
+            result = subprocess.run([
+                "/bin/bash", "-c", 'source "$1"; macos_archive_app "$2" "$3" "$4"',
+                "native-release-archive-test", str(SCRIPTS / "macos-release-app.sh"),
+                str(root), "Maple Agent", str(archive),
+            ], check=True, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0)
+            with tarfile.open(archive) as contents:
+                for member in contents:
+                    self.assertFalse(any("xattr" in key.lower() or "acl" in key.lower() or "fflags" in key.lower() for key in member.pax_headers), member.pax_headers)
+                    self.assertFalse(Path(member.name).name.startswith("._"), member.name)
+            output = root / "roundtrip"
+            output.mkdir()
+            subprocess.run(["/usr/bin/tar", "-xf", str(archive), "-C", str(output)], check=True)
+            extracted = output / app.name
+            for original in (executable, ticket, signature):
+                copy = extracted / original.relative_to(app)
+                self.assertEqual(copy.read_bytes(), original.read_bytes())
+                self.assertEqual(copy.stat().st_mode & 0o777, original.stat().st_mode & 0o777)
+            self.assertEqual(os.readlink(extracted / link.relative_to(app)), "MacOS/maple-agent")
+            self.assertNotIn("com.maple.archive-fixture", subprocess.check_output(["/usr/bin/xattr", str(extracted / executable.relative_to(app))], text=True).splitlines())
 
 
 class NativeGatekeeperTests(unittest.TestCase):
@@ -351,6 +398,43 @@ class ReleaseMetadataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_info.read_info("dev", self.path)
 
+    def test_update_feed_and_keys_cannot_drift_from_the_packaged_profile(self):
+        for field, value in (
+            ("update_feed_url", "https://wrong.invalid/agent/stable/latest.json"),
+            ("update_public_keys", ["attacker-key"]),
+        ):
+            original = self.info[field]
+            self.info[field] = value
+            self.write_info()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                release_info.read_info("dev", self.path)
+            self.info[field] = original
+
+    def test_prod_metadata_requires_the_configured_primary_and_backup_pins(self):
+        prod = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())["prod"]
+        self.info = {**prod, "profile": "prod", "version": "0.0.1",
+                     "source_sha": "a" * 40, "git_revision": "a" * 8}
+        self.write_info()
+        self.assertEqual(len(release_info.read_info("prod", self.path)["update_public_keys"]), 2)
+        for keys in ([], prod["update_public_keys"][:1],
+                     list(reversed(prod["update_public_keys"]))):
+            self.info["update_public_keys"] = keys
+            self.write_info()
+            with self.subTest(keys=keys), self.assertRaisesRegex(ValueError, "release profile"):
+                release_info.read_info("prod", self.path)
+
+    def test_backup_requires_a_distinct_public_key_not_a_changed_comment_or_id(self):
+        def key(point, key_id=b"12345678", comment="fixture"):
+            packet = base64.b64encode(b"Ed" + key_id + point).decode()
+            return f"untrusted comment: {comment}\n{packet}\n"
+        primary = key(bytes(range(32)))
+        release_info.validate_update_keys([])
+        release_info.validate_update_keys([primary, key(bytes(reversed(range(32))))])
+        for duplicate in [primary, key(bytes(range(32)), comment="backup"),
+                          key(bytes(range(32)), key_id=b"87654321")]:
+            with self.subTest(duplicate=duplicate), self.assertRaisesRegex(ValueError, "distinct"):
+                release_info.validate_update_keys([primary, duplicate])
+
     def test_release_plist_has_identity_permissions_and_no_shell_environment(self):
         output = self.directory / "Info.plist"
         release_info.write_plist(self.info, output, "42")
@@ -586,7 +670,15 @@ PY
             fi
             touch "${{@:$#}}" ;;
         /bin/df) echo 'Filesystem Size Used Avail Capacity Mounted on' ;;
-        tar) command tar "$@" ;;
+        tar)
+            # The mocked native boundary may run on Linux; actual BSDtar
+            # metadata behavior has a separate native macOS regression.
+            local args=() argument
+            for argument in "$@"; do
+                case "$argument" in --no-xattrs|--no-fflags|--no-acls|--no-mac-metadata) ;;
+                    *) args+=("$argument") ;; esac
+            done
+            command tar "${{args[@]}}" ;;
         *) echo 'unexpected native tool' >&2; return 1 ;;
     esac
 }}
@@ -635,6 +727,8 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         result, calls = self.run_packager()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_secrets_not_returned(result)
+        archive = next(call for call in calls if call[0] == "tar")
+        self.assertEqual(archive[1:5], ["--no-xattrs", "--no-fflags", "--no-acls", "--no-mac-metadata"])
         signs = [call for call in calls if call[0] == "codesign" and "--force" in call]
         self.assertTrue(signs[0][-1].endswith("libswiftFixture.dylib"))
         self.assertTrue(signs[1][-1].endswith(".app"))

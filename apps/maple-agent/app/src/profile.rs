@@ -33,6 +33,11 @@ pub fn build_info() -> serde_json::Value {
     debug_assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));
     debug_assert_eq!(info["pcr_environment"], PCR_ENVIRONMENT);
     debug_assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
+    debug_assert_eq!(info["update_feed_url"], serde_json::json!(UPDATE_FEED_URL));
+    debug_assert_eq!(
+        info["update_public_keys"],
+        serde_json::json!(UPDATE_PUBLIC_KEYS)
+    );
     debug_assert_eq!(info["prerelease"], PRERELEASE);
     info
 }
@@ -92,7 +97,44 @@ mod tests {
         assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));
         assert_eq!(info["client_id"], CLIENT_ID);
         assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
+        assert_eq!(info["update_feed_url"], serde_json::json!(UPDATE_FEED_URL));
+        assert_eq!(
+            info["update_public_keys"],
+            serde_json::json!(UPDATE_PUBLIC_KEYS)
+        );
         assert_eq!(info["prerelease"], PRERELEASE);
+    }
+
+    #[test]
+    fn prod_update_pins_are_accepted_and_reject_the_test_signer() {
+        use maple_agent_updater::{Config, Target, Updater, manifest::verify_envelope};
+
+        let (_, prod) = config::select_profile(Some("prod"), None).unwrap();
+        let feed = prod.update_feed_url.unwrap().parse().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let installed = temporary.path().join("installed");
+        std::fs::create_dir(&installed).unwrap();
+        // Constructing the actual client parses every configured minisign key.
+        // It writes only isolated temporary state and makes no network request.
+        Updater::new(Config {
+            feed_url: feed,
+            public_keys: prod.update_public_keys.clone(),
+            current_version: "0.0.1".parse().unwrap(),
+            target: Target::DarwinAarch64,
+            installed_path: installed,
+            state_dir: temporary.path().join("updates"),
+        })
+        .unwrap();
+        assert!(
+            verify_envelope(
+                include_bytes!(
+                    "../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"
+                ),
+                &"https://updates.trymaple.ai/".parse().unwrap(),
+                &prod.update_public_keys,
+            )
+            .is_err()
+        );
     }
 
     #[test]
