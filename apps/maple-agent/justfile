@@ -16,6 +16,17 @@ headless := "--no-default-features --features acp,proxy"
 default:
     @just --list --unsorted
 
+# Full synthetic final-schema measurements (2k tasks / 1M entries), both modes.
+# Arguments such as `seed --tasks ...` select the explicit stopped-profile tool.
+store-bench *ARGS:
+    cargo run --release --locked -p store-bench -- {{if ARGS == "" { "--full" } else { ARGS }}}
+
+# Small actual-Durable workload; unknown runner baselines remain explicitly pending.
+store-bench-ci:
+    cargo run --release --locked -p store-bench -- --ci --output target/store-bench-ci.json
+    python3 crates/store-bench/scripts/evaluate.py target/store-bench-ci.json --profile linux-ci
+    python3 -m unittest discover -s crates/store-bench/tests -p 'test_*.py'
+
 # Run all the checks that CI runs.
 ci: fmt-check clippy test
 
@@ -57,6 +68,10 @@ release:
 build-release PROFILE:
     ./scripts/build-release.sh {{PROFILE}}
 
+# Generate target-specific package notices; Cargo has already fetched the graph.
+notices *ARGS:
+    python3 scripts/generate-third-party-notices.py {{ARGS}}
+
 # Restore downloaded execution permissions and check the exact profile/source.
 verify-prebuilt-release PROFILE:
     ./scripts/verify-prebuilt-release.sh {{PROFILE}}
@@ -71,6 +86,7 @@ verify-release PROFILE DIRECTORY *ARGS:
 
 # Hermetic public metadata and mocked native signing boundary regressions.
 packaging-test:
+    python3 ./scripts/test_third_party_notices.py
     python3 ./scripts/test_release_packaging.py
     python3 ./scripts/test_linux_release_appimage.py
     python3 ./scripts/test_macos_release_dylibs.py
@@ -88,6 +104,7 @@ headless:
 
 # Build and run the debug binary with debug logs for the app.
 run *ARGS: build
+    ./target/debug/maple-agent host stop
     RUST_LOG=warn,maple_agent=debug ./target/debug/maple-agent {{ARGS}}
 
 # Build the release binary and copy it to dist/ with a version, commit, and SHA-256.

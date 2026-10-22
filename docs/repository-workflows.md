@@ -88,6 +88,16 @@ upstream Nix versions before doing build work. The workflows pass no GitHub
 token to the installer; FlakeHub authentication remains limited to jobs that
 separately receive `id-token: write`.
 
+The pinned `actionlint` has a small source patch in
+`scripts/ci/patches/actionlint-stream-stdin.patch`: analyzer input streams after
+the child starts, so workflow lint cannot fill a pipe before its reader runs.
+The Nix package runs a large-input regression for stdout and combined output.
+Remove the patch when the pinned upstream includes this behavior.
+The macOS validation shell also caps Bash heredoc pipes at the POSIX 512-byte
+minimum; larger bodies use its normal temporary-file path. Package regressions
+exercise both heredocs and here-strings against the built Bash. Apple’s shell
+bootstraps this macOS tool build so the cached Bash cannot block configure.
+
 ## Linux runners
 
 Research desktop/Android compilation and Agent Linux CI/AppImage builds use

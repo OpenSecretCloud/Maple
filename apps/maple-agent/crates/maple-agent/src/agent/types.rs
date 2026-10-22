@@ -500,14 +500,6 @@ pub struct RecentProjectRoot {
     pub name_revision: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentProjectRootRegistration {
-    pub project_root: String,
-    pub roots: Vec<RecentProjectRoot>,
-    pub config: AgentConfig,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCreateSessionRequest {
@@ -664,6 +656,21 @@ pub enum AgentRunEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentServiceEvent {
+    /// Local store initialization, locking or maintenance changed. Never remote.
+    StoreStateChanged {
+        state: crate::store::StoreState,
+    },
+    /// Fixed, content-free status for the connected host's unsaved changes.
+    /// It never marks the database as damaged or acknowledges a saved row.
+    PersistenceFailureChanged {
+        status: crate::store::PersistenceStatus,
+    },
+    /// A derived timeline epoch changed independently of an active run.
+    HistoryReplaced {
+        user_id: String,
+        session_id: String,
+        rows_epoch: i64,
+    },
     /// Profile sign-in changed in the authoritative host.
     AccountChanged(Option<String>),
     /// Temporary loss of the frontend connection; the host may still be running.
@@ -676,9 +683,16 @@ pub enum AgentServiceEvent {
     RemoteAccessEnded(String),
     RuntimeStatus(AgentRuntimeStatus),
     /// The owning daemon committed project display metadata for this account.
+    /// Each entry is a changed-root delta, never a replacement project catalog.
     ProjectsChanged {
         user_id: String,
         roots: Vec<RecentProjectRoot>,
+    },
+    /// A committed hide/archive invalidates this owner's paged membership on
+    /// every attached client, including its separately pinned default workspace.
+    ProjectRemoved {
+        user_id: String,
+        project_root: String,
     },
     /// The agent asked the user one or more related questions (ask_user
     /// tool); every question in the batch is answered in one card.
@@ -833,18 +847,6 @@ pub enum AgentTaskState {
     Archived,
 }
 
-impl AgentTaskState {
-    /// The verb for an error such as "Stop the running agent before
-    /// archiving this task".
-    pub(crate) fn gerund(self) -> &'static str {
-        match self {
-            Self::Active => "reopening",
-            Self::Settled => "settling",
-            Self::Archived => "archiving",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
@@ -878,6 +880,15 @@ pub struct AgentSessionDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTimelineItem {
+    /// Durable occurrence identity; legacy `id` remains projector presentation data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted: Option<AgentPersistedRowIdentity>,
+    /// Run-local identity retained on a commit event to reconcile its streamed row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<AgentLiveRowIdentity>,
+    /// Original serialized byte count when a bounded response includes a prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<usize>,
     /// Host-local update order; zero for persisted or locally constructed rows.
     #[serde(default)]
     pub revision: u64,
@@ -897,6 +908,46 @@ pub struct AgentTimelineItem {
     pub output: Option<Value>,
     pub created_ms: u128,
     pub merge: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPersistedRowIdentity {
+    pub task_id: String,
+    pub rows_epoch: i64,
+    pub row_seq: i64,
+    pub update_seq: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLiveRowIdentity {
+    pub run_id: String,
+    pub occurrence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunMarker {
+    pub run_id: String,
+    pub epoch: u64,
+    /// Background agents can repaint a task after its main run finishes.
+    #[serde(default)]
+    pub external_revision: u64,
+}
+
+/// A bounded copy of the active overlay. Committed history stays in paged reads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLivePage {
+    pub marker: Option<AgentRunMarker>,
+    /// `(timeline epoch, last source sequence)` also detects a whole intervening run.
+    pub stored_marker: (i64, i64),
+    pub timeline_revision: u64,
+    pub items: Vec<AgentTimelineItem>,
+    /// Some live rows were omitted or shortened. A lossless replay must retry later.
+    pub has_more: bool,
+    pub queue: AgentDesktopQueueSnapshot,
 }
 
 #[cfg(test)]

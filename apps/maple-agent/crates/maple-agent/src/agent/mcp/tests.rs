@@ -125,3 +125,124 @@ fn only_a_new_server_cannot_take_the_computer_use_name() {
         "{error}"
     );
 }
+
+fn store_layout() -> (
+    tempfile::TempDir,
+    AgentPathLayout,
+    std::sync::Arc<crate::store::Store>,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(
+        crate::store::Store::open(crate::store::StorePaths::new(root.path().join("data"))).unwrap(),
+    );
+    let paths =
+        AgentPathLayout::from_app_roots(root.path().join("prior-config"), root.path().join("data"))
+            .with_store(store.clone())
+            .with_home(Some(root.path().join("home")));
+    (root, paths, store)
+}
+
+#[test]
+fn saved_catalog_is_redacted_and_launch_injects_values_from_only_the_new_store() {
+    let (root, paths, store) = store_layout();
+    let prior = root
+        .path()
+        .join("prior-config/agent/accounts/synthetic/config.json");
+    std::fs::create_dir_all(prior.parent().unwrap()).unwrap();
+    std::fs::write(&prior, b"{\"mcpServers\":[{\"name\":\"Previous\"}]}").unwrap();
+    assert!(
+        load_saved_mcp_servers(&paths, "synthetic")
+            .unwrap()
+            .is_empty()
+    );
+    let mut configured = stdio("Example", "synthetic-mcp --serve");
+    if let AgentMcpTransport::Stdio { environment, .. } = &mut configured.transport {
+        environment.push(pair("TOKEN", "synthetic-host-only"));
+    }
+    save_saved_mcp_servers(&paths, "synthetic", vec![configured], McpEditOrigin::Local).unwrap();
+    let safe = load_saved_mcp_servers(&paths, "synthetic").unwrap();
+    assert!(
+        !serde_json::to_string(&safe)
+            .unwrap()
+            .contains("synthetic-host-only")
+    );
+    assert!(
+        matches!(&safe[0].transport,AgentMcpTransport::Stdio { environment,.. } if environment[0].value.is_empty())
+    );
+    let launch = read_saved_servers(&paths, "synthetic").unwrap();
+    assert!(
+        matches!(&launch[0].transport,AgentMcpTransport::Stdio { environment,.. } if environment[0].value=="synthetic-host-only")
+    );
+    // The old form echoes only names/empty values. That means Keep and cannot
+    // accidentally overwrite a value with a UI placeholder.
+    save_saved_mcp_servers(&paths, "synthetic", safe, McpEditOrigin::Local).unwrap();
+    let launch = read_saved_servers(&paths, "synthetic").unwrap();
+    assert!(
+        matches!(&launch[0].transport,AgentMcpTransport::Stdio { environment,.. } if environment[0].value=="synthetic-host-only")
+    );
+    assert!(
+        load_saved_mcp_servers(&paths, "another-account")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        std::fs::read(&prior).unwrap(),
+        b"{\"mcpServers\":[{\"name\":\"Previous\"}]}"
+    );
+    let account = store.account_id("synthetic").unwrap().unwrap();
+    assert!(store.mcp_definitions(account).unwrap()[0].environment[0].has_value);
+}
+
+#[test]
+fn remote_catalog_save_cannot_redirect_or_remove_an_existing_value() {
+    let (_root, paths, _store) = store_layout();
+    let mut configured = stdio("Example", "synthetic-mcp");
+    if let AgentMcpTransport::Stdio { environment, .. } = &mut configured.transport {
+        environment.push(pair("TOKEN", "synthetic-local-value"));
+    }
+    save_saved_mcp_servers(&paths, "synthetic", vec![configured], McpEditOrigin::Local).unwrap();
+    let mut safe = load_saved_mcp_servers(&paths, "synthetic").unwrap();
+    safe[0].enabled = false;
+    save_saved_mcp_servers(&paths, "synthetic", safe.clone(), McpEditOrigin::Remote).unwrap();
+    if let AgentMcpTransport::Stdio { command, .. } = &mut safe[0].transport {
+        *command = "synthetic-capture".into();
+    }
+    assert!(save_saved_mcp_servers(&paths, "synthetic", safe, McpEditOrigin::Remote).is_err());
+    assert!(save_saved_mcp_servers(&paths, "synthetic", vec![], McpEditOrigin::Remote).is_err());
+    assert!(
+        matches!(&read_saved_servers(&paths,"synthetic").unwrap()[0].transport,
+        AgentMcpTransport::Stdio { command,environment } if command=="synthetic-mcp" && environment[0].value=="synthetic-local-value")
+    );
+}
+
+#[test]
+fn project_catalog_switches_use_project_rows_and_keep_catalog_defaults() {
+    let (root, paths, store) = store_layout();
+    save_saved_mcp_servers(
+        &paths,
+        "synthetic",
+        vec![stdio("Example", "synthetic-mcp")],
+        McpEditOrigin::Local,
+    )
+    .unwrap();
+    let account = store.account_id("synthetic").unwrap().unwrap();
+    let project = root.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    store
+        .set_project_mcp_defaults(
+            account,
+            &path_string(&project),
+            &serde_json::json!({"example":false}),
+            1,
+        )
+        .unwrap();
+    let defaults = load_saved_mcp_servers(&paths, "synthetic").unwrap();
+    let projected =
+        servers_with_project_defaults(&paths, "synthetic", &project, defaults.clone()).unwrap();
+    assert!(!projected[0].enabled);
+    assert!(defaults[0].enabled);
+    assert!(
+        servers_with_project_defaults(&paths, "another-account", &project, defaults).unwrap()[0]
+            .enabled
+    );
+}

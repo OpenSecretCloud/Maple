@@ -362,6 +362,8 @@ async fn pump<R: AsyncRead + Unpin>(mut stream: R, on_data: OnData, activity: Ar
 /// Options for `bash`.
 #[derive(Clone)]
 pub struct BashToolOptions {
+    /// Full output goes here when present, without falling back on a failed path.
+    pub output_dir: Option<PathBuf>,
     /// Where commands run; this machine when `None`.
     pub operations: Option<Arc<dyn BashOperations>>,
     /// Run before every command, for example shell setup.
@@ -377,6 +379,7 @@ pub struct BashToolOptions {
 impl Default for BashToolOptions {
     fn default() -> Self {
         Self {
+            output_dir: None,
             operations: None,
             command_prefix: None,
             shell_path: None,
@@ -389,6 +392,7 @@ impl Default for BashToolOptions {
 /// Options for `powershell`.
 #[derive(Clone)]
 pub struct PowerShellToolOptions {
+    pub output_dir: Option<PathBuf>,
     pub operations: Option<Arc<dyn BashOperations>>,
     pub expose_session_environment: bool,
     pub spawn_hook: Option<BashSpawnHook>,
@@ -397,6 +401,7 @@ pub struct PowerShellToolOptions {
 impl Default for PowerShellToolOptions {
     fn default() -> Self {
         Self {
+            output_dir: None,
             operations: None,
             expose_session_environment: true,
             spawn_hook: None,
@@ -409,6 +414,7 @@ pub struct ShellTool {
     declaration: Tool,
     name: &'static str,
     cwd: PathBuf,
+    output_dir: Option<PathBuf>,
     operations: Arc<dyn BashOperations>,
     command_prefix: Option<String>,
     expose_session_environment: bool,
@@ -454,6 +460,7 @@ impl ShellTool {
             declaration: shell_declaration("bash", "bash"),
             name: "bash",
             cwd: cwd.into(),
+            output_dir: options.output_dir,
             operations,
             command_prefix: options.command_prefix,
             expose_session_environment: options.expose_session_environment,
@@ -474,6 +481,7 @@ impl ShellTool {
             declaration: shell_declaration("powershell", "PowerShell"),
             name: "powershell",
             cwd: cwd.into(),
+            output_dir: options.output_dir,
             operations,
             command_prefix: None,
             expose_session_environment: options.expose_session_environment,
@@ -668,8 +676,9 @@ impl AgentTool for ShellTool {
         let cwd = self.context.cwd().unwrap_or_else(|| self.cwd.clone());
         let spawn = self.spawn_context(command, cwd);
 
-        let output = Arc::new(Mutex::new(OutputAccumulator::new(
+        let output = Arc::new(Mutex::new(OutputAccumulator::new_with_output_dir(
             &self.context.output_file_prefix(self.name),
+            self.output_dir.clone(),
         )));
         let throttle = Arc::new(Mutex::new(Some(UpdateThrottle::start(
             output.clone(),

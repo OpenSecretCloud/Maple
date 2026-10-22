@@ -27,6 +27,7 @@ static MAPLE_AGENT_BUILD_INFO: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/bu
 pub fn build_info() -> serde_json::Value {
     let info: serde_json::Value =
         serde_json::from_slice(&MAPLE_AGENT_BUILD_INFO).expect("generated public build metadata");
+    debug_assert_eq!(info["profile"] != "unpackaged", PACKAGED);
     debug_assert_eq!(info["display_name"], DISPLAY_NAME);
     debug_assert_eq!(info["bundle_id"], BUNDLE_ID);
     debug_assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));

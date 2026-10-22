@@ -83,6 +83,10 @@
                 ./release_profile.rs
                 ./app
                 ./crates
+                ./about.toml
+                ./scripts
+                ./dependencies/sqlcipher
+                ./dependencies/licenses
                 ../../sdk/rust/Cargo.toml
                 ../../sdk/rust/src
                 ../../sdk/rust/assets
@@ -99,6 +103,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
+                "libsqlite3-sys-0.38.2" = "sha256-+Ppdrv03WsGQkCcWw6qiwnDnbY/z4ql2O/RSxEdXuyQ=";
                 "pake-cpace-0.1.0" = "07ig50fcmrlsccn0pmxk30bznbdqq9fgs01y9qw9881vv34a18gj";
                 "collections-0.1.0" = "sha256-d2GVmZgvJzLk1pbNtPedw0V09+ANZFORZjTSLVxw7jc=";
                 "proptest-1.10.0" = "sha256-p5NTcHhruI8QQvANACg8AMRVNmuvGxs2NLit+/8PaWo=";
@@ -114,11 +119,29 @@
               clang
               cmake
               pkg-config
+              perl
+              python3
+              cargo-about
             ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
 
             buildInputs =
               [ pkgs.libiconv ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
+
+            preBuild = ''
+              component="$sourceRoot/apps/maple-agent"
+              [[ "$component" == /* ]] || component="$NIX_BUILD_TOP/$component"
+              python3 "$component/scripts/generate-third-party-notices.py" \
+                --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
+            '';
+
+            postInstall = ''
+              component="$sourceRoot/apps/maple-agent"
+              [[ "$component" == /* ]] || component="$NIX_BUILD_TOP/$component"
+              python3 "$component/scripts/stage-third-party-notices.py" \
+                "$out/share/licenses/maple-agent" --component "$component" \
+                --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
+            '';
 
             cargoBuildFlags = [
               "-p"
@@ -225,6 +248,14 @@
               rustToolchain
               just
               python3
+              perl
+              # Reproduce the pinned SQLCipher amalgamation and audit its graph.
+              git
+              gnupg
+              tcl
+              gnumake
+              cargo-deny
+              cargo-about
             ]
             ++ pkgs.lib.optionals isDarwin [ xcrun ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [

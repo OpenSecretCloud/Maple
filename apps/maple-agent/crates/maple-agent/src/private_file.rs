@@ -19,14 +19,6 @@ pub fn set_owner_only_file(path: &Path) -> io::Result<()> {
     set_owner_only_mode(path, 0o600)
 }
 
-/// Restrict directory `path` to its owner: mode 0700.
-///
-/// A no-op off unix, where the containing profile already carries the
-/// access control.
-pub(crate) fn set_owner_only_dir(path: &Path) -> io::Result<()> {
-    set_owner_only_mode(path, 0o700)
-}
-
 #[cfg(unix)]
 fn set_owner_only_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;

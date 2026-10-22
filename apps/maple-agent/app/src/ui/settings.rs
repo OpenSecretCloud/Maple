@@ -12,8 +12,10 @@ use gpui::{
 
 use maple_agent::agent::{
     AgentIntegration, AgentIntegrationAvailability, AgentIntegrationBackend,
-    AgentIntegrationPermissions, AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport,
+    AgentIntegrationPermissions,
 };
+use maple_agent::store::records::{McpDefinition, McpServerEdit, McpTarget};
+use zeroize::Zeroizing;
 
 use crate::ui::icons::icon;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
@@ -29,12 +31,16 @@ use crate::ui::theme;
 use crate::ui::widgets;
 
 mod account;
+mod advanced;
 mod api_keys;
 mod billing;
+mod licenses;
+mod mcp;
 mod navigation;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
 /// Emitted when the user leaves settings.
@@ -59,6 +65,7 @@ pub enum Section {
     Remote,
     Usage,
     About,
+    Advanced,
 }
 
 impl Section {
@@ -74,10 +81,11 @@ impl Section {
             Self::Remote => "Remote computers",
             Self::Usage => "Usage",
             Self::About => "About",
+            Self::Advanced => "Privacy & Security",
         }
     }
 
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::General,
         Self::Account,
         Self::Billing,
@@ -87,6 +95,7 @@ impl Section {
         Self::Integrations,
         Self::Remote,
         Self::Usage,
+        Self::Advanced,
         Self::About,
     ];
 }
@@ -141,7 +150,7 @@ pub struct SettingsScreen {
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
-    mcp_servers: Option<Vec<AgentMcpServer>>,
+    mcp_servers: Option<Vec<McpDefinition>>,
     mcp_editor: Option<McpEditor>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
@@ -166,6 +175,9 @@ pub struct SettingsScreen {
     application_reveal_pending: bool,
     pane_scroll: ScrollHandle,
     application_anchor: ScrollAnchor,
+    license_notice: Option<String>,
+    advanced: advanced::AdvancedState,
+    advanced_subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,6 +230,7 @@ impl ShortcutListCache {
 struct McpEditor {
     /// Name of the server being edited; None when adding.
     original_name: Option<String>,
+    original: Option<McpDefinition>,
     enabled: bool,
     http: bool,
     timeout_seconds: u64,
@@ -225,9 +238,11 @@ struct McpEditor {
     description: Entity<TextInput>,
     /// Command line (stdio) or URL (HTTP).
     target: Entity<TextInput>,
-    /// `KEY=VALUE; KEY2=VALUE2` pairs.
+    /// Only newly entered names/values. Saved values never populate inputs.
     environment: Entity<TextInput>,
     headers: Entity<TextInput>,
+    saved_environment: Vec<McpSecretField>,
+    saved_headers: Vec<McpSecretField>,
 }
 
 /// Emitted with the section to open (composer "Manage integrations" link).
@@ -252,6 +267,40 @@ impl SettingsScreen {
             self.update = snapshot;
             cx.notify();
         }
+    }
+
+    pub(crate) fn settings_snapshot(&self) -> AppSettings {
+        self.settings.clone()
+    }
+
+    /// Store mode comes from the owner, independently of edits made in this
+    /// screen. Refresh that derived field without replacing pending user edits.
+    pub(crate) fn refresh_store_password_mode(
+        &mut self,
+        password_mode: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.store_password_mode = password_mode;
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_remote_sidebars(
+        &mut self,
+        sidebars: std::collections::HashMap<String, settings::RemoteSidebarSettings>,
+        cx: &mut Context<Self>,
+    ) {
+        let names = sidebars
+            .iter()
+            .map(|(key, sidebar)| (key.clone(), sidebar.display_name.clone()))
+            .collect();
+        self.settings.remote_sidebars = sidebars;
+        self.remote_screen
+            .update(cx, |screen, cx| screen.set_names(names, cx));
+        cx.notify();
+    }
+
+    fn visible_sections(&self) -> Vec<Section> {
+        Section::ALL.to_vec()
     }
 
     pub fn update_remote_status(
@@ -303,8 +352,9 @@ impl SettingsScreen {
         .detach();
         cx.subscribe(
             &remote_screen,
-            |this, _, event: &super::remote::ConnectComputer, cx| {
-                cx.emit(SettingsClosed(this.settings.clone()));
+            |_, _, event: &super::remote::ConnectComputer, cx| {
+                // The desktop accepts this only from its current settings
+                // screen and closes that same screen before navigating.
                 cx.emit(super::remote::ConnectComputer(event.0.clone()));
             },
         )
@@ -386,6 +436,9 @@ impl SettingsScreen {
             application_reveal_pending: false,
             pane_scroll,
             application_anchor,
+            license_notice: None,
+            advanced: advanced::AdvancedState::new(cx),
+            advanced_subscriptions: Vec::new(),
         };
         this.load_account(cx);
         this.load_billing(cx);
@@ -393,6 +446,7 @@ impl SettingsScreen {
         this.load_plan(cx);
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
+        this.load_advanced_status(cx);
         this
     }
 
@@ -428,7 +482,7 @@ impl SettingsScreen {
         let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         self.call(
-            async move { backend.list_mcp_servers(&user_id).await },
+            async move { backend.list_mcp_definitions(&user_id).await },
             cx,
             |this, result, cx| {
                 match result {
@@ -591,7 +645,7 @@ impl SettingsScreen {
         );
     }
 
-    fn save_mcp_servers(&mut self, servers: Vec<AgentMcpServer>, cx: &mut Context<Self>) {
+    fn save_mcp_servers(&mut self, servers: Vec<McpServerEdit>, cx: &mut Context<Self>) {
         if self.mcp_saving {
             return;
         }
@@ -601,7 +655,7 @@ impl SettingsScreen {
         let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         self.call(
-            async move { backend.save_mcp_servers(&user_id, servers).await },
+            async move { backend.save_mcp_definition_edits(&user_id, servers).await },
             cx,
             |this, result, cx| {
                 this.mcp_saving = false;
@@ -620,10 +674,10 @@ impl SettingsScreen {
         );
     }
 
-    fn open_mcp_editor(&mut self, existing: Option<AgentMcpServer>, cx: &mut Context<Self>) {
+    fn open_mcp_editor(&mut self, existing: Option<McpDefinition>, cx: &mut Context<Self>) {
         let application_focus = self.application_focus.clone();
         let application_vim_enabled = self.settings.application_vim_enabled;
-        let mut field = |placeholder: &str, value: &str, index: isize| {
+        let mut field = |placeholder: &str, value: &str, index: isize, secret: bool| {
             let value = value.to_string();
             let field_application_focus = application_focus.clone();
             cx.new(move |cx| {
@@ -633,36 +687,49 @@ impl SettingsScreen {
                     .on_application_escape(move |window, cx| {
                         window.focus(&field_application_focus, cx)
                     });
+                if secret {
+                    input = input.masked();
+                }
                 if !value.is_empty() {
                     input.set_text(&value, cx);
                 }
                 input
             })
         };
-        let (http, target, environment, headers) = match existing.as_ref().map(|s| &s.transport) {
-            Some(AgentMcpTransport::Stdio {
-                command,
-                environment,
-            }) => (
-                false,
-                command.clone(),
-                pairs_to_text(environment),
-                String::new(),
-            ),
-            Some(AgentMcpTransport::StreamableHttp {
-                url,
-                environment,
-                headers,
-            }) => (
-                true,
-                url.clone(),
-                pairs_to_text(environment),
-                pairs_to_text(headers),
-            ),
-            None => (false, String::new(), String::new(), String::new()),
+        let (http, target) = match existing.as_ref().map(|s| &s.target) {
+            Some(McpTarget::Stdio { command }) => (false, command.clone()),
+            Some(McpTarget::StreamableHttp { url }) => (true, url.clone()),
+            None => (false, String::new()),
         };
+        let saved_environment = existing
+            .as_ref()
+            .map(|server| server.environment.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(index, presence)| McpSecretField {
+                name: presence.name.clone(),
+                has_value: presence.has_value,
+                action: McpSecretAction::Keep,
+                input: field("Enter a new value", "", 10 + index as isize, true),
+            })
+            .collect();
+        let saved_headers = existing
+            .as_ref()
+            .map(|server| server.headers.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(index, presence)| McpSecretField {
+                name: presence.name.clone(),
+                has_value: presence.has_value,
+                action: McpSecretAction::Keep,
+                input: field("Enter a new value", "", 200 + index as isize, true),
+            })
+            .collect();
         self.mcp_editor = Some(McpEditor {
             original_name: existing.as_ref().map(|s| s.name.clone()),
+            original: existing.clone(),
             enabled: existing.as_ref().map(|s| s.enabled).unwrap_or(true),
             http,
             timeout_seconds: existing.as_ref().map(|s| s.timeout_seconds).unwrap_or(300),
@@ -670,6 +737,7 @@ impl SettingsScreen {
                 "My server",
                 existing.as_ref().map(|s| s.name.as_str()).unwrap_or(""),
                 1,
+                false,
             ),
             description: field(
                 "What this server helps the agent do",
@@ -678,14 +746,18 @@ impl SettingsScreen {
                     .map(|s| s.description.as_str())
                     .unwrap_or(""),
                 2,
+                false,
             ),
             target: field(
                 "npx -y @modelcontextprotocol/server-everything stdio",
                 &target,
                 3,
+                false,
             ),
-            environment: field("KEY=value; OTHER=value", &environment, 4),
-            headers: field("Authorization=Bearer …; X-Api-Key=…", &headers, 5),
+            environment: field("KEY=value; OTHER=value", "", 4, false),
+            headers: field("Authorization=Bearer …; X-Api-Key=…", "", 5, false),
+            saved_environment,
+            saved_headers,
         });
         self.mcp_notice = None;
         cx.notify();
@@ -717,28 +789,61 @@ impl SettingsScreen {
             cx.notify();
             return;
         }
-        let environment = text_to_pairs(&editor.environment.read(cx).text());
-        let transport = if editor.http {
-            AgentMcpTransport::StreamableHttp {
-                url: target,
-                environment,
-                headers: text_to_pairs(&editor.headers.read(cx).text()),
-            }
-        } else {
-            AgentMcpTransport::Stdio {
-                command: target,
-                environment,
-            }
-        };
-        let server = AgentMcpServer {
+        let mut server = McpServerEdit {
+            key: maple_agent::agent::AgentMcpServer::key_for_name(&name),
             name,
             description: editor.description.read(cx).text().trim().to_string(),
             enabled: editor.enabled,
             timeout_seconds: editor.timeout_seconds,
-            transport,
+            target: if editor.http {
+                McpTarget::StreamableHttp { url: target }
+            } else {
+                McpTarget::Stdio { command: target }
+            },
+            environment: Vec::new(),
+            headers: Vec::new(),
         };
+        let remote = self.integrations_backend.remote_host().is_some();
+        let edits = (|| {
+            server.environment = mcp::field_edits(&editor.saved_environment, remote, cx)?;
+            server.environment.extend(mcp::new_value_edits(
+                &Zeroizing::new(editor.environment.read(cx).text()),
+                remote,
+            )?);
+            server.headers = mcp::field_edits(&editor.saved_headers, remote, cx)?;
+            server.headers.extend(mcp::new_value_edits(
+                &Zeroizing::new(editor.headers.read(cx).text()),
+                remote,
+            )?);
+            mcp::require_target_choice(editor.original.as_ref(), &server)?;
+            if !editor.http {
+                if server.headers.iter().any(|entry| {
+                    !matches!(
+                        entry.update,
+                        maple_agent::store::records::McpSecretUpdate::Clear
+                    )
+                }) {
+                    return Err(
+                        "Clear each saved HTTP header before switching to Standard IO.".to_string(),
+                    );
+                }
+                server.headers.clear();
+            }
+            Ok(())
+        })();
+        if let Err(message) = edits {
+            self.mcp_notice = Some(message);
+            cx.notify();
+            return;
+        }
         let original = editor.original_name.clone();
-        let mut servers = self.mcp_servers.clone().unwrap_or_default();
+        let mut servers: Vec<_> = self
+            .mcp_servers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(definition_edit)
+            .collect();
         match original.and_then(|o| servers.iter().position(|s| s.name == o)) {
             Some(index) => servers[index] = server,
             None => servers.push(server),
@@ -762,7 +867,13 @@ impl SettingsScreen {
     }
 
     fn toggle_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
-        let mut servers = self.mcp_servers.clone().unwrap_or_default();
+        let mut servers: Vec<_> = self
+            .mcp_servers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(definition_edit)
+            .collect();
         if let Some(server) = servers.iter_mut().find(|s| s.name == name) {
             server.enabled = !server.enabled;
         }
@@ -770,7 +881,13 @@ impl SettingsScreen {
     }
 
     fn remove_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
-        let mut servers = self.mcp_servers.clone().unwrap_or_default();
+        let mut servers: Vec<_> = self
+            .mcp_servers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(definition_edit)
+            .collect();
         servers.retain(|s| s.name != name);
         self.save_mcp_servers(servers, cx);
     }
@@ -1084,6 +1201,14 @@ impl SettingsScreen {
         }
     }
 
+    fn toggle_password_notification_details(&mut self, cx: &mut Context<Self>) {
+        let next = !self.settings.password_notification_details;
+        self.edit_setting(
+            move |settings| settings.password_notification_details = next,
+            cx,
+        );
+    }
+
     /// Build one multi-value row: the saved value sits in a pebble button
     /// that opens a dropdown of every choice. Picking one applies and
     /// persists it; clicking away dismisses.
@@ -1354,6 +1479,14 @@ impl SettingsScreen {
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.password_operation_busy(cx) {
+            return;
+        }
+        if section != Section::Advanced {
+            self.advanced.form = None;
+            self.advanced_subscriptions.clear();
+            self.advanced.erase = false;
+        }
         if section != Section::Shortcuts {
             self.stop_shortcut_recording();
         }
@@ -1368,6 +1501,9 @@ impl SettingsScreen {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        if self.password_operation_busy(cx) {
+            return;
+        }
         self.stop_shortcut_recording();
         cx.emit(SettingsClosed(self.settings.clone()));
     }
@@ -1510,7 +1646,7 @@ impl SettingsScreen {
             .border_r_1()
             .border_color(gpui::rgb(theme::border()))
             .bg(gpui::rgb(theme::bg_sidebar()))
-            .children(Section::ALL.iter().map(|section| {
+            .children(self.visible_sections().iter().map(|section| {
                 let selected = self.section == *section;
                 let application_selected = self.application_vim_selects_section(*section);
                 div()
@@ -1565,6 +1701,9 @@ impl SettingsScreen {
             .track_scroll(&self.pane_scroll)
             .overflow_y_scroll();
         match self.section {
+            Section::Advanced => {
+                pane = pane.child(self.render_advanced(cx));
+            }
             Section::General => {
                 pane = pane
                     .child(section_title("Defaults"))
@@ -1635,6 +1774,18 @@ impl SettingsScreen {
                             self.settings.desktop_notifications,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_desktop_notifications(cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::PasswordNotificationDetails),
+                        toggle_row(
+                            "Show task details in password mode",
+                            "Include task titles and questions in desktop notifications. \
+                             Your operating system may retain this text after Maple quits.",
+                            self.settings.password_notification_details,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_password_notification_details(cx);
                             }),
                         ),
                     ))
@@ -1791,10 +1942,21 @@ impl SettingsScreen {
                                 .child("Later")
                         ))
                     )
+                    .child(
+                        widgets::secondary_button("third-party-notices")
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.license_notice = licenses::open().err();
+                                cx.notify();
+                            }))
+                            .child("Third-party notices"),
+                    )
+                    .when_some(self.license_notice.clone(), |pane, notice| {
+                        pane.child(info_row("Notices", notice))
+                    })
                     .child(info_row("Backend", self.backend.api_url().to_string()))
                     .child(info_row(
-                        "Config directory",
-                        crate::backend::app_config_root()
+                        "Instruction directory",
+                        crate::backend::instruction_config_root()
                             .to_string_lossy()
                             .to_string(),
                     ));
@@ -2337,9 +2499,9 @@ impl SettingsScreen {
             Some(servers) => {
                 pane = pane.children(servers.iter().map(|server| {
                     let name = server.name.clone();
-                    let summary = match &server.transport {
-                        AgentMcpTransport::Stdio { command, .. } => format!("STDIO · {command}"),
-                        AgentMcpTransport::StreamableHttp { url, .. } => format!("HTTP · {url}"),
+                    let summary = match &server.target {
+                        McpTarget::Stdio { command } => format!("STDIO · {command}"),
+                        McpTarget::StreamableHttp { url } => format!("HTTP · {url}"),
                     };
                     let card = widgets::card_row()
                         .flex()
@@ -2697,18 +2859,23 @@ impl SettingsScreen {
             } else {
                 field("Command", "", editor.target.clone())
             })
-            .child(field(
-                "Environment",
-                "KEY=value pairs separated by semicolons.",
-                editor.environment.clone(),
-            ))
-            .when(editor.http, |col| {
-                col.child(field(
-                    "Headers",
+            .when(!editor.saved_environment.is_empty(), |col| col
+                .child(subsection_title("Environment values"))
+                .child(self.render_mcp_secret_fields(&editor.saved_environment, false, cx)))
+            .when(!editor.saved_headers.is_empty(), |col| col
+                .child(subsection_title("Header values"))
+                .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx)))
+            .when(self.integrations_backend.remote_host().is_none(), |col| col
+                .child(field(
+                    "New environment values",
+                    "KEY=value pairs separated by semicolons. Existing values use the choices above.",
+                    editor.environment.clone(),
+                ))
+                .when(editor.http, |col| col.child(field(
+                    "New headers",
                     "Name=value pairs separated by semicolons.",
                     editor.headers.clone(),
-                ))
-            })
+                ))))
             .child(
                 div()
                     .flex()
@@ -2952,38 +3119,6 @@ fn pill_button(
         .child(label)
 }
 
-/// Whether saving a server as `name` would clash with another server.
-/// Servers are matched by name, so a rename onto an existing name would
-/// have added a second entry instead of replacing the original.
-fn name_collides(servers: &[AgentMcpServer], original: Option<&str>, name: &str) -> bool {
-    servers
-        .iter()
-        .any(|server| server.name == name && Some(server.name.as_str()) != original)
-}
-
-/// `KEY=value; KEY2=value` for the editor field.
-fn pairs_to_text(pairs: &[AgentMcpKeyValue]) -> String {
-    pairs
-        .iter()
-        .map(|pair| format!("{}={}", pair.key, pair.value))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn text_to_pairs(text: &str) -> Vec<AgentMcpKeyValue> {
-    text.split(';')
-        .filter_map(|entry| {
-            let entry = entry.trim();
-            let (key, value) = entry.split_once('=')?;
-            let key = key.trim();
-            (!key.is_empty()).then(|| AgentMcpKeyValue {
-                key: key.to_string(),
-                value: value.trim().to_string(),
-            })
-        })
-        .collect()
-}
-
 /// Pane heading in the brand display face, like the section titles of
 /// the brand kit.
 fn section_title(label: &str) -> Div {
@@ -3202,16 +3337,18 @@ mod tests {
         }
     }
 
-    fn server(name: &str) -> AgentMcpServer {
-        AgentMcpServer {
+    fn server(name: &str) -> McpDefinition {
+        McpDefinition {
+            key: maple_agent::agent::AgentMcpServer::key_for_name(name),
             name: name.to_string(),
             description: String::new(),
             enabled: true,
             timeout_seconds: 300,
-            transport: AgentMcpTransport::Stdio {
+            target: McpTarget::Stdio {
                 command: "cmd".to_string(),
-                environment: Vec::new(),
             },
+            environment: Vec::new(),
+            headers: Vec::new(),
         }
     }
 

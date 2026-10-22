@@ -3,10 +3,14 @@
 
 use std::sync::Arc;
 
-use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
+use gpui::{
+    AppContext, Context, Div, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*,
+};
+use zeroize::Zeroizing;
 
 use crate::backend::{AgentBackend, AuthSession, OAuthProvider};
 use crate::ui::icons::wordmark;
+use crate::ui::secret_input::{SecretInput, SecretInputSubmitted};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::widgets;
@@ -32,7 +36,7 @@ enum OAuthFlow {
 pub struct LoginScreen {
     backend: Arc<AgentBackend>,
     email_input: Entity<TextInput>,
-    password_input: Entity<TextInput>,
+    password_input: Entity<SecretInput>,
     /// Paste field for the OAuth redirect URL.
     callback_input: Entity<TextInput>,
     oauth: OAuthFlow,
@@ -42,40 +46,27 @@ pub struct LoginScreen {
     /// Abort backend work when this screen is destroyed, including an OAuth
     /// start that has been scheduled but has not created its native attempt.
     backend_tasks: std::cell::RefCell<Vec<tokio::task::AbortHandle>>,
+    subscriptions: Vec<Subscription>,
     error: Option<String>,
+    deletion_notice: Option<String>,
     busy: bool,
 }
 
 impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| TextInput::new("Email", cx).with_tab_index(0));
-        let password = cx.new(|cx| TextInput::new("Password", cx).masked().with_tab_index(1));
+        let password = cx.new(|cx| SecretInput::new("Password", cx).with_tab_index(1));
         let callback = cx.new(|cx| {
             TextInput::new("Paste the URL you were redirected to…", cx).with_tab_index(0)
         });
-        // Enter handlers receive their own field's text and read the sibling
-        // through its entity; neither path leases the focused input.
-        let (email_handle, password_handle) = (email.clone(), password.clone());
+        // The email handler receives its own text rather than reading the
+        // leased input. SecretInput emits a content-free submission event.
         let weak = cx.entity().downgrade();
         let email_weak = weak.clone();
-        let password_weak = weak.clone();
         email.update(cx, |input, _| {
             input.set_on_enter(move |email_text, _, cx| {
-                let password_text = password_handle.read(cx).text();
                 if let Some(this) = email_weak.upgrade() {
-                    this.update(cx, |screen, cx| {
-                        screen.submit_values(email_text, password_text, cx)
-                    });
-                }
-            });
-        });
-        password.update(cx, |input, _| {
-            input.set_on_enter(move |password_text, _, cx| {
-                let email_text = email_handle.read(cx).text();
-                if let Some(this) = password_weak.upgrade() {
-                    this.update(cx, |screen, cx| {
-                        screen.submit_values(email_text, password_text, cx)
-                    });
+                    this.update(cx, |screen, cx| screen.submit_email(email_text, cx));
                 }
             });
         });
@@ -87,31 +78,80 @@ impl LoginScreen {
                 }
             });
         });
-        Self {
+        let mut this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend_tasks: std::cell::RefCell::new(Vec::new()),
+            subscriptions: Vec::new(),
             backend,
             email_input: email,
             password_input: password,
             callback_input: callback,
             oauth: OAuthFlow::Idle,
             error: None,
+            deletion_notice: None,
             busy: false,
-        }
+        };
+        this.subscriptions.push(cx.subscribe(
+            &this.password_input,
+            |this, _input, _event: &SecretInputSubmitted, cx| this.submit_current(cx),
+        ));
+        let backend = this.backend.clone();
+        // This safe status includes no token, deletion secret or server guess.
+        // Keep its callback separate from sign-in's busy lifecycle.
+        let bridge = super::task::call(
+            &this.backend,
+            async move { backend.account_deletion_status().await },
+            cx,
+            |this, result, cx| {
+                if let Ok(Some(status)) = result {
+                    this.deletion_notice = Some(status.message);
+                    cx.notify();
+                }
+            },
+        );
+        super::task::retain(&this.bridged_tasks, bridge);
+        this
     }
 
-    fn submit_values(&mut self, email: String, password: String, cx: &mut Context<Self>) {
+    /// Validate before consuming the control's value. An ignored submission
+    /// must not discard a password typed while another call is pending.
+    fn take_credentials(
+        &mut self,
+        email: String,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, Zeroizing<String>)> {
         if self.busy {
-            return;
+            return None;
         }
-        if email.trim().is_empty() || password.is_empty() {
+        if self.deletion_notice.is_some() {
+            cx.notify();
+            return None;
+        }
+        if email.trim().is_empty() || self.password_input.read(cx).is_empty() {
             self.error = Some(EMPTY_CREDENTIALS_ERROR.to_string());
             cx.notify();
-            return;
+            return None;
         }
+        // Account passwords retain their exact bytes. The local store's NFC
+        // password policy does not apply to existing OpenSecret accounts.
+        let password = self
+            .password_input
+            .update(cx, |input, cx| input.take_secret(cx));
+        Some((email, password))
+    }
+
+    fn submit_email(&mut self, email: String, cx: &mut Context<Self>) {
+        let Some((email, mut password)) = self.take_credentials(email, cx) else {
+            return;
+        };
         let backend = self.begin(cx);
         self.call(
-            async move { backend.login(email, password).await },
+            async move {
+                // Keep the allocation zeroizing until the typed backend API
+                // requires an owned String. Move it without making a UI copy;
+                // the backend/SDK own their subsequent serialization copies.
+                backend.login(email, std::mem::take(&mut *password)).await
+            },
             cx,
             |this, result, cx| match result {
                 Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
@@ -119,6 +159,11 @@ impl LoginScreen {
                 Err(message) => this.error = Some(message),
             },
         );
+    }
+
+    fn submit_current(&mut self, cx: &mut Context<Self>) {
+        let email = self.email_input.read(cx).text();
+        self.submit_email(email, cx);
     }
 
     /// Enter the busy state for a backend call and hand back the backend
@@ -171,13 +216,15 @@ impl LoginScreen {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let email = self.email_input.read(cx).text();
-        let password = self.password_input.read(cx).text();
-        self.submit_values(email, password, cx);
+        self.submit_current(cx);
     }
 
     fn start_oauth(&mut self, provider: OAuthProvider, cx: &mut Context<Self>) {
         if self.busy {
+            return;
+        }
+        if self.deletion_notice.is_some() {
+            cx.notify();
             return;
         }
         let backend = self.begin(cx);
@@ -292,6 +339,12 @@ impl Render for LoginScreen {
             );
 
         match &self.oauth {
+            OAuthFlow::Idle if self.deletion_notice.is_some() => {
+                card = card.child(
+                    widgets::banner(theme::status_warning())
+                        .child(self.deletion_notice.clone().unwrap_or_default()),
+                );
+            }
             OAuthFlow::Idle => {
                 card = card
                     .child(field("Email", self.email_input.clone()))
@@ -463,7 +516,7 @@ fn oauth_button(
     .child(provider.label().to_string())
 }
 
-fn field(label: &str, input: Entity<TextInput>) -> Div {
+fn field(label: &str, input: impl IntoElement) -> Div {
     let mut container = div().flex().flex_col().gap_1();
     if !label.is_empty() {
         container = container.child(
@@ -482,6 +535,37 @@ mod tests {
     use gpui::{Focusable, TestAppContext, px, size};
     use std::{cell::RefCell, rc::Rc};
 
+    #[gpui::test]
+    fn unresolved_account_deletion_blocks_password_and_oauth_without_reconstructing_credentials(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let screen = cx.new(|cx| LoginScreen::new(backend, cx));
+        screen.update(cx, |screen, cx| {
+            screen.deletion_notice = Some(
+                "The server outcome is unknown. This version's local history is retained.".into(),
+            );
+            screen.password_input.update(cx, |input, cx| {
+                assert!(input.replace_secret(Zeroizing::new("synthetic-password".into()), cx));
+            });
+            screen.submit_email("synthetic@example.test".into(), cx);
+            assert!(!screen.busy);
+            assert!(screen.error.is_none());
+            screen.start_oauth(OAuthProvider::Github, cx);
+            assert!(!screen.busy);
+            assert!(matches!(screen.oauth, OAuthFlow::Idle));
+            assert!(
+                screen
+                    .deletion_notice
+                    .as_ref()
+                    .unwrap()
+                    .contains("history is retained")
+            );
+        });
+    }
+
     struct LoginHost {
         screen: Entity<LoginScreen>,
     }
@@ -490,6 +574,84 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div().size_full().child(self.screen.clone())
         }
+    }
+
+    #[gpui::test]
+    fn account_password_moves_exact_bytes_only_after_submission_is_admitted(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let screen = cx.new(|cx| LoginScreen::new(backend, cx));
+        // Decomposed Unicode and surrounding spaces are valid existing account
+        // password bytes; applying the store-password NFC/trim policy changes
+        // the credential. This fixture contains no real account secret.
+        const PASSWORD: &str = "  e\u{301}😀 fixture  ";
+        screen.update(cx, |screen, cx| {
+            let address = screen.password_input.update(cx, |input, cx| {
+                assert!(input.replace_secret(Zeroizing::new(PASSWORD.into()), cx));
+                input.with_secret(|secret| {
+                    assert_eq!(secret.as_bytes(), PASSWORD.as_bytes());
+                    secret.as_ptr()
+                })
+            });
+            assert!(screen.take_credentials("  ".into(), cx).is_none());
+            assert_eq!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
+            screen.error = None;
+            screen.busy = true;
+            assert!(
+                screen
+                    .take_credentials("fixture@example.test".into(), cx)
+                    .is_none()
+            );
+            assert!(screen.error.is_none());
+            screen.busy = false;
+            screen.deletion_notice = Some("Deletion outcome pending".into());
+            assert!(
+                screen
+                    .take_credentials("fixture@example.test".into(), cx)
+                    .is_none()
+            );
+            assert!(screen.error.is_none());
+            screen.password_input.read(cx).with_secret(|secret| {
+                assert_eq!(secret.as_bytes(), PASSWORD.as_bytes());
+                assert_eq!(secret.as_ptr(), address);
+            });
+            screen.deletion_notice = None;
+            let (email, password) = screen
+                .take_credentials("fixture@example.test".into(), cx)
+                .expect("valid credentials must transfer ownership");
+            assert_eq!(email, "fixture@example.test");
+            assert_eq!(password.as_bytes(), PASSWORD.as_bytes());
+            assert_eq!(password.as_ptr(), address, "submit must move, not clone");
+            assert!(screen.password_input.read(cx).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn email_enter_submits_without_reentrant_field_access(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let screen = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            LoginScreen::new(backend, cx)
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| LoginHost {
+            screen: screen.clone(),
+        });
+        cx.simulate_resize(size(px(900.), px(700.)));
+        let email_focus =
+            cx.update(|_window, app| screen.read(app).email_input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&email_focus, app));
+        cx.simulate_input("fixture@example.test");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            let screen = screen.read(app);
+            assert!(!screen.busy);
+            assert_eq!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
+        });
     }
 
     #[gpui::test]
@@ -551,7 +713,10 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.update(|_window, app| {
             let screen = screen.read(app);
-            assert_eq!(screen.password_input.read(app).text(), "hunter2");
+            assert!(
+                screen.password_input.read(app).is_empty(),
+                "an admitted submission transfers the control's secret"
+            );
             assert_ne!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
             assert!(
                 screen.busy || screen.error.is_some(),
@@ -653,7 +818,7 @@ mod tests {
         screen.update(cx, |this, cx| {
             assert!(matches!(this.oauth, OAuthFlow::Idle));
             assert!(this.busy, "wait result must settle before another sign-in");
-            this.submit_values(String::new(), String::new(), cx);
+            this.submit_email(String::new(), cx);
             this.start_oauth(OAuthProvider::Apple, cx);
             assert!(this.error.is_none());
             assert!(matches!(this.oauth, OAuthFlow::Idle));

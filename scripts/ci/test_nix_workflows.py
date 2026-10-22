@@ -18,7 +18,7 @@ VERIFY_STEP = {
     "name": "Verify pinned Nix runtime",
     "run": "bash scripts/ci/verify-nix-runtime.sh",
 }
-EXPECTED_INSTALLS = 74
+EXPECTED_INSTALLS = 76
 
 
 @functools.cache

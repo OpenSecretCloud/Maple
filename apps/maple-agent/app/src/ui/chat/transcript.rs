@@ -76,7 +76,26 @@ impl ChatScreen {
                         .timeline_index
                         .get(&item.id)
                         .map_or(0, |(_, revision)| *revision);
-                    let row = render_timeline_item(item, revision, expanded, &transcript);
+                    let mut row =
+                        div().child(render_timeline_item(item, revision, expanded, &transcript));
+                    if item.truncated.is_some() {
+                        let id = item.id.clone();
+                        let target = entity.clone();
+                        row = row.child(
+                            widgets::secondary_button(SharedString::from(format!(
+                                "expand-{}",
+                                item.id
+                            )))
+                            .text_xs()
+                            .mt_2()
+                            .child("Show full output")
+                            .on_click(move |_, _, cx| {
+                                if let Some(chat) = target.upgrade() {
+                                    chat.update(cx, |chat, cx| chat.expand_paged_row(&id, cx));
+                                }
+                            }),
+                        );
+                    }
                     if !chat.application_vim_enabled {
                         row.into_any_element()
                     } else {
@@ -133,6 +152,20 @@ impl ChatScreen {
                 }),
             )
             .children(self.render_transcript_menu(window, cx))
+            .when(self.pages.before, |container| {
+                container.child(
+                    widgets::secondary_button("history-older")
+                        .mx_6()
+                        .my_1()
+                        .text_xs()
+                        .child(if self.pages.loading {
+                            "Loading history…"
+                        } else {
+                            "Load older messages"
+                        })
+                        .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(true, cx))),
+                )
+            })
             .child(
                 // The list element does not apply padding itself, so the
                 // gutter lives here. Same column width as the composer.
@@ -150,8 +183,39 @@ impl ChatScreen {
                 "transcript-scrollbar",
                 self.list_state.clone(),
             ))
+            .when(self.pages.after, |container| {
+                container.child(
+                    widgets::secondary_button("history-newer")
+                        .mx_6()
+                        .my_1()
+                        .text_xs()
+                        .child("Load newer messages")
+                        .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(false, cx))),
+                )
+            })
             .when(show_jump, |container| {
                 container.child(self.render_jump_to_latest(cx))
+            })
+            .when(self.pages.live_has_more, |container| {
+                container.child(
+                    div()
+                        .mx_6()
+                        .mb_2()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child("Additional live activity is outside this view")
+                        .child(
+                            widgets::secondary_button("live-reload-latest")
+                                .text_xs()
+                                .child("Reload latest")
+                                .on_click(
+                                    cx.listener(|chat, _, _, cx| chat.reload_paged_latest(cx)),
+                                ),
+                        ),
+                )
             })
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
@@ -184,7 +248,11 @@ impl ChatScreen {
                     .border_color(gpui::rgb(theme::border()))
                     .text_xs()
                     .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.list_state.scroll_to_end();
+                        if this.pages.after {
+                            this.reload_paged_latest(cx);
+                        } else {
+                            this.list_state.scroll_to_end();
+                        }
                         cx.notify();
                     }))
                     .child(icon("chevron-down", px(12.), theme::text_secondary()))

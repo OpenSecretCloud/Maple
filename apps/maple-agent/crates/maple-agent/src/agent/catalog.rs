@@ -2,14 +2,12 @@
 //! windows and vision, and the voice endpoints.
 
 use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use super::config::{agent_config_dir, unix_ms};
+use super::config::{account_store, unix_ms};
 use super::provider::{CatalogEntry, catalog_entry};
 use super::types::{
     TRANSCRIPTION_MODEL, TTS_MODEL, audio_error_message, selectable_agent_model_id,
@@ -32,12 +30,6 @@ struct CachedModelCatalog {
     models: Vec<String>,
 }
 
-fn model_catalog_cache_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
-    Ok(agent_config_dir(paths, user_id)
-        .map_err(|error| error.to_string())?
-        .join("model-catalog.json"))
-}
-
 fn is_fresh(fetched_at_ms: u64) -> bool {
     unix_ms().saturating_sub(u128::from(fetched_at_ms)) < MODEL_CATALOG_TTL_MS
 }
@@ -49,23 +41,22 @@ async fn cached_model_ids(
     user_id: &str,
     api: &Arc<MapleApiSession>,
 ) -> Vec<String> {
-    let cache_path = match model_catalog_cache_path(paths, user_id) {
-        Ok(path) => Some(path),
-        Err(error) => {
-            log::warn!("Failed to place the model catalog cache: {error}");
-            None
-        }
-    };
-    let cached = match cache_path.clone() {
-        Some(path) => tokio::task::spawn_blocking(move || {
-            fs::read_to_string(&path)
+    let cache = account_store(paths, user_id)
+        .ok()
+        .and_then(|(_, account)| paths.store().ok().map(|store| (Arc::clone(store), account)));
+    let cached = if let Some((store, account)) = cache.clone() {
+        tokio::task::spawn_blocking(move || {
+            store
+                .account_setting(account, "cache.model_catalog")
                 .ok()
-                .and_then(|text| serde_json::from_str::<CachedModelCatalog>(&text).ok())
+                .flatten()
+                .and_then(|value| serde_json::from_value::<CachedModelCatalog>(value).ok())
         })
         .await
         .ok()
-        .flatten(),
-        None => None,
+        .flatten()
+    } else {
+        None
     };
     if let Some(record) = cached {
         if is_fresh(record.fetched_at_ms) {
@@ -73,7 +64,7 @@ async fn cached_model_ids(
         }
         // Answer from the stale cache and refresh it for the next caller,
         // so no request waits on the catalog after the first fetch.
-        if let Some(path) = cache_path
+        if let Some(cache) = cache
             && MODEL_CATALOG_REFRESH_IN_FLIGHT
                 .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
@@ -81,7 +72,7 @@ async fn cached_model_ids(
             let api = Arc::clone(api);
             tokio::spawn(async move {
                 match api.model_ids().await {
-                    Ok(models) => write_model_catalog(path, models).await,
+                    Ok(models) => write_model_catalog(cache, models).await,
                     Err(error) => log::warn!("Background model catalog refresh failed: {error}"),
                 }
                 MODEL_CATALOG_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
@@ -91,8 +82,8 @@ async fn cached_model_ids(
     }
     match api.model_ids().await {
         Ok(models) => {
-            if let Some(path) = cache_path {
-                write_model_catalog(path, models.clone()).await;
+            if let Some(cache) = cache {
+                write_model_catalog(cache, models.clone()).await;
             }
             models
         }
@@ -103,29 +94,24 @@ async fn cached_model_ids(
     }
 }
 
-async fn write_model_catalog(path: PathBuf, models: Vec<String>) {
+async fn write_model_catalog(
+    (store, account): (Arc<crate::store::Store>, crate::store::AccountId),
+    models: Vec<String>,
+) {
     let record = CachedModelCatalog {
         fetched_at_ms: u64::try_from(unix_ms()).unwrap_or(u64::MAX),
         models,
     };
-    let Ok(text) = serde_json::to_string(&record) else {
+    let Ok(value) = serde_json::to_value(record) else {
         return;
     };
-    let written = tokio::task::spawn_blocking(move || write_model_catalog_file(&path, &text))
-        .await
-        .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())));
-    if let Err(error) = written {
-        log::warn!("Failed to write the model catalog cache: {error}");
+    let written = tokio::task::spawn_blocking(move || {
+        store.set_account_setting(account, "cache.model_catalog", &value, pi_ai::now_ms())
+    })
+    .await;
+    if !matches!(written, Ok(Ok(()))) {
+        log::warn!("Failed to write the model catalog cache");
     }
-}
-
-fn write_model_catalog_file(path: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, text)?;
-    fs::rename(&temporary, path)
 }
 
 impl AgentRuntimeHandle {

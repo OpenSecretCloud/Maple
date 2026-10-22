@@ -11,6 +11,7 @@ mod billing;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod env;
+mod framing;
 mod host;
 mod hosted_oauth;
 #[cfg(feature = "desktop")]
@@ -58,6 +59,14 @@ struct Cli {
     /// Print the immutable build profile as JSON and exit without opening state.
     #[arg(long, conflicts_with = "desktop_args")]
     build_info: bool,
+    /// Internal read-only checker. Key material is accepted only on stdin.
+    #[arg(
+        long,
+        hide = true,
+        value_name = "STORE_V1_ROOT",
+        conflicts_with = "build_info"
+    )]
+    internal_store_integrity_check: Option<std::path::PathBuf>,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -90,6 +99,8 @@ enum Mode {
     Proxy(ProxyArgs),
     /// Sign in with email and password and save the session for `acp`.
     Login(LoginArgs),
+    /// Unlock Maple local data; the password is prompted on the controlling TTY.
+    Unlock,
 }
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
@@ -120,6 +131,7 @@ enum RemoteCommand {
 
 fn run_remote(command: RemoteCommand) -> Result<(), String> {
     let backend = AgentBackend::new(configured_api_url(), String::new())?;
+    require_open_cli(&backend)?;
     let (method, params) = match command {
         RemoteCommand::Status => ("remote_status", serde_json::json!([])),
         RemoteCommand::Enable => ("remote_enable", serde_json::json!([true])),
@@ -202,9 +214,6 @@ impl ProxyArgs {
 #[cfg(feature = "desktop")]
 static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
-/// Notes from adopting pre-rename state directories, logged once logging is up.
-static ADOPTED_APP_DIRS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-
 /// Milliseconds since `main` began.
 #[cfg(feature = "desktop")]
 pub(crate) fn startup_elapsed() -> u128 {
@@ -223,11 +232,21 @@ fn main() {
         );
         return;
     }
+    if let Err(error) = host::hardening::apply() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+    if let Some(root) = cli.internal_store_integrity_check {
+        let result = maple_agent::store::integrity::run_checker_stdio(&root);
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // SAFETY: argument parsing starts no threads. No other thread exists
     // yet, so mutating the process environment here cannot race a reader.
     unsafe { maple_agent::prepare_process_environment() };
-    // Before any mode opens settings, credentials, or the log file.
-    let _ = ADOPTED_APP_DIRS.set(backend::adopt_legacy_app_dirs());
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());
     match cli.mode {
@@ -238,6 +257,7 @@ fn main() {
                 HostCommand::Stop => host::stop(&configured_api_url()),
             };
             if let Err(error) = result {
+                log::error!("Maple host command failed: {error}");
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -284,6 +304,13 @@ fn main() {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
+            }
+        }
+        Some(Mode::Unlock) => {
+            init_logging(LogOutput::FileOnly);
+            if let Err(error) = run_unlock() {
+                eprintln!("{error}");
+                std::process::exit(1);
             }
         }
         Some(Mode::Login(args)) => {
@@ -393,6 +420,7 @@ fn run_acp() -> Result<(), String> {
 /// machine that never opened the window.
 fn run_login(args: LoginArgs) -> Result<(), String> {
     let backend = AgentBackend::new(configured_api_url(), String::new())?;
+    require_open_cli(&backend)?;
     if let Some(user_id) = backend.saved_user_id() {
         eprintln!("A Maple sign-in is already saved; signing in again replaces it.");
         log::info!("login replaces the saved session for account {user_id}");
@@ -418,6 +446,58 @@ fn run_login(args: LoginArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn require_open_cli(backend: &AgentBackend) -> Result<(), String> {
+    let status: serde_json::Value = backend
+        .runtime_handle()
+        .block_on(backend.local_control("store_status", ()))?;
+    let state: maple_agent::store::StoreState =
+        serde_json::from_value(status.get("state").cloned().ok_or("Invalid store status")?)
+            .map_err(|_| "Invalid store status")?;
+    match state {
+        maple_agent::store::StoreState::Open => Ok(()),
+        maple_agent::store::StoreState::Locked => {
+            Err("Maple is locked. Open Maple or run `maple-agent unlock`, then try again.".into())
+        }
+        maple_agent::store::StoreState::NeedsSetup => {
+            Err("Maple needs local store setup. Open Maple to continue.".into())
+        }
+        maple_agent::store::StoreState::Refused { reason } => Err(reason.message().into()),
+        _ => Err("Maple local data is not ready. Open Maple and try again.".into()),
+    }
+}
+
+fn run_unlock() -> Result<(), String> {
+    #[derive(serde::Serialize)]
+    struct Unlock<'a> {
+        password: &'a str,
+    }
+    let backend = std::sync::Arc::new(AgentBackend::new(configured_api_url(), String::new())?);
+    let password = zeroize::Zeroizing::new(
+        rpassword::prompt_password("Maple unlock password: ")
+            .map_err(|_| "Could not read the unlock password")?,
+    );
+    let result: serde_json::Value = backend.runtime_handle().block_on(backend.local_control(
+        "unlock",
+        Unlock {
+            password: &password,
+        },
+    ))?;
+    if result
+        .get("used_previous_password")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        eprintln!("That was your previous unlock password. Your current password is still active.");
+    } else {
+        eprintln!("Maple is unlocked.");
+    }
+    backend
+        .runtime_handle()
+        .block_on(backend.detach())
+        .map_err(|_| "Could not detach from Maple")?;
+    Ok(())
+}
+
 /// One trimmed line from the terminal, with `prompt` shown first.
 fn prompt_line(prompt: &str) -> Result<String, String> {
     use std::io::{BufRead, Write};
@@ -435,7 +515,7 @@ fn prompt_line(prompt: &str) -> Result<String, String> {
     Ok(line)
 }
 
-/// Log to stderr and to `<data dir>/logs/maple-agent.log` so a freeze or
+/// Log to stderr and to the new `store-v1/logs/maple-agent.log` so a freeze or
 /// crash leaves evidence on disk. `RUST_LOG` still controls the level;
 /// the default is `info`. Panics are logged as well.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -448,14 +528,9 @@ enum LogOutput {
 }
 
 fn init_logging(output: LogOutput) {
-    let log_dir = backend::local_data_root().join("logs");
-    let file = std::fs::create_dir_all(&log_dir).ok().and_then(|_| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("maple-agent.log"))
-            .ok()
-    });
+    let paths = backend::store_paths();
+    let log_dir = paths.logs();
+    let file = paths.open_log().ok();
     const DEFAULT_FILTER: &str =
         "info,iroh=warn,iroh_relay=warn,noq=warn,noq_proto=warn,netwatch=warn,tracing::span=warn";
     let mut builder = match output {
@@ -486,9 +561,6 @@ fn init_logging(output: LogOutput) {
         env!("CARGO_PKG_VERSION"),
         log_dir.join("maple-agent.log").display()
     );
-    for note in ADOPTED_APP_DIRS.get().into_iter().flatten() {
-        log::info!("state directory: {note}");
-    }
 }
 
 /// Buffered file sink plus stderr. Warnings and errors flush the file at

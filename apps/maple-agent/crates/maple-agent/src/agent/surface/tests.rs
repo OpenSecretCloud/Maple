@@ -313,6 +313,9 @@ async fn a_start_removes_provisional_tasks_a_crash_stranded() {
     let harness = Harness::new().await;
     let store = harness.handle.store().unwrap();
     let now = pi_ai::now_ms();
+    let stranded = "00000000-0000-4000-8000-000000000001";
+    let starting = "00000000-0000-4000-8000-000000000002";
+    let prompted = "00000000-0000-4000-8000-000000000003";
     let row = |id: &str, age_ms: i64, provisional: bool| {
         let mut row = TaskRow::new(
             id.to_string(),
@@ -327,15 +330,11 @@ async fn a_start_removes_provisional_tasks_a_crash_stranded() {
         }
         row
     };
-    store
-        .insert(&row("stranded", 11 * 60 * 1000, true))
-        .unwrap();
-    store.insert(&row("starting", 60 * 1000, true)).unwrap();
-    store
-        .insert(&row("prompted", 11 * 60 * 1000, false))
-        .unwrap();
+    store.insert(&row(stranded, 11 * 60 * 1000, true)).unwrap();
+    store.insert(&row(starting, 60 * 1000, true)).unwrap();
+    store.insert(&row(prompted, 11 * 60 * 1000, false)).unwrap();
     sweep_stale_provisional(&store, harness.handle.paths(), &harness.handle.user_id);
-    assert!(store.get("stranded").unwrap().is_none());
-    assert!(store.get("starting").unwrap().is_some());
-    assert!(store.get("prompted").unwrap().is_some());
+    assert!(store.get(stranded).unwrap().is_none());
+    assert!(store.get(starting).unwrap().is_some());
+    assert!(store.get(prompted).unwrap().is_some());
 }

@@ -1,0 +1,15 @@
+{
+  "format": "maple-store-bench-reference/1",
+  "profiles": {
+    "linux-ci": {
+      "status": "awaiting-recorded-run",
+      "scenario_medians_us": {},
+      "provenance": null
+    },
+    "macos-full": {
+      "status": "awaiting-recorded-run",
+      "scenario_medians_us": {},
+      "provenance": null
+    }
+  }
+}

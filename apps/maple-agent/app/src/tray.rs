@@ -44,13 +44,15 @@ impl StatusIcon {
         }));
         Ok((Self(tray), receiver))
     }
-    pub fn set_enabled(&self, enabled: bool) {
-        let _ = self.0.set_tooltip(Some(if enabled {
+    pub fn set_state(&self, remote_enabled: bool, store_resident: bool) {
+        let _ = self.0.set_tooltip(Some(if remote_enabled {
             "Maple — remote access on"
+        } else if store_resident {
+            "Maple — local data unlocked or changing"
         } else {
             "Maple — remote access off"
         }));
-        let _ = self.0.set_visible(enabled);
+        let _ = self.0.set_visible(remote_enabled || store_resident);
     }
 }
 

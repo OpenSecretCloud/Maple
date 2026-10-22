@@ -114,12 +114,14 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Build optimized Agent with embedded profile
         run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
-      - name: Upload prebuilt Agent binary
+      - name: Upload prebuilt Agent binary and notices
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
           overwrite: true
-          path: apps/maple-agent/target/release/maple-agent
+          path: |
+            apps/maple-agent/target/release/maple-agent
+            apps/maple-agent/target/third-party-notices
           if-no-files-found: error
           retention-days: 7
 
@@ -157,11 +159,11 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
-      - name: Download exact prebuilt Agent binary
+      - name: Download exact prebuilt Agent binary and notices
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
-          path: apps/maple-agent/target/release
+          path: apps/maple-agent/target
       - name: Verify prebuilt profile and source before signing
         run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Build trusted installer archive scanner
@@ -220,11 +222,11 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
-      - name: Download exact prebuilt Agent binary
+      - name: Download exact prebuilt Agent binary and notices
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
-          path: apps/maple-agent/target/release
+          path: apps/maple-agent/target
       - name: Verify prebuilt profile and source
         run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Build trusted installer archive scanner

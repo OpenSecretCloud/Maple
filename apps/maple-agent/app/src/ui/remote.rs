@@ -117,6 +117,17 @@ impl RemoteScreen {
         screen
     }
 
+    /// The controller's account snapshot can arrive after Settings opens.
+    /// Preserve any active editor while updating the labels it surrounds.
+    pub(crate) fn set_names(
+        &mut self,
+        names: std::collections::HashMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.names = names;
+        cx.notify();
+    }
+
     fn clear_local_code(&mut self) {
         if let Some((mut code, _)) = self.local_code.take() {
             zeroize::Zeroize::zeroize(&mut code);
@@ -269,15 +280,33 @@ impl RemoteScreen {
         self.names.insert(key.clone(), name.clone());
         self.renaming = None;
         self.error = None;
+        let backend = self.backend.clone();
+        let user = backend.saved_user_id();
         let saved_key = key.clone();
         let saved_name = name.clone();
-        crate::settings::update_settings_in_background(move |settings| {
-            settings
-                .remote_sidebars
-                .entry(saved_key)
-                .or_default()
-                .display_name = saved_name;
+        let request = self.backend.spawn(async move {
+            let user = user.ok_or("Sign in before naming a remote computer")?;
+            backend
+                .set_remote_sidebar(
+                    &user,
+                    saved_key,
+                    serde_json::json!({"display_name":saved_name}),
+                )
+                .await
         });
+        let bridge = cx.spawn(async move |this, cx| {
+            let result = request
+                .await
+                .unwrap_or_else(|_| Err("Could not save the computer name".into()));
+            if let Err(error) = result {
+                this.update(cx, |screen, cx| {
+                    screen.error = Some(error);
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+        task::retain(&self.bridges, bridge);
         cx.emit(ComputerNamed { key, name });
         cx.notify();
     }

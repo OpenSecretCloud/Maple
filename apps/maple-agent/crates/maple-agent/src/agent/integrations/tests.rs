@@ -1,11 +1,15 @@
 use serde_json::json;
 
 use super::*;
-use crate::agent::config::save_agent_config_inner;
-use crate::agent::{AgentConfig, AgentMcpTransport, DEFAULT_MCP_TIMEOUT_SECONDS};
+use crate::agent::{AgentMcpTransport, DEFAULT_MCP_TIMEOUT_SECONDS};
 
 fn paths(root: &std::path::Path) -> AgentPathLayout {
-    AgentPathLayout::from_app_roots(root.join("config"), root.join("local-data"))
+    AgentPathLayout::from_app_roots(root.join("config"), root.join("local-data")).with_store(
+        std::sync::Arc::new(
+            crate::store::Store::open(crate::store::StorePaths::new(root.join("local-data")))
+                .unwrap(),
+        ),
+    )
 }
 
 fn detections(codex: CliDetection, claude: CliDetection, cua: CuaDetection) -> Detections {
@@ -226,15 +230,26 @@ fn cua_is_enabled_only_once_set_up_and_never_over_a_custom_server() {
         "switching off keeps the setup"
     );
 
-    save_agent_config_inner(
-        &paths,
-        "user",
-        &AgentConfig {
-            mcp_servers: vec![http_server("Cua Driver")],
-            ..AgentConfig::default()
-        },
-    )
-    .unwrap();
+    use crate::store::records::{McpEditOrigin, McpServerEdit, McpTarget};
+    let (store, account) = account_store(&paths, "user").unwrap();
+    store
+        .save_mcp_definitions(
+            account,
+            &[McpServerEdit {
+                key: AgentMcpServer::key_for_name("Cua Driver"),
+                name: "Cua Driver".into(),
+                description: String::new(),
+                enabled: true,
+                timeout_seconds: DEFAULT_MCP_TIMEOUT_SECONDS,
+                target: McpTarget::StreamableHttp {
+                    url: "https://example.com/mcp".into(),
+                },
+                environment: Vec::new(),
+                headers: Vec::new(),
+            }],
+            McpEditOrigin::Local,
+        )
+        .unwrap();
     let error =
         set_integration_default(&paths, "user", &request("cua-driver", true), &ready).unwrap_err();
     assert!(error.contains("Rename or remove"), "{error}");
@@ -264,38 +279,35 @@ fn a_cua_named_server_already_saved_does_not_block_other_saves() {
 fn saved_choices_of_other_versions_or_retired_backends() {
     let temporary = tempfile::tempdir().unwrap();
     let paths = paths(temporary.path());
-    let path = integrations_path(&paths, "user").unwrap();
-    // A newer build's file is reported, and left as it is.
-    write_device_local_json_file(&path, &json!({ "version": 99, "integrations": [] })).unwrap();
+    let (store, account) = account_store(&paths, "user").unwrap();
+    let save = |value| {
+        store
+            .set_account_setting(account, INTEGRATIONS_SETTING, &value, 1)
+            .unwrap()
+    };
+    save(json!({ "version": 99, "integrations": [] }));
     let error = project_integrations(&paths, "user", &nothing_installed()).unwrap_err();
     assert!(error.contains("Unsupported"), "{error}");
-    assert!(path.exists());
-
-    // The standalone CuaDriver's entry is dropped; the others stay.
-    write_device_local_json_file(
-        &path,
-        &json!({
-            "version": INTEGRATIONS_FILE_VERSION,
-            "integrations": [
-                { "id": "cua-driver", "enabled": true, "backend": "external" },
-                { "id": "codex", "enabled": true, "backend": "embedded" }
-            ],
-        }),
-    )
-    .unwrap();
+    assert_eq!(
+        store
+            .account_setting(account, INTEGRATIONS_SETTING)
+            .unwrap()
+            .unwrap()["version"],
+        99
+    );
+    save(json!({
+        "version": INTEGRATIONS_FILE_VERSION,
+        "integrations": [
+            { "id": "cua-driver", "enabled": true, "backend": "external" },
+            { "id": "codex", "enabled": true, "backend": "embedded" }
+        ]
+    }));
     let cards = project_integrations(&paths, "user", &nothing_installed()).unwrap();
     assert_eq!(cards[0].backend, None);
     assert!(!cards[0].enabled_for_new_tasks);
     assert!(card(&cards, "codex").enabled_for_new_tasks);
-
-    write_device_local_json_file(
-        &path,
-        &json!({
-            "version": INTEGRATIONS_FILE_VERSION,
-            "integrations": [{ "id": "other", "enabled": true, "backend": "embedded" }],
-        }),
-    )
-    .unwrap();
+    save(json!({"version": INTEGRATIONS_FILE_VERSION,
+        "integrations": [{ "id": "other", "enabled": true, "backend": "embedded" }]}));
     let error = project_integrations(&paths, "user", &nothing_installed()).unwrap_err();
     assert!(error.contains("unknown or duplicate"), "{error}");
 }
@@ -486,3 +498,4 @@ async fn acp_created_tasks_inherit_the_hosts_computer_use_default() {
     assert_eq!(crate::agent::cua::task_choice(&row), Some(true));
     session.lease.discard_created_if_untouched().await;
 }
+use std::path::PathBuf;

@@ -7,6 +7,10 @@
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
 pub use local::*;
 pub(crate) mod local;
+pub(crate) mod paging;
+#[cfg(feature = "desktop")]
+pub use paging::*;
+mod mcp;
 
 use crate::host::{RemoteClient, protocol::Request};
 use maple_agent::agent::*;
@@ -16,7 +20,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tokio::{runtime::Runtime, sync::mpsc};
@@ -31,6 +35,7 @@ pub struct AgentBackend {
     controller: Option<Arc<AgentBackend>>,
     remote_host: Option<String>,
     retired_after_update: Arc<AtomicBool>,
+    subscription_sequence: AtomicU64,
 }
 
 impl Drop for AgentBackend {
@@ -45,9 +50,85 @@ impl Drop for AgentBackend {
 }
 
 enum BackendClient {
-    Host(RemoteClient),
+    Host(Box<RemoteClient>),
     #[cfg(test)]
     InProcess(Box<LocalBackend>),
+}
+
+impl AgentBackend {
+    #[cfg(feature = "acp")]
+    pub async fn get_acp_config(
+        &self,
+        user_id: &str,
+    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
+        if self.remote_host.is_some() {
+            return Err("ACP settings require the local desktop".into());
+        }
+        self.call("get_acp_config", (user_id,)).await
+    }
+
+    #[cfg(feature = "acp")]
+    pub async fn set_acp_config(
+        &self,
+        user_id: &str,
+        config: maple_agent::acp::AgentAcpConfig,
+    ) -> Result<maple_agent::acp::AgentAcpConfig, String> {
+        if self.remote_host.is_some() {
+            return Err("ACP settings require the local desktop".into());
+        }
+        self.call("set_acp_config", (user_id, config)).await
+    }
+
+    /// Store lifecycle commands always address this computer's host. A
+    /// selected remote computer cannot forward passwords or erase requests.
+    pub async fn local_control<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<R, String> {
+        if self.remote_host.is_some()
+            || !matches!(
+                method,
+                "store_status"
+                    | "cancel_oauth"
+                    | "acknowledge_mode_change_notice"
+                    | "host_status"
+                    | "store_progress"
+                    | "cancel_store_operation"
+                    | "unlock"
+                    | "setup_store"
+                    | "start_fresh"
+                    | "set_store_password"
+                    | "change_store_password"
+                    | "remove_store_password"
+                    | "erase_local_data"
+                    | "generate_store_passphrase"
+                    | "assess_store_password"
+                    | "retry_store_persistence"
+                    | "repair_status"
+                    | "repair_progress"
+                    | "cancel_store_repair"
+                    | "authenticate_repair_password"
+                    | "check_store_integrity"
+                    | "preview_salvage"
+                    | "salvage_preview_page"
+                    | "salvage_store"
+            )
+        {
+            return Err("Store lifecycle commands require the local desktop".into());
+        }
+        self.call(method, params).await
+    }
+
+    pub fn store_state(&self) -> maple_agent::store::StoreState {
+        match &self.client {
+            BackendClient::Host(client) => client.store_state(),
+            #[cfg(test)]
+            BackendClient::InProcess(backend) => backend
+                .store()
+                .map_or(maple_agent::store::StoreState::Open, |store| store.state()),
+        }
+    }
 }
 
 // Borrowed facade parameters become owned messages at the process boundary.
@@ -101,8 +182,16 @@ macro_rules! unpack_type {
 }
 
 operations! {
+    get_ui_settings() -> crate::settings::AppSettings;
+    set_ui_settings(patch: (serde_json::Value)) -> ();
+    flush_ui_settings() -> ();
+    dictionary(after: (Option<String>), limit: (u16)) -> maple_agent::store::DictionaryPage;
+    add_word(word: (String)) -> bool;
+    get_remote_sidebars(user_id: (&str)) -> HashMap<String, crate::settings::RemoteSidebarSettings>;
+    set_remote_sidebar(user_id: (&str), computer: (String), patch: (serde_json::Value)) -> ();
+    set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
     login(email: (String), password: (String)) -> AuthSession;
-    logout_and_clear(user_id: (&str)) -> ();
+    logout_and_clear(account_user: (&str)) -> ();
     oauth_start(provider: (OAuthProvider)) -> String;
     oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
     oauth_complete(provider: (OAuthProvider), redirected_url: (String)) -> AuthSession;
@@ -110,7 +199,8 @@ operations! {
     request_verification_email(user_id: (&str)) -> ();
     change_password(user_id: (&str), current_password: (String), new_password: (String)) -> ();
     request_account_deletion(user_id: (&str)) -> String;
-    confirm_account_deletion(user_id: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
+    account_deletion_status() -> Option<AccountDeletionStatus>;
+    confirm_account_deletion(account_user: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
     list_api_keys(user_id: (&str)) -> Vec<MapleApiKey>;
     create_api_key(user_id: (&str), name: (String)) -> MapleApiKeyCreated;
     delete_api_key(user_id: (&str), name: (&str)) -> ();
@@ -121,24 +211,18 @@ operations! {
     start_checkout(user_id: (&str), product_id: (String)) -> ();
     start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
-    recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
-    select_project_root(user_id: (&str), path: (String)) -> AgentProjectRootRegistration;
-    rename_project_root(user_id: (&str), path: (String), name: (String)) -> Vec<RecentProjectRoot>;
-    list_sessions(user_id: (&str), project_root: (Option<String>)) -> Vec<AgentSessionSummary>;
-    local_bootstrap(user_id: (&str)) -> LocalBootstrap;
-    recovery_snapshot(user_id: (&str), session_id: (Option<String>)) -> RecoverySnapshot;
+    select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
+    rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
+    archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
     create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
-    load_session(user_id: (&str), session_id: (&str)) -> AgentSessionDetail;
     set_session_state(user_id: (&str), session_id: (&str), state: (AgentTaskState)) -> AgentSessionSummary;
     delete_session(user_id: (&str), session_id: (&str)) -> ();
-    remove_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
     rename_session(user_id: (&str), session_id: (&str), title: (String)) -> AgentSessionSummary;
     project_trust(user_id: (&str), path: (String)) -> AgentProjectTrustStatus;
     set_project_trust(user_id: (&str), path: (String), trusted: (bool)) -> AgentProjectTrustStatus;
     cancel_queued_message(user_id: (&str), session_id: (&str), queue_id: (&str)) -> AgentDesktopQueueSnapshot;
     begin_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
     end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
-    read_image_attachment(user_id: (&str), session_id: (&str), attachment_id: (&str)) -> Vec<u8>;
     cancel_run(user_id: (&str), run_id: (&str)) -> ();
     available_model_ids(user_id: (&str)) -> Vec<String>;
     model_catalog_entry(user_id: (&str), model: (&str)) -> Option<maple_agent::agent::CatalogEntry>;
@@ -148,12 +232,12 @@ operations! {
     list_session_mcp_servers(user_id: (&str), session_id: (&str)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
     set_session_mcp_server_enabled(user_id: (&str), session_id: (&str), name: (&str), kind: (maple_agent::agent::AgentSessionIntegrationKind), enabled: (bool)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
     list_mcp_servers(user_id: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
+    list_mcp_definitions(user_id: (&str)) -> Vec<maple_agent::store::records::McpDefinition>;
     list_project_mcp_servers(user_id: (&str), project_root: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
     set_project_mcp_server_enabled(user_id: (&str), project_root: (&str), name: (&str), enabled: (bool)) -> ();
     list_integrations(user_id: (&str)) -> Vec<AgentIntegration>;
     set_integration_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentIntegration>;
     setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
-    save_mcp_servers(user_id: (&str), servers: (Vec<maple_agent::agent::AgentMcpServer>)) -> Vec<maple_agent::agent::AgentMcpServer>;
     set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
     compact_session(user_id: (&str), session_id: (&str)) -> ();
     session_subagents(user_id: (&str), session_id: (&str)) -> Vec<AgentSubagent>;
@@ -188,7 +272,23 @@ impl AgentBackend {
             controller: None,
             remote_host: None,
             retired_after_update: Arc::new(AtomicBool::new(false)),
+            subscription_sequence: AtomicU64::new(0),
         })
+    }
+
+    /// Real-IPC fixtures supply their own contained endpoint and host lifetime.
+    #[cfg(test)]
+    pub(crate) fn from_host_client_for_test(client: RemoteClient) -> Self {
+        Self {
+            runtime: tokio::runtime::Handle::current(),
+            owned_runtime: None,
+            client: BackendClient::Host(Box::new(client)),
+            api_url: "http://127.0.0.1:1".into(),
+            controller: None,
+            remote_host: None,
+            retired_after_update: Arc::new(AtomicBool::new(false)),
+            subscription_sequence: AtomicU64::new(0),
+        }
     }
 
     pub fn new(api_url: String, _harness_instructions: String) -> Result<Self, String> {
@@ -198,11 +298,12 @@ impl AgentBackend {
         Ok(Self {
             runtime: runtime.handle().clone(),
             owned_runtime: Some(runtime),
-            client: BackendClient::Host(client),
+            client: BackendClient::Host(Box::new(client)),
             api_url,
             controller: None,
             remote_host: None,
             retired_after_update: Arc::new(AtomicBool::new(false)),
+            subscription_sequence: AtomicU64::new(0),
         })
     }
 
@@ -210,7 +311,7 @@ impl AgentBackend {
         self.with_remote_connection(peer.clone(), || async {
             RemoteClient::connect_remote(&self.api_url, peer)
                 .await
-                .map(BackendClient::Host)
+                .map(|client| BackendClient::Host(Box::new(client)))
         })
         .await
     }
@@ -234,6 +335,7 @@ impl AgentBackend {
             controller: Some(self.clone()),
             remote_host: Some(peer),
             retired_after_update: self.retired_after_update.clone(),
+            subscription_sequence: AtomicU64::new(0),
         }))
     }
 
@@ -242,6 +344,11 @@ impl AgentBackend {
     /// their local controller share this terminal gate; cleanup can still spawn.
     pub fn retire_after_update(&self) {
         self.retired_after_update.store(true, Ordering::Release);
+    }
+
+    #[cfg(feature = "desktop")]
+    pub(crate) fn is_retired_after_update(&self) -> bool {
+        self.retired_after_update.load(Ordering::Acquire)
     }
 
     fn ensure_active(&self) -> Result<(), String> {
@@ -271,9 +378,10 @@ impl AgentBackend {
         params: impl Serialize,
     ) -> Result<R, String> {
         self.ensure_active()?;
-        // Speech capture/playback and account UI belong to the controller.
+        // Speech, account UI and each viewer's remote-sidebar preferences
+        // belong to the controller.
         // All task operations use the selected host's separate connection.
-        if let Some(controller) = &self.controller
+        let client = if let Some(controller) = &self.controller
             && matches!(
                 method,
                 "audio_capabilities"
@@ -281,15 +389,14 @@ impl AgentBackend {
                     | "transcribe_audio"
                     | "plan_usage"
                     | "account"
-            )
-        {
-            match &controller.client {
-                BackendClient::Host(client) => return client.call(method, params).await,
-                #[cfg(test)]
-                BackendClient::InProcess(_) => {}
-            }
-        }
-        match &self.client {
+                    | "get_remote_sidebars"
+                    | "set_remote_sidebar"
+            ) {
+            &controller.client
+        } else {
+            &self.client
+        };
+        match client {
             BackendClient::Host(client) => client.call(method, params).await,
             #[cfg(test)]
             BackendClient::InProcess(backend) => {
@@ -429,26 +536,6 @@ impl AgentBackend {
         // Native permission prompts remain on the signed app's UI thread.
         maple_agent::agent::begin_integration_setup(&AgentSetupIntegrationRequest { id: id.into() })
     }
-    pub fn load_tool_summaries_blocking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<HashMap<String, String>, String> {
-        self.runtime
-            .block_on(self.call("load_tool_summaries", (user_id, session_id)))
-    }
-    pub fn store_tool_summary_blocking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        item_id: &str,
-        summary: &str,
-    ) -> Result<(), String> {
-        self.runtime.block_on(self.call(
-            "store_tool_summary",
-            (user_id, session_id, item_id, summary),
-        ))
-    }
     pub async fn saved_model(&self, user_id: &str) -> Option<String> {
         self.call("saved_model", (user_id,)).await.ok().flatten()
     }
@@ -458,11 +545,37 @@ async fn dispatch_special(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    if paging::is_paging(&request.method) {
+        return paging::dispatch(backend, request, maple_agent::store::PageTransport::Local).await;
+    }
     let invalid = |_| "Invalid host request parameters".to_string();
-    let encode = |value| {
+    fn encode(value: impl Serialize) -> Result<serde_json::Value, String> {
         serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
-    };
+    }
     match request.method.as_str() {
+        "save_mcp_servers" => {
+            let (user, servers): (String, Vec<AgentMcpServer>) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.save_mcp_servers(&user, servers).await?)
+        }
+        "save_mcp_definition_edits" => {
+            let (user, edits): (String, Vec<maple_agent::store::records::McpServerEdit>) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.save_mcp_definition_edits(&user, edits).await?)
+        }
+        #[cfg(feature = "acp")]
+        "get_acp_config" => {
+            let (user,): (String,) = serde_json::from_value(request.params).map_err(invalid)?;
+            encode(backend.get_acp_config(&user).await?)
+        }
+        #[cfg(feature = "acp")]
+        "set_acp_config" => {
+            let (user, config): (String, maple_agent::acp::AgentAcpConfig) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            encode(backend.set_acp_config(&user, config).await?)
+        }
         "send_message" => {
             let (user, message): (String, AgentSendMessageRequest) =
                 serde_json::from_value(request.params)
@@ -490,20 +603,48 @@ async fn dispatch_special(
             backend.authorize_account(&user_id)?;
             serde_json::to_value(backend.saved_model(&user_id).await).map_err(|e| e.to_string())
         }
-        "load_tool_summaries" => {
-            let (user_id, session_id): (String, String) =
+        // Retained for authenticated host/remote callers; the GUI uses the
+        // explicit archive operation and has no whole-project hiding client.
+        "remove_project_root" => {
+            let (user, path, fallback): (String, String, Option<String>) =
                 serde_json::from_value(request.params).map_err(invalid)?;
-            backend.authorize_account(&user_id)?;
-            encode(backend.load_tool_summaries_blocking(&user_id, &session_id)?)
-        }
-        "store_tool_summary" => {
-            let (user_id, session_id, item_id, summary): (String, String, String, String) =
-                serde_json::from_value(request.params).map_err(invalid)?;
-            backend.authorize_account(&user_id)?;
-            backend.store_tool_summary_blocking(&user_id, &session_id, &item_id, &summary)?;
+            backend.authorize_account(&user)?;
+            backend.remove_project_root(&user, path, fallback).await?;
             Ok(serde_json::Value::Null)
         }
         _ => Err("Unknown Maple host operation".into()),
+    }
+}
+
+/// Remote origin is selected by the authenticated transport, never request
+/// parameters. Neither compatibility saves nor typed patches can grant access
+/// to an existing host secret through a changed server target.
+async fn dispatch_remote_mcp(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, String> {
+    match request.method.as_str() {
+        "save_mcp_servers" => {
+            let (user, servers): (String, Vec<AgentMcpServer>) =
+                serde_json::from_value(request.params)
+                    .map_err(|_| "Invalid host request parameters".to_string())?;
+            backend.authorize_account(&user)?;
+            serde_json::to_value(backend.save_mcp_servers_remote(&user, servers).await?)
+                .map_err(|_| "Could not encode host response".into())
+        }
+        "save_mcp_definition_edits" => {
+            let (user, edits): (String, Vec<maple_agent::store::records::McpServerEdit>) =
+                serde_json::from_value(request.params)
+                    .map_err(|_| "Invalid host request parameters".to_string())?;
+            backend.authorize_account(&user)?;
+            serde_json::to_value(
+                backend
+                    .save_mcp_definition_edits_remote(&user, edits)
+                    .await?,
+            )
+            .map_err(|_| "Could not encode host response".into())
+        }
+        _ => Err("Unknown remote MCP operation".into()),
     }
 }
 
@@ -533,6 +674,24 @@ pub(crate) async fn dispatch(
         let _account = backend.account_gate.read().await;
         dispatch_inner(backend, request).await
     }
+}
+
+/// The remote connection selects its transport after the method allowlist and
+/// account checks; request parameters cannot opt into local page budgets.
+pub(crate) async fn dispatch_remote_inner(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, String> {
+    if paging::is_paging(&request.method) {
+        return paging::dispatch(backend, request, maple_agent::store::PageTransport::Remote).await;
+    }
+    if matches!(
+        request.method.as_str(),
+        "save_mcp_servers" | "save_mcp_definition_edits"
+    ) {
+        return dispatch_remote_mcp(backend, request).await;
+    }
+    dispatch_inner(backend, request).await
 }
 
 #[cfg(test)]
@@ -665,6 +824,100 @@ mod tests {
                 Some(RETIRED_AFTER_UPDATE.into())
             );
         });
+    }
+
+    #[tokio::test]
+    async fn remote_sidebar_preferences_stay_in_the_controller_store() {
+        fn store(root: &std::path::Path) -> Arc<maple_agent::store::Store> {
+            Arc::new(
+                maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root)).unwrap(),
+            )
+        }
+        fn backend(store: Arc<maple_agent::store::Store>) -> AgentBackend {
+            let mut local =
+                LocalBackend::new_with_store("http://127.0.0.1:1".into(), String::new(), store)
+                    .unwrap();
+            local.ui_fixture = true;
+            AgentBackend {
+                runtime: tokio::runtime::Handle::current(),
+                owned_runtime: None,
+                client: BackendClient::InProcess(Box::new(local)),
+                api_url: "http://127.0.0.1:1".into(),
+                controller: None,
+                remote_host: None,
+                retired_after_update: Arc::new(AtomicBool::new(false)),
+                subscription_sequence: AtomicU64::new(0),
+            }
+        }
+
+        let local_root = tempfile::tempdir().unwrap();
+        let remote_root = tempfile::tempdir().unwrap();
+        let local_store = store(local_root.path());
+        let remote_store = store(remote_root.path());
+        let local_account = local_store.upsert_account("account", 1).unwrap();
+        let remote_account = remote_store.upsert_account("account", 1).unwrap();
+        let setting =
+            serde_json::json!({"peer":{"display_name":"Local alias","pinned_tasks":["local-pin"]}});
+        local_store
+            .set_account_setting(local_account, "remote.sidebars", &setting, 1)
+            .unwrap();
+        let remote_setting = serde_json::json!({"peer":{"display_name":"Remote alias","pinned_tasks":["remote-pin"]}});
+        remote_store
+            .set_account_setting(remote_account, "remote.sidebars", &remote_setting, 1)
+            .unwrap();
+
+        let controller = Arc::new(backend(local_store.clone()));
+        let mut selected = backend(remote_store.clone());
+        selected.controller = Some(controller.clone());
+        selected.remote_host = Some("peer".into());
+        let settings = selected.get_remote_sidebars("account").await.unwrap();
+        assert_eq!(settings["peer"].display_name, "Local alias");
+        assert_eq!(settings["peer"].pinned_tasks, ["local-pin"]);
+        selected
+            .set_remote_sidebar(
+                "account",
+                "peer".into(),
+                serde_json::json!({"display_name":"Saved nickname","pinned_tasks":["new-local-pin"]}),
+            )
+            .await
+            .unwrap();
+        let reloaded = controller.get_remote_sidebars("account").await.unwrap();
+        assert_eq!(reloaded["peer"].pinned_tasks, ["new-local-pin"]);
+        assert_eq!(
+            remote_store
+                .account_setting(remote_account, "remote.sidebars")
+                .unwrap(),
+            Some(remote_setting.clone())
+        );
+        // Retire every store/backend reference, then independently reopen both
+        // stores. A warm facade/cache read would miss the original regression.
+        drop(selected);
+        drop(controller);
+        drop(local_store);
+        drop(remote_store);
+        let reopened_local = store(local_root.path());
+        let reopened_remote = store(remote_root.path());
+        reopened_local.upsert_account("other-account", 2).unwrap();
+        let controller = Arc::new(backend(reopened_local.clone()));
+        let mut selected = backend(reopened_remote.clone());
+        selected.controller = Some(controller);
+        selected.remote_host = Some("peer".into());
+        let restored = selected.get_remote_sidebars("account").await.unwrap();
+        assert_eq!(restored["peer"].display_name, "Saved nickname");
+        assert_eq!(restored["peer"].pinned_tasks, ["new-local-pin"]);
+        assert!(
+            selected
+                .get_remote_sidebars("other-account")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reopened_remote
+                .account_setting(remote_account, "remote.sidebars")
+                .unwrap(),
+            Some(remote_setting)
+        );
     }
 
     #[tokio::test]

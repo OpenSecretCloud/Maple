@@ -460,6 +460,9 @@ impl ChatScreen {
     /// Forget a task the backend no longer has. A deleted selection
     /// moves to the newest live task in the same root.
     pub(super) fn remove_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.forget_tasks(&[session_id.to_owned()], cx)
+        });
         let Some(index) = self
             .sessions
             .iter()
@@ -502,10 +505,10 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let path = root.to_string();
-        let fallback = self
-            .recent_roots
+        let roots = self.sidebar.read(cx).navigation_roots();
+        let fallback = roots
             .iter()
-            .map(|root| &root.path)
+            .chain(self.recent_roots.iter().map(|root| &root.path))
             .chain(
                 self.sessions
                     .iter()
@@ -514,7 +517,7 @@ impl ChatScreen {
             )
             .find(|candidate| candidate.as_str() != root)
             .cloned();
-        let task_ids: Vec<String> = self
+        let removed_task_ids: Vec<String> = self
             .sessions
             .iter()
             .filter(|s| s.state != AgentTaskState::Archived && s.project_root == root)
@@ -522,16 +525,8 @@ impl ChatScreen {
             .collect();
         let removed = path.clone();
         let next_root = fallback.clone();
-        let removed_task_ids = task_ids.clone();
         self.call(
-            async move {
-                for id in task_ids {
-                    backend
-                        .set_session_state(&user_id, &id, AgentTaskState::Archived)
-                        .await?;
-                }
-                backend.remove_project_root(&user_id, path, fallback).await
-            },
+            async move { backend.archive_project_root(&user_id, path, fallback).await },
             cx,
             move |this, result, cx| {
                 match result {
@@ -546,11 +541,13 @@ impl ChatScreen {
                         }
                         this.sidebar.update(cx, |sidebar, cx| {
                             sidebar.forget_tasks(&removed_task_ids, cx);
+                            sidebar.forget_project(&removed, cx);
                         });
                         let was_current = this.project_root.as_deref() == Some(&*removed);
                         if was_current {
                             this.leave_selected_session(cx);
                             this.set_project_context(next_root.clone(), cx);
+                            this.new_session(cx);
                         }
                         this.sync_sidebar(cx);
                         if was_current && let Some(next) = next_root {

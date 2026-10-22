@@ -5,12 +5,16 @@ use super::{
     streams, wire,
 };
 use crate::host::protocol::{self, Message, Request};
+use crate::host::subscription::{SubscribeRequest, Subscription};
 use iroh::{
     EndpointId,
     endpoint::{Connection, RecvStream, SendStream},
 };
 use maple_agent::agent::AgentServiceEvent;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 use tokio::sync::mpsc;
 
 async fn read_control_ack(reader: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<(), String> {
@@ -115,28 +119,39 @@ async fn serve(
     let mut events = node.events.subscribe();
     let mut revoked = node.revoked.subscribe();
     let capacity = Arc::new(streams::Capacity::new());
+    let subscription = Arc::new(RwLock::new(Subscription::default()));
     let mut calls = tokio::task::JoinSet::new();
     // A slow event consumer cannot hold the request accept/dispatch loop.
     let event_node = node.clone();
+    let event_filter = subscription.clone();
     let _ = tx.set_priority(1);
     let mut event_writer = tokio::task::JoinSet::new();
     event_writer.spawn(async move {
         loop {
-            let event = events
-                .recv()
-                .await
-                .map_err(|_| "Remote event stream fell behind")?;
+            let event = match events.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    event_node.ensure_valid().await?;
+                    send(&mut tx, &Message::Resync).await?;
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            };
             event_node.ensure_valid().await?;
             if !event_node.store.lock().unwrap().permits(peer)
                 || matches!(&*event, AgentServiceEvent::AccountChanged(_))
             {
                 return Ok::<(), String>(());
             }
-            if matches!(&*event, AgentServiceEvent::ProjectsChanged { user_id, .. } if user_id != &event_node.account) {
+            if !event_belongs_to_account(&event, &event_node.account) {
                 continue;
             }
-            if remote_event(&event) {
-                send(&mut tx, &Message::Event(Box::new((*event).clone()))).await?;
+            let allowed = event_filter
+                .read()
+                .map_err(|_| "Remote subscription unavailable")?
+                .allows(&event);
+            if remote_event(&event) && allowed {
+                send_event(&mut tx, &event).await?;
             }
         }
     });
@@ -162,8 +177,9 @@ async fn serve(
                 }
                 let node = node.clone();
                 let capacity = capacity.clone();
+                let subscription = subscription.clone();
                 calls.spawn(async move {
-                    if let Err(error) = serve_request(node, peer, tx, rx, capacity).await {
+                    if let Err(error) = serve_request(node, peer, tx, rx, capacity, subscription).await {
                         log::debug!("Remote request stream ended: {error}");
                     }
                 });
@@ -183,12 +199,13 @@ async fn serve_request(
     mut tx: SendStream,
     mut rx: RecvStream,
     capacity: Arc<streams::Capacity>,
+    subscription: Arc<RwLock<Subscription>>,
 ) -> Result<(), String> {
     let header = match streams::Header::read(&mut rx).await {
         Ok(header) => header,
         Err(reason) => return Err(reason),
     };
-    tx.set_priority(if header.method.urgent() { 10 } else { 0 })
+    tx.set_priority(header.method.priority())
         .map_err(|_| "Remote reply closed")?;
     let _slot = match capacity.acquire(header.method) {
         Ok(slot) => slot,
@@ -224,32 +241,67 @@ async fn serve_request(
         return Err("Remote access revoked".into());
     }
     let id = request.id;
-    let result = crate::host::dispatch_remote_with_receipt(
-        &node.backend,
-        Request {
-            id,
-            method: if request.method == wire::Method::TaskBootstrap {
-                "start_runtime".into()
-            } else {
-                request.method.name()
+    let result = if request.method == wire::Method::Subscribe {
+        set_subscription(&subscription, &node.account, request.params)
+    } else {
+        crate::host::dispatch_remote_with_receipt(
+            &node.backend,
+            Request {
+                id,
+                method: if request.method == wire::Method::TaskBootstrap {
+                    "start_runtime".into()
+                } else {
+                    request.method.name()
+                },
+                send_id: request.send_id,
+                params: if request.method == wire::Method::TaskBootstrap {
+                    serde_json::json!([node.account, null])
+                } else {
+                    request.params
+                },
             },
-            send_id: request.send_id,
-            params: if request.method == wire::Method::TaskBootstrap {
-                serde_json::json!([node.account, null])
-            } else {
-                request.params
-            },
-        },
-        node.receipts.clone(),
-        &node.session,
-        &node.account,
-    )
-    .await;
+            node.receipts.clone(),
+            &node.session,
+            &node.account,
+        )
+        .await
+    };
     if node.valid().await && node.store.lock().unwrap().permits(peer) {
         let result = streams::encode_result(method, result);
-        streams::reply(&mut tx, &Message::Response { id, result }).await?;
+        streams::reply_with_limit(
+            &mut tx,
+            &Message::Response { id, result },
+            method.reply_limit(),
+        )
+        .await?;
     }
     Ok(())
+}
+
+fn set_subscription(
+    subscription: &RwLock<Subscription>,
+    account: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (requested_account, requested): (String, SubscribeRequest) =
+        serde_json::from_value(params).map_err(|_| "Invalid remote subscription")?;
+    if requested_account != account {
+        return Err("Invalid remote subscription".into());
+    }
+    subscription
+        .write()
+        .map_err(|_| "Remote subscription unavailable")?
+        .set(requested)
+        .map(|()| serde_json::Value::Null)
+}
+
+fn event_belongs_to_account(event: &AgentServiceEvent, account: &str) -> bool {
+    match event {
+        AgentServiceEvent::ProjectsChanged { user_id, .. }
+        | AgentServiceEvent::ProjectRemoved { user_id, .. }
+        | AgentServiceEvent::HistoryReplaced { user_id, .. } => user_id == account,
+        _ => true,
+    }
 }
 
 pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
@@ -257,6 +309,7 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
     match event {
         AgentServiceEvent::RuntimeStatus(_)
         | AgentServiceEvent::ProjectsChanged { .. }
+        | AgentServiceEvent::ProjectRemoved { .. }
         | AgentServiceEvent::Question { .. }
         | AgentServiceEvent::QuestionResolved { .. }
         | AgentServiceEvent::ThinkingChanged { .. }
@@ -265,7 +318,10 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
         | AgentServiceEvent::TimelineItem { .. }
         | AgentServiceEvent::Run { .. }
         | AgentServiceEvent::SideQuestion { .. } => true,
-        AgentServiceEvent::AccountChanged(_)
+        AgentServiceEvent::HistoryReplaced { .. }
+        | AgentServiceEvent::PersistenceFailureChanged { .. } => true,
+        AgentServiceEvent::StoreStateChanged { .. }
+        | AgentServiceEvent::AccountChanged(_)
         | AgentServiceEvent::RemoteAccessEnded(_)
         | AgentServiceEvent::HostReconnecting
         | AgentServiceEvent::HostReconnected
@@ -281,6 +337,31 @@ async fn send(tx: &mut SendStream, message: &Message) -> Result<(), String> {
     .await
     .map_err(|_| "Remote consumer stopped reading")?
     .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+enum BorrowedEvent<'a> {
+    Event(&'a AgentServiceEvent),
+}
+
+fn encode_event(event: &AgentServiceEvent) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
+    const EVENT_LIMIT: usize = 4 * 1024 * 1024;
+    match crate::framing::encode(&BorrowedEvent::Event(event), EVENT_LIMIT) {
+        Ok(bytes) => Ok(bytes),
+        Err(crate::framing::EncodeError::TooLarge) => {
+            crate::framing::encode(&Message::Resync, EVENT_LIMIT)
+                .map_err(|_| "Could not encode remote resync".into())
+        }
+        Err(crate::framing::EncodeError::Invalid) => Err("Could not encode remote event".into()),
+    }
+}
+
+async fn send_event(tx: &mut SendStream, event: &AgentServiceEvent) -> Result<(), String> {
+    let bytes = encode_event(event)?;
+    tokio::time::timeout(Duration::from_secs(10), wire::write_encoded(tx, &bytes))
+        .await
+        .map_err(|_| "Remote consumer stopped reading")?
+        .map_err(|error| error.to_string())
 }
 
 pub struct Link {
@@ -350,7 +431,9 @@ pub async fn bridge(
                 Ok(Message::Event(event)) if !remote_event(&event) => Message::Closed {
                     reason: "Unexpected remote event; update both computers".into(),
                 },
-                Ok(message @ (Message::Event(_) | Message::Closed { .. })) => message,
+                Ok(message @ (Message::Event(_) | Message::Closed { .. } | Message::Resync)) => {
+                    message
+                }
                 Ok(Message::Response { .. }) => Message::Closed {
                     reason: "Unexpected reply on the remote event stream".into(),
                 },
@@ -453,6 +536,127 @@ async fn local_send(
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn delayed_remote_subscribe_cannot_steal_a_newer_navigation_intent() {
+        const A: &str = "01234567-89ab-7def-8123-456789abcdef";
+        const B: &str = "11234567-89ab-7def-8123-456789abcdef";
+        let subscription = Arc::new(RwLock::new(Subscription::default()));
+        let (release, delayed) = tokio::sync::oneshot::channel::<()>();
+        let old_subscription = subscription.clone();
+        let old_stream = tokio::spawn(async move {
+            delayed.await.unwrap();
+            set_subscription(
+                &old_subscription,
+                "account",
+                serde_json::json!([
+                    "account", {"intent":1,"tasks":[A]}
+                ]),
+            )
+            .unwrap();
+        });
+        set_subscription(
+            &subscription,
+            "account",
+            serde_json::json!([
+                "account", {"intent":2,"tasks":[B]}
+            ]),
+        )
+        .unwrap();
+        // An invalid account cannot poison the sequence before the old stream
+        // resumes, even if it requests the largest possible intent.
+        assert!(
+            set_subscription(
+                &subscription,
+                "account",
+                serde_json::json!([
+                    "other-account", {"intent":u64::MAX,"tasks":[A]}
+                ])
+            )
+            .is_err()
+        );
+        release.send(()).unwrap();
+        old_stream.await.unwrap();
+        let subscription = subscription.read().unwrap();
+        for (task, expected) in [(A, false), (B, true)] {
+            let event = AgentServiceEvent::Run {
+                session_id: task.into(),
+                run_id: "run".into(),
+                event: maple_agent::agent::AgentRunEvent::SubagentActivity {
+                    id: "worker".into(),
+                    tool: "read".into(),
+                },
+            };
+            assert_eq!(subscription.allows(&event), expected);
+        }
+    }
+
+    #[test]
+    fn oversized_live_event_requests_paged_resync_without_a_giant_frame() {
+        let item = serde_json::from_value(serde_json::json!({
+            "id":"call", "itemType":"tool_call", "input":{"large":"\u{0000}".repeat(1024*1024)},
+            "createdMs":1, "merge":"upsert"
+        }))
+        .unwrap();
+        let event = AgentServiceEvent::TimelineItem {
+            session_id: "01234567-89ab-7def-8123-456789abcdef".into(),
+            run_id: Some("run".into()),
+            item,
+        };
+        let encoded = encode_event(&event).unwrap();
+        assert!(encoded.len() < 64);
+        assert!(matches!(
+            serde_json::from_slice::<Message>(&encoded).unwrap(),
+            Message::Resync
+        ));
+    }
+
+    #[test]
+    fn history_epoch_changes_cross_the_remote_event_boundary() {
+        let event = AgentServiceEvent::HistoryReplaced {
+            user_id: "account".into(),
+            session_id: "01234567-89ab-7def-8123-456789abcdef".into(),
+            rows_epoch: 2,
+        };
+        assert!(remote_event(&event));
+        let message: Message = serde_json::from_slice(&encode_event(&event).unwrap()).unwrap();
+        assert!(
+            matches!(message,Message::Event(event) if matches!(*event,AgentServiceEvent::HistoryReplaced{rows_epoch:2,..}))
+        );
+    }
+
+    #[test]
+    fn history_epoch_events_are_scoped_before_remote_delivery() {
+        let own = AgentServiceEvent::HistoryReplaced {
+            user_id: "alice".into(),
+            session_id: "01234567-89ab-7def-8123-456789abcdef".into(),
+            rows_epoch: 2,
+        };
+        let other = AgentServiceEvent::HistoryReplaced {
+            user_id: "bob".into(),
+            session_id: "11234567-89ab-7def-8123-456789abcdef".into(),
+            rows_epoch: 7,
+        };
+        // An untouched subscription and a summary-only subscription both
+        // accept epoch events. Neither can bypass the account filter.
+        let mut subscription = Subscription::default();
+        for configured in [false, true] {
+            if configured {
+                subscription
+                    .set(SubscribeRequest {
+                        intent: 1,
+                        tasks: Vec::new(),
+                    })
+                    .unwrap();
+            }
+            assert!(subscription.allows(&own));
+            assert!(subscription.allows(&other));
+            assert!(event_belongs_to_account(&own, "alice"));
+            assert!(!event_belongs_to_account(&other, "alice"));
+            assert!(!event_belongs_to_account(&own, "bob"));
+            assert!(event_belongs_to_account(&other, "bob"));
+        }
+    }
 
     #[tokio::test]
     async fn control_handshake_retries_disconnect_but_not_invalid_frames_or_revocation() {

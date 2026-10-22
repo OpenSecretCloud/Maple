@@ -96,7 +96,7 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
             &mut download,
             &Header {
                 id: 2,
-                method: Method::ReadImageAttachment,
+                method: Method::ReadAttachment,
                 send_id: None,
             },
             wire::MAX_PREFACE,
@@ -126,8 +126,8 @@ async fn stop_and_answers_pass_stalled_upload_and_download() {
 
         // Fill the ordinary admission pool as well. Urgent work must not depend
         // on a free ordinary slot, a completed upload or a drained reply.
-        let _ordinary: Vec<_> = (0..30)
-            .map(|_| capacity.acquire(Method::ListSessions).unwrap())
+        let _ordinary: Vec<_> = (0..31)
+            .map(|_| capacity.acquire(Method::ListTasks).unwrap())
             .collect();
         assert!(capacity.acquire(Method::SendMessage).is_err());
         for (id, method) in [(3, Method::CancelRun), (4, Method::AnswerQuestion)] {
@@ -261,52 +261,88 @@ async fn urgent_body_is_bounded_and_reply_identity_is_checked() {
 }
 
 #[tokio::test]
-async fn large_image_and_oversized_reply_do_not_break_other_requests() {
+async fn ten_mib_image_ranges_and_oversized_page_do_not_break_other_requests() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
     let (a, b, client, server) = endpoints().await;
     let exercise = async {
-        let bytes = vec![255_u8; 10 * 1024 * 1024];
-        let image = encode_result(
-            Method::ReadImageAttachment,
-            Ok(serde_json::to_value(&bytes).unwrap()),
-        )
-        .unwrap();
-        assert!(wire::encode(&image, wire::MAX_FRAME).is_ok());
-        let cases = [
-            (1, Method::ReadImageAttachment, image),
-            (2, Method::ListSessions, json!("x".repeat(wire::MAX_FRAME))),
-            (3, Method::CancelRun, json!("stopped")),
-        ];
-        for (id, method, value) in cases {
-            let send = call(&client, command(id, method));
+        let original = vec![255_u8; 10 * 1024 * 1024];
+        let mut reconstructed = Vec::new();
+        for (index, chunk) in original.chunks(1024 * 1024).enumerate() {
+            let id = index as u64 + 1;
+            let value =
+                json!({"mime":"image/png","size":original.len(),"data":STANDARD.encode(chunk)});
+            let transfer = call(&client, command(id, Method::ReadAttachment));
             let serve = async {
                 let capacity = Capacity::new();
                 let (header, mut tx, mut rx, _slot) = receive(&server, &capacity).await;
                 header.body(&mut rx).await.unwrap();
-                reply(
+                reply_with_limit(
                     &mut tx,
                     &Message::Response {
                         id,
                         result: Ok(value),
                     },
+                    Method::ReadAttachment.reply_limit(),
                 )
                 .await
                 .unwrap();
             };
-            let (reply, ()) = tokio::join!(send, serve);
-            let Message::Response { result, .. } = decode_result(method, reply.unwrap()) else {
-                panic!("request closed the connection")
+            let (response, ()) = tokio::join!(transfer, serve);
+            let Message::Response {
+                result: Ok(value), ..
+            } = response.unwrap()
+            else {
+                panic!("range failed")
             };
-            match id {
-                1 => assert_eq!(
-                    serde_json::from_value::<Vec<u8>>(result.unwrap()).unwrap(),
-                    bytes
-                ),
-                2 => assert!(result.unwrap_err().contains("too large")),
-                _ => assert_eq!(result.unwrap(), json!("stopped")),
+            reconstructed.extend(STANDARD.decode(value["data"].as_str().unwrap()).unwrap());
+        }
+        assert_eq!(reconstructed, original);
+        for (id, method, value) in [
+            (20, Method::ListTasks, json!("x".repeat(5 * 1024 * 1024))),
+            (21, Method::CancelRun, json!("stopped")),
+        ] {
+            let transfer = call(&client, command(id, method));
+            let serve = async {
+                let capacity = Capacity::new();
+                let (header, mut tx, mut rx, _slot) = receive(&server, &capacity).await;
+                header.body(&mut rx).await.unwrap();
+                reply_with_limit(
+                    &mut tx,
+                    &Message::Response {
+                        id,
+                        result: Ok(value),
+                    },
+                    method.reply_limit(),
+                )
+                .await
+                .unwrap();
+            };
+            let (response, ()) = tokio::join!(transfer, serve);
+            let Message::Response { result, .. } = response.unwrap() else {
+                panic!("request closed connection")
+            };
+            if id == 20 {
+                assert!(result.unwrap_err().contains("too large"));
+            } else {
+                assert_eq!(result.unwrap(), json!("stopped"));
             }
         }
     };
     let result = tokio::time::timeout(Duration::from_secs(30), exercise).await;
     tokio::join!(a.close(), b.close());
     result.unwrap();
+}
+
+#[test]
+fn ranges_have_four_slots_and_do_not_consume_urgent_capacity() {
+    let capacity = Capacity::new();
+    let _ranges: Vec<_> = (0..4)
+        .map(|_| capacity.acquire(Method::ReadAttachment).unwrap())
+        .collect();
+    assert!(capacity.acquire(Method::ReadAttachment).is_err());
+    assert!(capacity.acquire(Method::ReadRow).is_err());
+    assert!(capacity.acquire(Method::CancelRun).is_ok());
+    assert_eq!(Method::OpenTask.priority(), 5);
+    assert_eq!(Method::HistoryBefore.priority(), 5);
+    assert_eq!(Method::CancelRun.priority(), 10);
 }

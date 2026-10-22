@@ -85,6 +85,16 @@ changed offer clears preparation. A newer offer immediately starts the normal
 check/download path. A malicious service can withhold a release; signed metadata
 has no expiry, and this implementation does not claim freeze-attack prevention.
 
+Discovery and anti-rollback state live in the profile's `updates/` directory,
+outside the resettable `store-v1/` SQLite data. The startup checkpoint waits for
+the current Open store and its saved UI settings to load; locked, damaged or
+loading stores retain the previous application. Automatic downloads start with
+the saved preference, and store reattachment does not create another polling loop.
+Restart flushes pending frontend settings before the host's coordinated durable
+shutdown. Installation holds both startup admission and the store's authoritative
+owner lock through replacement and the old process's exit. A committed restart
+or terminal Quit never sends another old-build request to that stopped host.
+
 macOS installation also requires the expected bundle ID
 `cloud.opensecret.maple.agent`, Developer ID team `X773Y823TN`, signed version and
 build, hardened code-signing identity, and a bundle tree matching the downloaded

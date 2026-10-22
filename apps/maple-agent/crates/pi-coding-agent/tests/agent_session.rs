@@ -26,6 +26,42 @@ use pi_coding_agent::{
 use serde_json::json;
 
 #[tokio::test]
+async fn a_partial_resume_preserves_the_inherited_thinking_level() {
+    let harness = Harness::new();
+    let model = harness.faux.model();
+    let mut tree = SessionManager::in_memory("/work");
+    tree.append_model_change(&model.provider, &model.id);
+    tree.append_thinking_level_change(ThinkingLevel::High);
+    tree.append_message(SessionMessage::Llm(Message::User(
+        pi_ai::UserMessage::text("old"),
+    )));
+    let boundary = tree.append_message(SessionMessage::Llm(Message::User(
+        pi_ai::UserMessage::text("kept"),
+    )));
+    tree.append_compaction(
+        "summary".into(),
+        Some(boundary.clone()),
+        100,
+        None,
+        None,
+        false,
+    );
+    let base = tree.base_before(&boundary).unwrap();
+    let tail = tree.entries()[3..].to_vec();
+    let mut options = harness.options();
+    options.session =
+        SessionManager::open_partial(tree.header().clone(), base, tail, Box::new(MemoryStore));
+    options.settings.default_thinking_level = Some(ThinkingLevel::Low);
+    let resumed = AgentSession::new(options).await.unwrap();
+    assert_eq!(resumed.thinking_level(), ThinkingLevel::High);
+    assert!(resumed.with_session(|tree| {
+        tree.entries()
+            .iter()
+            .all(|entry| !matches!(entry.kind, EntryKind::ThinkingLevelChange { .. }))
+    }));
+}
+
+#[tokio::test]
 async fn a_prompt_records_the_system_prompt_and_the_exchange() {
     let harness = Harness::new();
     harness.faux.push_text("hello");
@@ -41,6 +77,15 @@ async fn a_prompt_records_the_system_prompt_and_the_exchange() {
             .await
             .unwrap(),
         PromptOutcome::Completed
+    );
+    // Ordinary messages are persisted before MessageEnd without broadening Pi's
+    // EntryAppended event, which remains reserved for explicit special entries.
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| !event.starts_with("entry:"))
     );
     // A new session records the model and thinking level it starts with, as in Pi.
     assert_eq!(
@@ -178,7 +223,7 @@ async fn transient_errors_are_retried_and_the_failed_attempt_leaves_the_context(
     // the attempt is reported.
     let ends: Vec<&String> = events
         .iter()
-        .filter(|event| event.starts_with("agent_end") || event.starts_with("entry"))
+        .filter(|event| event.starts_with("agent_end") || event.as_str() == "entry:context_edit")
         .collect();
     assert_eq!(
         ends,

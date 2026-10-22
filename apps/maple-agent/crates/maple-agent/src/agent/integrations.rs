@@ -1,7 +1,7 @@
 //! Maple-curated integrations on this device: built-in computer use (CUA),
 //! and the Codex and Claude Code command lines as external agents. A card
 //! joins what Maple finds on the device with the choice saved for new tasks
-//! in the account's device-local `integrations.json`.
+//! in the account's `agent.integrations` setting in the host-owned store.
 //!
 //! The catalog, saved choices and detection are Goose's. An external agent
 //! switched on here can be switched on for a desktop task, and while one is
@@ -12,15 +12,11 @@
 mod detect;
 
 use std::collections::HashSet;
-use std::fs;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::config::{
-    account_local_data_dir_path, load_agent_config_inner, write_device_local_json_file,
-};
+use super::config::{account_store, load_agent_config_inner};
 use super::mcp::{name_to_key, normalize_mcp_servers};
 use super::{
     AgentIntegration, AgentIntegrationAvailability, AgentIntegrationBackend,
@@ -199,7 +195,7 @@ pub(super) fn validate_new_mcp_integration_collisions(
     ensure_no_custom_integration_collision(&added)
 }
 
-const INTEGRATIONS_FILE_NAME: &str = "integrations.json";
+const INTEGRATIONS_SETTING: &str = "agent.integrations";
 const INTEGRATIONS_FILE_VERSION: u32 = 2;
 
 /// The choices saved on this device for the account's new tasks.
@@ -255,30 +251,18 @@ impl StoredIntegration {
     }
 }
 
-fn integrations_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
-    Ok(account_local_data_dir_path(paths, user_id)
-        .map_err(|error| error.to_string())?
-        .join(INTEGRATIONS_FILE_NAME))
-}
-
 fn load_stored_integrations(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<StoredIntegrations, String> {
-    let path = integrations_path(paths, user_id)?;
-    if !path
-        .try_exists()
-        .map_err(|error| format!("Failed to inspect device-local integration settings: {error}"))?
-    {
+    let (store, account) = account_store(paths, user_id).map_err(|error| error.to_string())?;
+    let Some(value) = store
+        .account_setting(account, INTEGRATIONS_SETTING)
+        .map_err(|error| error.to_string())?
+    else {
         return Ok(StoredIntegrations::default());
-    }
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Failed to read device-local integration settings: {error}"))?;
-    let parse_error = |error: serde_json::Error| {
-        format!("Failed to parse device-local integration settings: {error}")
     };
-    let version = serde_json::from_str::<Value>(&contents)
-        .map_err(parse_error)?
+    let version = value
         .get("version")
         .and_then(Value::as_u64)
         .ok_or_else(|| "Device-local integration settings have no version".to_string())?;
@@ -287,16 +271,11 @@ fn load_stored_integrations(
             "Unsupported device-local integration settings version {version}"
         ));
     }
-    let mut stored: StoredIntegrations = serde_json::from_str(&contents).map_err(parse_error)?;
-    // A choice of the retired standalone CuaDriver is dropped, not migrated:
-    // the card reads as not set up until built-in CUA is enabled.
-    let before = stored.integrations.len();
+    let mut stored: StoredIntegrations = serde_json::from_value(value)
+        .map_err(|error| format!("Failed to parse device-local integration settings: {error}"))?;
     stored
         .integrations
         .retain(|entry| entry.backend != StoredBackend::Retired);
-    if stored.integrations.len() != before {
-        log::warn!("Ignoring a device-local integration entry that selected a retired backend");
-    }
     validate_stored_integrations(&stored)?;
     Ok(stored)
 }
@@ -328,7 +307,10 @@ fn save_stored_integrations(
     stored: &StoredIntegrations,
 ) -> Result<(), String> {
     validate_stored_integrations(stored)?;
-    write_device_local_json_file(&integrations_path(paths, user_id)?, stored)
+    let (store, account) = account_store(paths, user_id).map_err(|error| error.to_string())?;
+    let value = serde_json::to_value(stored).map_err(|error| error.to_string())?;
+    store
+        .set_account_setting(account, INTEGRATIONS_SETTING, &value, pi_ai::now_ms())
         .map_err(|error| format!("Failed to save device-local integration settings: {error}"))
 }
 

@@ -37,6 +37,7 @@ use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod dialogs;
 mod images;
 mod navigation;
+mod paging;
 mod queue;
 mod sending;
 mod sidebar;
@@ -108,6 +109,47 @@ const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = px(220.);
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
 /// Header title when no task is selected.
 const DEFAULT_TASK_TITLE: &str = "New Task";
+
+fn notification_body(
+    details_enabled: bool,
+    generic: &str,
+    details: impl FnOnce() -> String,
+) -> String {
+    if details_enabled {
+        details()
+    } else {
+        generic.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod notification_policy_tests {
+    use super::notification_body;
+
+    #[test]
+    fn private_notifications_never_evaluate_sensitive_content() {
+        assert_eq!(
+            notification_body(false, "Open Maple to respond.", || {
+                panic!("question text must not be read for a private notification")
+            }),
+            "Open Maple to respond."
+        );
+        assert_eq!(
+            notification_body(false, "A task finished.", || {
+                panic!("task title must not be read for a private notification")
+            }),
+            "A task finished."
+        );
+    }
+
+    #[test]
+    fn opted_in_notifications_use_the_detailed_body() {
+        assert_eq!(
+            notification_body(true, "A task finished.", || "“Example” finished".into()),
+            "“Example” finished"
+        );
+    }
+}
 
 /// Recent projects the project menu lists above "New project…".
 pub(super) const ROOT_MENU_RECENTS: usize = 6;
@@ -377,6 +419,7 @@ pub struct ChatScreen {
     sessions: Vec<AgentSessionSummary>,
     selected_session: Option<String>,
     timeline: Vec<AgentTimelineItem>,
+    pages: paging::TranscriptPages,
     /// Active run per session id, kept across selection changes.
     active_runs: HashMap<String, String>,
     /// Successfully completed tasks that have not been opened since their
@@ -467,11 +510,14 @@ pub struct ChatScreen {
     model_locked: bool,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
+    /// Local-store policy, independent of the selected execution computer.
+    notify_details: bool,
     /// Mirrors `window.is_window_active()` from the last render; refreshed
     /// on activation changes because they force a redraw.
     window_active: bool,
     sidebar_plan: Option<crate::billing::PlanUsage>,
     runtime_error: Option<SharedString>,
+    persistence_status: maple_agent::store::PersistenceStatus,
     host_recovery: HostRecovery,
     notice: Option<SharedString>,
     booting: bool,
@@ -601,6 +647,9 @@ pub struct ChatScreen {
     /// Attachment ids with a read in flight or already failed; never asked
     /// for twice.
     attachment_requests: HashSet<String>,
+    attachment_queue: std::collections::VecDeque<String>,
+    pending_attachments: usize,
+    attachment_viewport: std::ops::Range<usize>,
     /// Shared drag-selection state for transcript text.
     selection: Option<Entity<rich_text::TextSelection>>,
     /// Focus handle of the transcript; a selection press moves focus here
@@ -696,6 +745,7 @@ struct HostRecovery {
     epoch: u64,
     unavailable: bool,
     ended: bool,
+    store_maintenance: bool,
     events: Option<Vec<AgentServiceEvent>>,
     overflow: bool,
 }
@@ -707,8 +757,43 @@ const LOAD_RETRIES: u8 = 2;
 const FINISHED_RUNS_KEPT: usize = 64;
 
 impl ChatScreen {
+    pub(crate) fn apply_notification_settings(&mut self, settings: &crate::settings::AppSettings) {
+        self.notify_enabled = settings.desktop_notifications;
+        self.notify_details = settings.notification_details_enabled();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notification_preferences_for_test(&self) -> (bool, bool) {
+        (self.notify_enabled, self.notify_details)
+    }
+
     pub fn connection_ended(&self) -> bool {
         self.host_recovery.ended
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_store_maintenance_for_test(
+        &mut self,
+        selected: Option<String>,
+        draft: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_session = selected;
+        self.fill_empty_composer(draft, cx);
+        self.booting = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store_maintenance_snapshot_for_test(
+        &self,
+        cx: &Context<Self>,
+    ) -> (Option<String>, Option<String>, bool, Option<String>) {
+        (
+            self.selected_session.clone(),
+            self.composer_text(cx),
+            self.booting,
+            self.runtime_error.as_ref().map(ToString::to_string),
+        )
     }
 
     pub(crate) fn execution_backend(&self) -> Arc<AgentBackend> {
@@ -734,6 +819,13 @@ impl ChatScreen {
         this.transcript_focus = Some(cx.focus_handle());
         this.application_focus = Some(cx.focus_handle());
         this.initialize_application_vim_surface();
+        this.list_state.set_scroll_handler(move |event, _, cx| {
+            if let Some(chat) = weak.upgrade() {
+                chat.update(cx, |chat, cx| {
+                    chat.transcript_scrolled(event.visible_range.start, event.visible_range.end, cx)
+                });
+            }
+        });
         this
     }
 
@@ -763,18 +855,33 @@ impl ChatScreen {
                 cx.notify();
             }
             SidebarEvent::ProjectsChanged(roots) => {
+                self.merge_project_metadata(roots, cx);
+                cx.notify();
+            }
+            SidebarEvent::PagesReady {
+                sessions,
+                generation,
+            } => self.apply_session_list(sessions, generation, cx),
+            SidebarEvent::ProjectsReady { roots } => {
                 self.apply_recent_roots(roots, cx);
                 cx.notify();
             }
-            SidebarEvent::Select(id) => self.select_session(&id, cx),
+            SidebarEvent::Select(id) => {
+                self.sessions = self.sidebar.read(cx).navigation_sessions();
+                self.select_session(&id, cx);
+            }
             SidebarEvent::SessionChanged(session) => {
                 self.upsert_session(session, cx);
                 cx.notify();
             }
             SidebarEvent::SetState { session_id, state } => {
+                self.sessions = self.sidebar.read(cx).navigation_sessions();
                 self.set_session_state(&session_id, state, cx)
             }
-            SidebarEvent::DeleteTask(id) => self.request_delete_task(&id, cx),
+            SidebarEvent::DeleteTask(id) => {
+                self.sessions = self.sidebar.read(cx).navigation_sessions();
+                self.request_delete_task(&id, cx);
+            }
             SidebarEvent::RemoveRoot(root) => self.request_remove_root(&root, cx),
             SidebarEvent::SetTrust { path, trusted } => self.set_project_trust(path, trusted, cx),
             SidebarEvent::ChooseProject => self.choose_root_dialog(cx),
@@ -873,7 +980,7 @@ impl ChatScreen {
     #[cfg(test)]
     fn set_sidebar_filter(&mut self, filter: &str, cx: &mut Context<Self>) {
         self.sidebar.update(cx, |sidebar, cx| {
-            sidebar.set_filter_for_test(filter);
+            sidebar.set_filter_for_test(filter, cx);
             cx.notify();
         });
     }
@@ -1110,6 +1217,7 @@ impl ChatScreen {
             sessions: Vec::new(),
             selected_session: None,
             timeline: Vec::new(),
+            pages: paging::TranscriptPages::default(),
             active_runs: HashMap::new(),
             completed_unread_sessions: HashSet::new(),
             finished_runs: std::collections::VecDeque::new(),
@@ -1149,9 +1257,11 @@ impl ChatScreen {
             thinking_saving: false,
             model_locked: false,
             notify_enabled: settings.desktop_notifications,
+            notify_details: settings.notification_details_enabled(),
             window_active: true,
             sidebar_plan: None,
             runtime_error: None,
+            persistence_status: maple_agent::store::PersistenceStatus::default(),
             host_recovery: HostRecovery::default(),
             notice: None,
             booting: true,
@@ -1197,6 +1307,9 @@ impl ChatScreen {
             reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
+            attachment_queue: std::collections::VecDeque::new(),
+            pending_attachments: 0,
+            attachment_viewport: 0..0,
             timeline_revisions: HashMap::new(),
             selection: None,
             transcript_focus: None,
@@ -1280,42 +1393,33 @@ impl ChatScreen {
     /// read after it would queue behind that lock.
     fn start(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let user = self.user_id.clone();
         self.call(
-            async move {
-                let boot = backend.local_bootstrap(&user_id).await?;
-                let summaries = match &boot.latest {
-                    Some(detail) => {
-                        let store = backend.clone();
-                        let target = detail.session.id.clone();
-                        tokio::task::spawn_blocking(move || {
-                            store.load_tool_summaries_blocking(&user_id, &target)
-                        })
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .unwrap_or_else(|error| {
-                            log::warn!("Cannot load tool summaries: {error}");
-                            HashMap::new()
-                        })
-                    }
-                    None => HashMap::new(),
-                };
-                Ok::<_, String>((boot, summaries))
-            },
+            async move { backend.navigation_bootstrap(&user).await },
             cx,
             |this, result, cx| {
                 match result {
-                    Ok((boot, summaries)) => {
-                        log::debug!(
-                            "startup: local bootstrap applied at {} ms ({} tasks)",
-                            crate::startup_elapsed(),
-                            boot.sessions.len()
+                    Ok(boot) => {
+                        this.persistence_status = boot.persistence_status.clone();
+                        this.active_runs = boot.runtime_status.active_runs;
+                        this.apply_bootstrap(
+                            crate::backend::LocalBootstrap {
+                                project_root: boot.project_root,
+                                sessions: Vec::new(),
+                                recent_roots: sidebar::bootstrap_projects(
+                                    boot.recent_projects,
+                                    boot.default_project,
+                                ),
+                                latest: None,
+                                questions: boot.pending_questions,
+                            },
+                            HashMap::new(),
+                            cx,
                         );
-                        this.apply_bootstrap(boot, summaries, cx);
                     }
-                    // Not fatal: the runtime start below retreads all of it.
-                    Err(message) => log::debug!("local bootstrap unavailable: {message}"),
+                    Err(error) => this.notice = Some(error.into()),
                 }
+                this.refresh_sessions(cx);
                 this.finish_navigation_bootstrap(cx);
                 this.refresh_slash_commands(cx);
                 this.start_runtime(cx);
@@ -1333,6 +1437,14 @@ impl ChatScreen {
         summaries: HashMap<String, String>,
         cx: &mut Context<Self>,
     ) {
+        let workspace = boot
+            .recent_roots
+            .iter()
+            .find(|root| root.is_default_workspace)
+            .cloned();
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.reconcile_default_project(workspace, cx)
+        });
         self.handle_service_events(boot.questions, cx);
         if !self.set_project_context(boot.project_root, cx) {
             self.project_root_changed(cx);
@@ -1365,10 +1477,14 @@ impl ChatScreen {
         // A task or project selected while the start is in flight owns the
         // visible project context.
         let generation = self.selection_generation;
+        let recovery_epoch = self.host_recovery.epoch;
         self.call(
             async move { backend.start_runtime(&user_id, Some(request)).await },
             cx,
             move |this, result, cx| {
+                if this.host_recovery.epoch != recovery_epoch {
+                    return;
+                }
                 match result {
                     Ok(status) => {
                         log::debug!(
@@ -1422,24 +1538,13 @@ impl ChatScreen {
     }
 
     fn refresh_roots(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.recent_project_roots(&user_id).await },
-            cx,
-            |this, result, cx| {
-                if let Ok(roots) = result {
-                    this.apply_recent_roots(roots, cx);
-                }
-                cx.notify();
-            },
-        );
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.refresh_project_roots(cx));
     }
 
-    /// Take the recent-root list the service returned, newest first.
+    /// Replace the currently loaded project page membership, retaining newer
+    /// owner-issued names when a late read arrives after a rename event.
     fn apply_recent_roots(&mut self, mut roots: Vec<RecentProjectRoot>, cx: &mut Context<Self>) {
-        // Reads and mutation replies use separate streams from pushed events.
-        // Keep a newer owner-issued name when an older snapshot arrives late.
         self.sidebar
             .read(cx)
             .preserve_newer_project_names(&mut roots);
@@ -1448,6 +1553,52 @@ impl ChatScreen {
             self.sync_sidebar(cx);
             self.refresh_project_caption(cx);
         }
+    }
+
+    /// Project events and mutation replies carry point updates, not a catalog.
+    fn merge_project_metadata(
+        &mut self,
+        mut roots: Vec<RecentProjectRoot>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.sidebar
+            .read(cx)
+            .preserve_newer_project_names(&mut roots);
+        let mut changed = false;
+        for root in &roots {
+            if let Some(existing) = self
+                .recent_roots
+                .iter_mut()
+                .find(|row| row.path == root.path)
+                && existing != root
+            {
+                *existing = root.clone();
+                changed = true;
+            }
+        }
+        changed |= self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.merge_project_metadata(roots, cx));
+        self.refresh_project_caption(cx);
+        if changed {
+            cx.emit(NavigationChanged);
+        }
+        changed
+    }
+
+    fn restore_selected_project(&mut self, project: RecentProjectRoot, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.restore_project(project.clone(), cx);
+        });
+        if !self
+            .recent_roots
+            .iter()
+            .any(|root| root.path == project.path)
+        {
+            self.recent_roots.push(project.clone());
+        }
+        self.merge_project_metadata(vec![project], cx);
+        cx.emit(NavigationChanged);
     }
 
     /// Select the project context for new tasks without disturbing work that
@@ -1491,7 +1642,8 @@ impl ChatScreen {
                 this.root_selecting = false;
                 match result {
                     Ok(registration) => {
-                        this.apply_recent_roots(registration.roots, cx);
+                        this.restore_selected_project(registration.project, cx);
+                        this.refresh_roots(cx);
                         this.land_project_selection(
                             registration.project_root,
                             selection_generation,
@@ -1541,7 +1693,8 @@ impl ChatScreen {
             cx,
             |this, result, cx| match result {
                 Ok(registration) => {
-                    this.apply_recent_roots(registration.roots, cx);
+                    this.restore_selected_project(registration.project, cx);
+                    this.refresh_roots(cx);
                     cx.notify();
                 }
                 Err(error) => log::warn!("Cannot persist project root: {error}"),
@@ -1842,22 +1995,10 @@ impl ChatScreen {
     }
 
     fn refresh_sessions(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        // The sidebar groups tasks by project, so list every root. Each task's
-        // stored root remains authoritative when it is opened or run.
         let generation = self.selection_generation;
-        self.call(
-            async move { backend.list_sessions(&user_id, None).await },
-            cx,
-            move |this, result, cx| {
-                match result {
-                    Ok(sessions) => this.apply_session_list(sessions, generation, cx),
-                    Err(message) => this.notice = Some(message.into()),
-                }
-                cx.notify();
-            },
-        );
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.refresh_pages_for_generation(generation, cx)
+        });
     }
 
     /// Take a fresh session list. With nothing on screen, open the latest
@@ -1874,7 +2015,18 @@ impl ChatScreen {
         generation: u64,
         cx: &mut Context<Self>,
     ) {
+        let selected = self.selected_session.clone();
+        let retained = self
+            .sessions
+            .iter()
+            .find(|s| Some(&s.id) == selected.as_ref())
+            .cloned();
         self.sessions = sessions;
+        if let Some(retained) = retained
+            && !self.sessions.iter().any(|s| s.id == retained.id)
+        {
+            self.sessions.push(retained);
+        }
         self.sync_sidebar(cx);
         if self.selected_session.is_some() || self.draft || self.selection_generation != generation
         {
@@ -2057,6 +2209,9 @@ impl ChatScreen {
         let selection_generation = self.selection_generation;
         self.session_setup_pending = true;
         let backend = self.backend.clone();
+        // Reserve this before create can be delayed. A newer task selection
+        // must keep its subscription even if this create finishes afterward.
+        let subscription_intent = backend.next_subscription_intent();
         let user_id = self.user_id.clone();
         let task_mcp = self.created_task_mcp(request.mcp_server_names.as_deref());
         self.call(
@@ -2069,9 +2224,53 @@ impl ChatScreen {
             cx,
             move |this, result, cx| match result {
                 Ok(session) => {
-                    this.settle_new_session(session, task_mcp, selection_generation, cx);
+                    this.subscribe_new_session(
+                        session,
+                        task_mcp,
+                        selection_generation,
+                        subscription_intent,
+                        cx,
+                    );
                 }
                 Err(message) => this.fail_new_session(message, cx),
+            },
+        );
+    }
+
+    /// A create does not select the connection's transcript subscription. Wait
+    /// for that acknowledgement before any first send can emit message rows.
+    fn subscribe_new_session(
+        &mut self,
+        session: AgentSessionSummary,
+        task_mcp: Vec<DraftMcpChange>,
+        selection_generation: u64,
+        subscription_intent: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_generation != selection_generation {
+            self.abandon_new_session(session, cx);
+            return;
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let session_id = session.id.clone();
+        self.call(
+            async move {
+                backend
+                    .subscribe_task(&user_id, &session_id, subscription_intent)
+                    .await
+            },
+            cx,
+            move |this, result, cx| match result {
+                Ok(()) => {
+                    this.settle_new_session(session, task_mcp, selection_generation, cx);
+                }
+                Err(message) => this.fail_new_session_setup(
+                    session,
+                    format!("Could not subscribe to task history: {message}"),
+                    selection_generation,
+                    cx,
+                ),
             },
         );
     }
@@ -2401,25 +2600,20 @@ impl ChatScreen {
         let user_id = self.user_id.clone();
         let session_id = session_id.to_string();
         let target = session_id.clone();
+        let subscription_intent = backend.next_subscription_intent();
         self.call(
             async move {
-                // The stored summaries load off-thread while the runtime
-                // builds the session detail.
-                let store = backend.clone();
-                let store_user = user_id.clone();
-                let store_target = target.clone();
-                let summaries = tokio::task::spawn_blocking(move || {
-                    store.load_tool_summaries_blocking(&store_user, &store_target)
-                });
-                let (detail, summaries) =
-                    tokio::join!(backend.load_session(&user_id, &target), summaries);
-                let summaries = summaries
-                    .map_err(|error| error.to_string())?
-                    .unwrap_or_else(|error| {
-                        log::warn!("Cannot load tool summaries: {error}");
-                        HashMap::new()
-                    });
-                Ok::<_, String>((detail?, summaries))
+                backend
+                    .open_task(
+                        &user_id,
+                        crate::backend::OpenTaskPageRequest {
+                            task: target,
+                            limit_rows: None,
+                            limit_bytes: None,
+                        },
+                        subscription_intent,
+                    )
+                    .await
             },
             cx,
             move |this, result, cx| {
@@ -2435,7 +2629,7 @@ impl ChatScreen {
                 if matches!(mode, LoadMode::Reload) && !this.is_selected(&session_id) {
                     return;
                 }
-                let (mut detail, summaries) = match result {
+                let mut detail = match result {
                     Ok(detail) => detail,
                     Err(message) => {
                         this.finish_loading(&session_id);
@@ -2444,6 +2638,7 @@ impl ChatScreen {
                         return;
                     }
                 };
+                detail.timeline = detail.timeline.into_iter().map(paging::normalize).collect();
                 let current = *this
                     .timeline_revisions
                     .get(&detail.session.id)
@@ -2464,7 +2659,11 @@ impl ChatScreen {
                     .into_iter()
                     .filter(|item| item.revision > detail.timeline_revision)
                 {
-                    if let Some(row) = detail.timeline.iter_mut().find(|row| row.id == item.id) {
+                    if let Some(row) = detail
+                        .timeline
+                        .iter_mut()
+                        .find(|row| same_timeline_occurrence(row, &item))
+                    {
                         *row = item;
                     } else {
                         detail.timeline.push(item);
@@ -2475,15 +2674,20 @@ impl ChatScreen {
                 this.loading_timeline.clear();
                 // Stored summaries stand in for the model calls the
                 // timeline would otherwise request again.
-                let summaries: HashMap<String, SharedString> = summaries
+                let summaries: HashMap<String, SharedString> = detail
+                    .summaries
                     .into_iter()
                     .map(|(id, summary)| (id, SharedString::from(summary)))
                     .collect();
+                let before = detail.before.is_some();
+                let epoch = detail.rows_epoch;
+                let plan = detail.plan;
+                let live_has_more = detail.live_has_more;
                 match mode {
                     LoadMode::Select => {
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
-                        this.queue = detail.queue.items;
+                        this.set_queue(detail.queue.items);
                     }
                     LoadMode::Reload => {
                         this.tool_summaries.extend(summaries);
@@ -2493,6 +2697,15 @@ impl ChatScreen {
                         this.summarize_loaded_tools(cx);
                         cx.notify();
                     }
+                }
+                this.pages.generation += 1;
+                this.pages.before = before;
+                this.pages.after = false;
+                this.pages.epoch = Some(epoch);
+                this.pages.loading = false;
+                this.pages.live_has_more = live_has_more;
+                if let Some(plan) = plan.and_then(|item| plan_entries(&item)) {
+                    this.set_plan(plan);
                 }
             },
         );
@@ -2548,7 +2761,9 @@ impl ChatScreen {
         let old_navigation_order = self
             .application_vim_enabled
             .then(|| self.navigable_timeline_ids());
-        self.timeline = timeline;
+        self.timeline = timeline.into_iter().map(paging::normalize).collect();
+        self.pages.weights.clear();
+        self.bound_transcript_window(true);
         self.timeline_index = self
             .timeline
             .iter()
@@ -2586,7 +2801,7 @@ impl ChatScreen {
             // default the task will be created with.
             self.web_enabled = settings.default_web_enabled;
         }
-        self.notify_enabled = settings.desktop_notifications;
+        self.apply_notification_settings(settings);
         self.summaries_enabled = settings.tool_summaries;
         self.composer_vim_enabled = settings.composer_vim_enabled;
         if let Some(composer) = self.composer.clone() {
@@ -2816,6 +3031,7 @@ impl ChatScreen {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        self.pages.reset_for_navigation();
         if self.first_send_waiting_for_mcp {
             self.withdraw_first_send(cx);
         }
@@ -2828,6 +3044,8 @@ impl ChatScreen {
         self.tool_summaries.clear();
         self.attachment_images.clear();
         self.attachment_requests.clear();
+        self.attachment_queue.clear();
+        self.attachment_viewport = 0..0;
         self.toggled_tools.clear();
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| input.reset_vim_context(cx));
@@ -4355,13 +4573,23 @@ impl ChatScreen {
         } else {
             std::mem::take(&mut self.draft_images)
         };
+        let editing = self
+            .queue_edit
+            .as_ref()
+            .is_some_and(|edit| Some(&edit.queue_id) == queue_id.as_ref());
         let request = AgentSendMessageRequest {
             session_id: session_id.clone(),
-            text: text.clone(),
+            // A steer identifies the queued item atomically. A fetched preview
+            // must never overwrite another client's intervening queue edit.
+            text: if queue_id.is_some() && !editing {
+                String::new()
+            } else {
+                text.clone()
+            },
             model,
             context_limit,
             vision_capable,
-            steer: steer && run_active,
+            steer: steer && (run_active || queue_id.is_some()),
             queue_id,
             attachments: drafts
                 .iter()
@@ -4375,10 +4603,7 @@ impl ChatScreen {
                 .collect(),
         };
         self.notice = None;
-        let editing = self
-            .queue_edit
-            .as_ref()
-            .is_some_and(|edit| Some(&edit.queue_id) == request.queue_id.as_ref());
+
         let from_composer = request.queue_id.is_none() || editing;
         if from_composer {
             self.remember_prompt(&text);
@@ -4543,6 +4768,9 @@ impl ChatScreen {
 
     fn push_local_error(&mut self, title: &str, message: &str, cx: &mut Context<Self>) {
         let item = AgentTimelineItem {
+            persisted: None,
+            live: None,
+            truncated: None,
             revision: 0,
             id: format!(
                 "local-error-{}",
@@ -4954,6 +5182,49 @@ impl ChatScreen {
     ///
     /// Returns the changed item's index, or None for an older snapshot event.
     fn apply_timeline_item(&mut self, session_id: &str, item: AgentTimelineItem) -> Option<usize> {
+        let item = paging::normalize(item);
+        let alias_index = item.live.as_ref().and_then(|live| {
+            self.timeline
+                .iter()
+                .position(|row| row.live.as_ref() == Some(live))
+        });
+        if item.revision > 0 && item.revision <= self.snapshot_revision {
+            return None;
+        }
+        if self.pages.after && !self.timeline_index.contains_key(&item.id) && alias_index.is_none()
+        {
+            // Forward history pages restore committed rows. A paused live row
+            // needs a fresh bounded open, so keep Reload latest available even
+            // after paging reaches the committed tail.
+            self.pages.live_has_more = true;
+            return None;
+        }
+        if let Some(index) = alias_index
+            && self.timeline[index].id != item.id
+        {
+            if item.revision > 0 && self.timeline[index].revision >= item.revision {
+                return None;
+            }
+            if let (Some(old), Some(new)) = (&self.timeline[index].persisted, &item.persisted)
+                && old.update_seq > new.update_seq
+            {
+                return None;
+            }
+            let old = self.timeline[index].id.clone();
+            self.timeline_index.remove(&old);
+            self.timeline[index].id = item.id.clone();
+            self.timeline_index.insert(item.id.clone(), (index, 0));
+            if let Some(summary) = self.tool_summaries.remove(&old) {
+                self.tool_summaries.insert(item.id.clone(), summary);
+            }
+        }
+        if let Some((index, _)) = self.timeline_index.get(&item.id)
+            && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
+            && old.update_seq > new.update_seq
+        {
+            return None;
+        }
+        self.pages.weights.remove(&item.id);
         if item.revision > 0 {
             if let Some((index, _)) = self.timeline_index.get(&item.id)
                 && self.timeline[*index].revision >= item.revision
@@ -4976,6 +5247,9 @@ impl ChatScreen {
         let index = match position {
             Some(index) => {
                 let AgentTimelineItem {
+                    persisted: incoming_persisted,
+                    live: incoming_live,
+                    truncated: incoming_truncated,
                     revision: incoming_revision,
                     created_ms: incoming_created,
                     item_type: incoming_type,
@@ -4990,6 +5264,9 @@ impl ChatScreen {
                 } = item;
                 let existing = &mut self.timeline[index];
                 existing.revision = incoming_revision;
+                existing.persisted = incoming_persisted.or_else(|| existing.persisted.take());
+                existing.live = incoming_live.or_else(|| existing.live.take());
+                existing.truncated = incoming_truncated;
                 // The virtualized list caches item heights; tell it this
                 // one changed. A remeasure keeps the previous height as a
                 // hint and leaves the scroll position alone, so a stream
@@ -5033,11 +5310,21 @@ impl ChatScreen {
             .timeline_revisions
             .entry(session_id.to_string())
             .or_insert(0) += 1;
-        Some(index)
+        let id = self.timeline[index].id.clone();
+        let anchor = self.scroll_anchor();
+        let count = self.timeline.len();
+        self.bound_transcript_window(self.list_state.is_following_tail());
+        if self.timeline.len() != count {
+            self.rebuild_window(anchor);
+        }
+        self.timeline_index.get(&id).map(|(index, _)| *index)
     }
 
     /// Insert or replace a session row; returns whether anything changed.
     fn upsert_session(&mut self, session: AgentSessionSummary, cx: &mut Context<Self>) -> bool {
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.apply_live_summary(session.clone(), cx)
+        });
         // An archived row shows no indicator; drop a marker it may carry.
         if session.state == AgentTaskState::Archived {
             self.completed_unread_sessions.remove(&session.id);
@@ -5133,10 +5420,51 @@ impl ChatScreen {
         }
     }
 
+    /// Password maintenance stops the runtime without disconnecting IPC. Keep
+    /// this computer's parked chat, but stop admitting sends until the desktop
+    /// has verified that the same store is Open again.
+    pub(crate) fn begin_store_maintenance(&mut self, cx: &mut Context<Self>) {
+        if self.host_recovery.store_maintenance || self.host_recovery.ended {
+            return;
+        }
+        self.host_recovery.store_maintenance = true;
+        self.host_recovery.epoch += 1;
+        self.host_recovery.unavailable = true;
+        self.host_recovery.events = None;
+        self.booting = true;
+        if self.first_send_waiting_for_mcp {
+            self.fail_new_session(
+                "Message not sent: local data is being updated. Send again when Maple is ready."
+                    .into(),
+                cx,
+            );
+        }
+        if self.draft {
+            self.draft_mcp_defaults = None;
+        }
+        self.begin_navigation();
+        self.runtime_error = Some("Updating local data…".into());
+        cx.emit(NavigationChanged);
+        cx.notify();
+    }
+
+    /// Success, rejection and cancellation can all stop the runtime. Its readiness
+    /// is independent of the password result; recover once from current host
+    /// state, and never retry a prompt as part of restoring that runtime.
+    pub(crate) fn end_store_maintenance(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.host_recovery.store_maintenance) || self.host_recovery.ended {
+            return;
+        }
+        self.recover_host(cx);
+    }
+
     /// Rebuild presentation from the owner, preserving the composer and
     /// selection. Buffer a bounded stream while loading, then apply it after
     /// the snapshot. Overflow asks for another snapshot, never a bigger queue.
     fn recover_host(&mut self, cx: &mut Context<Self>) {
+        if self.host_recovery.store_maintenance {
+            return;
+        }
         self.host_recovery.epoch += 1;
         let epoch = self.host_recovery.epoch;
         self.host_recovery.unavailable = true;
@@ -5147,9 +5475,29 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user = self.user_id.clone();
         let selected = self.selected_session.clone();
+        let subscription_intent = backend.next_subscription_intent();
         self.runtime_error = Some("Connected. Refreshing task history…".into());
         self.call(
-            async move { backend.recovery_snapshot(&user, selected).await },
+            async move {
+                let boot = backend.navigation_bootstrap(&user).await?;
+                let selected = match selected {
+                    Some(task) => Some(
+                        backend
+                            .open_task(
+                                &user,
+                                crate::backend::OpenTaskPageRequest {
+                                    task,
+                                    limit_rows: None,
+                                    limit_bytes: None,
+                                },
+                                subscription_intent,
+                            )
+                            .await?,
+                    ),
+                    None => None,
+                };
+                Ok::<_, String>((boot, selected))
+            },
             cx,
             move |this, result, cx| {
                 if this.host_recovery.epoch != epoch {
@@ -5160,7 +5508,44 @@ impl ChatScreen {
                     return;
                 }
                 match result {
-                    Ok(snapshot) => {
+                    Ok((boot, selected)) => {
+                        this.persistence_status = boot.persistence_status.clone();
+                        let status = boot.runtime_status.clone();
+                        let selected_page = selected.as_ref().map(|detail| {
+                            (
+                                detail.before.is_some(),
+                                detail.rows_epoch,
+                                detail.plan.clone(),
+                                detail.summaries.clone(),
+                                detail.live_has_more,
+                            )
+                        });
+                        let selected =
+                            selected.map(|detail| maple_agent::agent::AgentSessionDetail {
+                                timeline_revision: detail.timeline_revision,
+                                session: detail.session,
+                                timeline: detail
+                                    .timeline
+                                    .into_iter()
+                                    .map(paging::normalize)
+                                    .collect(),
+                                queue: detail.queue,
+                                mcp_errors: detail.mcp_errors,
+                            });
+                        let snapshot = crate::backend::RecoverySnapshot {
+                            status,
+                            selected,
+                            bootstrap: crate::backend::LocalBootstrap {
+                                project_root: boot.project_root,
+                                sessions: Vec::new(),
+                                recent_roots: sidebar::bootstrap_projects(
+                                    boot.recent_projects,
+                                    boot.default_project,
+                                ),
+                                latest: None,
+                                questions: boot.pending_questions,
+                            },
+                        };
                         let events = this.host_recovery.events.take().unwrap_or_default();
                         let running = events
                             .iter()
@@ -5170,10 +5555,41 @@ impl ChatScreen {
                                 _ => None,
                             })
                             .unwrap_or(snapshot.status.running);
+                        if this.selection_generation == selection
+                            && let Some((_, _, _, summaries, _)) = &selected_page
+                        {
+                            this.tool_summaries.extend(
+                                summaries
+                                    .iter()
+                                    .map(|(key, value)| (key.clone(), value.clone().into())),
+                            );
+                        }
+                        // Metadata outside this bounded snapshot may have
+                        // changed offline. Drop those projection caches before
+                        // applying it, then replay newer buffered pushes below.
+                        this.prepare_project_cache_for_recovery(
+                            &snapshot.bootstrap.recent_roots,
+                            cx,
+                        );
                         this.apply_recovery_snapshot(snapshot, selection, cx);
+                        if this.selection_generation == selection
+                            && let Some((before, epoch, plan, _, live_has_more)) = selected_page
+                        {
+                            this.pages.generation += 1;
+                            this.pages.before = before;
+                            this.pages.epoch = Some(epoch);
+                            this.pages.after = false;
+                            this.pages.loading = false;
+                            this.pages.live_has_more = live_has_more;
+                            if let Some(plan) = plan.and_then(|item| plan_entries(&item)) {
+                                this.set_plan(plan);
+                            }
+                        }
+                        this.refresh_sessions(cx);
                         this.handle_service_events(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error = None;
+                        this.booting = !running && !this.navigation_only;
                         this.check_unresolved_sends(cx);
                         cx.emit(NavigationChanged);
                         if !this.navigation_only {
@@ -5181,11 +5597,10 @@ impl ChatScreen {
                             this.refresh_roots(cx);
                             this.refresh_slash_commands(cx);
                         }
-                        if !running && !this.navigation_only {
+                        if this.booting {
                             // A host another client restarted may not have a
                             // runtime yet. Restore catalog/tool availability;
                             // this does not resume or submit any prompt.
-                            this.booting = true;
                             this.start_runtime(cx);
                         }
                         this.finish_navigation_bootstrap(cx);
@@ -5205,12 +5620,31 @@ impl ChatScreen {
         );
     }
 
+    fn prepare_project_cache_for_recovery(
+        &mut self,
+        roots: &[RecentProjectRoot],
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar.update(cx, |sidebar, _| {
+            sidebar.prepare_project_cache_for_recovery(roots)
+        });
+    }
+
     fn apply_recovery_snapshot(
         &mut self,
         snapshot: crate::backend::RecoverySnapshot,
         selection: u64,
         cx: &mut Context<Self>,
     ) {
+        let workspace = snapshot
+            .bootstrap
+            .recent_roots
+            .iter()
+            .find(|root| root.is_default_workspace)
+            .cloned();
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.reconcile_default_project(workspace, cx)
+        });
         // Revisions are scoped to a host incarnation. Even a restarted host
         // with lower revision numbers must supersede the old partial rows.
         self.snapshot_revision = 0;
@@ -5248,6 +5682,17 @@ impl ChatScreen {
     /// Apply one event; returns false when nothing visible changed.
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
         use maple_agent::agent::AgentRunEvent;
+        if let AgentServiceEvent::PersistenceFailureChanged { status } = &event {
+            if self.persistence_status.store_id.is_some()
+                && (self.persistence_status.store_id != status.store_id
+                    || self.persistence_status.revision > status.revision)
+            {
+                return false;
+            }
+            let changed = self.persistence_status != *status;
+            self.persistence_status = status.clone();
+            return changed;
+        }
         // A computer that has not been opened needs navigation state only.
         // Do this before the recovery buffer: a busy transcript must not make
         // the summary snapshot overflow and reload forever.
@@ -5344,14 +5789,34 @@ impl ChatScreen {
             self.loading_timeline.insert(item.id.clone(), item.clone());
         }
         match event {
-            AgentServiceEvent::AccountChanged(_) => return false,
+            AgentServiceEvent::AccountChanged(_)
+            | AgentServiceEvent::StoreStateChanged { .. }
+            | AgentServiceEvent::PersistenceFailureChanged { .. } => {
+                return false;
+            }
             AgentServiceEvent::ProjectsChanged { user_id, roots } => {
                 if user_id != self.user_id {
                     return false;
                 }
-                let previous = self.recent_roots.clone();
-                self.apply_recent_roots(roots, cx);
-                return self.recent_roots != previous;
+                return self.merge_project_metadata(roots, cx);
+            }
+            AgentServiceEvent::ProjectRemoved {
+                user_id,
+                project_root,
+            } => {
+                if user_id != self.user_id {
+                    return false;
+                }
+                self.recent_roots.retain(|root| root.path != project_root);
+                self.sidebar
+                    .update(cx, |sidebar, cx| sidebar.forget_project(&project_root, cx));
+                cx.emit(NavigationChanged);
+                return true;
+            }
+            AgentServiceEvent::HistoryReplaced { session_id, .. } => {
+                if self.selected_session.as_deref() == Some(session_id.as_str()) {
+                    self.reload_timeline(&session_id, cx);
+                }
             }
             AgentServiceEvent::QuestionResolved { request_id } => {
                 let showing = self
@@ -5422,11 +5887,18 @@ impl ChatScreen {
                 {
                     return false;
                 }
-                let preview: String = questions
-                    .first()
-                    .map(|question| question.question.chars().take(140).collect())
-                    .unwrap_or_default();
-                self.notify_desktop(&session_id, "Maple has a question", &preview, cx);
+                self.notify_desktop(
+                    &session_id,
+                    "Maple has a question",
+                    "Open Maple to respond.",
+                    || {
+                        questions
+                            .first()
+                            .map(|question| question.question.chars().take(140).collect())
+                            .unwrap_or_default()
+                    },
+                    cx,
+                );
                 // Questions queue per session; one for a task that is not
                 // on screen shows its card when the user switches there.
                 let shows_now = self.current_question().is_none()
@@ -5648,13 +6120,21 @@ impl ChatScreen {
                         self.maybe_summarize_thinking(last, cx);
                     }
                 }
-                let title = self
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == session_id)
-                    .map(|session| session.title.clone())
-                    .unwrap_or_else(|| "Task".to_string());
-                self.notify_desktop(session_id, "Maple", &format!("“{title}” finished"), cx);
+                self.notify_desktop(
+                    session_id,
+                    "Maple",
+                    "A task finished. Open Maple to view it.",
+                    || {
+                        let title = self
+                            .sessions
+                            .iter()
+                            .find(|session| session.id == session_id)
+                            .map(|session| session.title.as_str())
+                            .unwrap_or("Task");
+                        format!("“{title}” finished")
+                    },
+                    cx,
+                );
                 self.refresh_sidebar_plan(cx);
             }
             AgentRunEvent::QueueChanged(snapshot) => {
@@ -5682,6 +6162,7 @@ impl EventEmitter<LoggedOut> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}
+impl EventEmitter<crate::ui::store_gate::RetryStorePersistence> for ChatScreen {}
 
 /// Height hint for transcript rows that have not been measured yet, so a
 /// freshly opened task has a scrollbar of about the right size on its
@@ -5691,6 +6172,24 @@ const TRANSCRIPT_ROW_ESTIMATE: gpui::Pixels = px(96.);
 /// The transcript list: bottom-aligned, following its tail so streaming
 /// content stays in view until the user scrolls up, with enough overdraw
 /// that a fast wheel scroll lands on measured rows.
+fn same_timeline_occurrence(a: &AgentTimelineItem, b: &AgentTimelineItem) -> bool {
+    match (&a.persisted, &b.persisted) {
+        (Some(a), Some(b)) => {
+            a.task_id == b.task_id && a.rows_epoch == b.rows_epoch && a.row_seq == b.row_seq
+        }
+        _ => match (&a.live, &b.live) {
+            (Some(a), Some(b)) => a == b,
+            _ => {
+                a.persisted.is_none()
+                    && b.persisted.is_none()
+                    && a.live.is_none()
+                    && b.live.is_none()
+                    && a.id == b.id
+            }
+        },
+    }
+}
+
 fn transcript_list_state() -> gpui::ListState {
     let state = gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(1024.));
     state.set_follow_mode(gpui::FollowMode::Tail);
@@ -5820,7 +6319,8 @@ impl Render for ChatScreen {
                         .children(self.render_subagents_card(cx))
                         .children(self.render_plan_card(cx))
                         .child(self.render_composer(window, cx))
-                        .children(self.render_slash_palette(cx)),
+                        .children(self.render_slash_palette(cx))
+                        .children(self.render_persistence_failure(cx)),
                 )
         };
         let main = match loading_overlay {
@@ -5971,6 +6471,40 @@ impl Render for ChatScreen {
 }
 
 impl ChatScreen {
+    /// Keep unsaved-work feedback beside the composer that produced it.
+    /// The desktop owns retries so the local store's lifecycle guards still apply.
+    fn render_persistence_failure(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let failure = self.persistence_status.failure.as_ref()?;
+        let remote = self.backend.remote_host().is_some();
+        Some(
+            div()
+                .debug_selector(|| "chat-persistence-feedback".to_string())
+                .w_full()
+                .pt_2()
+                .child(
+                    widgets::banner(theme::status_error())
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap_2()
+                        .child(failure.message())
+                        .when(remote, |panel| {
+                            panel.child("Retry saving from Maple on that computer.")
+                        })
+                        .when(!remote, |panel| {
+                            panel.child(
+                                widgets::secondary_button("retry-local-store-persistence")
+                                    .debug_selector(|| "retry-local-store-persistence".to_string())
+                                    .child("Retry saving")
+                                    .on_click(cx.listener(|_this, _event, _window, cx| {
+                                        cx.emit(crate::ui::store_gate::RetryStorePersistence);
+                                    })),
+                            )
+                        }),
+                ),
+        )
+    }
+
     /// Panel icon that hides or shows the sidebar.
     fn render_sidebar_toggle(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
@@ -6063,6 +6597,7 @@ impl ChatScreen {
                     .when_some(self.runtime_error.clone(), |column, error| {
                         column.child(widgets::banner(theme::status_error()).child(error))
                     })
+                    .children(self.render_persistence_failure(cx))
                     .children(self.render_update_banner(cx))
                     .children(self.render_notice(cx)),
             );
@@ -6116,7 +6651,14 @@ impl ChatScreen {
     /// Raise a desktop notification when enabled and the window is not
     /// focused. `tag` names the task, so a later alert about the same task
     /// replaces the earlier one instead of stacking.
-    fn notify_desktop(&self, tag: &str, title: &str, body: &str, cx: &gpui::App) {
+    fn notify_desktop(
+        &self,
+        tag: &str,
+        title: &str,
+        generic_body: &str,
+        details: impl FnOnce() -> String,
+        cx: &gpui::App,
+    ) {
         if !self.notify_enabled {
             log::info!("desktop notification skipped (disabled): {title}");
             return;
@@ -6130,7 +6672,8 @@ impl ChatScreen {
             Some(host) => format!("remote-task:{host}:{tag}"),
             None => format!("task:{tag}"),
         };
-        crate::notify::notify(cx, tag, title, body, &[]);
+        let body = notification_body(self.notify_details, generic_body, details);
+        crate::notify::notify(cx, tag, title, &body, &[]);
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the

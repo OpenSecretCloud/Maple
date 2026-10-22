@@ -150,6 +150,7 @@ struct Inner {
     releases: Mutex<ReleaseState>,
     snapshots: watch::Sender<Snapshot>,
     automatic: AtomicBool,
+    started: AtomicBool,
     cancel: CancellationToken,
     installed: OnceLock<CommittedInstallation>,
 }
@@ -174,12 +175,20 @@ impl Controller {
             releases: Mutex::new(ReleaseState::default()),
             snapshots,
             automatic: AtomicBool::new(automatic_downloads),
+            started: AtomicBool::new(false),
             cancel: CancellationToken::new(),
             installed: OnceLock::new(),
         }))
     }
     pub fn snapshot(&self) -> Snapshot {
         self.0.snapshots.borrow().clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn startup_policy_for_test(&self) -> (bool, bool) {
+        (
+            self.0.started.load(Ordering::Acquire),
+            self.0.automatic.load(Ordering::Acquire),
+        )
     }
     #[cfg(test)]
     pub(crate) fn set_test_state(&self, state: State) {
@@ -316,6 +325,9 @@ impl Controller {
     /// Owned by the desktop lifetime. Cancellation interrupts polling and HTTP
     /// work; a blocking atomic replacement, once started, finishes deliberately.
     pub async fn run(self) {
+        if self.0.started.swap(true, Ordering::AcqRel) {
+            return;
+        }
         if self.snapshot().state == State::Disabled || self.0.cancel.is_cancelled() {
             return;
         }
@@ -554,9 +566,13 @@ impl Controller {
             }
         }
     }
-    pub async fn set_auto_download(&self, enabled: bool) {
+    /// Apply on the UI thread accepting the current settings generation. A
+    /// delayed runtime task must never overwrite a newer saved opt-out.
+    pub fn set_auto_download(&self, enabled: bool) {
         self.0.automatic.store(enabled, Ordering::Relaxed);
-        if enabled && self.snapshot().state == State::Available {
+    }
+    pub async fn download_if_automatic(&self) {
+        if self.0.automatic.load(Ordering::Relaxed) && self.snapshot().state == State::Available {
             self.download().await;
         }
     }
@@ -685,6 +701,12 @@ impl Controller {
                 return Ok(None);
             }
         }
+        // Commit every pending frontend patch before asking the host to drain.
+        // Failed saves leave the live store and installation untouched.
+        if let Err(error) = crate::desktop::flush_frontend_state(&backend).await {
+            discard_preparation(preparation).await;
+            return Err(error.into());
+        }
         let recovery_api = api_url.clone();
         let installed_version = prepared.release.manifest.version.clone();
         let controller = self.clone();
@@ -810,7 +832,7 @@ fn build_service() -> Result<Service, String> {
             .map_err(|_| "Invalid app version")?,
         target,
         installed_path: installed_path.clone(),
-        state_dir: crate::backend::local_data_root().join("updates"),
+        state_dir: update_state_dir(),
     };
     Ok(Service {
         updater: Arc::new(
@@ -819,6 +841,11 @@ fn build_service() -> Result<Service, String> {
         installed_path,
         manual_only: AtomicBool::new(manual_only),
     })
+}
+
+fn update_state_dir() -> PathBuf {
+    // Signed discovery/anti-rollback state survives local-store reset/repair.
+    crate::backend::profile_data_root().join("updates")
 }
 
 fn installation() -> Result<(PathBuf, bool), String> {
@@ -849,6 +876,27 @@ fn manual_macos_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_state_stays_outside_the_resettable_sql_store() {
+        let profile = crate::backend::profile_data_root();
+        let store = maple_agent::store::StorePaths::new(&profile);
+        assert_eq!(update_state_dir(), profile.join("updates"));
+        assert!(!update_state_dir().starts_with(store.root()));
+    }
+
+    #[tokio::test]
+    async fn deferred_store_bootstrap_cannot_overwrite_a_newer_opt_out() {
+        let controller = Controller::new(false);
+        controller.set_test_state(State::Disabled);
+        controller.set_auto_download(true);
+        let older_bootstrap = controller.clone().run();
+        controller.set_auto_download(false);
+        older_bootstrap.await;
+        assert_eq!(controller.startup_policy_for_test(), (true, false));
+        controller.clone().run().await;
+        assert_eq!(controller.startup_policy_for_test(), (true, false));
+    }
     #[test]
     fn packaged_prod_needs_pins_and_dev_cannot_enable_updates() {
         assert_eq!(

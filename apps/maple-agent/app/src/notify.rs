@@ -5,6 +5,9 @@
 //! the platform's command-line tool, run on a separate thread so a D-Bus
 //! or script launch never blocks the UI thread.
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::io::Write;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -72,13 +75,25 @@ pub fn notify_desktop(title: &str, body: &str) {
     });
 }
 
-fn run(mut command: Command) -> Result<(), String> {
-    let status = command
-        .stdin(Stdio::null())
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn run_script(mut command: Command, script: &str) -> Result<(), String> {
+    let mut child = command
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .map_err(|error| error.to_string())?;
+    let write = child
+        .stdin
+        .take()
+        .ok_or("Notification input unavailable")?
+        .write_all(script.as_bytes());
+    if write.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Could not submit notification".into());
+    }
+    let status = child.wait().map_err(|error| error.to_string())?;
     if status.success() {
         Ok(())
     } else {
@@ -88,26 +103,31 @@ fn run(mut command: Command) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn send(title: &str, body: &str) -> Result<(), String> {
-    let mut command = Command::new("notify-send");
-    command
-        .args([
-            "-a",
-            crate::profile::DISPLAY_NAME,
-            "-t",
-            "8000",
-            "-u",
-            "normal",
-        ])
-        .args(linux_positional_args(title, body));
-    run(command)
-}
-
-/// `notify-send` parses a title or body that starts with `-` as an option
-/// ("- item" is common in summaries), so the positional pair is always
-/// preceded by `--`.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn linux_positional_args<'a>(title: &'a str, body: &'a str) -> [&'a str; 3] {
-    ["--", title, body]
+    let connection =
+        zbus::blocking::Connection::session().map_err(|_| "Notification bus unavailable")?;
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .map_err(|_| "Notification service unavailable")?;
+    let _: u32 = proxy
+        .call(
+            "Notify",
+            &(
+                crate::profile::DISPLAY_NAME,
+                0u32,
+                "",
+                title,
+                body,
+                Vec::<String>::new(),
+                std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
+                8000i32,
+            ),
+        )
+        .map_err(|_| "Notification delivery failed")?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -118,8 +138,8 @@ fn send(title: &str, body: &str) -> Result<(), String> {
         escape_applescript(title)
     );
     let mut command = Command::new("osascript");
-    command.args(["-e", &script]);
-    run(command)
+    command.arg("-");
+    run_script(command, &script)
 }
 
 #[cfg(target_os = "windows")]
@@ -142,9 +162,9 @@ fn send(title: &str, body: &str) -> Result<(), String> {
     );
     let mut command = Command::new("powershell");
     command
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", "-"])
         .creation_flags(CREATE_NO_WINDOW);
-    run(command)
+    run_script(command, &script)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -172,14 +192,6 @@ mod tests {
     #[test]
     fn escapes_applescript_quotes() {
         assert_eq!(escape_applescript(r#"a "b" \c"#), r#"a \"b\" \\c"#);
-    }
-
-    #[test]
-    fn linux_arguments_end_option_parsing() {
-        assert_eq!(
-            linux_positional_args("-Title", "--body"),
-            ["--", "-Title", "--body"]
-        );
     }
 
     #[test]
