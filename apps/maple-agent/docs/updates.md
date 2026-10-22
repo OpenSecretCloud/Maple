@@ -2,10 +2,14 @@
 
 Packaged Prod builds use the Agent-only signed update service at
 `https://updates.trymaple.ai/agent/stable/latest.json`. Dev and unpackaged
-builds do not check that service. The production public-key list is intentionally
-empty until reviewed owner setup; those builds show **Updates not configured**
-and make no updater requests. Environment variables cannot supply a feed or
-signing key. `MAPLE_DISABLE_UPDATE_CHECK=1` can only disable checks.
+builds do not check that service. The Prod profile now pins the reviewed primary
+and backup public keys, so packaged Prod builds check the compiled feed after
+launch. Publication remains disabled pending owner service and routing setup;
+pinning keys does not deploy or publish anything. Invitations still require the
+signed installed-update rehearsal below. Environment
+variables cannot supply a feed or signing key. `MAPLE_DISABLE_UPDATE_CHECK=1`
+can only disable checks. A profile with no keys still shows **Updates not
+configured** and makes no updater requests.
 
 This feature does not change Research's updater, update Worker, publisher,
 release selection, signing configuration, or download paths. Agent publication
@@ -95,10 +99,11 @@ Implementation PRs do not create infrastructure, production signing keys,
 GitHub environments, routes, credentials, releases, or production publications.
 Before enabling the feed, prepare and review these concrete operations:
 
-1. Create two dedicated Agent minisign key pairs, retain the backup offline, and
-   commit only the two reviewed public keys in `release-profiles.json`. Rebuild
-   the initial `0.0.1` package with those pins. Test keys must never become Prod
-   pins. Key rotation is a separately reviewed release operation.
+1. The two reviewed Agent public keys are pinned in `release-profiles.json`;
+   the primary and backup are distinct from test and Research keys. Build the
+   initial `0.0.1` package from this pinned source. Keep the backup private key
+   offline and unavailable to CI. Key rotation remains a separately reviewed
+   release operation.
 2. Reuse the existing `desktop-signing` environment and its five Apple
    signing/notarization secrets for the trusted master Agent packaging job. No
    new app-signing environment, Apple credentials or BWS migration is required;

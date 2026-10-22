@@ -266,9 +266,8 @@ mod tests {
             prod.update_feed_url.as_deref(),
             Some("https://updates.trymaple.ai/agent/stable/latest.json")
         );
-        // The reviewed source may be built before production key setup. The
-        // updater fails closed until separately approved keys are pinned.
-        assert!(prod.update_public_keys.is_empty());
+        assert_eq!(prod.update_public_keys.len(), 2);
+        assert_ne!(prod.update_public_keys[0], prod.update_public_keys[1]);
         for profile in [dev, prod] {
             assert_ne!(profile.data_namespace, "maple-agent");
             assert_ne!(profile.data_namespace, "maple-gpui");
@@ -320,6 +319,9 @@ mod tests {
     fn updater_profile_accepts_disabled_key_setup_and_rejects_empty_or_duplicate_keys() {
         let original = profiles().unwrap();
         assert!(validate_profiles(&original).is_ok());
+        let mut disabled = original.clone();
+        disabled.get_mut("prod").unwrap().update_public_keys.clear();
+        assert!(validate_profiles(&disabled).is_ok());
         for keys in [
             vec![" ".into()],
             vec!["single".into()],

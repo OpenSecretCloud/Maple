@@ -564,9 +564,12 @@ check.
 
 Packaged Prod builds use the independent signed Agent update feed. Dev and
 unpackaged/MDE builds do not check a production updater. The Prod profile pins
-the update URL and public keys; inherited environment variables cannot replace
-them. Until approved production keys are pinned, the UI reports that updates
-are not configured and makes no update requests.
+the update URL and reviewed primary/backup public keys; inherited environment
+variables cannot replace them. Packaged Prod builds check the compiled feed, while
+publication remains disabled pending owner service setup. Invitations still
+require the signed installed-update rehearsal.
+An empty-key profile still reports that updates are not configured and makes no
+update requests.
 
 Updates authenticate product, channel, version, target, byte size and SHA-256
 before staging. Automatic downloads default on; installation requires the

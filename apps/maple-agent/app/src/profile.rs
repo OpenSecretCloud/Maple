@@ -105,6 +105,38 @@ mod tests {
     }
 
     #[test]
+    fn prod_update_pins_are_accepted_and_reject_the_test_signer() {
+        use maple_agent_updater::{Config, Target, Updater, manifest::verify_envelope};
+
+        let (_, prod) = config::select_profile(Some("prod"), None).unwrap();
+        let feed = prod.update_feed_url.unwrap().parse().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let installed = temporary.path().join("installed");
+        std::fs::create_dir(&installed).unwrap();
+        // Constructing the actual client parses every configured minisign key.
+        // It writes only isolated temporary state and makes no network request.
+        Updater::new(Config {
+            feed_url: feed,
+            public_keys: prod.update_public_keys.clone(),
+            current_version: "0.0.1".parse().unwrap(),
+            target: Target::DarwinAarch64,
+            installed_path: installed,
+            state_dir: temporary.path().join("updates"),
+        })
+        .unwrap();
+        assert!(
+            verify_envelope(
+                include_bytes!(
+                    "../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"
+                ),
+                &"https://updates.trymaple.ai/".parse().unwrap(),
+                &prod.update_public_keys,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn runtime_dependency_bakes_the_same_pcr_trust_as_app_metadata() {
         let actual = maple_agent::open_secret_config::configured_pcr0_environment().unwrap();
         let expected = match PCR_ENVIRONMENT {

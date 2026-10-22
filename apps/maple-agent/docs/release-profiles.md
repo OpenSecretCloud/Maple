@@ -56,11 +56,14 @@ revision with a possible `-dirty` suffix; `source_sha` is the full source commit
 Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.
 
 Packaged Prod builds use only the compiled Agent stable feed at
-`https://updates.trymaple.ai/agent/stable/latest.json`. The profile contains no
-production signing keys yet, so it reports **Updates not configured** and makes
-no update requests until the separately approved key setup is complete. Active
-trust configuration requires two distinct public keys; the backup supports
-planned rotation and does not revoke a compromised accepted primary.
+`https://updates.trymaple.ai/agent/stable/latest.json`. The profile pins the
+reviewed primary and backup public keys, enabling packaged Prod discovery after
+launch. Publication remains disabled pending owner service setup; invitations
+still require the signed update rehearsal. An empty-key profile reports
+**Updates not configured** and
+makes no update requests. Active trust requires two distinct public keys; the
+backup supports planned rotation and does not revoke a compromised accepted
+primary.
 
 Dev and unpackaged builds contain no updater feed or keys. No runtime override
 can opt either into production updating. `MAPLE_DISABLE_UPDATE_CHECK=1` remains

@@ -99,10 +99,13 @@ ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 
 Packaged Agent Prod uses its independently signed R2 update feed with compiled
-public-key pins. Dev and unpackaged builds have no production updater. Empty
-production pins disable update traffic until reviewed setup; do not substitute
-a test key or inherit feed/key overrides from the launch environment. Embedded
-profiles, bundle IDs and state namespaces remain separate; packaged profiles
+primary and backup public-key pins. Packaged Prod checks the compiled feed;
+publication remains disabled pending owner service setup. Invitations still
+require the signed installed-update rehearsal.
+Dev and unpackaged builds have no production updater. Empty-key profiles still
+disable update traffic. Do not substitute a test key or inherit feed/key overrides
+from the launch environment. Embedded profiles, bundle IDs and state namespaces
+remain separate; packaged profiles
 never adopt legacy Agent or Research state. See
 [`desktop builds`](../../../apps/maple-agent/docs/desktop-builds.md) for packaging
 commands and the protected-master signing/artifact contract.

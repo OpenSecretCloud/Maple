@@ -308,6 +308,19 @@ class ReleaseMetadataTests(unittest.TestCase):
                 release_info.read_info("dev", self.path)
             self.info[field] = original
 
+    def test_prod_metadata_requires_the_configured_primary_and_backup_pins(self):
+        prod = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())["prod"]
+        self.info = {**prod, "profile": "prod", "version": "0.0.1",
+                     "source_sha": "a" * 40, "git_revision": "a" * 8}
+        self.write_info()
+        self.assertEqual(len(release_info.read_info("prod", self.path)["update_public_keys"]), 2)
+        for keys in ([], prod["update_public_keys"][:1],
+                     list(reversed(prod["update_public_keys"]))):
+            self.info["update_public_keys"] = keys
+            self.write_info()
+            with self.subTest(keys=keys), self.assertRaisesRegex(ValueError, "release profile"):
+                release_info.read_info("prod", self.path)
+
     def test_backup_requires_a_distinct_public_key_not_a_changed_comment_or_id(self):
         def key(point, key_id=b"12345678", comment="fixture"):
             packet = base64.b64encode(b"Ed" + key_id + point).decode()

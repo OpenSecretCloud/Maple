@@ -26,7 +26,10 @@
     "pcr_environment": "production",
     "update_tag_prefix": "maple-agent-v",
     "update_feed_url": "https://updates.trymaple.ai/agent/stable/latest.json",
-    "update_public_keys": [],
+    "update_public_keys": [
+      "RWSEawHGDqhs8hlPvW08LCDXexMVkxqCtKhorNHTVpgMmYlls07md+mc",
+      "RWR3nhVL8nlVmwQBTSKl/dl6a0V3eseG260Be3/aYVb4+K8MgBfyOyN4"
+    ],
     "prerelease": false
   }
 }

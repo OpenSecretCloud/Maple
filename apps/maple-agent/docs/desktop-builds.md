@@ -22,7 +22,7 @@ previews.
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
 | Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
-| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed, after production keys are configured |
+| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed with primary/backup pins; publication separately gated |
 
 The binary embeds its profile, hosted API/client/billing settings, and PCR
 environment. `--build-info` prints the public build identity as JSON without
@@ -145,8 +145,11 @@ These builds remain Actions downloads and do not advance an updater feed.
 The independent Agent publisher promotes only verified Prod artifacts into the
 Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
 The client accepts only its signed Agent product/channel/target manifest, with
-keys embedded in the selected Prod profile. Empty production keys disable update
-traffic until owner setup is complete. See [updater activation](updates.md).
+the primary and backup keys embedded in the Prod profile. Packaged Prod builds
+check that feed; publication remains disabled pending owner service setup, and
+invitations still require the signed update rehearsal. An empty-key profile
+still disables updater traffic. See
+[updater activation](updates.md).
 
 No new app-signing environment or Apple credential migration is needed. Keep the
 existing `desktop-signing` credentials and policies, Research updater key,
