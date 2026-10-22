@@ -20,6 +20,15 @@ def workflow(name):
 
 
 class AgentUpdatesWorkflows(unittest.TestCase):
+    def test_delivery_checks_follow_imported_profile_and_package_contracts(self):
+        config = workflow("agent-updates-tests.yml")
+        for event in ("push", "pull_request"):
+            self.assertTrue({
+                "apps/maple-agent/scripts/release-info.py",
+                "apps/maple-agent/release-profiles.json",
+                "services/agent-updates/**",
+            } <= set(config["on"][event]["paths"]))
+
     def test_manual_master_only_and_separate_authority(self):
         config = workflow("agent-updates-publish.yml")
         self.assertEqual(set(config["on"]), {"workflow_dispatch"})
@@ -62,6 +71,7 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         source = "\n".join(step.get("run", "") for step in verify["steps"])
         self.assertIn("AGENT_UPDATES_ENABLED", str(verify))
         self.assertIn('"$ACTIVATED" = true', source)
+        self.assertIn("nix develop --no-update-lock-file .#ci -c bash -euo pipefail <<'PREPARE'", source)
         self.assertIn("publisher.py trust", source)
         self.assertIn("publisher.py prepare", source)
         self.assertIn("--public-key public-key.pub", source)

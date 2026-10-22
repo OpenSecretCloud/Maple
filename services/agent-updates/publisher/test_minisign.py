@@ -1,5 +1,6 @@
 """Verify the shared public wire fixture with the pinned real minisign CLI."""
 
+import base64
 import json
 import hashlib
 from pathlib import Path
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import publisher
 
@@ -26,6 +28,84 @@ class MinisignTests(unittest.TestCase):
         envelope = json.loads(self.data)
         self.assertEqual(envelope["manifest"].encode(), (FIXTURES / "manifest.json").read_bytes())
         self.assertEqual(envelope["signature"].encode(), (FIXTURES / "manifest.minisig").read_bytes())
+
+    def test_raw_public_key_file_verifies_with_the_real_cli(self):
+        with tempfile.TemporaryDirectory(prefix="maple-agent-public-key-test-") as temporary:
+            key = Path(temporary) / "one-line.pub"
+            key.write_text(publisher.public_key_text(self.key) + "\n")
+            self.assertEqual(publisher.minisign_verify(self.data, key)["version"], "0.0.2")
+
+    def test_existing_signed_pointer_rotation_retry_and_missing_object_repair(self):
+        class Store:
+            def __init__(self):
+                self.objects = {}
+                self.writes = []
+
+            def get(self, key, maximum=publisher.MAX_JSON):
+                if key not in self.objects:
+                    return None
+                data = self.objects[key]
+                return data, '"' + hashlib.sha256(data).hexdigest() + '"'
+
+            def same(self, key, digest, size):
+                value = self.objects.get(key)
+                return value is not None and len(value) == size and hashlib.sha256(value).hexdigest() == digest
+
+            def put(self, key, data, *, condition, content_type):
+                current = self.get(key)
+                if condition == ("If-None-Match", "*"):
+                    if current is not None:
+                        raise publisher.StoreError(412)
+                elif current is None or condition != ("If-Match", current[1]):
+                    raise publisher.StoreError(412)
+                self.writes.append(key)
+                self.objects[key] = data.read_bytes() if isinstance(data, Path) else data
+
+        with tempfile.TemporaryDirectory(prefix="maple-agent-pointer-test-") as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            (bundle / "manifest.json").write_bytes((FIXTURES / "manifest.json").read_bytes())
+            (bundle / "envelope.json").write_bytes(self.data)
+            # Match the workflow variable's raw one-line public-key input.
+            (bundle / "public-key.pub").write_text(publisher.public_key_text(self.key) + "\n")
+            payloads = bundle / "payloads"
+            payloads.mkdir()
+            for name in ("Maple-Agent.app.tar.gz", "Maple-Agent.dmg"):
+                (payloads / name).write_bytes(b"signed payload fixture bytes")
+            metadata = bundle / "metadata"
+            metadata.mkdir()
+            inventory = {}
+            for name in sorted({"provenance.json"} | publisher.MACOS_METADATA_NAMES):
+                data = ("offline public signing fixture: " + name + "\n").encode()
+                (metadata / name).write_bytes(data)
+                inventory[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+            (bundle / "metadata-inventory.json").write_bytes(publisher.encode_json(inventory))
+            profile = root / "apps/maple-agent/release-profiles.json"
+            profile.parent.mkdir(parents=True)
+            # The first valid public key does not sign this envelope, exercising
+            # the pinned-key fallback used during rotation with the real CLI.
+            other_key = base64.b64encode(b"Ed" + bytes(40)).decode()
+            profile.write_bytes(publisher.encode_json({"prod": {
+                "update_feed_url": publisher.FEED_URL,
+                "update_public_keys": [other_key, publisher.public_key_text(self.key)],
+            }}))
+            store = Store()
+            with patch.object(publisher, "ROOT", root):
+                publisher.reserve(bundle, store, self.key)
+                self.assertEqual(publisher.publish(bundle, store, self.key), "published")
+                store.writes.clear()
+                self.assertEqual(publisher.publish(bundle, store, self.key), "already-published")
+                self.assertEqual(store.writes, [])
+                missing = "stable/releases/0.0.2/Maple-Agent.app.tar.gz"
+                del store.objects[missing]
+                self.assertEqual(publisher.publish(bundle, store, self.key), "already-published")
+                self.assertEqual(store.writes, [missing])
+                self.assertEqual(store.objects["stable/latest.json"], self.data)
+                tampered = json.loads(self.data)
+                tampered["manifest"] = tampered["manifest"].replace("A test update.", "A fake update.")
+                with self.assertRaisesRegex(publisher.PublishError, "not trusted"):
+                    publisher.verify_current(publisher.encode_json(tampered), self.key)
 
     def test_tampered_signed_bytes_and_comment_are_rejected(self):
         envelope = json.loads(self.data)
@@ -47,6 +127,10 @@ class MinisignTests(unittest.TestCase):
 
             def get(self, key, maximum=publisher.MAX_JSON):
                 return (self.objects[key], '"fixture-etag"') if key in self.objects else None
+
+            def same(self, key, digest, size):
+                data = self.objects.get(key)
+                return data is not None and len(data) == size and hashlib.sha256(data).hexdigest() == digest
 
         # These disposable, offline test keys never leave the private tempdir.
         # Production key generation is an owner operation outside this tool.

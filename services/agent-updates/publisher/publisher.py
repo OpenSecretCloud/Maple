@@ -216,7 +216,10 @@ def minisign_verify(data, public_key):
         signature = Path(temporary) / "signature.minisig"
         message.write_bytes(envelope["manifest"].encode("utf-8"))
         signature.write_text(envelope["signature"], encoding="utf-8")
-        result = subprocess.run(["minisign", "-V", "-H", "-q", "-m", str(message), "-x", str(signature), "-p", str(public_key)], stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        # Configured/public pinned keys may be raw base64 or a commented file.
+        # minisign -p only accepts the latter, while -P accepts the normalized
+        # public key packet in either case. No secret key is passed in argv.
+        result = subprocess.run(["minisign", "-V", "-H", "-q", "-m", str(message), "-x", str(signature), "-P", public_key_text(public_key)], stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
         need(result.returncode == 0, "minisign verification failed")
     return manifest
 
@@ -644,6 +647,12 @@ def immutable_put(store, key, data, content_type="application/octet-stream", max
         digest, size = hash_file(data, maximum)
     else:
         digest, size = hashlib.sha256(data).hexdigest(), len(data)
+    # A locked release object may reject an attempted write before evaluating
+    # its conditional header. Reuse matching bytes without any write attempt.
+    # Missing/different objects still require a create-only PUT; the second
+    # comparison handles a writer winning the race after this first read.
+    if store.same(key, digest, size):
+        return
     try:
         store.put(key, data, condition=("If-None-Match", "*"), content_type=content_type)
     except StoreError as error:

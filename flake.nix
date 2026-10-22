@@ -198,7 +198,7 @@
         ];
         # Frontend scripts run tsc and Vite through their Node shebangs; pin
         # that runtime instead of relying on a hosted runner's global Node.
-        ciPackages = [ rustupShim pkgs.nodejs ] ++ commonPackages;
+        ciPackages = [ rustupShim pkgs.nodejs pkgs.gh ] ++ commonPackages;
 
         linuxTauriPackages =
           with pkgs;
