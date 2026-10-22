@@ -10,7 +10,7 @@ use crate::model_config::{
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v5";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v6";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -208,22 +208,23 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-// While i02 is reserved for a different deployment, split fresh stock DeepSeek
-// account buckets evenly between shared Tinfoil and i01: 70 * 100 : 100 * 70.
-// Existing eligible sticky routes and health gates retain their precedence.
+// Provider multipliers allocate 5% of fresh stock DeepSeek account buckets to
+// shared Tinfoil and 95% to dedicated i01: 70 * 20 : 100 * 266. i02 remains
+// reserved for its distinct model. Eligible sticky routes and health gates
+// retain their normal precedence over this initial allocation.
 const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Tinfoil,
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
         response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        weight: 100,
+        weight: 20,
         enabled: true,
     },
     ModelRouteSpec {
         provider: ProviderId::Maple(MapleInstanceId::I01),
         provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
         response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        weight: 70,
+        weight: 266,
         enabled: true,
     },
 ];
@@ -563,7 +564,7 @@ mod tests {
                 .iter()
                 .map(|route| route.weight)
                 .collect::<Vec<_>>(),
-            [100, 70]
+            [20, 266]
         );
         for route in model.routes {
             assert_eq!(route.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
