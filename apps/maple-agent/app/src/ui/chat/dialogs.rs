@@ -468,7 +468,7 @@ impl ChatScreen {
             return;
         };
         let removed = self.sessions.remove(index);
-        self.completed_unread_sessions.remove(session_id);
+        self.mark_seen(session_id);
         self.timeline_revisions.remove(session_id);
         self.pending_questions
             .retain(|question| question.session_id != session_id);
@@ -542,6 +542,7 @@ impl ChatScreen {
                             if session.project_root == removed {
                                 session.state = AgentTaskState::Archived;
                                 this.completed_unread_sessions.remove(&session.id);
+                                this.failed_unread_sessions.remove(&session.id);
                             }
                         }
                         this.sidebar.update(cx, |sidebar, cx| {
