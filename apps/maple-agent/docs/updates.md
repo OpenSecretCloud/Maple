@@ -108,9 +108,12 @@ Before enabling the feed, prepare and review these concrete operations:
    `/download/agent/stable/*` as an owner operation. Keep routes out of routine
    Worker deployment configuration so deploy tokens do not need route-write
    authority. Configure HTTP-to-HTTPS handling in the zone.
-4. Protect `agent-update-signing` and `agent-updates-production`, restrict them
-   to trusted master, and configure the independently scoped signing and R2
-   credentials documented by the service. Publication must verify that the
+4. Reuse the existing `updates-production` approval environment and BWS access
+   credential for Agent reservation, update signing and publication. Configure
+   the Agent signing-key and bucket-item IDs documented by the service without
+   changing the existing environment's policies or Research credentials. The
+   workflow maps BWS outputs only into the consuming step; shared BWS grants and
+   environment access remain a trusted workflow boundary. Publication must verify that the
    selected artifact's embedded pins and trusted master both contain the chosen
    public key; an environment variable is not a substitute for compiled trust.
 5. Deploy with the narrowly scoped existing-Worker token and confirm the R2
