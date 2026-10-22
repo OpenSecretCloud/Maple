@@ -365,6 +365,9 @@ pub(super) struct Sidebar {
     /// Commits a task's rename when its field loses focus, the way a
     /// click anywhere else ends one in a native list.
     rename_focus_out: Option<Subscription>,
+    /// Task renames sent to the backend, for tests.
+    #[cfg(test)]
+    renames_sent: Vec<(String, String)>,
     // Persisted in the app settings.
     pinned_tasks: Vec<String>,
     /// Latest owner metadata seen per path, independent of current membership.
@@ -559,6 +562,8 @@ impl Sidebar {
             rename_input: None,
             rename_focus_pending: false,
             rename_focus_out: None,
+            #[cfg(test)]
+            renames_sent: Vec::new(),
             pinned_tasks: remote_settings
                 .as_ref()
                 .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
@@ -899,6 +904,11 @@ impl Sidebar {
         self.project_metadata.clear();
         self.pending_project_names.clear();
         self.rebuild_sections();
+    }
+
+    #[cfg(test)]
+    pub(super) fn renames_sent(&self) -> &[(String, String)] {
+        &self.renames_sent
     }
 
     #[cfg(test)]
@@ -1410,8 +1420,19 @@ impl Sidebar {
                                 sidebar.update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
                             }
                         });
-                    } else if let Some(chat) = chat.upgrade() {
-                        chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
+                    } else {
+                        // Escape discards: cancel before focus moves, or
+                        // the field losing focus would commit the rename.
+                        let escape = escape.clone();
+                        let chat = chat.clone();
+                        window.defer(cx, move |window, cx| {
+                            if let Some(sidebar) = escape.upgrade() {
+                                sidebar.update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
+                            }
+                            if let Some(chat) = chat.upgrade() {
+                                chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
+                            }
+                        });
                     }
                 })
                 .on_enter(move |_text, _, cx| {
@@ -1454,6 +1475,18 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// The pointer or focus left a task's rename field: commit it, unless
+    /// the field's own right-click menu took them (Paste, Cut).
+    fn leave_rename(&mut self, cx: &mut Context<Self>) {
+        let menu_open = self
+            .rename_input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).menu_open());
+        if !menu_open {
+            self.commit_rename(cx);
+        }
+    }
+
     pub(super) fn commit_rename(&mut self, cx: &mut Context<Self>) {
         let Some(target) = self.rename.take() else {
             return;
@@ -1470,6 +1503,8 @@ impl Sidebar {
         }
         match target {
             RenameTarget::Task(session_id) => {
+                #[cfg(test)]
+                self.renames_sent.push((session_id.clone(), name.clone()));
                 let backend = self.backend.clone();
                 let user_id = self.user_id.clone();
                 self.call(
@@ -2395,7 +2430,7 @@ impl Sidebar {
             Some(RenameTarget::Task(target)) if target == session_id => {
                 self.rename_field().map(|field| {
                     field.on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                        this.commit_rename(cx);
+                        this.leave_rename(cx);
                     }))
                 })
             }
@@ -2416,6 +2451,7 @@ impl Sidebar {
         let input = self.rename_input.clone()?;
         Some(
             div()
+                .debug_selector(|| "rename-field".to_string())
                 .id("rename-field")
                 .flex_1()
                 .min_w_0()
@@ -2679,7 +2715,7 @@ impl Render for Sidebar {
                     self.rename_focus_out =
                         Some(
                             cx.on_focus_out(&handle, window, |_this, _event, window, cx| {
-                                cx.defer_in(window, |this, _window, cx| this.commit_rename(cx));
+                                cx.defer_in(window, |this, _window, cx| this.leave_rename(cx));
                             }),
                         );
                 }
