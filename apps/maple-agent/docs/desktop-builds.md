@@ -104,7 +104,11 @@ build origin; Linux checksums alone do not provide that authentication.
 
 Pull requests produce unsigned macOS previews and Linux packaging evidence on
 fresh hosted runners. Their macOS artifacts include `unsigned` in the name and
-cannot satisfy the signed-artifact verifier. PR previews are not attested.
+cannot satisfy the signed-artifact verifier. The preview app is ad-hoc signed
+without hardened runtime so macOS can load its bundled libraries without a
+Developer ID Team ID. Signed master apps retain hardened runtime. Preview
+verification rejects incompatible library-validation flags; downloaded previews
+may still require macOS's **Open Anyway** approval. PR previews are not attested.
 
 The macOS GUI smoke establishes window creation, entry into the first render,
 and process survival; it does not capture a presented frame or verify login, chat,

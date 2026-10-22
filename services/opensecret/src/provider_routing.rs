@@ -2241,7 +2241,7 @@ mod tests {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_maple();
         let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        request.account_uuid = uuid_for_bucket(75);
+        request.account_uuid = uuid_for_bucket(25);
         let shared = router
             .select_active_completion_route(&proxy_router_with_both_providers(), &request)
             .expect("unready Maple leaves shared Tinfoil");
@@ -2255,8 +2255,21 @@ mod tests {
         assert_eq!(sticky.selection_source, RouteSelectionSource::Sticky);
         assert_eq!(sticky.bucket, None);
 
+        // A replacement backend starts with fresh process-local route memory,
+        // so a former shared account uses the restored i01 allocation.
+        let replacement = ProviderRouter::default();
+        let reassigned = replacement
+            .select_active_completion_route(&proxies, &request)
+            .expect("fresh router uses the restored account allocation");
+        assert_eq!(reassigned.provider, ProviderId::Maple(MapleInstanceId::I01));
+        assert_eq!(
+            reassigned.selection_source,
+            RouteSelectionSource::StaticSplit
+        );
+        assert_eq!(reassigned.bucket, Some(25));
+
         let mut other_account = request.clone();
-        other_account.account_uuid = uuid_for_bucket(175);
+        other_account.account_uuid = uuid_for_bucket(125);
         let mut other_surface = request.clone();
         other_surface.surface = InferenceSurface::ChatCompletions;
         for isolated in [other_account, other_surface] {
@@ -2442,7 +2455,7 @@ mod tests {
             let selected = router
                 .select_active_completion_route(&proxies, &request)
                 .unwrap();
-            let (index, expected) = if bucket < 50 {
+            let (index, expected) = if bucket < 5 {
                 (0, ProviderId::Tinfoil)
             } else {
                 (1, ProviderId::Maple(MapleInstanceId::I01))
@@ -2454,7 +2467,7 @@ mod tests {
             assert_eq!(selected.provider_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
             assert_eq!(selected.response_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         }
-        assert_eq!(counts, [50, 50]);
+        assert_eq!(counts, [5, 95]);
 
         request.account_uuid = uuid_for_bucket(75);
         let initial = router

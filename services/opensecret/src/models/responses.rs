@@ -1546,6 +1546,128 @@ impl RawThreadMessage {
         }
     }
 
+    /// Fetch one conversation item by UUID.
+    ///
+    /// Every branch filters by item UUID (unique per table) and conversation, so
+    /// a lookup reads at most one row per item table regardless of history size.
+    pub fn get_conversation_item(
+        conn: &mut PgConnection,
+        conversation_id: i64,
+        item_uuid: Uuid,
+    ) -> Result<Option<RawThreadMessage>, ResponsesError> {
+        let query = r#"
+            SELECT * FROM (
+                -- User messages
+                SELECT
+                    'user' as message_type,
+                    um.id,
+                    um.uuid,
+                    r.uuid as response_uuid,
+                    um.content_enc,
+                    'completed'::text as status,
+                    um.created_at,
+                    r.model,
+                    um.prompt_tokens as token_count,
+                    NULL::uuid as tool_call_id,
+                    NULL::text as finish_reason,
+                    NULL::text as tool_name
+                FROM user_messages um
+                LEFT JOIN responses r ON um.response_id = r.id
+                WHERE um.uuid = $2 AND um.conversation_id = $1
+
+                UNION ALL
+
+                -- Assistant messages
+                SELECT
+                    'assistant' as message_type,
+                    am.id,
+                    am.uuid,
+                    r.uuid as response_uuid,
+                    am.content_enc,
+                    am.status,
+                    am.created_at,
+                    r.model,
+                    am.completion_tokens as token_count,
+                    NULL::uuid as tool_call_id,
+                    am.finish_reason,
+                    NULL::text as tool_name
+                FROM assistant_messages am
+                LEFT JOIN responses r ON am.response_id = r.id
+                WHERE am.uuid = $2 AND am.conversation_id = $1
+
+                UNION ALL
+
+                -- Tool calls
+                SELECT
+                    'tool_call' as message_type,
+                    tc.id,
+                    tc.uuid,
+                    r.uuid as response_uuid,
+                    tc.arguments_enc as content_enc,
+                    'completed'::text as status,
+                    tc.created_at,
+                    NULL::text as model,
+                    tc.argument_tokens as token_count,
+                    tc.uuid as tool_call_id,
+                    NULL::text as finish_reason,
+                    tc.name as tool_name
+                FROM tool_calls tc
+                LEFT JOIN responses r ON tc.response_id = r.id
+                WHERE tc.uuid = $2 AND tc.conversation_id = $1
+
+                UNION ALL
+
+                -- Tool outputs
+                SELECT
+                    'tool_output' as message_type,
+                    tto.id,
+                    tto.uuid,
+                    r.uuid as response_uuid,
+                    tto.output_enc as content_enc,
+                    'completed'::text as status,
+                    tto.created_at,
+                    NULL::text as model,
+                    tto.output_tokens as token_count,
+                    tc.uuid as tool_call_id,
+                    NULL::text as finish_reason,
+                    tc.name as tool_name
+                FROM tool_outputs tto
+                JOIN tool_calls tc ON tto.tool_call_fk = tc.id
+                LEFT JOIN responses r ON tto.response_id = r.id
+                WHERE tto.uuid = $2 AND tto.conversation_id = $1
+
+                UNION ALL
+
+                -- Reasoning items
+                SELECT
+                    'reasoning' as message_type,
+                    ri.id,
+                    ri.uuid,
+                    r.uuid as response_uuid,
+                    ri.content_enc,
+                    ri.status,
+                    ri.created_at,
+                    NULL::text as model,
+                    ri.reasoning_tokens as token_count,
+                    NULL::uuid as tool_call_id,
+                    NULL::text as finish_reason,
+                    NULL::text as tool_name
+                FROM reasoning_items ri
+                LEFT JOIN responses r ON ri.response_id = r.id
+                WHERE ri.uuid = $2 AND ri.conversation_id = $1
+            ) AS conversation_item
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+        "#;
+
+        sql_query(query)
+            .bind::<BigInt, _>(conversation_id)
+            .bind::<diesel::sql_types::Uuid, _>(item_uuid)
+            .get_result::<RawThreadMessage>(conn)
+            .optional()
+            .map_err(ResponsesError::DatabaseError)
+    }
+
     pub fn get_response_context(
         conn: &mut PgConnection,
         response_id: i64,

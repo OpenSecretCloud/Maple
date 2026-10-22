@@ -252,6 +252,107 @@ assert appdir.parent.stat().st_mode & 0o777 == 0o700
                 self.env[variable] = "755" if variable == "FIXTURE_EXEC_MODE" else "644"
 
 
+class MacosUnsignedVerifierTests(unittest.TestCase):
+    """Run the actual static verifier while substituting only native tools."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.component = self.root / "component"
+        scripts = self.component / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("verify-release.sh", "release-info.py", "macos-build-info.py"):
+            shutil.copy2(SCRIPTS / name, scripts / name)
+        shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
+        entitlements = self.component / "app/packaging/macos-entitlements.plist"
+        entitlements.parent.mkdir(parents=True)
+        shutil.copy2(SCRIPTS.parent / "app/packaging/macos-entitlements.plist", entitlements)
+        profiles = json.loads((self.component / "release-profiles.json").read_text())
+        self.info = {**profiles["dev"], "profile": "dev", "version": "0.1.0",
+                     "source_sha": "a" * 40, "git_revision": "a" * 8}
+        self.bundle = self.root / f"{self.info['display_name']}.app"
+        binary = self.bundle / "Contents/MacOS/maple-agent"
+        binary.parent.mkdir(parents=True)
+        # Metadata-only Mach-O cannot execute. A successful static verification
+        # must read its section and signatures without launching artifact code.
+        binary.write_bytes(macho(self.info))
+        binary.chmod(0o755)
+        release_info.write_plist(self.info, self.bundle / "Contents/Info.plist", "1")
+        self.artifacts = self.root / "artifacts"
+        self.artifacts.mkdir()
+        (self.artifacts / "build-info.json").write_text(
+            json.dumps(self.info, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        (self.artifacts / "fixture.dmg").write_text("fixture disk image")
+        with tarfile.open(self.artifacts / "fixture.app.tar.gz", "w:gz") as archive:
+            archive.add(self.bundle, arcname=self.bundle.name)
+        release_info.write_manifest(self.info, self.artifacts, "macos-aarch64", True)
+        self.wrapper = self.root / "verify-fixture.sh"
+        self.wrapper.write_text("""#!/usr/bin/env bash
+set -euo pipefail
+uname() { if [[ "$1" == -s ]]; then echo Darwin; else echo arm64; fi; }
+git() { printf '%040d\\n' 0 | tr 0 a; }
+function /usr/bin/codesign {
+    case "$1" in
+        --verify) ;;
+        --display)
+            if [[ "$2" == --entitlements ]]; then
+                cat "$FIXTURE_ENTITLEMENTS"
+            else
+                printf '%s\\n' "$FIXTURE_SIGNATURE"
+            fi ;;
+        *) echo 'unexpected codesign call' >&2; return 1 ;;
+    esac
+}
+function /usr/bin/lipo { echo arm64; }
+function /usr/bin/hdiutil {
+    if [[ "$1" == attach ]]; then
+        while [[ $# -gt 0 && "$1" != -mountpoint ]]; do shift; done
+        [[ "$1" == -mountpoint ]]
+        cp -R "$FIXTURE_BUNDLE" "$2/"
+    elif [[ "$1" != detach ]]; then
+        echo 'unexpected hdiutil call' >&2; return 1
+    fi
+}
+source "$0" dev "$1" --unsigned --static
+""")
+        self.env = dict(os.environ, TMPDIR=str(self.root), FIXTURE_BUNDLE=str(self.bundle),
+                        FIXTURE_ENTITLEMENTS=str(entitlements))
+
+    def verify(self, directory_flags):
+        self.env["FIXTURE_SIGNATURE"] = (
+            "Executable=fixture\nIdentifier=cloud.opensecret.maple.agent.dev\n"
+            + directory_flags + "\nSignature=adhoc\nTeamIdentifier=not set\n"
+        )
+        result = subprocess.run(
+            ["bash", "-c", self.wrapper.read_text(), str(self.component / "scripts/verify-release.sh"), str(self.artifacts)],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertFalse(list(self.root.glob("maple-agent-verify.*")), "verifier private files must be cleaned")
+        return result
+
+    def test_ad_hoc_main_passes_real_static_artifact_verification(self):
+        result = self.verify("CodeDirectory v=20400 size=512 flags=0x2(adhoc) hashes=8+5 location=embedded")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("verified dev macos-aarch64", result.stdout)
+
+    def test_ad_hoc_main_rejects_hardened_runtime_library_validation_and_unknown_flags(self):
+        for flags in ("0x10002(adhoc,runtime)", "0x2002(adhoc,library-validation)", "0x8002(adhoc)"):
+            with self.subTest(flags=flags):
+                result = self.verify(f"CodeDirectory v=20400 size=512 flags={flags} hashes=8+5 location=embedded")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsigned macOS app must use only ad-hoc signing flags", result.stderr)
+                self.assertNotIn("verified dev macos-aarch64", result.stdout)
+
+    def test_ad_hoc_main_rejects_missing_or_malformed_flags(self):
+        for directory in ("", "CodeDirectory v=20400 flags=unrecognized", "flags=0x2(adhoc)"):
+            with self.subTest(directory=directory):
+                result = self.verify(directory)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsigned macOS app must use only ad-hoc signing flags", result.stderr)
+
+
 class ReleaseMetadataTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -618,7 +719,7 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assertTrue(signs[0][-1].endswith("libswiftFixture.dylib"))
         self.assertTrue(signs[1][-1].endswith(".app"))
         self.assertIn("--options", signs[1])
-        self.assertIn("runtime", signs[1])
+        self.assertEqual(signs[1][signs[1].index("--options") + 1], "runtime")
         self.assertIn("--timestamp", signs[1])
         self.assertEqual(len([call for call in calls if call[:3] == ["xcrun", "notarytool", "submit"]]), 2)
         self.assertTrue(any(call[:2] == ["security", "delete-keychain"] for call in calls))
@@ -656,6 +757,11 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assert_secrets_not_returned(result)
         self.assertFalse(any(call[0] == "security" or "notarytool" in call for call in calls))
         self.assertTrue(all("--timestamp=none" in call for call in calls if call[0] == "codesign" and "--force" in call))
+        main_sign = next(call for call in calls if call[:2] == ["codesign", "--force"] and call[-1].endswith(".app"))
+        self.assertEqual(main_sign[main_sign.index("--sign") + 1], "-")
+        self.assertEqual(main_sign[main_sign.index("--options") + 1], "0")
+        self.assertEqual(main_sign[main_sign.index("--entitlements") + 1],
+                         str(SCRIPTS.parent / "app/packaging/macos-entitlements.plist"))
 
     def test_rejected_notary_response_and_signing_failure_cleanup(self):
         for failure in ("notary", "codesign"):
