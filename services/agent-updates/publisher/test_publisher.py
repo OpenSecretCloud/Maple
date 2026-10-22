@@ -6,6 +6,7 @@ cryptographic verification remains an explicitly injected boundary here.
 """
 
 import base64
+from email.message import Message
 import gzip
 import hashlib
 import importlib.util
@@ -18,6 +19,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
+from urllib.response import addinfourl
 
 
 SPEC = importlib.util.spec_from_file_location("agent_publisher", Path(__file__).with_name("publisher.py"))
@@ -720,6 +722,62 @@ class PublicationTests(unittest.TestCase):
         for record in [*self.manifest["artifacts"].values(), *self.manifest["downloads"].values()]:
             for method, range_header in (("HEAD", None), ("GET", "bytes=0-0"), ("GET", None)):
                 self.assertIn((method, record["path"], range_header), origin.calls)
+
+    def test_live_verification_sends_native_headers_through_urllib_for_every_request(self):
+        origin = FixtureOrigin(self.bundle, self.manifest, self.envelope)
+        requests = []
+
+        def offline_https(_handler, request):
+            headers = (request.get_header("User-agent"), request.get_header("Accept-encoding"))
+            requests.append((request.get_method(), urlsplit(request.full_url).path,
+                             request.get_header("Range"), headers))
+            # Model the public edge's client policy through urllib's real
+            # request, response and redirect handlers, without network access.
+            response = origin.open(request, request.timeout) if headers == ("Maple-Agent-Updater/1", "identity") \
+                else FakeResponse(b"client headers required", status=403)
+            response_headers = Message()
+            for name, value in response.headers.items():
+                response_headers[name] = value
+            result = addinfourl(response, response_headers, request.full_url, response.status)
+            result.msg = "Offline fixture"
+            return result
+
+        with patch.object(publisher, "minisign_verify", fixture_verifier), \
+                patch.object(publisher.urllib.request, "getproxies", return_value={}), \
+                patch.object(publisher.urllib.request.HTTPSHandler, "https_open", offline_https):
+            result = publisher.verify_live(self.bundle, self.bundle / "public-key.pub", "https://updates.example")
+
+        self.assertEqual(result, self.manifest)
+        # Two metadata GETs, HEAD/range/full GET for each of two payloads, and
+        # one installer redirect GET. The redirect must never be followed.
+        self.assertEqual(len(requests), 9)
+        self.assertEqual({request[3] for request in requests}, {("Maple-Agent-Updater/1", "identity")})
+        self.assertIn(("GET", "/agent/stable/latest.json", None), origin.calls)
+        self.assertIn(("GET", publisher.public_path("1.2.3", "manifest.json"), None), origin.calls)
+        self.assertIn(("GET", "/download/agent/stable/macos", None), origin.calls)
+        for record in [*self.manifest["artifacts"].values(), *self.manifest["downloads"].values()]:
+            for method, range_header in (("HEAD", None), ("GET", "bytes=0-0"), ("GET", None)):
+                self.assertIn((method, record["path"], range_header), origin.calls)
+
+    def test_live_metadata_failure_identifies_fixed_path_and_status_without_response_content(self):
+        for path in ("/agent/stable/latest.json", publisher.public_path("1.2.3", "manifest.json")):
+            for status in (403, 200):
+                with self.subTest(path=path, status=status):
+                    origin = FixtureOrigin(self.bundle, self.manifest, self.envelope)
+                    original_open = origin.open
+
+                    def wrong_metadata(request, timeout):
+                        if urlsplit(request.full_url).path == path:
+                            return FakeResponse(b"private upstream response", status=status,
+                                                headers={"Private-Header": "private upstream header"})
+                        return original_open(request, timeout)
+
+                    with patch.object(publisher, "minisign_verify", fixture_verifier), \
+                            patch.object(publisher.urllib.request, "build_opener", return_value=origin), \
+                            patch.object(origin, "open", side_effect=wrong_metadata), \
+                            self.assertRaises(publisher.PublishError) as raised:
+                        publisher.verify_live(self.bundle, self.bundle / "public-key.pub", "https://updates.example")
+                    self.assertEqual(str(raised.exception), f"live signed metadata differs at {path} (HTTP {status})")
 
     def test_live_verification_rejects_foreign_or_wrong_download_redirect(self):
         for redirect in ("https://foreign.example/app.dmg", "/agent/stable/releases/1.2.4/app.dmg"):

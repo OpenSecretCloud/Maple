@@ -782,9 +782,12 @@ def verify_live(bundle, public_key, base_url):
     manifest = minisign_verify(envelope, public_key)
     bundle_records(bundle, manifest)
     opener = urllib.request.build_opener(NoRedirect)
+    # Match the native updater and preserve the exact bytes being verified,
+    # including full payload GETs that do not go through live_request.
+    opener.addheaders = [("User-Agent", "Maple-Agent-Updater/1"), ("Accept-Encoding", "identity")]
     for path, expected in (("/agent/stable/latest.json", envelope), (public_path(manifest["version"], "manifest.json"), envelope)):
         status, _, body = live_request(opener, origin + path)
-        need(status == 200 and body == expected, "live signed metadata differs")
+        need(status == 200 and body == expected, f"live signed metadata differs at {path} (HTTP {status})")
     for record in {item["path"]: item for item in [*manifest["artifacts"].values(), *manifest["downloads"].values()]}.values():
         status, headers, _ = live_request(opener, origin + record["path"], method="HEAD", maximum=0)
         need(status == 200 and headers.get("Content-Length") == str(record["size"]), "live artifact HEAD failed")

@@ -104,7 +104,9 @@ do not print subprocess output, signing-key paths, request headers or credential
 
 Publication finishes by checking the live latest and immutable signed manifest,
 signature, full artifact hashes, HEAD lengths, one-byte ranges, and installer
-redirect destinations. Repeat that separately with `verify-live --bundle bundle
+redirect destinations. All public requests use the native client's
+`Maple-Agent-Updater/1` identity and `Accept-Encoding: identity`, including full
+payload downloads. Repeat that separately with `verify-live --bundle bundle
 --public-key bundle/public-key.pub --base-url https://updates.trymaple.ai` after a
 transport failure or operational change. If this final check fails after promotion,
 inspect the live state and retry the identical bundle; publication may already

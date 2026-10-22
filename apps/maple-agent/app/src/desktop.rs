@@ -2869,10 +2869,14 @@ pub fn run() {
             }
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| quit_app(cx));
-            cx.on_action(|_: &crate::update::AboutAgent, cx| show_update_about(cx));
+            // Menu actions dispatch while the active window is borrowed.
+            // Re-enter its view only after the dispatch has unwound.
+            cx.on_action(|_: &crate::update::AboutAgent, cx| cx.defer(show_update_about));
             cx.on_action(|_: &crate::update::CheckForUpdates, cx| {
-                show_update_about(cx);
-                dispatch_update_action(crate::update::UpdateAction::Check, cx);
+                cx.defer(|cx| {
+                    show_update_about(cx);
+                    dispatch_update_action(crate::update::UpdateAction::Check, cx);
+                });
             });
             #[cfg(target_os = "macos")]
             {
