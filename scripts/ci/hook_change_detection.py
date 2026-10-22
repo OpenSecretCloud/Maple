@@ -23,6 +23,7 @@ OUTPUTS = (
     "proxy",
     "opensecret",
     "updates",
+    "agent_updates",
     "repo",
 )
 ALL_OUTPUTS = frozenset(OUTPUTS)
@@ -50,6 +51,10 @@ AUTH_PREFIX = "apps/maple-auth/"
 
 AGENT_PREFIX = "apps/maple-agent/"
 AGENT_INERT_PREFIXES = ("docs/", ".githooks/")
+AGENT_PUBLICATION_INPUTS = frozenset({
+    "apps/maple-agent/scripts/release-info.py",
+    "apps/maple-agent/release-profiles.json",
+})
 
 SDK_TS_PREFIXES = ("sdk/src/",)
 SDK_TS_FILES = frozenset(
@@ -95,6 +100,7 @@ BACKEND_INERT_FILES = frozenset(
 )
 
 UPDATES_PREFIX = "services/updates/"
+AGENT_UPDATES_PREFIX = "services/agent-updates/"
 
 REPO_PREFIXES = (".github/", "scripts/ci/")
 REPO_FILES = frozenset({"flake.nix", "flake.lock"})
@@ -133,6 +139,8 @@ def classify_path(path: str) -> frozenset[str]:
         relative = path.removeprefix(AGENT_PREFIX)
         if relative.startswith(AGENT_INERT_PREFIXES):
             return frozenset()
+        if path in AGENT_PUBLICATION_INPUTS:
+            return frozenset({"agent", "agent_updates"})
         return frozenset({"agent"})
 
     if path in SDK_SHARED_FILES:
@@ -161,6 +169,10 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset()
     if path.startswith(UPDATES_PREFIX):
         return frozenset({"updates"})
+    if path.startswith(AGENT_UPDATES_PREFIX + ".githooks/"):
+        return frozenset()
+    if path.startswith(AGENT_UPDATES_PREFIX):
+        return frozenset({"agent_updates"})
 
     if path in REPO_FILES or path.startswith(REPO_PREFIXES):
         return frozenset({"repo"})

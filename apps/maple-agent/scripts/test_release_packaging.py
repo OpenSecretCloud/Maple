@@ -9,6 +9,7 @@ from pathlib import Path
 import plistlib
 import shlex
 import shutil
+from signal import SIGKILL
 import subprocess
 import sys
 import tempfile
@@ -484,6 +485,32 @@ class NativeSigningBoundaryTests(unittest.TestCase):
         log.unlink(missing_ok=True)
         search_state = self.directory / "keychain-search.json"
         search_state.write_text(json.dumps(self.search_list if search_list is None else search_list))
+        # Bash 5.3 uses a pipe for this heredoc, but the Darwin pipe capacity
+        # can be smaller than its threshold. Keep this longer mock as a file
+        # so a command substitution cannot block before Python starts.
+        security_list = self.directory / "mock-security-list.py"
+        security_list.write_text("""import json,os,sys
+from pathlib import Path
+state=Path(os.environ['FIXTURE_KEYCHAIN_SEARCH'])
+args=sys.argv[1:]
+if args == ['list-keychains','-d','user']:
+    if os.environ.get('FIXTURE_FAILURE') == 'malformed-search':
+        print('not a quoted path')
+    else:
+        for path in json.loads(state.read_text()):
+            print('    "'+path+'"')
+else:
+    assert args[:4] == ['list-keychains','-d','user','-s'], args
+    paths=args[4:]
+    adding=any('/.macos-release.' in path and path.endswith('/signing.keychain-db') for path in paths)
+    failure=os.environ.get('FIXTURE_FAILURE')
+    if failure == 'restore-search' and not adding:
+        raise SystemExit(1)
+    state.write_text(json.dumps(paths))
+    # Simulate a setter that changed state before reporting failure.
+    if failure == 'set-search' and adding:
+        raise SystemExit(1)
+""")
         wrapper = self.directory / "mock-packager.sh"
         wrapper.write_text(f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -520,29 +547,7 @@ PY
             if [[ "$1" == find-identity ]]; then echo '1) 1111111111111111111111111111111111111111 "Developer ID Application: Fixture (TEAM123456)"';
             elif [[ "$1" == create-keychain ]]; then touch "${{@:$#}}";
             elif [[ "$1" == list-keychains ]]; then
-                python3 - "$@" <<'PY'
-import json,os,sys
-from pathlib import Path
-state=Path(os.environ['FIXTURE_KEYCHAIN_SEARCH'])
-args=sys.argv[1:]
-if args == ['list-keychains','-d','user']:
-    if os.environ.get('FIXTURE_FAILURE') == 'malformed-search':
-        print('not a quoted path')
-    else:
-        for path in json.loads(state.read_text()):
-            print('    "'+path+'"')
-else:
-    assert args[:4] == ['list-keychains','-d','user','-s'], args
-    paths=args[4:]
-    adding=any('/.macos-release.' in path and path.endswith('/signing.keychain-db') for path in paths)
-    failure=os.environ.get('FIXTURE_FAILURE')
-    if failure == 'restore-search' and not adding:
-        raise SystemExit(1)
-    state.write_text(json.dumps(paths))
-    # Simulate a setter that changed state before reporting failure.
-    if failure == 'set-search' and adding:
-        raise SystemExit(1)
-PY
+                python3 {shlex.quote(str(security_list))} "$@"
             fi ;;
         codesign)
             if [[ "$1" == --force && "$3" != - ]]; then
@@ -584,7 +589,20 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
             "APPLE_ID": "fixture-apple-id", "APPLE_ID_PASSWORD": "fixture-notary-password",
             "APPLE_TEAM_ID": "TEAM123456",
         })
-        result = subprocess.run(["bash", str(wrapper)], env=env, capture_output=True, text=True)
+        process = subprocess.Popen(["bash", str(wrapper)], env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            stdout, stderr = process.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            # The fixture owns its process group, including nested mock-tool
+            # children. Reap all of them when it times out, not unrelated tests.
+            try:
+                os.killpg(process.pid, SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            self.fail("mock macOS packager exceeded its 60-second timeout")
+        result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return result, calls
 

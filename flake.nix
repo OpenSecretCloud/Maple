@@ -198,7 +198,7 @@
         ];
         # Frontend scripts run tsc and Vite through their Node shebangs; pin
         # that runtime instead of relying on a hosted runner's global Node.
-        ciPackages = [ rustupShim pkgs.nodejs ] ++ commonPackages;
+        ciPackages = [ rustupShim pkgs.nodejs pkgs.gh ] ++ commonPackages;
 
         linuxTauriPackages =
           with pkgs;
@@ -743,7 +743,7 @@
           '';
 
           change-detection = pkgs.runCommand "maple-ci-change-detection-check" {
-            nativeBuildInputs = [ pkgs.python3 ];
+            nativeBuildInputs = with pkgs; [ bash git python3 ];
             src = ./.;
           } ''
             cd "$src"
@@ -787,6 +787,16 @@
             python3 apps/maple-agent/scripts/test_macos_release_dylibs.py
             python3 apps/maple-agent/scripts/test_macos_build_info.py
             python3 apps/maple-agent/scripts/test_smoke_macos_release.py
+            touch "$out"
+          '';
+
+          agent-updates = pkgs.runCommand "maple-agent-updates-check" {
+            nativeBuildInputs = with pkgs; [ git minisign python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_agent_updates_workflows.py
+            python3 -I -m unittest discover -s services/agent-updates/publisher -p 'test_*.py'
             touch "$out"
           '';
 

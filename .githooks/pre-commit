@@ -77,8 +77,9 @@ export MAPLE_HOOK_STAGED="$STAGED_FILE"
 export MAPLE_HOOK_SELECTED="$SELECTED"
 export MAPLE_HOOK_FULL="${MAPLE_HOOK_FULL:-0}"
 
-# run_component NAME DIR FLAKE_REF SCRIPT [ENV=VALUE ...]
+# run_component NAME DIR FLAKE_REF SCRIPT [--bash] [ENV=VALUE ...]
 #   DIR is where the script and `nix develop` run; FLAKE_REF is relative to DIR.
+#   CI entrypoints may opt into Bash; component hooks use POSIX sh by default.
 #   ENV=VALUE pairs are set for `nix develop` itself, not only for the script:
 #   a flake's shellHook runs before the `-c` command, and the opensecret shell
 #   starts PostgreSQL and writes .env unless OPENSECRET_DEV_* tell it not to.
@@ -86,6 +87,11 @@ export MAPLE_HOOK_FULL="${MAPLE_HOOK_FULL:-0}"
 run_component() {
     name=$1; dir=$2; flake_ref=$3; script=$4
     shift 4
+    component_shell=sh
+    if [ "${1:-}" = "--bash" ]; then
+        component_shell=bash
+        shift
+    fi
     hook_log "=== $name ==="
     started=$(date +%s)
     # Git exports GIT_INDEX_FILE, GIT_DIR, and friends to hooks. They must not
@@ -94,10 +100,10 @@ run_component() {
     # shellcheck disable=SC2086 # GIT_ENV_UNSET is a deliberate word list
     if [ -n "$NIX_BIN" ]; then
         (cd "$dir" && env $GIT_ENV_UNSET "$@" "$NIX_BIN" develop --no-update-lock-file "$flake_ref" \
-            -c env MAPLE_HOOK_IN_NIX=1 sh "$script")
+            -c env MAPLE_HOOK_IN_NIX=1 "$component_shell" "$script")
     else
         # shellcheck disable=SC2086
-        (cd "$dir" && env $GIT_ENV_UNSET MAPLE_HOOK_IN_NIX=0 "$@" sh "$script")
+        (cd "$dir" && env $GIT_ENV_UNSET MAPLE_HOOK_IN_NIX=0 "$@" "$component_shell" "$script")
     fi
     status=$?
     hook_log "=== $name finished in $(( $(date +%s) - started ))s ==="
@@ -115,6 +121,9 @@ if hook_selected auth; then
 fi
 if hook_selected updates; then
     run_component updates "$REPO_ROOT" ".#ci" "$REPO_ROOT/services/updates/.githooks/pre-commit"
+fi
+if hook_selected agent_updates; then
+    run_component agent-updates "$REPO_ROOT" ".#ci" "$REPO_ROOT/scripts/ci/agent-updates.sh" --bash
 fi
 if hook_selected sdk_rust || hook_selected sdk_ts; then
     run_component sdk "$REPO_ROOT/sdk" "." "$REPO_ROOT/sdk/.githooks/pre-commit"
