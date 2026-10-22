@@ -1,0 +1,1764 @@
+//! Synchronous, fail-closed installation primitives. Run these off the UI thread.
+//!
+//! The caller authenticates discovery again and holds `InstallLock` plus the
+//! profile's startup/host fences through `replace`. Serialized preparation is
+//! never authority: every file is compared with the signed payload again.
+
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
+    path::{Component, Path, PathBuf},
+};
+
+use flate2::read::MultiGzDecoder;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+use crate::{Artifact, PreparedUpdate, Target};
+
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
+
+const APP_NAME: &str = "Maple Agent.app";
+const STAGING_PREFIX: &str = ".maple-agent-update-";
+const STAGING_RANDOM_LENGTH: usize = 16;
+const RECEIPT_NAME: &str = "installed.json";
+const MAX_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ENTRIES: usize = 20_000;
+const MAX_PATH_BYTES: usize = 1024;
+const MAX_EXTENSION_BYTES: u64 = 16 * 1024;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+const CODESIGN_REQUIREMENT: &str = "=anchor apple generic and identifier \"cloud.opensecret.maple.agent\" and certificate leaf[subject.OU] = \"X773Y823TN\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
+
+#[derive(Debug, Error)]
+pub enum InstallError {
+    #[error("This installation needs a manual download: {0}")]
+    NotifyOnly(&'static str),
+    #[error("Another updater is installing this application; try again shortly")]
+    Busy,
+    #[error("The prepared update is invalid: {0}")]
+    Invalid(&'static str),
+    #[error("The update does not have the required Maple code signature and identity")]
+    CodeSignature,
+    #[error("The update could not be installed: {0}")]
+    Io(#[from] io::Error),
+}
+
+type Result<T> = std::result::Result<T, InstallError>;
+
+/// The on-disk values are untrusted on restoration. Keep the authenticated
+/// `PreparedUpdate` separately and pass it to every revalidation/replacement.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallPreparation {
+    pub installed_path: PathBuf,
+    pub staging_dir: PathBuf,
+    pub payload_path: PathBuf,
+    pub staged_path: PathBuf,
+    pub version: String,
+    pub build: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// The previous bundle stays at `backup_path` until a successful new startup.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledUpdate {
+    pub installed_path: PathBuf,
+    pub staging_dir: PathBuf,
+    pub backup_path: PathBuf,
+    pub version: String,
+    pub build: String,
+    /// The swap committed, but a later directory synchronization failed.
+    /// Relaunch the new app and keep the previous app until its checkpoint.
+    #[serde(default)]
+    pub durability_warning: bool,
+}
+
+/// Separate from profile locks: two profiles must not replace the same app.
+pub struct InstallLock {
+    _file: File,
+}
+
+/// Find a supported installation from the real executable, never a saved path.
+/// AppImage updates remain notify-only until the packaged Linux launch gate.
+pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let executable = executable.canonicalize()?;
+        let app = executable
+            .parent()
+            .filter(|p| p.file_name().is_some_and(|n| n == "MacOS"))
+            .and_then(Path::parent)
+            .filter(|p| p.file_name().is_some_and(|n| n == "Contents"))
+            .and_then(Path::parent)
+            .ok_or(InstallError::NotifyOnly(
+                "run the installed application bundle",
+            ))?;
+        validate_destination(app)?;
+        let _probe = tempfile::Builder::new()
+            .prefix(".maple-agent-write-probe-")
+            .tempfile_in(app.parent().unwrap())
+            .map_err(destination_error)?;
+        Ok(app.to_owned())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = executable;
+        Err(InstallError::NotifyOnly(
+            "automatic installation is not enabled on this platform",
+        ))
+    }
+}
+
+pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
+    validate_destination(installed)?;
+    let parent = installed
+        .parent()
+        .ok_or(InstallError::Invalid("missing installation parent"))?;
+    let digest = hex::encode(Sha256::digest(installed.as_os_str().as_encoded_bytes()));
+    let path = parent.join(format!(".maple-agent-install-{digest}.lock"));
+    let file = open_regular(&path, true, false)?;
+    validate_private_file(&file)?;
+    file.try_lock_exclusive().map_err(|e| {
+        if e.kind() == io::ErrorKind::WouldBlock {
+            InstallError::Busy
+        } else {
+            e.into()
+        }
+    })?;
+    Ok(InstallLock { _file: file })
+}
+
+/// The caller retains the application lock for this preparation's entire
+/// lifetime, including while Ready, until it is installed or discarded.
+pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
+    ensure_supported()?;
+    prepare_inner(update, Verifier::Native)
+}
+
+pub fn revalidate(preparation: &InstallPreparation, update: &PreparedUpdate) -> Result<()> {
+    ensure_supported()?;
+    revalidate_inner(preparation, update, Verifier::Native)
+}
+
+/// Remove a withdrawn/cancelled preparation before replacement. Once an install
+/// receipt exists the directory may contain the prior app, so only a verified
+/// new startup may clear it through checkpoint cleanup.
+pub fn discard_preparation(preparation: &InstallPreparation) -> Result<()> {
+    validate_destination(&preparation.installed_path)?;
+    validate_staging(&preparation.installed_path, &preparation.staging_dir)?;
+    if preparation.payload_path != preparation.staging_dir.join("payload")
+        || preparation.staged_path != preparation.staging_dir.join(APP_NAME)
+        || fs::symlink_metadata(preparation.staging_dir.join(RECEIPT_NAME)).is_ok()
+    {
+        return Err(InstallError::Invalid(
+            "cannot discard a changed preparation or retained backup",
+        ));
+    }
+    fs::remove_dir_all(&preparation.staging_dir)?;
+    sync_directory(preparation.installed_path.parent().unwrap())
+}
+
+/// Requires the caller to retain the application lock and profile host fences.
+/// It rechecks the downloaded archive, every staged byte, and the OS signature
+/// immediately before the atomic swap. No downloaded executable is launched.
+pub fn replace(
+    preparation: &InstallPreparation,
+    update: &PreparedUpdate,
+) -> Result<InstalledUpdate> {
+    ensure_supported()?;
+    replace_inner(preparation, update, Verifier::Native, Synchronizer::Native)
+}
+
+fn replace_inner(
+    preparation: &InstallPreparation,
+    update: &PreparedUpdate,
+    verifier: Verifier,
+    synchronizer: Synchronizer,
+) -> Result<InstalledUpdate> {
+    revalidate_inner(preparation, update, verifier)?;
+    let mut installed = InstalledUpdate {
+        installed_path: preparation.installed_path.clone(),
+        staging_dir: preparation.staging_dir.clone(),
+        backup_path: preparation.staged_path.clone(),
+        version: preparation.version.clone(),
+        build: preparation.build.clone(),
+        durability_warning: false,
+    };
+    // A receipt preceding the swap survives a crash before profile-state save.
+    // Old startups cannot clear it: checkpoint requires the NEW version/build.
+    write_receipt(&installed)?;
+    if let Err(error) = swap_bundles(&preparation.installed_path, &preparation.staged_path) {
+        // Failed atomic swaps leave both paths unchanged. Remove the pending
+        // receipt so the caller can discard or retry this preparation.
+        let _ = fs::remove_file(preparation.staging_dir.join(RECEIPT_NAME));
+        return Err(error);
+    }
+    // Once swap succeeds this is a committed install, including on an I/O
+    // error while making directory changes durable. Returning an ordinary Err
+    // would keep the old process running after its host has been stopped.
+    // Always hand the new installation to relaunch; retain the receipt and old
+    // bundle for its checkpoint regardless of synchronization outcome.
+    let stage_synced = synchronizer.sync(&preparation.staging_dir).is_ok();
+    let parent_synced = synchronizer
+        .sync(preparation.installed_path.parent().unwrap())
+        .is_ok();
+    installed.durability_warning = !stage_synced || !parent_synced;
+    Ok(installed)
+}
+
+impl InstalledUpdate {
+    /// Call only after the new app reached its startup checkpoint. On failure,
+    /// retain the backup; automatic crash rollback is deliberately not implied.
+    pub fn checkpoint_cleanup(&self) -> Result<()> {
+        let _lock = acquire_install_lock(&self.installed_path)?;
+        self.cleanup_locked()
+    }
+
+    fn cleanup_locked(&self) -> Result<()> {
+        validate_staging(&self.installed_path, &self.staging_dir)?;
+        if self.backup_path != self.staging_dir.join(APP_NAME) {
+            return Err(InstallError::Invalid("backup path changed"));
+        }
+        verify_bundle(&self.installed_path, &self.version, &self.build)?;
+        fs::remove_dir_all(&self.staging_dir)?;
+        sync_directory(self.installed_path.parent().unwrap())
+    }
+}
+
+/// Recover receipts even if the process exited after swapping but before saving
+/// its profile state. Invalid/stale receipts leave their backups untouched.
+pub fn cleanup_after_startup(installed: &Path, version: &str, build: &str) -> Result<usize> {
+    ensure_supported()?;
+    let _lock = acquire_install_lock(installed)?;
+    verify_bundle(installed, version, build)?;
+    cleanup_staging_locked(installed, version, build)
+}
+
+// An active preparation retains the application lock even while the user
+// defers Restart. Once this lock is available, no receipt means a crashed or
+// cancelled preparation, rather than another process's live Ready update.
+fn cleanup_staging_locked(installed: &Path, version: &str, build: &str) -> Result<usize> {
+    let parent = installed
+        .parent()
+        .ok_or(InstallError::Invalid("missing installation parent"))?;
+    let mut cleaned = 0;
+    for entry in fs::read_dir(parent)?.take(4096) {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(STAGING_PREFIX))
+        {
+            continue;
+        }
+        let root = entry.path();
+        if validate_staging(installed, &root).is_err() {
+            continue;
+        }
+        match fs::symlink_metadata(root.join(RECEIPT_NAME)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::remove_dir_all(&root)?;
+                sync_directory(parent)?;
+                cleaned += 1;
+                continue;
+            }
+            // Any receipt, including malformed or unreadable state, may be a
+            // retained prior app after a committed swap. Preserve uncertainty.
+            Ok(_) => {}
+            Err(_) => continue,
+        }
+        let Ok(mut receipt) = open_regular(&root.join(RECEIPT_NAME), false, false) else {
+            continue;
+        };
+        if receipt.metadata()?.len() > 16 * 1024 {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut receipt)
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        let Ok(saved) = serde_json::from_slice::<InstalledUpdate>(&bytes) else {
+            continue;
+        };
+        if saved.installed_path == installed
+            && saved.staging_dir == root
+            && saved.version == version
+            && saved.build == build
+            && saved.cleanup_locked().is_ok()
+        {
+            cleaned += 1;
+        }
+    }
+    Ok(cleaned)
+}
+
+/// Packaging assigns CFBundleVersion after compilation. Read it from the
+/// current bundle, then authenticate it before trusting a matching receipt.
+pub fn cleanup_current_installation(installed: &Path, running_version: &str) -> Result<usize> {
+    ensure_supported()?;
+    let (version, build) = bundle_version(installed)?;
+    if version != running_version {
+        return Err(InstallError::Invalid(
+            "installed version differs from running app",
+        ));
+    }
+    verify_bundle(installed, &version, &build)?;
+    cleanup_after_startup(installed, &version, &build)
+}
+
+fn ensure_supported() -> Result<()> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Ok(())
+    } else {
+        Err(InstallError::NotifyOnly(
+            "automatic installation is not enabled on this platform",
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Verifier {
+    Native,
+    #[cfg(all(test, unix))]
+    Test(fn(&Path, &str, &str) -> Result<()>),
+}
+
+#[derive(Clone, Copy)]
+enum Synchronizer {
+    Native,
+    #[cfg(all(test, target_os = "macos"))]
+    Test(fn(&Path) -> Result<()>),
+}
+
+impl Synchronizer {
+    fn sync(self, directory: &Path) -> Result<()> {
+        match self {
+            Self::Native => sync_directory(directory),
+            #[cfg(all(test, target_os = "macos"))]
+            Self::Test(sync) => sync(directory),
+        }
+    }
+}
+
+impl Verifier {
+    fn verify(self, bundle: &Path, version: &str, build: &str) -> Result<()> {
+        match self {
+            Self::Native => verify_bundle(bundle, version, build),
+            #[cfg(all(test, unix))]
+            Self::Test(verify) => verify(bundle, version, build),
+        }
+    }
+}
+
+fn expected_artifact(update: &PreparedUpdate) -> Result<&Artifact> {
+    crate::manifest::validate_manifest(&update.release.manifest)
+        .map_err(|_| InstallError::Invalid("manifest fields changed"))?;
+    update
+        .release
+        .manifest
+        .artifacts
+        .get(Target::DarwinAarch64.key())
+        .ok_or(InstallError::Invalid("missing macOS payload"))
+}
+
+fn prepare_inner(update: &PreparedUpdate, verifier: Verifier) -> Result<InstallPreparation> {
+    validate_destination(&update.installed_path)?;
+    let artifact = expected_artifact(update)?;
+    validate_upgrade_destination(update, verifier)?;
+    let parent = update.installed_path.parent().unwrap();
+    let temporary = tempfile::Builder::new()
+        .prefix(STAGING_PREFIX)
+        .rand_bytes(STAGING_RANDOM_LENGTH)
+        .tempdir_in(parent)
+        .map_err(destination_error)?;
+    #[cfg(unix)]
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))?;
+    let payload_path = temporary.path().join("payload");
+    copy_verified_payload(&update.payload_path, &payload_path, artifact)?;
+    let expected = scan_archive(&payload_path, Some(temporary.path()))?;
+    let staged_path = temporary.path().join(APP_NAME);
+    if scan_tree(&staged_path)? != expected {
+        return Err(InstallError::Invalid("staged content differs from archive"));
+    }
+    verifier.verify(
+        &staged_path,
+        &update.release.manifest.version,
+        &update.release.manifest.build,
+    )?;
+    sync_directory(temporary.path())?;
+    let preparation = InstallPreparation {
+        installed_path: update.installed_path.clone(),
+        staging_dir: temporary.path().to_owned(),
+        payload_path,
+        staged_path,
+        version: update.release.manifest.version.clone(),
+        build: update.release.manifest.build.clone(),
+        size: artifact.size,
+        sha256: artifact.sha256.clone(),
+    };
+    let _ = temporary.keep();
+    Ok(preparation)
+}
+
+fn revalidate_inner(
+    preparation: &InstallPreparation,
+    update: &PreparedUpdate,
+    verifier: Verifier,
+) -> Result<()> {
+    validate_destination(&update.installed_path)?;
+    validate_upgrade_destination(update, verifier)?;
+    validate_staging(&update.installed_path, &preparation.staging_dir)?;
+    let artifact = expected_artifact(update)?;
+    if preparation.installed_path != update.installed_path
+        || preparation.payload_path != preparation.staging_dir.join("payload")
+        || preparation.staged_path != preparation.staging_dir.join(APP_NAME)
+        || preparation.version != update.release.manifest.version
+        || preparation.build != update.release.manifest.build
+        || preparation.size != artifact.size
+        || preparation.sha256 != artifact.sha256
+    {
+        return Err(InstallError::Invalid("persisted preparation changed"));
+    }
+    verify_payload(&preparation.payload_path, artifact)?;
+    let expected = scan_archive(&preparation.payload_path, None)?;
+    if scan_tree(&preparation.staged_path)? != expected {
+        return Err(InstallError::Invalid(
+            "staged content differs from signed archive",
+        ));
+    }
+    verifier.verify(
+        &preparation.staged_path,
+        &preparation.version,
+        &preparation.build,
+    )
+}
+
+fn validate_upgrade_destination(update: &PreparedUpdate, verifier: Verifier) -> Result<()> {
+    let (version, build) = bundle_version(&update.installed_path)?;
+    let installed = crate::manifest::stable_version(&version)
+        .map_err(|_| InstallError::Invalid("invalid installed version"))?;
+    let proposed = crate::manifest::stable_version(&update.release.manifest.version)
+        .map_err(|_| InstallError::Invalid("invalid proposed version"))?;
+    if proposed <= installed {
+        return Err(InstallError::Invalid(
+            "installation already has this version or a newer version",
+        ));
+    }
+    verifier.verify(&update.installed_path, &version, &build)
+}
+
+fn validate_destination(installed: &Path) -> Result<()> {
+    if !installed.is_absolute()
+        || installed
+            .to_str()
+            .is_none_or(|path| path.chars().any(char::is_control))
+        || installed.file_name().is_none_or(|n| n != APP_NAME)
+        || installed
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+        || installed
+            .components()
+            .any(|c| c.as_os_str() == "AppTranslocation")
+        || installed.starts_with("/Volumes")
+    {
+        return Err(InstallError::NotifyOnly(
+            "move Maple Agent to a writable installed application directory",
+        ));
+    }
+    if fs::symlink_metadata(installed)?.file_type().is_symlink()
+        || !fs::symlink_metadata(installed)?.is_dir()
+        || installed.canonicalize()? != installed
+    {
+        return Err(InstallError::Invalid(
+            "installation path is not a canonical application directory",
+        ));
+    }
+    Ok(())
+}
+
+fn destination_error(error: io::Error) -> InstallError {
+    if error.kind() == io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(libc::EROFS | libc::EPERM))
+    {
+        InstallError::NotifyOnly("the application directory is not writable")
+    } else {
+        error.into()
+    }
+}
+
+fn validate_staging(installed: &Path, root: &Path) -> Result<()> {
+    if root.parent() != installed.parent()
+        || !root.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.strip_prefix(STAGING_PREFIX).is_some_and(|suffix| {
+                suffix.len() == STAGING_RANDOM_LENGTH
+                    && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+        })
+        || root.canonicalize()? != root
+    {
+        return Err(InstallError::Invalid(
+            "staging is not a private installation sibling",
+        ));
+    }
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(InstallError::Invalid("staging directory changed"));
+    }
+    #[cfg(unix)]
+    if metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o777 != 0o700
+        || metadata.dev() != fs::metadata(installed)?.dev()
+    {
+        return Err(InstallError::Invalid(
+            "staging ownership, permissions or volume changed",
+        ));
+    }
+    Ok(())
+}
+
+fn open_regular(path: &Path, create: bool, exclusive: bool) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(create)
+        .create(create)
+        .create_new(exclusive);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(InstallError::Invalid("expected a regular file"));
+    }
+    Ok(file)
+}
+
+fn validate_private_file(file: &File) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = file;
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata()?;
+        if metadata.nlink() != 1
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(InstallError::Invalid(
+                "private file permissions or ownership changed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_payload(path: &Path, artifact: &Artifact) -> Result<()> {
+    let mut file = open_regular(path, false, false)?;
+    if file.metadata()?.len() != artifact.size {
+        return Err(InstallError::Invalid("payload size changed"));
+    }
+    if hex::encode(hash_reader(&mut file, artifact.size)?) != artifact.sha256 {
+        return Err(InstallError::Invalid("payload digest changed"));
+    }
+    Ok(())
+}
+
+fn copy_verified_payload(source: &Path, destination: &Path, artifact: &Artifact) -> Result<()> {
+    let mut input = open_regular(source, false, false)?;
+    if input.metadata()?.len() != artifact.size {
+        return Err(InstallError::Invalid("payload size changed"));
+    }
+    let mut output = open_regular(destination, true, true)?;
+    let mut hasher = Sha256::new();
+    let mut remaining = artifact.size;
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let length = remaining.min(buffer.len() as u64) as usize;
+        let read = input.read(&mut buffer[..length])?;
+        if read == 0 {
+            return Err(InstallError::Invalid("payload truncated"));
+        }
+        output.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    if input.read(&mut buffer[..1])? != 0 || hex::encode(hasher.finalize()) != artifact.sha256 {
+        return Err(InstallError::Invalid("payload digest changed"));
+    }
+    output.sync_all()?;
+    Ok(())
+}
+
+fn hash_reader(reader: &mut impl Read, expected: u64) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    let mut read = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        read = read
+            .checked_add(count as u64)
+            .ok_or(InstallError::Invalid("size overflow"))?;
+        if read > expected {
+            return Err(InstallError::Invalid("file grew during verification"));
+        }
+        hasher.update(&buffer[..count]);
+    }
+    if read != expected {
+        return Err(InstallError::Invalid("file truncated during verification"));
+    }
+    Ok(hasher.finalize().into())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Node {
+    Directory,
+    File {
+        mode: u32,
+        size: u64,
+        digest: [u8; 32],
+    },
+    Symlink(String),
+}
+
+/// Raw iteration prevents tar's GNU/PAX preprocessing from allocating an
+/// attacker-declared extension size. Extensions are bounded and parsed here;
+/// no ownership, xattrs, flags, hard links, sparse or special files are applied.
+fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String, Node>> {
+    let input = open_regular(payload, false, false)?;
+    let decoded = MultiGzDecoder::new(input);
+    let bounded = ExpansionLimit {
+        inner: decoded,
+        remaining: MAX_EXPANDED_BYTES,
+    };
+    let mut archive = tar::Archive::new(bounded);
+    let mut nodes = BTreeMap::new();
+    let mut explicit = BTreeSet::new();
+    let mut pax = BTreeMap::new();
+    let mut long_name = None;
+    let mut long_link = None;
+    let mut expanded = 0u64;
+    for (count, entry) in archive.entries()?.raw(true).enumerate() {
+        if count >= MAX_ENTRIES {
+            return Err(InstallError::Invalid("too many archive members"));
+        }
+        let mut entry = entry?;
+        let kind = entry.header().entry_type();
+        let size = entry.size();
+        if kind.is_pax_local_extensions() || kind.is_gnu_longname() || kind.is_gnu_longlink() {
+            if size > MAX_EXTENSION_BYTES {
+                return Err(InstallError::Invalid("oversized archive extension"));
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            if kind.is_pax_local_extensions() {
+                if !pax.is_empty() {
+                    return Err(InstallError::Invalid("duplicate archive extensions"));
+                }
+                for extension in tar::PaxExtensions::new(&bytes) {
+                    let extension = extension?;
+                    let key = extension
+                        .key()
+                        .map_err(|_| InstallError::Invalid("invalid archive extension"))?;
+                    let value = extension
+                        .value()
+                        .map_err(|_| InstallError::Invalid("invalid archive extension"))?;
+                    if !matches!(
+                        key,
+                        "path"
+                            | "linkpath"
+                            | "mtime"
+                            | "atime"
+                            | "ctime"
+                            | "uid"
+                            | "gid"
+                            | "uname"
+                            | "gname"
+                    ) || pax.insert(key.to_owned(), value.to_owned()).is_some()
+                    {
+                        return Err(InstallError::Invalid("unsupported archive metadata"));
+                    }
+                }
+            } else {
+                let value = std::str::from_utf8(bytes.strip_suffix(&[0]).unwrap_or(&bytes))
+                    .map_err(|_| InstallError::Invalid("non-UTF-8 archive path"))?
+                    .to_owned();
+                let previous = if kind.is_gnu_longname() {
+                    long_name.replace(value)
+                } else {
+                    long_link.replace(value)
+                };
+                if previous.is_some() {
+                    return Err(InstallError::Invalid("duplicate archive long name"));
+                }
+            }
+            continue;
+        }
+        let header_path = entry.header().path_bytes();
+        let header_path = std::str::from_utf8(&header_path)
+            .map_err(|_| InstallError::Invalid("non-UTF-8 archive path"))?;
+        let name = pax
+            .remove("path")
+            .or(long_name.take())
+            .unwrap_or_else(|| header_path.to_owned());
+        let name = archive_path(&name, kind.is_dir())?;
+        if !explicit.insert(name.clone()) {
+            return Err(InstallError::Invalid("duplicate archive path"));
+        }
+        let mode = entry.header().mode()?;
+        let node = if kind.is_dir() {
+            if mode != 0o755 || size != 0 {
+                return Err(InstallError::Invalid("unsafe archive directory metadata"));
+            }
+            if let Some(root) = output {
+                create_public_directory(&root.join(&name))?;
+            }
+            Node::Directory
+        } else if kind.is_file() {
+            if !matches!(mode, 0o644 | 0o755) || size > MAX_FILE_BYTES {
+                return Err(InstallError::Invalid("unsafe file size or permissions"));
+            }
+            expanded = expanded
+                .checked_add(size)
+                .ok_or(InstallError::Invalid("expanded size overflow"))?;
+            if expanded > MAX_EXPANDED_BYTES {
+                return Err(InstallError::Invalid("archive expansion limit exceeded"));
+            }
+            let digest = if let Some(root) = output {
+                let destination = root.join(&name);
+                create_public_directory(destination.parent().unwrap())?;
+                let mut file = open_regular(&destination, true, true)?;
+                let mut hasher = Sha256::new();
+                let mut copied = 0u64;
+                let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    let length = entry.read(&mut buffer)?;
+                    if length == 0 {
+                        break;
+                    }
+                    copied += length as u64;
+                    if copied > size {
+                        return Err(InstallError::Invalid("archive member grew"));
+                    }
+                    file.write_all(&buffer[..length])?;
+                    hasher.update(&buffer[..length]);
+                }
+                if copied != size {
+                    return Err(InstallError::Invalid("truncated archive member"));
+                }
+                set_mode(&destination, mode)?;
+                file.sync_all()?;
+                hasher.finalize().into()
+            } else {
+                hash_reader(&mut entry, size)?
+            };
+            Node::File { mode, size, digest }
+        } else if kind.is_symlink() {
+            if size != 0 {
+                return Err(InstallError::Invalid("symlink contains file data"));
+            }
+            let header_link = entry
+                .header()
+                .link_name_bytes()
+                .ok_or(InstallError::Invalid("missing symlink target"))?;
+            let header_link = std::str::from_utf8(&header_link)
+                .map_err(|_| InstallError::Invalid("non-UTF-8 symlink"))?;
+            let link = pax
+                .remove("linkpath")
+                .or(long_link.take())
+                .unwrap_or_else(|| header_link.to_owned());
+            validate_link(&name, &link)?;
+            Node::Symlink(link)
+        } else {
+            return Err(InstallError::Invalid(
+                "hard links, sparse and special files are not allowed",
+            ));
+        };
+        if pax.contains_key("linkpath") || long_link.is_some() {
+            return Err(InstallError::Invalid("link metadata on a non-link"));
+        }
+        pax.clear();
+        nodes.insert(name, node);
+    }
+    if !pax.is_empty() || long_name.is_some() || long_link.is_some() {
+        return Err(InstallError::Invalid("unconsumed archive extension"));
+    }
+    if nodes.get(APP_NAME) != Some(&Node::Directory) {
+        return Err(InstallError::Invalid("missing application root"));
+    }
+    let paths: Vec<String> = nodes.keys().cloned().collect();
+    for name in paths {
+        let mut parent = Path::new(&name).parent();
+        while let Some(path) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            let parent_name = path
+                .to_str()
+                .ok_or(InstallError::Invalid("invalid archive path"))?
+                .to_owned();
+            match nodes.get(&parent_name) {
+                Some(Node::Directory) => {}
+                Some(_) => {
+                    return Err(InstallError::Invalid(
+                        "archive writes through a file or symlink",
+                    ));
+                }
+                None => {
+                    nodes.insert(parent_name, Node::Directory);
+                }
+            }
+            parent = path.parent();
+        }
+    }
+    validate_symlink_graph(&nodes)?;
+    if let Some(root) = output {
+        for (name, node) in &nodes {
+            if let Node::Symlink(link) = node {
+                let destination = root.join(name);
+                create_public_directory(destination.parent().unwrap())?;
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(link, destination)?;
+                #[cfg(not(unix))]
+                {
+                    let _ = link;
+                    return Err(InstallError::NotifyOnly(
+                        "archive links are unsupported on this platform",
+                    ));
+                }
+            }
+        }
+        for (name, node) in nodes.iter().rev() {
+            if matches!(node, Node::Directory) {
+                sync_directory(&root.join(name))?;
+            }
+        }
+    }
+    Ok(nodes)
+}
+
+fn archive_path(raw: &str, directory: bool) -> Result<String> {
+    let name = if directory {
+        raw.strip_suffix('/').unwrap_or(raw)
+    } else {
+        raw
+    };
+    if name.len() > MAX_PATH_BYTES
+        || name.is_empty()
+        || name.contains('\\')
+        || name.chars().any(char::is_control)
+        || name
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || name.split('/').next() != Some(APP_NAME)
+    {
+        return Err(InstallError::Invalid("unsafe archive path"));
+    }
+    Ok(name.to_owned())
+}
+
+fn validate_link(name: &str, link: &str) -> Result<()> {
+    if link.is_empty()
+        || link.len() > MAX_PATH_BYTES
+        || link.starts_with('/')
+        || link.contains('\\')
+        || link.chars().any(char::is_control)
+    {
+        return Err(InstallError::Invalid("unsafe symlink target"));
+    }
+    let mut resolved: Vec<&str> = name.split('/').collect();
+    resolved.pop();
+    for part in link.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if resolved.len() <= 1 {
+                    return Err(InstallError::Invalid("symlink escapes application"));
+                }
+                resolved.pop();
+            }
+            _ => resolved.push(part),
+        }
+    }
+    if resolved.first() != Some(&APP_NAME) {
+        return Err(InstallError::Invalid("symlink escapes application"));
+    }
+    Ok(())
+}
+
+// Lexical containment alone is insufficient: `dir/parent/../outside` escapes
+// when `dir/parent -> ..`. Resolve links against the complete virtual tree,
+// including links appearing later in the archive, before creating any of them.
+fn validate_symlink_graph(nodes: &BTreeMap<String, Node>) -> Result<()> {
+    for (name, node) in nodes {
+        let Node::Symlink(target) = node else {
+            continue;
+        };
+        let parent = name
+            .rsplit_once('/')
+            .ok_or(InstallError::Invalid("invalid archive symlink"))?
+            .0;
+        let mut pending: VecDeque<String> = parent
+            .split('/')
+            .chain(target.split('/'))
+            .map(str::to_owned)
+            .collect();
+        let mut resolved = Vec::new();
+        let mut followed = 0;
+        while let Some(part) = pending.pop_front() {
+            match part.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    if resolved.len() <= 1 {
+                        return Err(InstallError::Invalid("symlink chain escapes application"));
+                    }
+                    resolved.pop();
+                }
+                _ => {
+                    resolved.push(part);
+                    match nodes.get(&resolved.join("/")) {
+                        Some(Node::Symlink(link)) => {
+                            followed += 1;
+                            if followed > 40 {
+                                return Err(InstallError::Invalid("cyclic or excessive symlinks"));
+                            }
+                            resolved.pop();
+                            for part in link.split('/').rev() {
+                                pending.push_front(part.to_owned());
+                            }
+                        }
+                        Some(Node::Directory) => {}
+                        Some(Node::File { .. }) if pending.is_empty() => {}
+                        Some(Node::File { .. }) => {
+                            return Err(InstallError::Invalid("symlink traverses a file"));
+                        }
+                        None => return Err(InstallError::Invalid("dangling archive symlink")),
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn create_public_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(InstallError::Invalid("archive parent is a file or symlink"));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .ok_or(InstallError::Invalid("missing archive parent"))?;
+            // Recurse only for missing ancestors, preserving the private 0700
+            // staging root while giving implicit bundle directories 0755.
+            if !parent.exists() {
+                create_public_directory(parent)?;
+            }
+            fs::create_dir(path)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    set_mode(path, 0o755)
+}
+
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+    Ok(())
+}
+
+fn scan_tree(bundle: &Path) -> Result<BTreeMap<String, Node>> {
+    let mut nodes = BTreeMap::new();
+    let parent = bundle
+        .parent()
+        .ok_or(InstallError::Invalid("missing bundle parent"))?;
+    let mut pending = vec![bundle.to_owned()];
+    let mut total = 0u64;
+    while let Some(path) = pending.pop() {
+        if nodes.len() >= MAX_ENTRIES {
+            return Err(InstallError::Invalid("too many staged files"));
+        }
+        let name = path
+            .strip_prefix(parent)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or(InstallError::Invalid("invalid staged path"))?;
+        let metadata = fs::symlink_metadata(&path)?;
+        let node = if metadata.file_type().is_symlink() {
+            let link = fs::read_link(&path)?;
+            let link = link
+                .to_str()
+                .ok_or(InstallError::Invalid("invalid staged symlink"))?;
+            validate_link(name, link)?;
+            Node::Symlink(link.to_owned())
+        } else if metadata.is_dir() {
+            #[cfg(unix)]
+            if metadata.mode() & 0o7777 != 0o755 {
+                return Err(InstallError::Invalid(
+                    "staged directory permissions changed",
+                ));
+            }
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+            Node::Directory
+        } else if metadata.is_file() {
+            #[cfg(unix)]
+            if metadata.nlink() != 1 {
+                return Err(InstallError::Invalid("staged file is hard-linked"));
+            }
+            total = total
+                .checked_add(metadata.len())
+                .ok_or(InstallError::Invalid("staged size overflow"))?;
+            if metadata.len() > MAX_FILE_BYTES || total > MAX_EXPANDED_BYTES {
+                return Err(InstallError::Invalid("staged content is too large"));
+            }
+            let mut file = open_regular(&path, false, false)?;
+            #[cfg(unix)]
+            let mode = metadata.mode() & 0o7777;
+            #[cfg(not(unix))]
+            let mode = 0o644;
+            Node::File {
+                mode,
+                size: metadata.len(),
+                digest: hash_reader(&mut file, metadata.len())?,
+            }
+        } else {
+            return Err(InstallError::Invalid("staged special file"));
+        };
+        nodes.insert(name.to_owned(), node);
+    }
+    validate_symlink_graph(&nodes)?;
+    Ok(nodes)
+}
+
+struct ExpansionLimit<R> {
+    inner: R,
+    remaining: u64,
+}
+impl<R: Read> Read for ExpansionLimit<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            return Err(io::Error::other("archive expansion limit exceeded"));
+        }
+        let length = output.len().min(self.remaining as usize);
+        let read = self.inner.read(&mut output[..length])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+fn bundle_dictionary(bundle: &Path) -> Result<plist::Dictionary> {
+    let plist_path = bundle.join("Contents/Info.plist");
+    let plist = open_regular(&plist_path, false, false)?;
+    if plist.metadata()?.len() > 1024 * 1024 {
+        return Err(InstallError::CodeSignature);
+    }
+    let value = plist::Value::from_reader(plist).map_err(|_| InstallError::CodeSignature)?;
+    value.into_dictionary().ok_or(InstallError::CodeSignature)
+}
+
+fn bundle_version(bundle: &Path) -> Result<(String, String)> {
+    let dictionary = bundle_dictionary(bundle)?;
+    let version = dictionary
+        .get("CFBundleShortVersionString")
+        .and_then(plist::Value::as_string)
+        .ok_or(InstallError::CodeSignature)?
+        .to_owned();
+    let build = dictionary
+        .get("CFBundleVersion")
+        .and_then(plist::Value::as_string)
+        .ok_or(InstallError::CodeSignature)?
+        .to_owned();
+    Ok((version, build))
+}
+
+fn verify_bundle(bundle: &Path, version: &str, build: &str) -> Result<()> {
+    let dictionary = bundle_dictionary(bundle)?;
+    for (key, expected) in [
+        ("CFBundleIdentifier", "cloud.opensecret.maple.agent"),
+        ("CFBundleExecutable", "maple-agent"),
+        ("CFBundleShortVersionString", version),
+        ("CFBundleVersion", build),
+    ] {
+        if dictionary.get(key).and_then(plist::Value::as_string) != Some(expected) {
+            return Err(InstallError::CodeSignature);
+        }
+    }
+    if dictionary.contains_key("LSEnvironment") {
+        return Err(InstallError::CodeSignature);
+    }
+    let executable = fs::symlink_metadata(bundle.join("Contents/MacOS/maple-agent"))?;
+    if !executable.is_file() || executable.file_type().is_symlink() {
+        return Err(InstallError::CodeSignature);
+    }
+    #[cfg(unix)]
+    if executable.mode() & 0o111 != 0o111 || executable.mode() & 0o6000 != 0 {
+        return Err(InstallError::CodeSignature);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("/usr/bin/codesign")
+            .args([
+                "--verify",
+                "--deep",
+                "--strict",
+                "--all-architectures",
+                "--test-requirement",
+                CODESIGN_REQUIREMENT,
+            ])
+            .arg(bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err(InstallError::CodeSignature);
+        }
+        // CodeDirectory's numeric CS_RUNTIME flag is authoritative. Do not
+        // accept the word "runtime" appearing elsewhere in diagnostics.
+        let mut child = std::process::Command::new("/usr/bin/codesign")
+            .args(["--display", "--verbose=4"])
+            .arg(bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let mut output = Vec::new();
+        let read = child
+            .stderr
+            .take()
+            .ok_or(InstallError::CodeSignature)?
+            .take(32 * 1024 + 1)
+            .read_to_end(&mut output);
+        if read.is_err() || output.len() > 32 * 1024 {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(InstallError::CodeSignature);
+        }
+        if !child.wait()?.success() || !has_hardened_runtime(&output) {
+            return Err(InstallError::CodeSignature);
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err(InstallError::NotifyOnly(
+        "macOS signature verification is unavailable",
+    ))
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn has_hardened_runtime(output: &[u8]) -> bool {
+    let Ok(output) = std::str::from_utf8(output) else {
+        return false;
+    };
+    let mut directories = output
+        .lines()
+        .filter(|line| line.starts_with("CodeDirectory "));
+    let Some(directory) = directories.next() else {
+        return false;
+    };
+    if directories.next().is_some() {
+        return false;
+    }
+    let mut flags = directory
+        .split_ascii_whitespace()
+        .filter_map(|part| part.strip_prefix("flags=0x"));
+    let Some(flag) = flags.next() else {
+        return false;
+    };
+    if flags.next().is_some() {
+        return false;
+    }
+    let hexadecimal = flag.split('(').next().unwrap_or("");
+    u32::from_str_radix(hexadecimal, 16).is_ok_and(|flags| flags & 0x10000 != 0)
+}
+
+fn write_receipt(installed: &InstalledUpdate) -> Result<()> {
+    let destination = installed.staging_dir.join(RECEIPT_NAME);
+    let bytes = serde_json::to_vec(installed)
+        .map_err(|_| InstallError::Invalid("invalid install receipt"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&installed.staging_dir)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| InstallError::Io(error.error))?;
+    sync_directory(&installed.staging_dir)
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    let file = File::open(path)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn swap_bundles(installed: &Path, staged: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let installed = CString::new(installed.as_os_str().as_bytes())
+            .map_err(|_| InstallError::Invalid("invalid installed path"))?;
+        let staged = CString::new(staged.as_os_str().as_bytes())
+            .map_err(|_| InstallError::Invalid("invalid staged path"))?;
+        // Both paths were revalidated as ordinary directories on one volume.
+        // RENAME_SWAP preserves the prior app at staged even if power is lost.
+        let result =
+            unsafe { libc::renamex_np(installed.as_ptr(), staged.as_ptr(), libc::RENAME_SWAP) };
+        if result != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (installed, staged);
+        Err(InstallError::NotifyOnly(
+            "atomic bundle replacement is unavailable",
+        ))
+    }
+}
+
+// These cases intentionally exercise Unix permissions, directory fsync, and
+// framework symlinks. Windows CI provides compilation coverage, not installation.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{Downloads, Manifest, VerifiedRelease};
+    use flate2::{Compression, write::GzEncoder};
+
+    enum Member<'a> {
+        Directory(&'a str),
+        File(&'a str, &'a [u8], u32),
+        Link(&'a str, &'a str),
+        Special(&'a str, u8),
+    }
+
+    fn archive(path: &Path, members: &[Member<'_>]) {
+        let output = File::create(path).unwrap();
+        let encoder = GzEncoder::new(output, Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        for member in members {
+            let mut header = tar::Header::new_ustar();
+            let (name, data, kind, mode, link) = match member {
+                Member::Directory(name) => (*name, &[][..], b'5', 0o755, None),
+                Member::File(name, data, mode) => (*name, *data, b'0', *mode, None),
+                Member::Link(name, target) => (*name, &[][..], b'2', 0o777, Some(*target)),
+                Member::Special(name, kind) => (*name, &[][..], *kind, 0o644, None),
+            };
+            header.set_mode(mode);
+            header.set_size(data.len() as u64);
+            header.set_entry_type(tar::EntryType::new(kind));
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            // Raw mutation permits deliberately unsafe path fixtures that the
+            // tar writer's convenience path API would correctly reject.
+            let bytes = header.as_mut_bytes();
+            assert!(name.len() < 100);
+            bytes[..100].fill(0);
+            bytes[..name.len()].copy_from_slice(name.as_bytes());
+            if let Some(link) = link {
+                header.set_link_name(link).unwrap();
+            }
+            header.set_cksum();
+            builder.append(&header, data).unwrap();
+        }
+        builder
+            .into_inner()
+            .unwrap()
+            .finish()
+            .unwrap()
+            .sync_all()
+            .unwrap();
+    }
+
+    fn fixture_members() -> Vec<Member<'static>> {
+        vec![
+            Member::Directory(APP_NAME),
+            Member::Directory("Maple Agent.app/Contents"),
+            Member::File(
+                "Maple Agent.app/Contents/maple-agent",
+                b"verified package executable",
+                0o755,
+            ),
+            Member::Directory("Maple Agent.app/Contents/Frameworks"),
+            Member::Directory("Maple Agent.app/Contents/Frameworks/A.framework"),
+            Member::Directory("Maple Agent.app/Contents/Frameworks/A.framework/Versions"),
+            Member::Directory("Maple Agent.app/Contents/Frameworks/A.framework/Versions/A"),
+            Member::File(
+                "Maple Agent.app/Contents/Frameworks/A.framework/Versions/A/A",
+                b"dylib",
+                0o755,
+            ),
+            Member::Link(
+                "Maple Agent.app/Contents/Frameworks/A.framework/Versions/Current",
+                "A",
+            ),
+            Member::Link(
+                "Maple Agent.app/Contents/Frameworks/A.framework/A",
+                "Versions/Current/A",
+            ),
+        ]
+    }
+
+    fn write_version(bundle: &Path, version: &str, build: &str) {
+        fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let mut dictionary = plist::Dictionary::new();
+        for (key, value) in [
+            ("CFBundleIdentifier", "cloud.opensecret.maple.agent"),
+            ("CFBundleExecutable", "maple-agent"),
+            ("CFBundleShortVersionString", version),
+            ("CFBundleVersion", build),
+        ] {
+            dictionary.insert(key.to_owned(), value.into());
+        }
+        plist::Value::Dictionary(dictionary)
+            .to_file_xml(bundle.join("Contents/Info.plist"))
+            .unwrap();
+    }
+
+    fn update_fixture(root: &Path) -> PreparedUpdate {
+        let installed = root.join(APP_NAME);
+        write_version(&installed, "0.0.1", "1");
+        let payload = root.join("archive.tar.gz");
+        archive(&payload, &fixture_members());
+        let bytes = fs::read(&payload).unwrap();
+        let artifact = Artifact {
+            path: "/agent/stable/releases/0.0.2/maple-agent.app.tar.gz".into(),
+            size: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        };
+        let dmg = Artifact {
+            path: "/agent/stable/releases/0.0.2/maple-agent.dmg".into(),
+            ..artifact.clone()
+        };
+        PreparedUpdate {
+            release: VerifiedRelease {
+                manifest: Manifest {
+                    format: "maple-agent-update-v1".into(),
+                    product: "maple-agent".into(),
+                    channel: "stable".into(),
+                    version: "0.0.2".into(),
+                    build: "2".into(),
+                    source_sha: "a".repeat(40),
+                    pub_date: "2026-10-22T00:00:00Z".into(),
+                    notes: "fixture".into(),
+                    artifacts: BTreeMap::from([("darwin-aarch64".into(), artifact)]),
+                    downloads: Downloads {
+                        macos: dmg,
+                        linux_appimage: None,
+                    },
+                },
+                envelope: "test-only authenticated caller fixture".into(),
+                origin: "https://updates.example.test".parse().unwrap(),
+            },
+            payload_path: payload,
+            installed_path: installed.canonicalize().unwrap(),
+        }
+    }
+
+    fn accept_test_signature(_: &Path, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn extracts_internal_framework_symlinks_and_compares_every_staged_byte() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = root.path().join("package");
+        let staging = root.path().join("staging");
+        fs::create_dir(&staging).unwrap();
+        set_mode(&staging, 0o700).unwrap();
+        archive(&payload, &fixture_members());
+        let expected = scan_archive(&payload, Some(&staging)).unwrap();
+        assert_eq!(expected, scan_tree(&staging.join(APP_NAME)).unwrap());
+        assert_eq!(expected, scan_archive(&payload, None).unwrap());
+        fs::write(
+            staging.join("Maple Agent.app/Contents/maple-agent"),
+            b"tampered",
+        )
+        .unwrap();
+        assert_ne!(expected, scan_tree(&staging.join(APP_NAME)).unwrap());
+        #[cfg(unix)]
+        assert_eq!(fs::metadata(&staging).unwrap().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn rejects_traversal_duplicate_hardlink_special_and_privileged_members() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = root.path().join("package");
+        for member in [
+            Member::File("Maple Agent.app/../outside", b"x", 0o644),
+            Member::File("/Maple Agent.app/absolute", b"x", 0o644),
+            Member::File("Other.app/Contents/file", b"x", 0o644),
+            Member::File("Maple Agent.app/./ambiguous", b"x", 0o644),
+            Member::File("Maple Agent.app/private", b"x", 0o600),
+            Member::File("Maple Agent.app/setuid", b"x", 0o4755),
+            Member::Special("Maple Agent.app/fifo", b'6'),
+            Member::Special("Maple Agent.app/hardlink", b'1'),
+            Member::Special("Maple Agent.app/sparse", b'S'),
+            Member::Directory(APP_NAME),
+        ] {
+            archive(&payload, &[Member::Directory(APP_NAME), member]);
+            assert!(scan_archive(&payload, None).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_escaping_links_and_writes_through_internal_links_in_both_orders() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = root.path().join("package");
+        for target in ["/outside", "../../outside", "../outside", "\\outside"] {
+            archive(
+                &payload,
+                &[
+                    Member::Directory(APP_NAME),
+                    Member::Link("Maple Agent.app/link", target),
+                ],
+            );
+            assert!(scan_archive(&payload, None).is_err());
+        }
+        for reversed in [false, true] {
+            let mut members = vec![
+                Member::Directory(APP_NAME),
+                Member::Link("Maple Agent.app/alias", "Contents"),
+                Member::File("Maple Agent.app/alias/file", b"x", 0o644),
+            ];
+            if reversed {
+                members.swap(1, 2);
+            }
+            archive(&payload, &members);
+            assert!(scan_archive(&payload, None).is_err());
+        }
+        archive(
+            &payload,
+            &[
+                Member::Directory(APP_NAME),
+                Member::Directory("Maple Agent.app/dir"),
+                Member::Link("Maple Agent.app/dir/parent", ".."),
+                Member::Link("Maple Agent.app/link", "dir/parent/../outside"),
+            ],
+        );
+        assert!(matches!(
+            scan_archive(&payload, None),
+            Err(InstallError::Invalid("symlink chain escapes application"))
+        ));
+        archive(
+            &payload,
+            &[
+                Member::Directory(APP_NAME),
+                Member::Link("Maple Agent.app/cycle", "cycle"),
+            ],
+        );
+        assert!(scan_archive(&payload, None).is_err());
+    }
+
+    #[test]
+    fn bounds_extensions_before_allocating_and_rejects_unsafe_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = root.path().join("package");
+        let mut encoder = GzEncoder::new(File::create(&payload).unwrap(), Compression::fast());
+        let mut header = tar::Header::new_ustar();
+        header.set_path("extended").unwrap();
+        header.set_entry_type(tar::EntryType::new(b'x'));
+        header.set_size(MAX_EXTENSION_BYTES + 1);
+        header.set_cksum();
+        // A malicious size must fail before reading its missing body.
+        encoder.write_all(header.as_bytes()).unwrap();
+        encoder.finish().unwrap();
+        assert!(matches!(
+            scan_archive(&payload, None),
+            Err(InstallError::Invalid("oversized archive extension"))
+        ));
+        let encoder = GzEncoder::new(File::create(&payload).unwrap(), Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        builder
+            .append_pax_extensions([(
+                "SCHILY.xattr.com.apple.quarantine",
+                b"do not apply".as_slice(),
+            )])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+        assert!(matches!(
+            scan_archive(&payload, None),
+            Err(InstallError::Invalid("unsupported archive metadata"))
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_native_release_tar_format_and_preserves_bundle_modes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let bundle = source.join(APP_NAME);
+        fs::create_dir_all(bundle.join("Contents/Frameworks/A.framework/Versions/A")).unwrap();
+        write_version(&bundle, "0.0.2", "2");
+        fs::write(
+            bundle.join("Contents/Frameworks/A.framework/Versions/A/A"),
+            b"dylib",
+        )
+        .unwrap();
+        let mut pending = vec![source.clone()];
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                set_mode(&path, 0o755).unwrap();
+                for entry in fs::read_dir(&path).unwrap() {
+                    pending.push(entry.unwrap().path());
+                }
+            } else {
+                set_mode(&path, 0o644).unwrap();
+            }
+        }
+        std::os::unix::fs::symlink(
+            "A",
+            bundle.join("Contents/Frameworks/A.framework/Versions/Current"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "Versions/Current/A",
+            bundle.join("Contents/Frameworks/A.framework/A"),
+        )
+        .unwrap();
+        let payload = root.path().join("release.app.tar.gz");
+        let status = std::process::Command::new("/usr/bin/tar")
+            .env("COPYFILE_DISABLE", "1")
+            .arg("-czf")
+            .arg(&payload)
+            .arg("-C")
+            .arg(&source)
+            .arg(APP_NAME)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let output = root.path().join("output");
+        fs::create_dir(&output).unwrap();
+        let expected = scan_archive(&payload, Some(&output)).unwrap();
+        assert_eq!(expected, scan_tree(&output.join(APP_NAME)).unwrap());
+    }
+
+    #[test]
+    fn preparation_rechecks_saved_paths_archive_staging_and_installed_version() {
+        let root = tempfile::tempdir().unwrap();
+        let update = update_fixture(root.path());
+        let verifier = Verifier::Test(accept_test_signature);
+        let prepared = prepare_inner(&update, verifier).unwrap();
+        revalidate_inner(&prepared, &update, verifier).unwrap();
+        let mut changed = prepared.clone();
+        changed.staged_path = update.installed_path.clone();
+        assert!(revalidate_inner(&changed, &update, verifier).is_err());
+        fs::write(prepared.staged_path.join("extra"), b"not in signed archive").unwrap();
+        assert!(revalidate_inner(&prepared, &update, verifier).is_err());
+        fs::remove_file(prepared.staged_path.join("extra")).unwrap();
+        fs::write(&prepared.payload_path, b"corrupted archive").unwrap();
+        assert!(revalidate_inner(&prepared, &update, verifier).is_err());
+        write_version(&update.installed_path, "0.0.3", "3");
+        assert!(matches!(
+            prepare_inner(&update, verifier),
+            Err(InstallError::Invalid(
+                "installation already has this version or a newer version"
+            ))
+        ));
+    }
+
+    #[test]
+    fn separate_installers_exclude_each_other_across_profiles() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let installed = installed.canonicalize().unwrap();
+        let first = acquire_install_lock(&installed).unwrap();
+        assert!(matches!(
+            acquire_install_lock(&installed),
+            Err(InstallError::Busy)
+        ));
+        drop(first);
+        assert!(acquire_install_lock(&installed).is_ok());
+    }
+
+    #[test]
+    fn deferred_preparation_is_protected_then_reclaimed_after_process_lock_release() {
+        let root = tempfile::tempdir().unwrap();
+        let update = update_fixture(root.path());
+        let ready_guard = acquire_install_lock(&update.installed_path).unwrap();
+        let prepared = prepare_inner(&update, Verifier::Test(accept_test_signature)).unwrap();
+        assert!(matches!(
+            acquire_install_lock(&update.installed_path),
+            Err(InstallError::Busy)
+        ));
+        assert!(
+            prepared.staging_dir.is_dir(),
+            "another startup cannot sweep a live Ready preparation"
+        );
+        // A process exit releases this guard even when its preparation was
+        // deferred. The next startup can safely reclaim its entire stage.
+        drop(ready_guard);
+        let _startup_guard = acquire_install_lock(&update.installed_path).unwrap();
+        assert_eq!(
+            cleanup_staging_locked(&update.installed_path, "0.0.1", "1").unwrap(),
+            1
+        );
+        assert!(!prepared.staging_dir.exists());
+        assert!(update.installed_path.is_dir());
+        assert!(update.payload_path.is_file());
+    }
+
+    #[test]
+    fn orphan_sweep_preserves_any_receipt_and_unrelated_private_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let update = update_fixture(root.path());
+        let _startup_guard = acquire_install_lock(&update.installed_path).unwrap();
+        let prepared = prepare_inner(&update, Verifier::Test(accept_test_signature)).unwrap();
+        fs::write(
+            prepared.staging_dir.join(RECEIPT_NAME),
+            b"truncated uncertain committed receipt",
+        )
+        .unwrap();
+        let unrelated = tempfile::Builder::new()
+            .prefix(".maple-agent-update-other-")
+            .tempdir_in(update.installed_path.parent().unwrap())
+            .unwrap();
+        assert_eq!(
+            cleanup_staging_locked(&update.installed_path, "0.0.1", "1").unwrap(),
+            0
+        );
+        assert!(prepared.staging_dir.is_dir());
+        assert!(unrelated.path().is_dir());
+    }
+
+    #[test]
+    fn rejects_saved_symlink_staging_and_cross_installation_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let update = update_fixture(root.path());
+        let prepared = prepare_inner(&update, Verifier::Test(accept_test_signature)).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut changed = prepared.clone();
+        changed.staging_dir = elsewhere.path().to_owned();
+        assert!(
+            revalidate_inner(&changed, &update, Verifier::Test(accept_test_signature)).is_err()
+        );
+        #[cfg(unix)]
+        {
+            let alias = root.path().join(format!("{STAGING_PREFIX}alias"));
+            std::os::unix::fs::symlink(&prepared.staging_dir, &alias).unwrap();
+            assert!(validate_staging(&update.installed_path, &alias).is_err());
+        }
+    }
+
+    #[test]
+    fn native_identity_validation_never_accepts_fake_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join(APP_NAME);
+        write_version(&bundle, "0.0.2", "2");
+        assert!(verify_bundle(&bundle, "0.0.2", "2").is_err());
+        assert!(verify_bundle(&bundle, "0.0.3", "2").is_err());
+        assert!(verify_bundle(&bundle, "0.0.2", "3").is_err());
+    }
+
+    #[test]
+    fn developer_id_requirement_and_numeric_hardened_runtime_are_mandatory() {
+        assert!(
+            CODESIGN_REQUIREMENT.starts_with('='),
+            "codesign requires = for inline requirement text"
+        );
+        assert!(CODESIGN_REQUIREMENT.contains("identifier \"cloud.opensecret.maple.agent\""));
+        assert!(CODESIGN_REQUIREMENT.contains("certificate leaf[subject.OU] = \"X773Y823TN\""));
+        assert!(
+            CODESIGN_REQUIREMENT.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists")
+        );
+        assert!(
+            CODESIGN_REQUIREMENT
+                .contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists")
+        );
+        assert!(has_hardened_runtime(b"CodeDirectory v=20500 size=1024 flags=0x10000(runtime) hashes=10+7 location=embedded\n"));
+        for output in [
+            "CodeDirectory v=20500 flags=0x0(none)\nruntime=true\n",
+            "CodeDirectory v=20500 flags=0x2(adhoc)\n",
+            "CodeDirectory v=20500 flags=0x20000(linker-signed)\n",
+            "CodeDirectory v=20500 flags=0x100000000(runtime)\n",
+            "CodeDirectory flags=0x10000(runtime) flags=0x0\n",
+            "CodeDirectory flags=0x10000(runtime)\nCodeDirectory flags=0x0\n",
+            "Authority=runtime\n",
+        ] {
+            assert!(
+                !has_hardened_runtime(output.as_bytes()),
+                "accepted {output:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn requirement_is_accepted_by_the_native_requirement_compiler() {
+        let status = std::process::Command::new("/usr/bin/csreq")
+            .args(["-r", CODESIGN_REQUIREMENT])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn replacement_failure_preserves_current_app_and_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let update = update_fixture(root.path());
+        let prepared = prepare_inner(&update, Verifier::Test(accept_test_signature)).unwrap();
+        assert!(swap_bundles(&prepared.installed_path, &root.path().join("missing")).is_err());
+        assert!(prepared.installed_path.is_dir());
+        assert!(prepared.staged_path.is_dir());
+        assert_eq!(bundle_version(&prepared.installed_path).unwrap().0, "0.0.1");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn successful_swap_returns_committed_restart_path_when_post_swap_sync_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let update = update_fixture(root.path());
+        let verifier = Verifier::Test(accept_test_signature);
+        let prepared = prepare_inner(&update, verifier).unwrap();
+        let committed = replace_inner(
+            &prepared,
+            &update,
+            verifier,
+            Synchronizer::Test(|_| Err(io::Error::other("injected post-swap sync failure").into())),
+        )
+        .expect("successful swap must always return the committed installation");
+        assert!(committed.durability_warning);
+        assert_eq!(committed.installed_path, update.installed_path);
+        assert_eq!(
+            fs::read(committed.installed_path.join("Contents/maple-agent")).unwrap(),
+            b"verified package executable"
+        );
+        assert_eq!(bundle_version(&committed.backup_path).unwrap().0, "0.0.1");
+        assert!(committed.staging_dir.join(RECEIPT_NAME).is_file());
+        assert!(
+            discard_preparation(&prepared).is_err(),
+            "backup must survive discard attempts"
+        );
+        assert!(
+            committed.checkpoint_cleanup().is_err(),
+            "fake unsigned new app cannot pass checkpoint"
+        );
+        assert!(committed.backup_path.is_dir());
+    }
+}

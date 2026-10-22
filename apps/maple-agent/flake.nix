@@ -72,7 +72,7 @@
         {
           default = rustPlatform.buildRustPackage {
             pname = "maple-agent";
-            version = "0.1.0";
+            version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
             src = pkgs.lib.fileset.toSource {
               root = ../..;
