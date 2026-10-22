@@ -7,7 +7,13 @@ downloaded applications. Run it from a trusted checkout with the root pinned
 
 The workflow separates read-only package verification, bucket reservation,
 signing and publication. Reservation/publication use bucket-scoped S3 credentials;
-the signing stage receives only a dedicated unencrypted minisign secret-key file.
+the signing process receives a dedicated unencrypted minisign secret-key file.
+Credentialed jobs reuse the existing `updates-production` environment and BWS
+access credential. The pinned BWS action does not export to later steps; each
+consuming step explicitly maps only the values it needs. This does not narrow
+the underlying BWS grants or the environment's existing secret context. Pinned
+tools are realized before retrieval. No new machine accounts or access tokens
+are required; the exact item-ID inputs are listed in the [service setup](../README.md#publication-and-authority).
 The public key must already be pinned both in the selected build's source profile
 and in the publisher's trusted source profile. An empty key list blocks publication.
 

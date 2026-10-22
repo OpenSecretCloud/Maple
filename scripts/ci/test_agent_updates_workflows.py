@@ -49,22 +49,67 @@ class AgentUpdatesWorkflows(unittest.TestCase):
             environment = job.get("environment")
             if isinstance(environment, dict):
                 environment = environment["name"]
-            if name == "sign":
-                self.assertEqual(environment, "agent-update-signing")
-            elif name in {"reserve", "publish"}:
-                self.assertEqual(environment, "agent-updates-production")
+            if name in {"reserve", "sign", "publish"}:
+                self.assertEqual(environment, "updates-production")
             self.assertNotIn("permissions", job)
             for step in job["steps"]:
                 self.assertNotIn("continue-on-error", step)
                 for value in step.get("env", {}).values():
                     if "secrets." in str(value):
                         secret = re.search(r"secrets\.([A-Z0-9_]+)", value)[1]
-                        self.assertIn(secret, {"AGENT_UPDATE_SIGNING_KEY"} if name == "sign" else {
-                            "AGENT_R2_ACCESS_KEY_ID", "AGENT_R2_SECRET_ACCESS_KEY",
-                        } if name in {"reserve", "publish"} else set())
+                        self.fail(f"credential must be passed from a step output: {secret}")
                 if step.get("uses", "").startswith("actions/checkout@"):
                     self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
                     self.assertIs(step["with"]["persist-credentials"], False)
+
+    def test_bws_reuses_existing_access_without_exporting_credentials_to_later_steps(self):
+        jobs = workflow("agent-updates-publish.yml")["jobs"]
+        bws_action = workflow("opensecret-eif-release.yml")["jobs"]["sign"]["steps"]
+        bws_action = next(step["uses"] for step in bws_action
+                          if step.get("uses", "").startswith("bitwarden/sm-action@"))
+        self.assertEqual(bws_action, "bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793")
+        for name in ("reserve", "sign", "publish"):
+            with self.subTest(job=name):
+                job = jobs[name]
+                self.assertNotIn("env", job)
+                steps = job["steps"]
+                fetches = [i for i, step in enumerate(steps)
+                           if step.get("uses", "").startswith("bitwarden/sm-action@")]
+                self.assertEqual(len(fetches), 1)
+                index = fetches[0]
+                fetch = steps[index]
+                self.assertEqual(fetch["uses"], bws_action)
+                self.assertEqual(fetch["with"]["access_token"], "${{ secrets.AGENT_UPDATES_BWS_ACCESS_TOKEN }}")
+                self.assertIs(fetch["with"]["set_env"], False)
+                realization = next(i for i, step in enumerate(steps)
+                                   if step.get("run") == "nix develop --no-update-lock-file .#ci -c true")
+                download = next(i for i, step in enumerate(steps)
+                                if step.get("uses", "").startswith("actions/download-artifact@"))
+                self.assertLess(download, realization)
+                self.assertLess(realization, index)
+                for step in steps:
+                    references = re.findall(r"secrets\.([A-Z0-9_]+)", json.dumps(step))
+                    self.assertEqual(references, ["AGENT_UPDATES_BWS_ACCESS_TOKEN"] if step is fetch else [])
+                if name == "sign":
+                    self.assertEqual(fetch["with"]["secrets"].splitlines(), [
+                        "${{ vars.AGENT_UPDATE_SIGNING_KEY_ID }} > AGENT_UPDATE_SIGNING_KEY",
+                    ])
+                    expected = {"AGENT_UPDATE_SIGNING_KEY": "${{ steps.signing-key.outputs.AGENT_UPDATE_SIGNING_KEY }}"}
+                else:
+                    self.assertEqual(fetch["with"]["secrets"].splitlines(), [
+                        "${{ vars.AGENT_R2_ACCESS_KEY_ID_SECRET_ID }} > AWS_ACCESS_KEY_ID",
+                        "${{ vars.AGENT_R2_SECRET_ACCESS_KEY_SECRET_ID }} > AWS_SECRET_ACCESS_KEY",
+                    ])
+                    expected = {
+                        "AWS_ACCESS_KEY_ID": "${{ steps.r2-credentials.outputs.AWS_ACCESS_KEY_ID }}",
+                        "AWS_SECRET_ACCESS_KEY": "${{ steps.r2-credentials.outputs.AWS_SECRET_ACCESS_KEY }}",
+                    }
+                consuming = steps[index + 1]
+                for key, value in expected.items():
+                    self.assertEqual(consuming["env"][key], value)
+                for other in steps[:index] + steps[index + 2:]:
+                    self.assertNotRegex(json.dumps(other), r"steps\.(?:signing-key|r2-credentials)\.outputs")
+                    self.assertNotRegex(other.get("run", ""), r"GITHUB_ENV|BWS_ACCESS_TOKEN")
 
     def test_preparation_verifies_provenance_before_any_secrets(self):
         verify = workflow("agent-updates-publish.yml")["jobs"]["verify"]

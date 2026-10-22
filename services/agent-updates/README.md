@@ -85,9 +85,10 @@ The owner must prepare and approve these inputs before activating delivery:
 
 - A private existing Agent bucket, no `r2.dev`/bucket custom domain, retention
   and immutable-object overwrite/delete policy protecting release prefixes.
-- Separate Agent-only macOS package signing, update-signing and R2 publication
-  environments with required reviewers and master-only branch policy. Signing
-  uses new Agent primary/offline backup keys; never Research's key.
+- Reuse the existing `desktop-signing` environment for macOS package signing
+  and `updates-production` for Agent reservation, update signing and publication.
+  Preserve their current protection policies and Research configuration. Update
+  signing uses new Agent primary/offline backup keys; never Research's key.
 - Bucket-scoped S3 Object Read & Write credentials, an approved account/bucket,
   public primary key and exact HTTPS origin. R2 credentials cannot deploy Workers.
 - An existing Agent Worker and scoped Worker Editor deployment credential;
@@ -97,21 +98,30 @@ The owner must prepare and approve these inputs before activating delivery:
   `https://updates.trymaple.ai/download/agent/stable/*`, separately owner-managed.
   Confirm zone/account/proxied DNS, HTTP redirects and edge allowlisting first.
 
-Workflow setup is explicit and initially absent:
+Agent-specific workflow inputs are explicit and initially absent. Reuse the
+existing BWS access credential; no new machine accounts or access tokens are
+required by this workflow:
 
-| Scope                                            | Required input                                                                |
-| ------------------------------------------------ | ----------------------------------------------------------------------------- |
-| Repository variables                             | `AGENT_UPDATES_ENABLED=true`, `AGENT_UPDATE_PUBLIC_KEY` (public minisign key) |
-| `agent-updates-production` environment variables | `AGENT_R2_ACCOUNT_ID`, `AGENT_R2_BUCKET`                                      |
-| `agent-updates-production` secrets               | `AGENT_R2_ACCESS_KEY_ID`, `AGENT_R2_SECRET_ACCESS_KEY`                        |
-| `agent-update-signing` secret                    | `AGENT_UPDATE_SIGNING_KEY` (dedicated unencrypted minisign key-file contents) |
+| Scope                                           | Required input                                                                                                                                      |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository variables                            | `AGENT_UPDATES_ENABLED=true`, `AGENT_UPDATE_PUBLIC_KEY` (public minisign key)                                                                       |
+| `updates-production` environment variables      | `AGENT_R2_ACCOUNT_ID`, `AGENT_R2_BUCKET`, `AGENT_UPDATE_SIGNING_KEY_ID`, `AGENT_R2_ACCESS_KEY_ID_SECRET_ID`, `AGENT_R2_SECRET_ACCESS_KEY_SECRET_ID` |
+| `updates-production` environment secret         | `AGENT_UPDATES_BWS_ACCESS_TOKEN` (existing BWS access credential)                                                                                   |
+| BWS items selected by the environment variables | Dedicated unencrypted Agent minisign key-file contents and Agent-bucket S3 access-key pair                                                          |
+
+The pinned BWS action follows the existing PCR workflow: `set_env: false`, with
+outputs passed only to the consuming step after the pinned tools are realized.
+The sign step maps only the Agent update key; reservation/publication map only
+the Agent bucket credentials. These mappings do not reduce the existing BWS
+credential's grants or the GitHub environment's secret context. Shared access
+therefore remains a trusted workflow boundary, not separate credential authority.
 
 The public key must also be pinned in both the chosen build's Prod source profile
 and the publisher's trusted master profile. An empty source key list fails closed;
 setting workflow variables cannot replace those pins. Production verification uses
 the fixed `https://updates.trymaple.ai` origin. No Worker deployment token belongs
-in any publication environment. Protect both environments with required reviewers
-and master-only branch policy before activation.
+in the Agent publication steps. Preserve the existing environment's policies;
+the Agent workflow additionally enforces manual dispatch from trusted `master`.
 
 Before/after route activation compare Research's metadata bytes and all six
 GET/HEAD download redirects, accounting for legitimate Research releases. In an

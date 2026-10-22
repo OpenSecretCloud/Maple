@@ -95,7 +95,7 @@ jobs:
   reserve:
     needs: verify
     if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' }}
-    environment: agent-updates-production
+    environment: updates-production
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -114,10 +114,21 @@ jobs:
         with:
           name: agent-update-prepared-${{ github.run_id }}
           path: bundle
+      - name: Realize pinned publisher tools before retrieving credentials
+        run: nix develop --no-update-lock-file .#ci -c true
+      - name: Resolve Agent bucket credentials from Bitwarden Secrets Manager
+        id: r2-credentials
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.AGENT_UPDATES_BWS_ACCESS_TOKEN }}
+          secrets: |
+            ${{ vars.AGENT_R2_ACCESS_KEY_ID_SECRET_ID }} > AWS_ACCESS_KEY_ID
+            ${{ vars.AGENT_R2_SECRET_ACCESS_KEY_SECRET_ID }} > AWS_SECRET_ACCESS_KEY
+          set_env: false
       - name: Reserve immutable exact manifest and reuse prior signed envelope
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AGENT_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AGENT_R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ steps.r2-credentials.outputs.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.r2-credentials.outputs.AWS_SECRET_ACCESS_KEY }}
           R2_ACCOUNT: ${{ vars.AGENT_R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ vars.AGENT_R2_BUCKET }}
         run: |
@@ -138,7 +149,7 @@ jobs:
   sign:
     needs: reserve
     if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' }}
-    environment: agent-update-signing
+    environment: updates-production
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -157,9 +168,19 @@ jobs:
         with:
           name: agent-update-reserved-${{ github.run_id }}
           path: bundle
+      - name: Realize pinned publisher tools before retrieving credentials
+        run: nix develop --no-update-lock-file .#ci -c true
+      - name: Resolve Agent update key from Bitwarden Secrets Manager
+        id: signing-key
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.AGENT_UPDATES_BWS_ACCESS_TOKEN }}
+          secrets: |
+            ${{ vars.AGENT_UPDATE_SIGNING_KEY_ID }} > AGENT_UPDATE_SIGNING_KEY
+          set_env: false
       - name: Sign exact reserved manifest with Agent-only key
         env:
-          AGENT_UPDATE_SIGNING_KEY: ${{ secrets.AGENT_UPDATE_SIGNING_KEY }}
+          AGENT_UPDATE_SIGNING_KEY: ${{ steps.signing-key.outputs.AGENT_UPDATE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           umask 077
@@ -181,9 +202,7 @@ jobs:
   publish:
     needs: sign
     if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' }}
-    environment:
-      name: agent-updates-production
-      url: https://updates.trymaple.ai/agent/stable/latest.json
+    environment: updates-production
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -202,10 +221,21 @@ jobs:
         with:
           name: agent-update-signed-${{ github.run_id }}
           path: bundle
+      - name: Realize pinned publisher tools before retrieving credentials
+        run: nix develop --no-update-lock-file .#ci -c true
+      - name: Resolve Agent bucket credentials from Bitwarden Secrets Manager
+        id: r2-credentials
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.AGENT_UPDATES_BWS_ACCESS_TOKEN }}
+          secrets: |
+            ${{ vars.AGENT_R2_ACCESS_KEY_ID_SECRET_ID }} > AWS_ACCESS_KEY_ID
+            ${{ vars.AGENT_R2_SECRET_ACCESS_KEY_SECRET_ID }} > AWS_SECRET_ACCESS_KEY
+          set_env: false
       - name: Upload immutably, conditionally promote, and verify public delivery
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AGENT_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AGENT_R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ steps.r2-credentials.outputs.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.r2-credentials.outputs.AWS_SECRET_ACCESS_KEY }}
           R2_ACCOUNT: ${{ vars.AGENT_R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ vars.AGENT_R2_BUCKET }}
         run: |
