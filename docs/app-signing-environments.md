@@ -6,6 +6,7 @@ Branch protection on `master` alone does not protect repository-level secrets.
 
 | Environment | Credentials | Jobs |
 | --- | --- | --- |
+| `agent-desktop-signing` | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID` | Agent macOS Dev/Prod packages from trusted master |
 | `desktop-signing` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`, `KEYCHAIN_PASSWORD` | macOS/Linux master and release builds |
 | `apple-signing` | `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_PRIVATE_KEY`, `APPLE_TEAM_ID` | Shared production iOS and Maple Dev builds and TestFlight submission |
 | `android-signing` | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Android master and release builds |
@@ -26,8 +27,11 @@ Pages/updater deployments. The same environments also serve owner-controlled
 `v*` release tags, so their signing jobs likewise have no separate approval prompt.
 Creating a release and controlling its distribution remain separate boundaries.
 
-`Maple Agent Desktop Builds` also uses the existing `desktop-signing` environment
-for its trusted `master` macOS Dev/Prod jobs. The same Developer ID publisher
+`Maple Agent Desktop Builds` uses the separate `agent-desktop-signing` environment
+for its trusted `master` macOS Dev/Prod jobs. Configure its master-only policy and
+Apple credentials before merging that workflow change; it has no Research Tauri key.
+Agent update-manifest signing and distribution use separate protected environments.
+The same Developer ID publisher
 signs distinct Agent bundle identities; it does not replace Research's identity.
 Agent contributor packaging, Linux compilation, and macOS compilation receive
 no Apple or updater signing secrets. A fresh macOS packaging job downloads the

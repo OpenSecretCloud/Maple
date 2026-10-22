@@ -54,6 +54,10 @@ pub struct AppSettings {
     /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
+    /// Download verified updates in the background. Installation always
+    /// requires the user's explicit Restart to Update action.
+    #[serde(default = "default_automatic_update_downloads")]
+    pub automatic_update_downloads: bool,
     /// Skip looping and reveal animations. gpui reads no OS preference for
     /// this, so it is a Maple setting.
     #[serde(default)]
@@ -196,6 +200,10 @@ fn default_desktop_notifications() -> bool {
     true
 }
 
+fn default_automatic_update_downloads() -> bool {
+    true
+}
+
 fn default_tool_summaries() -> bool {
     true
 }
@@ -214,6 +222,7 @@ impl Default for AppSettings {
             project_names: std::collections::HashMap::new(),
             remote_sidebars: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
+            automatic_update_downloads: default_automatic_update_downloads(),
             reduce_motion: false,
             harness_instructions: String::new(),
             window: None,
@@ -478,6 +487,17 @@ mod tests {
     }
 
     #[test]
+    fn existing_settings_files_default_automatic_update_downloads_to_on() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"theme":"dark","desktop_notifications":false}"#)
+                .expect("deserialize settings from before automatic downloads");
+        assert!(settings.automatic_update_downloads);
+        assert_eq!(settings.theme, "dark");
+        assert!(!settings.desktop_notifications);
+        assert!(AppSettings::default().automatic_update_downloads);
+    }
+
+    #[test]
     fn existing_settings_files_default_chat_reading_to_system_14() {
         let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
         let object = json.as_object_mut().expect("settings object");
@@ -506,6 +526,7 @@ mod tests {
         // A second queued change must not lose the first: both go through
         // the writer thread in order.
         update_settings_in_background(|settings| settings.tts_speed = 1.5);
+        update_settings_in_background(|settings| settings.automatic_update_downloads = false);
         update_settings_and_wait(|_| {});
 
         let reloaded = load_settings();
@@ -517,6 +538,7 @@ mod tests {
 
         assert_eq!(reloaded.tts_voice, "neutral_male");
         assert!((reloaded.tts_speed - 1.5).abs() < 0.01);
+        assert!(!reloaded.automatic_update_downloads);
     }
 
     /// Without an explicit XDG_CONFIG_HOME, a test build must resolve the

@@ -17,12 +17,19 @@ pub struct ReleaseProfile {
     pub client_id: String,
     pub pcr_environment: String,
     pub update_tag_prefix: String,
+    pub update_feed_url: Option<String>,
+    pub update_public_keys: Vec<String>,
     pub prerelease: bool,
 }
 
 pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
     let profiles: BTreeMap<String, ReleaseProfile> =
         serde_json::from_str(include_str!("release-profiles.json")).map_err(|e| e.to_string())?;
+    validate_profiles(&profiles)?;
+    Ok(profiles)
+}
+
+fn validate_profiles(profiles: &BTreeMap<String, ReleaseProfile>) -> Result<(), String> {
     if profiles.len() != 2 || !profiles.contains_key("dev") || !profiles.contains_key("prod") {
         return Err("release-profiles.json must contain exactly dev and prod".into());
     }
@@ -74,6 +81,28 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
                 "{channel} profile has invalid public service configuration"
             ));
         }
+        if profile.update_feed_url.as_deref()
+            != if channel == "prod" {
+                Some("https://updates.trymaple.ai/agent/stable/latest.json")
+            } else {
+                None
+            }
+            || (channel == "dev" && !profile.update_public_keys.is_empty())
+            || !matches!(profile.update_public_keys.len(), 0 | 2)
+            || profile
+                .update_public_keys
+                .iter()
+                .enumerate()
+                .any(|(index, key)| {
+                    key.trim().is_empty()
+                        || key.len() > 1024
+                        || profile.update_public_keys[..index].contains(key)
+                })
+        {
+            return Err(format!(
+                "{channel} profile has invalid updater configuration"
+            ));
+        }
     }
     if profiles["dev"].display_name == profiles["prod"].display_name
         || profiles["dev"].api_url == profiles["prod"].api_url
@@ -82,7 +111,7 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
     {
         return Err("Dev and Prod must have distinct names and service endpoints".into());
     }
-    Ok(profiles)
+    Ok(())
 }
 
 pub fn select_profile(
@@ -109,6 +138,10 @@ pub fn select_profile(
         // Hosted return is admitted only by packaged profiles. Local
         // environment overrides must not opt an unpackaged client into it.
         profile.auth_origin = None;
+        // Development binaries must never discover or install a Prod update,
+        // even if the selected packaged profile gains signing keys later.
+        profile.update_feed_url = None;
+        profile.update_public_keys.clear();
         // Local/MDE builds keep the existing explicit PCR override. Invalid
         // values still fail runtime validation rather than being normalized.
         if let Some(pcr) = configured_pcr {
@@ -177,6 +210,21 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
     constants.push_str(&format!(
         "pub const AUTH_ORIGIN: Option<&str> = {auth_origin};\n"
     ));
+    let update_feed_url = match profile.update_feed_url.as_deref() {
+        Some(url) => format!(
+            "Some({})",
+            serde_json::to_string(url).expect("profile update feed URL")
+        ),
+        None => "None".to_string(),
+    };
+    constants.push_str(&format!(
+        "pub const UPDATE_FEED_URL: Option<&str> = {update_feed_url};\n"
+    ));
+    let public_keys =
+        serde_json::to_string(&profile.update_public_keys).expect("profile update keys");
+    constants.push_str(&format!(
+        "pub const UPDATE_PUBLIC_KEYS: &[&str] = &{public_keys};\n"
+    ));
     constants.push_str(&format!(
         "pub const PRERELEASE: bool = {};\n",
         profile.prerelease
@@ -212,6 +260,15 @@ mod tests {
         assert_ne!(dev.update_tag_prefix, prod.update_tag_prefix);
         assert!(dev.prerelease);
         assert!(!prod.prerelease);
+        assert_eq!(dev.update_feed_url, None);
+        assert!(dev.update_public_keys.is_empty());
+        assert_eq!(
+            prod.update_feed_url.as_deref(),
+            Some("https://updates.trymaple.ai/agent/stable/latest.json")
+        );
+        // The reviewed source may be built before production key setup. The
+        // updater fails closed until separately approved keys are pinned.
+        assert!(prod.update_public_keys.is_empty());
         for profile in [dev, prod] {
             assert_ne!(profile.data_namespace, "maple-agent");
             assert_ne!(profile.data_namespace, "maple-gpui");
@@ -238,5 +295,40 @@ mod tests {
         assert_eq!(profile.pcr_environment, "development");
         assert_eq!(profile.bundle_id, "cloud.opensecret.maple.agent.debug");
         assert_eq!(profile.auth_origin, None);
+        assert_eq!(profile.update_feed_url, None);
+        assert!(profile.update_public_keys.is_empty());
+    }
+
+    #[test]
+    fn updater_profile_rejects_feed_redirection_and_dev_keys() {
+        let original = profiles().unwrap();
+        for channel in ["dev", "prod"] {
+            let mut profiles = original.clone();
+            profiles.get_mut(channel).unwrap().update_feed_url =
+                Some("https://wrong.example/latest.json".into());
+            assert!(validate_profiles(&profiles).is_err());
+        }
+        let mut profiles = original.clone();
+        profiles.get_mut("prod").unwrap().update_feed_url = None;
+        assert!(validate_profiles(&profiles).is_err());
+        let mut profiles = original;
+        profiles.get_mut("dev").unwrap().update_public_keys = vec!["unapproved-key".into()];
+        assert!(validate_profiles(&profiles).is_err());
+    }
+
+    #[test]
+    fn updater_profile_accepts_disabled_key_setup_and_rejects_empty_or_duplicate_keys() {
+        let original = profiles().unwrap();
+        assert!(validate_profiles(&original).is_ok());
+        for keys in [
+            vec![" ".into()],
+            vec!["single".into()],
+            vec!["key".into(), "key".into()],
+            vec!["x".repeat(1025), "second".into()],
+        ] {
+            let mut profiles = original.clone();
+            profiles.get_mut("prod").unwrap().update_public_keys = keys;
+            assert!(validate_profiles(&profiles).is_err());
+        }
     }
 }

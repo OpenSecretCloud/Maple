@@ -98,14 +98,18 @@ account isolation, tool execution, MCP/ACP inputs, persistence, and process
 ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 
-Packaged Agent Prod only links to stable `maple-agent-vX.Y.Z` releases; Dev only
-links to prereleases named `maple-agent-dev-vX.Y.Z`. Their embedded profiles,
-bundle IDs, and configuration/data namespaces must remain separate. Packaged
-profiles never adopt legacy Agent or Research state. See
+Packaged Agent Prod uses its independently signed R2 update feed with compiled
+public-key pins. Dev and unpackaged builds have no production updater. Empty
+production pins disable update traffic until reviewed setup; do not substitute
+a test key or inherit feed/key overrides from the launch environment. Embedded
+profiles, bundle IDs and state namespaces remain separate; packaged profiles
+never adopt legacy Agent or Research state. See
 [`desktop builds`](../../../apps/maple-agent/docs/desktop-builds.md) for packaging
 commands and the protected-master signing/artifact contract.
-Never use repository-wide `/releases/latest` for Agent, accept Research's bare
-`vX.Y.Z` tags, or turn a failed/incomplete release scan into an update offer.
-No Agent publisher is activated by the import. Future Agent release work
-requires explicit authorization and `make_latest: false` to preserve Research's
-latest pointer. Do not rename SDKs or publish registries incidentally.
+Never use repository-wide `/releases/latest` for Agent or modify Research's
+Worker/feed/publisher while working on the Agent updater. Preserve exact signed
+manifest bytes, anti-rollback, bounded downloads, staged-state revalidation and
+host/install lock ownership. Linux activation needs its own packaged update proof.
+Follow [updater development](../../../apps/maple-agent/docs/updates.md) for key
+setup and validation. Production resources, keys, routes, signing and publication
+remain separately authorized operations. Do not publish registries incidentally.

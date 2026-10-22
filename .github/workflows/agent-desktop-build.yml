@@ -127,7 +127,7 @@ jobs:
     name: Signed macOS (${{ matrix.variant }})
     needs: [changes, macos-build]
     if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-    environment: desktop-signing
+    environment: agent-desktop-signing
     permissions:
       contents: read
       id-token: write

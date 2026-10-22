@@ -492,6 +492,17 @@ fn spawn_host() -> Result<(), String> {
     Ok(())
 }
 
+/// Restore host availability after an update failed before committing its swap.
+/// This explicit recovery never replays work; ordinary reconnect loops still
+/// cannot undo a deliberate host stop. Call only after the update fence drops.
+#[cfg(feature = "desktop")]
+pub async fn recover_after_failed_update(api_url: &str) -> Result<(), String> {
+    let endpoint = ipc::Endpoint::new(api_url)?;
+    let (connection, _) = connect(&endpoint, ConnectionMode::Client, true).await?;
+    drop(connection);
+    Ok(())
+}
+
 pub fn run(api_url: String) -> Result<(), String> {
     let endpoint = ipc::Endpoint::new(&api_url)?;
     let ownership = endpoint.lock("host.lock")?;
@@ -832,6 +843,170 @@ pub fn stop(api_url: &str) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| e.to_string())
     })
+}
+
+/// Run an already verified replacement while this profile cannot start a host.
+///
+/// Call from a blocking task, never the UI or an async executor thread. The caller
+/// also owns the application-path installation lock and revalidates staging in
+/// `replace`. File guards live until replacement finishes, including when the
+/// async caller drops its blocking-task handle. Normal host startup already owns
+/// `startup.lock` while waiting for the child's handshake; the child must not try
+/// to acquire that same lock a second time.
+#[cfg(feature = "desktop")]
+pub fn with_update_fence<T>(
+    api_url: &str,
+    replace: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let endpoint = ipc::Endpoint::new(api_url)?;
+    with_update_fence_endpoint(
+        &endpoint,
+        Duration::from_secs(45),
+        || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| "Could not prepare update shutdown".to_string())?;
+            runtime.block_on(request_stop_endpoint(&endpoint))
+        },
+        replace,
+    )
+}
+
+#[cfg(feature = "desktop")]
+fn with_update_fence_endpoint<T>(
+    endpoint: &ipc::Endpoint,
+    timeout: Duration,
+    stop: impl FnOnce() -> Result<(), String>,
+    replace: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let startup = endpoint.lock("startup.lock")?;
+    wait_update_lock(&startup, timeout, "Another Maple host is starting")?;
+    stop()?;
+    // Stop acknowledgement and even socket EOF can precede the host's final
+    // drop of ownership. Acquiring ownership proves the drain has completed
+    // and prevents direct `host serve` attempts during the file replacement.
+    let ownership = endpoint.lock("host.lock")?;
+    wait_update_lock(&ownership, timeout, "Maple host is still shutting down")?;
+    let result = replace();
+    // The new process must acquire these locks normally after the transaction.
+    // Keep this order explicit: never release admission before replacement.
+    drop(ownership);
+    drop(startup);
+    result
+}
+
+#[cfg(feature = "desktop")]
+fn wait_update_lock(file: &std::fs::File, timeout: Duration, busy: &str) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Err(busy.to_string()),
+            Err(_) => return Err("Could not acquire Maple update ownership".into()),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod update_install_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn update_waits_for_drain_and_holds_startup_and_ownership_during_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let old_host = endpoint.lock("host.lock").unwrap();
+        old_host.lock().unwrap();
+        let queued_start = endpoint.lock("startup.lock").unwrap();
+        let direct_start = endpoint.lock("host.lock").unwrap();
+        let result = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_secs(2),
+            || {
+                assert!(matches!(
+                    queued_start.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                drop(old_host);
+                Ok(())
+            },
+            || {
+                assert!(matches!(
+                    queued_start.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                assert!(matches!(
+                    direct_start.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                Ok(42)
+            },
+        )
+        .unwrap();
+        assert_eq!(result, 42);
+        queued_start.try_lock().unwrap();
+        direct_start.try_lock().unwrap();
+    }
+
+    #[test]
+    fn shutdown_failure_never_replaces_and_releases_startup_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let replaced = AtomicBool::new(false);
+        let result = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_millis(30),
+            || Err("stop failed".into()),
+            || {
+                replaced.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "stop failed");
+        assert!(!replaced.load(Ordering::SeqCst));
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+    }
+
+    #[test]
+    fn stop_acknowledgement_does_not_bypass_a_host_that_keeps_ownership() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let old_host = endpoint.lock("host.lock").unwrap();
+        old_host.lock().unwrap();
+        let replaced = AtomicBool::new(false);
+        let result = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_millis(30),
+            || Ok(()),
+            || {
+                replaced.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert!(result.unwrap_err().contains("shutting down"));
+        assert!(!replaced.load(Ordering::SeqCst));
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+    }
+
+    #[test]
+    fn replacement_failure_releases_both_locks_for_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(directory.path().to_path_buf());
+        let result: Result<(), String> = with_update_fence_endpoint(
+            &endpoint,
+            Duration::from_millis(30),
+            || Ok(()),
+            || Err("replacement failed".into()),
+        );
+        assert_eq!(result.unwrap_err(), "replacement failed");
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        endpoint.lock("host.lock").unwrap().try_lock().unwrap();
+    }
 }
 
 #[cfg(feature = "acp")]

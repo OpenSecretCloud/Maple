@@ -19,10 +19,10 @@ startup in an Ubuntu 24.04 container with no Nix installation and no network
 access. Each master run completes independently; newer PR updates cancel older
 previews.
 
-| Profile | Application | macOS bundle ID | Configuration/data namespace | Update tags |
+| Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
-| Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | `maple-agent-dev-vX.Y.Z`, prerelease |
-| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | `maple-agent-vX.Y.Z`, stable |
+| Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
+| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed, after production keys are configured |
 
 The binary embeds its profile, hosted API/client/billing settings, and PCR
 environment. `--build-info` prints the public build identity as JSON without
@@ -113,20 +113,21 @@ nix develop --no-update-lock-file . -c ./scripts/verify-release.sh dev dist/dev 
 ```
 
 Use `prod` for the production service profile. Official macOS signing is run
-only by the trusted CI job using the existing `desktop-signing` GitHub
+only by the trusted CI job using the separate `agent-desktop-signing` GitHub
 environment. Cargo and native compilation run before that job step receives
 Apple credentials, on a separate runner. Linux packaging needs no Apple
 credentials.
 
 ## Distribution and update boundaries
 
-These builds are Actions downloads. They do not create GitHub Releases or
-advance an updater feed. The application discovers only releases in its own
-profile's tag namespace and opens their release page for a manual download;
-it does not install an update. Dev and Prod reject each other's releases, and
-Research's bare `vX.Y.Z` releases are excluded.
+These builds remain Actions downloads and do not advance an updater feed.
+The independent Agent publisher promotes only verified Prod artifacts into the
+Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
+The client accepts only its signed Agent product/channel/target manifest, with
+keys embedded in the selected Prod profile. Empty production keys disable update
+traffic until owner setup is complete. See [updater activation](updates.md).
 
-A future Agent publisher must use namespaced tags and `make_latest: false`,
-preserving Research's repository-wide latest release. Release publication and
-any Research-to-Agent migration require their own explicit authorization. No
-Research install is replaced, overwritten, or migrated by this workflow.
+Configure `agent-desktop-signing` and its master-only protection before merging
+the workflow's environment change. Keep Research's signing environment, updater
+key, publication workflow and compatibility URLs intact. No Research install is
+replaced, overwritten or migrated by Agent packaging or publication.

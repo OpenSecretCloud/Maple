@@ -62,6 +62,12 @@ fn app_menus(macos: bool) -> Vec<Menu> {
 
 fn maple_menu_items(macos: bool) -> Vec<MenuItem> {
     let mut items = vec![
+        MenuItem::action(
+            format!("About {}", crate::profile::DISPLAY_NAME),
+            crate::update::AboutAgent,
+        ),
+        MenuItem::action("Check for Updates…", crate::update::CheckForUpdates),
+        MenuItem::separator(),
         MenuItem::action("Settings…", chat::OpenAppSettings),
         MenuItem::separator(),
         MenuItem::os_submenu("Services", SystemMenuType::Services),
@@ -104,6 +110,8 @@ mod tests {
         assert_eq!(
             maple_action_names(true),
             vec![
+                format!("About {}", crate::profile::DISPLAY_NAME),
+                "Check for Updates…".to_string(),
                 "Settings…".to_string(),
                 format!("Hide {}", crate::profile::DISPLAY_NAME),
                 "Hide Others".to_string(),
@@ -118,6 +126,8 @@ mod tests {
         assert_eq!(
             maple_action_names(false),
             vec![
+                format!("About {}", crate::profile::DISPLAY_NAME),
+                "Check for Updates…".to_string(),
                 "Settings…".to_string(),
                 format!("Quit {}", crate::profile::DISPLAY_NAME)
             ]

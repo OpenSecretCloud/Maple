@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic identity, artifact-integrity and native-signing boundary tests."""
 
+import base64
 import importlib.util
 import io
 import json
@@ -248,6 +249,30 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.write_info()
         with self.assertRaises(ValueError):
             release_info.read_info("dev", self.path)
+
+    def test_update_feed_and_keys_cannot_drift_from_the_packaged_profile(self):
+        for field, value in (
+            ("update_feed_url", "https://wrong.invalid/agent/stable/latest.json"),
+            ("update_public_keys", ["attacker-key"]),
+        ):
+            original = self.info[field]
+            self.info[field] = value
+            self.write_info()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                release_info.read_info("dev", self.path)
+            self.info[field] = original
+
+    def test_backup_requires_a_distinct_public_key_not_a_changed_comment_or_id(self):
+        def key(point, key_id=b"12345678", comment="fixture"):
+            packet = base64.b64encode(b"Ed" + key_id + point).decode()
+            return f"untrusted comment: {comment}\n{packet}\n"
+        primary = key(bytes(range(32)))
+        release_info.validate_update_keys([])
+        release_info.validate_update_keys([primary, key(bytes(reversed(range(32))))])
+        for duplicate in [primary, key(bytes(range(32)), comment="backup"),
+                          key(bytes(range(32)), key_id=b"87654321")]:
+            with self.subTest(duplicate=duplicate), self.assertRaisesRegex(ValueError, "distinct"):
+                release_info.validate_update_keys([primary, duplicate])
 
     def test_release_plist_has_identity_permissions_and_no_shell_environment(self):
         output = self.directory / "Info.plist"

@@ -486,7 +486,7 @@ the missing feature.
 
 Local unpackaged builds accept the environment settings below. Packaged Dev
 and Prod bake their service endpoints, client ID, PCR trust, state namespace,
-and update repository at compile time; service and repository overrides are
+and updater trust at compile time; service overrides are
 ignored. See [build profiles](docs/release-profiles.md).
 
 | Variable | Purpose | Default |
@@ -497,8 +497,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
 | `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
-| `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
-| `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
+| `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
 ### File locations
@@ -563,17 +562,24 @@ check.
 
 ## Update and release boundary
 
-Prod and unpackaged builds accept stable `maple-agent-vX.Y.Z` releases. Dev
-accepts only prereleases in `maple-agent-dev-vX.Y.Z`. Each selects the highest
-semantic version across a bounded, complete scan of release pages. Research
-`vX.Y.Z` releases, drafts, and the other channel are ignored. A failed or
-incomplete scan produces no update banner. The app only links to a canonical
-GitHub release page; it does not download or install binaries.
+Packaged Prod builds use the independent signed Agent update feed. Dev and
+unpackaged/MDE builds do not check a production updater. The Prod profile pins
+the update URL and public keys; inherited environment variables cannot replace
+them. Until approved production keys are pinned, the UI reports that updates
+are not configured and makes no update requests.
+
+Updates authenticate product, channel, version, target, byte size and SHA-256
+before staging. Automatic downloads default on; installation requires the
+explicit Restart to Update action, fresh feed revalidation and profile-host
+shutdown. Read-only installations offer a manual download. Linux automatic
+replacement stays disabled until its packaged update gate is independently
+validated. See [updater development and activation](docs/updates.md).
 
 The [desktop build workflow](docs/desktop-builds.md) provides Actions artifacts
-without creating releases or advancing update feeds. Future Agent releases
-must set `make_latest: false` so Research’s global GitHub latest pointer remains
-unchanged. Release publication requires its own authorization. Local
+without creating releases or advancing update feeds. Agent publication uses
+its own R2 bucket and workflow, with no GitHub Release or tag creation and no
+Research Worker/feed changes. Production activation and release publication
+require their own authorization. Local
 `just release` and `just dist` only build local files.
 
 ## Shared dependencies and provenance

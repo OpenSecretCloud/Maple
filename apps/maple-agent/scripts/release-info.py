@@ -2,6 +2,7 @@
 """Validate public release identity and create package metadata, never secrets."""
 
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -16,12 +17,34 @@ COMPONENT = Path(__file__).resolve().parent.parent
 PUBLIC_FIELDS = (
     "display_name", "bundle_id", "data_namespace", "api_url", "billing_api_url", "web_url", "auth_origin",
     "client_id", "pcr_environment", "update_tag_prefix", "prerelease",
+    "update_feed_url", "update_public_keys",
 )
 BUILD_FIELDS = set(PUBLIC_FIELDS) | {"profile", "version", "git_revision", "source_sha"}
 
 
 def read_info(profile, path, source_sha=None):
     return validate_info(profile, json.loads(Path(path).read_text()), source_sha)
+
+
+def validate_update_keys(keys):
+    if not isinstance(keys, list) or len(keys) not in (0, 2):
+        raise ValueError("update trust must contain zero or two distinct public keys")
+    public_points = set()
+    for key in keys:
+        if not isinstance(key, str) or len(key) > 1024:
+            raise ValueError("invalid public update key")
+        # Comments and key IDs do not make a duplicate public key a backup.
+        lines = key.strip().splitlines()
+        packet = lines[-1] if lines else ""
+        try:
+            decoded = base64.b64decode(packet, validate=True)
+        except ValueError as error:
+            raise ValueError("invalid public update key encoding") from error
+        if len(decoded) != 42 or decoded[:2] != b"Ed":
+            raise ValueError("invalid public update key packet")
+        if decoded[10:] in public_points:
+            raise ValueError("update trust requires distinct public keys")
+        public_points.add(decoded[10:])
 
 
 def validate_info(profile, info, source_sha=None):
@@ -39,7 +62,15 @@ def validate_info(profile, info, source_sha=None):
         raise ValueError("binary prerelease marker must be a boolean")
     if info["auth_origin"] is not None and not isinstance(info["auth_origin"], str):
         raise ValueError("public auth origin must be a string or null")
-    if any(not isinstance(info[field], str) for field in BUILD_FIELDS - {"prerelease", "auth_origin"}):
+    if info["update_feed_url"] is not None and not isinstance(info["update_feed_url"], str):
+        raise ValueError("public update feed must be a string or null")
+    keys = info["update_public_keys"]
+    validate_update_keys(keys)
+    if profile == "dev" and (info["update_feed_url"] is not None or keys):
+        raise ValueError("Dev builds cannot enable the production updater")
+    if any(not isinstance(info[field], str) for field in BUILD_FIELDS - {
+        "prerelease", "auth_origin", "update_feed_url", "update_public_keys",
+    }):
         raise ValueError("public build identity fields must be strings")
     if not re.fullmatch(r"[0-9a-f]{40}", info["source_sha"]):
         raise ValueError("release binary must record a full source commit")

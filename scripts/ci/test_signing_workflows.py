@@ -16,6 +16,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ENVIRONMENTS = {
+    "agent-desktop-signing": {
+        "APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID",
+        "APPLE_ID_PASSWORD", "APPLE_TEAM_ID",
+    },
     "desktop-signing": {
         "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
         "APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID",
@@ -40,7 +44,7 @@ ENVIRONMENTS = {
 }
 SIGNING_SECRETS = set.union(*ENVIRONMENTS.values())
 CONSUMERS = {
-    "agent-desktop-build.yml": {"macos": "desktop-signing"},
+    "agent-desktop-build.yml": {"macos": "agent-desktop-signing"},
     "agent-updates-publish.yml": {"sign": "agent-update-signing"},
     "desktop-build.yml": {
         "build-macos": "desktop-signing", "build-linux": "desktop-signing",
@@ -58,6 +62,7 @@ CONSUMERS = {
         "build-android": "android-signing", "build-ios": "apple-signing",
     },
     "zapstore-publish.yml": {"publish": "zapstore-publishing"},
+    # Preserve the original credential diagnostics and Research environments.
     "signing-credentials-check.yml": {
         name: name for name in (
             "desktop-signing", "apple-signing", "android-signing",

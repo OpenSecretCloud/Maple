@@ -7,14 +7,16 @@ use tray_icon::{
 pub enum Action {
     Open,
     Quit,
+    CheckForUpdates,
 }
 pub struct StatusIcon(TrayIcon);
 impl StatusIcon {
     pub fn new() -> Result<(Self, tokio::sync::mpsc::Receiver<Action>), String> {
         let menu = Menu::new();
         let open = MenuItem::with_id("maple-open", "Open Maple", true, None);
+        let check = MenuItem::with_id("maple-updates", "Check for Updates…", true, None);
         let quit = MenuItem::with_id("maple-quit", "Quit Maple", true, None);
-        menu.append_items(&[&open, &quit])
+        menu.append_items(&[&open, &check, &quit])
             .map_err(|_| "Could not create the Maple tray menu")?;
         let image = image::load_from_memory(include_bytes!("../packaging/maple-agent.png"))
             .map_err(|_| "Could not load the Maple tray icon")?
@@ -35,6 +37,7 @@ impl StatusIcon {
             let action = match event.id.as_ref() {
                 "maple-open" => Action::Open,
                 "maple-quit" => Action::Quit,
+                "maple-updates" => Action::CheckForUpdates,
                 _ => return,
             };
             let _ = sender.try_send(action);

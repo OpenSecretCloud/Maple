@@ -32,6 +32,11 @@ pub fn build_info() -> serde_json::Value {
     debug_assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));
     debug_assert_eq!(info["pcr_environment"], PCR_ENVIRONMENT);
     debug_assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
+    debug_assert_eq!(info["update_feed_url"], serde_json::json!(UPDATE_FEED_URL));
+    debug_assert_eq!(
+        info["update_public_keys"],
+        serde_json::json!(UPDATE_PUBLIC_KEYS)
+    );
     debug_assert_eq!(info["prerelease"], PRERELEASE);
     info
 }
@@ -91,6 +96,11 @@ mod tests {
         assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));
         assert_eq!(info["client_id"], CLIENT_ID);
         assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
+        assert_eq!(info["update_feed_url"], serde_json::json!(UPDATE_FEED_URL));
+        assert_eq!(
+            info["update_public_keys"],
+            serde_json::json!(UPDATE_PUBLIC_KEYS)
+        );
         assert_eq!(info["prerelease"], PRERELEASE);
     }
 

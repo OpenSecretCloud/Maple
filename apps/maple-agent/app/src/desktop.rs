@@ -101,6 +101,8 @@ struct MapleApp {
     tray: Option<crate::tray::StatusIcon>,
     remote_bridges: std::cell::RefCell<Vec<gpui::Task<()>>>,
     settings: crate::settings::AppSettings,
+    updater: crate::update::Controller,
+    restart_prompt_pending: bool,
     /// The complete live shortcut map. Settings mutations prepare a full
     /// replacement before this runtime clears GPUI's process-wide bindings.
     shortcuts: crate::shortcuts::ShortcutRuntime,
@@ -147,18 +149,107 @@ impl MapleApp {
         }
     }
 
-    /// A newer release exists: tell the chat screen so it shows the banner.
-    /// Without a chat screen (login in progress) nothing is done here; the
-    /// result stays in `update::available()` and seeds the next chat.
-    fn set_update(&mut self, info: crate::update::UpdateInfo, cx: &mut Context<Self>) {
-        let chat = match &self.screen {
-            Screen::Chat(chat) => Some(chat.clone()),
-            _ => self.parked_chat.clone(),
-        };
-        if let Some(chat) = chat {
-            chat.update(cx, |chat, cx| chat.set_update(info, cx));
+    fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
+        if let Some(chat) = &self.local_chat {
+            chat.update(cx, |chat, cx| chat.set_update(snapshot.clone(), cx));
         }
-        cx.notify();
+        if let Screen::Settings(settings) = &self.screen {
+            settings.update(cx, |settings, cx| settings.set_update(snapshot, cx));
+        }
+    }
+
+    fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.screen {
+            Screen::Settings(settings) => {
+                settings.update(cx, |settings, cx| settings.show_about(cx))
+            }
+            Screen::Chat(_) => self.show_settings(Section::About, cx),
+            _ => {
+                let details = format!(
+                    "Version {}\n{}",
+                    crate::ui::titlebar::TitleBar::version(),
+                    self.updater.snapshot().label
+                );
+                drop(window.prompt(
+                    gpui::PromptLevel::Info,
+                    crate::profile::DISPLAY_NAME,
+                    Some(&details),
+                    &["OK"],
+                    cx,
+                ));
+            }
+        }
+    }
+
+    fn update_action(
+        &mut self,
+        action: crate::update::UpdateAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::update::UpdateAction;
+        if action == UpdateAction::ManualDownload {
+            if let Some(url) = self.updater.snapshot().manual_download_url {
+                cx.open_url(&url);
+            }
+            return;
+        }
+        if action == UpdateAction::Restart {
+            if self.restart_prompt_pending
+                || self.updater.snapshot().state != crate::update::State::Ready
+            {
+                return;
+            }
+            self.restart_prompt_pending = true;
+            let answer = window.prompt(gpui::PromptLevel::Warning, "Restart Maple to update?",
+                Some("This stops running tasks and remote access on this computer. Editors using Maple must reconnect after the update."),
+                &["Later", "Restart to Update"], cx);
+            let controller = self.updater.clone();
+            let backend = self.backend.clone();
+            let api_url = backend.api_url().to_owned();
+            let bridge = cx.spawn(async move |this, cx| {
+                let installed = if answer.await == Ok(1) {
+                    backend
+                        .spawn(async move { controller.install(api_url).await })
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .flatten()
+                } else {
+                    None
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.restart_prompt_pending = false;
+                    if let Some(path) = installed {
+                        this.updater.shutdown();
+                        persist_window_state();
+                        if let Some(state) = cx.try_global::<DesktopLifecycle>() {
+                            state.quit_stop_attempted.set(true);
+                        }
+                        cx.set_restart_path(path);
+                        cx.restart();
+                    }
+                });
+            });
+            ui::task::retain(&self.remote_bridges, bridge);
+            return;
+        }
+        let controller = self.updater.clone();
+        if let UpdateAction::AutomaticDownloads(enabled) = action {
+            self.settings.automatic_update_downloads = enabled;
+        }
+        // Dropping a Tokio join handle deliberately detaches the operation.
+        drop(self.backend.spawn(async move {
+            match action {
+                UpdateAction::Check => controller.check().await,
+                UpdateAction::Download => controller.download().await,
+                UpdateAction::Later => controller.later().await,
+                UpdateAction::AutomaticDownloads(enabled) => {
+                    controller.set_auto_download(enabled).await
+                }
+                UpdateAction::Restart | UpdateAction::ManualDownload => {}
+            }
+        }));
     }
 
     /// Tear down the chat screen and return to a fresh login form. A
@@ -202,11 +293,7 @@ impl MapleApp {
         );
         let backend = self.backend.clone();
         let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
-        // The release check may have finished while the login screen was
-        // up; the banner must not be lost with it.
-        if let Some(info) = crate::update::available() {
-            chat.update(cx, |chat, cx| chat.set_update(info.clone(), cx));
-        }
+        chat.update(cx, |chat, cx| chat.set_update(self.updater.snapshot(), cx));
         self.user_id = Some(user_id);
         self.parked_chat = None;
         self.screen = Screen::Chat(chat.clone());
@@ -638,6 +725,17 @@ impl MapleApp {
                 cx,
             )
         });
+        screen.update(cx, |settings, cx| {
+            settings.set_update(self.updater.snapshot(), cx)
+        });
+        cx.subscribe(
+            &screen,
+            |_, _, event: &crate::update::UpdateRequested, cx| {
+                let action = event.0;
+                cx.defer(move |cx| dispatch_update_action(action, cx));
+            },
+        )
+        .detach();
         cx.subscribe(
             &screen,
             |app, _, event: &ui::remote::ComputersChanged, cx| {
@@ -716,6 +814,11 @@ impl MapleApp {
 
     /// Wire per-chat events: sign-out and the settings gear.
     fn subscribe_chat(&mut self, chat: &Entity<ChatScreen>, cx: &mut Context<Self>) {
+        cx.subscribe(chat, |_, _, event: &crate::update::UpdateRequested, cx| {
+            let action = event.0;
+            cx.defer(move |cx| dispatch_update_action(action, cx));
+        })
+        .detach();
         cx.subscribe(chat, |app, _, _: &NavigationChanged, cx| {
             app.schedule_computers_sync(cx)
         })
@@ -848,6 +951,7 @@ impl Render for MapleApp {
 #[derive(Clone)]
 struct DesktopLifecycle {
     backend: Arc<AgentBackend>,
+    updater: crate::update::Controller,
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
     can_background: bool,
     closing: std::rc::Rc<std::cell::Cell<bool>>,
@@ -855,16 +959,35 @@ struct DesktopLifecycle {
 }
 impl gpui::Global for DesktopLifecycle {}
 
+/// Recheck at the final effect, including completions/prompts admitted before
+/// installation began. Every explicit Quit path goes through this boundary.
+fn may_finish_quit(cx: &App) -> bool {
+    !cx.try_global::<DesktopLifecycle>()
+        .is_some_and(|state| state.updater.snapshot().state == crate::update::State::Installing)
+}
+
+fn finish_quit(cx: &mut App) {
+    if may_finish_quit(cx) {
+        cx.quit();
+    } else {
+        show_update_about(cx);
+    }
+}
+
 fn quit_app(cx: &mut App) {
     let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
-        cx.quit();
+        finish_quit(cx);
         return;
     };
+    if state.updater.snapshot().state == crate::update::State::Installing {
+        show_update_about(cx);
+        return;
+    }
     if !state
         .remote_enabled
         .load(std::sync::atomic::Ordering::Acquire)
     {
-        cx.quit();
+        finish_quit(cx);
         return;
     }
     if state.closing.replace(true) {
@@ -876,8 +999,11 @@ fn quit_app(cx: &mut App) {
         .spawn(async move { crate::host::request_stop(&api).await });
     cx.spawn(async move |cx| match stop.await {
         Ok(Ok(())) => cx.update(|cx| {
-            state.quit_stop_attempted.set(true);
-            cx.quit();
+            if may_finish_quit(cx) {
+                state.quit_stop_attempted.set(true);
+            }
+            state.closing.set(false);
+            finish_quit(cx);
         }),
         result => {
             state.closing.set(false);
@@ -916,8 +1042,10 @@ impl Render for QuitWarning {
                 .child(ui::widgets::secondary_button("quit-maple-anyway").debug_selector(|| "quit-maple-anyway".to_string()).child("Quit anyway")
                     .on_click(|_, _, cx| {
                         // Do not repeat the failed stop in the app-quit callback.
-                        if let Some(state) = cx.try_global::<DesktopLifecycle>() { state.quit_stop_attempted.set(true); }
-                        cx.quit();
+                        if may_finish_quit(cx) && let Some(state) = cx.try_global::<DesktopLifecycle>() {
+                            state.quit_stop_attempted.set(true);
+                        }
+                        finish_quit(cx);
                     })))
     }
 }
@@ -926,9 +1054,19 @@ impl Render for QuitWarning {
 pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
     persist_window_state();
     let Some(state) = cx.try_global::<DesktopLifecycle>().cloned() else {
-        cx.quit();
+        finish_quit(cx);
         return;
     };
+    if state.updater.snapshot().state == crate::update::State::Installing {
+        drop(window.prompt(
+            gpui::PromptLevel::Info,
+            "Maple is installing an update",
+            Some("Keep Maple open until the update finishes and Maple restarts."),
+            &["OK"],
+            cx,
+        ));
+        return;
+    }
     if !state
         .remote_enabled
         .load(std::sync::atomic::Ordering::Acquire)
@@ -1111,7 +1249,7 @@ impl StartupError {
             let _ = this.update(cx, |this, cx| {
                 this.stopping = false;
                 match result {
-                    Some(Ok(())) => cx.quit(),
+                    Some(Ok(())) => finish_quit(cx),
                     Some(Err(error)) => this.message = format!("Could not restart Maple: {error}"),
                     None => {}
                 }
@@ -1160,7 +1298,7 @@ impl Render for StartupError {
                     .rounded_md()
                     .bg(gpui::rgb(ui::theme::bg_elevated()))
                     .child("Close")
-                    .on_click(|_, _, cx| cx.quit()),
+                    .on_click(|_, _, cx| finish_quit(cx)),
             )
     }
 }
@@ -1183,7 +1321,7 @@ fn show_startup_error(error: String) {
             },
             move |window, cx| {
                 window.on_window_should_close(cx, |_, cx| {
-                    cx.quit();
+                    finish_quit(cx);
                     true
                 });
                 cx.new(|_| StartupError::new(error))
@@ -1191,11 +1329,32 @@ fn show_startup_error(error: String) {
         );
         if let Err(error) = result {
             log::error!("Could not show the startup error: {error}");
-            cx.quit();
+            finish_quit(cx);
         } else {
             cx.activate(true);
         }
     });
+}
+
+fn dispatch_update_action(action: crate::update::UpdateAction, cx: &mut App) {
+    for window in cx.windows() {
+        let _ = window.update(cx, |root, window, cx| {
+            if let Ok(app) = root.downcast::<MapleApp>() {
+                app.update(cx, |app, cx| app.update_action(action, window, cx));
+            }
+        });
+    }
+}
+
+fn show_update_about(cx: &mut App) {
+    for window in cx.windows() {
+        let _ = window.update(cx, |root, window, cx| {
+            if let Ok(app) = root.downcast::<MapleApp>() {
+                window.activate_window();
+                app.update(cx, |app, cx| app.show_about(window, cx));
+            }
+        });
+    }
 }
 
 pub fn run() {
@@ -1244,6 +1403,11 @@ pub fn run() {
             }
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| quit_app(cx));
+            cx.on_action(|_: &crate::update::AboutAgent, cx| show_update_about(cx));
+            cx.on_action(|_: &crate::update::CheckForUpdates, cx| {
+                show_update_about(cx);
+                dispatch_update_action(crate::update::UpdateAction::Check, cx);
+            });
             #[cfg(target_os = "macos")]
             {
                 cx.on_action(|_: &Hide, cx| cx.hide());
@@ -1315,8 +1479,13 @@ pub fn run() {
                 WindowBounds::Windowed(bounds)
             };
             let remote_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let updater =
+                crate::update::Controller::new(startup_settings.automatic_update_downloads);
+            let mut update_events = updater.subscribe();
+            let quit_updater = updater.clone();
             cx.set_global(DesktopLifecycle {
                 backend: backend.clone(),
+                updater: updater.clone(),
                 remote_enabled: remote_enabled.clone(),
                 can_background: false,
                 closing: Default::default(),
@@ -1325,12 +1494,17 @@ pub fn run() {
             let quit_remote_enabled = remote_enabled.clone();
             let quit_backend = backend.clone();
             cx.on_app_quit(move |cx| {
+                quit_updater.shutdown();
                 let stop_attempted = cx
                     .try_global::<DesktopLifecycle>()
                     .is_some_and(|state| state.quit_stop_attempted.get());
                 let backend = quit_backend.clone();
                 let remote_enabled = quit_remote_enabled.clone();
+                let updater = quit_updater.clone();
                 async move {
+                    let _ = backend
+                        .spawn(async move { updater.cleanup_on_exit().await })
+                        .await;
                     persist_window_state();
                     if stop_attempted {
                         return;
@@ -1357,6 +1531,7 @@ pub fn run() {
             let root_enabled = remote_enabled.clone();
             let root_backend = backend.clone();
             let root_settings = startup_settings.clone();
+            let root_updater = updater.clone();
             let window = cx
                 .open_window(main_window_options(window_bounds), move |_, cx| {
                     cx.new(move |cx| MapleApp {
@@ -1375,6 +1550,8 @@ pub fn run() {
                         tray,
                         remote_bridges: std::cell::RefCell::new(Vec::new()),
                         settings: root_settings,
+                        updater: root_updater,
+                        restart_prompt_pending: false,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                     })
@@ -1419,22 +1596,22 @@ pub fn run() {
                     }
                 }
             }
-            // Ask for a newer release off the UI thread; the banner shows
-            // in the chat when one exists.
-            if crate::update::enabled() {
-                let check = backend.spawn(crate::update::check());
-                let root_window = window;
-                cx.spawn(async move |cx| {
-                    if let Ok(Some(info)) = check.await {
-                        root_window
-                            .update(cx, |app: &mut MapleApp, _window, cx| {
-                                app.set_update(info, cx);
-                            })
-                            .ok();
+            // HTTP clients are created on the backend Tokio runtime. A watch
+            // stream pushes only state changes into the cached GPUI views.
+            drop(backend.spawn(updater.run()));
+            let root_window = window;
+            cx.spawn(async move |cx| {
+                while update_events.changed().await.is_ok() {
+                    let snapshot = update_events.borrow_and_update().clone();
+                    if root_window
+                        .update(cx, |app: &mut MapleApp, _, cx| app.set_update(snapshot, cx))
+                        .is_err()
+                    {
+                        break;
                     }
-                })
-                .detach();
-            }
+                }
+            })
+            .detach();
             let root = window
                 .update(cx, |app, window, cx| {
                     // The only window: closing it from the window manager
@@ -1495,6 +1672,11 @@ pub fn run() {
                         match action {
                             crate::tray::Action::Quit => {
                                 cx.update(quit_app);
+                            }
+                            crate::tray::Action::CheckForUpdates => {
+                                cx.update(|cx| {
+                                    dispatch_update_action(crate::update::UpdateAction::Check, cx)
+                                });
                             }
                             crate::tray::Action::Open => {
                                 cx.update(|cx| {
@@ -1595,6 +1777,46 @@ mod tests {
         }]
     }
 
+    #[gpui::test]
+    fn pending_quit_or_warning_cannot_finish_during_installation(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let updater = crate::update::Controller::new(false);
+        updater.set_test_state(crate::update::State::Ready);
+        let pending = std::rc::Rc::new(std::cell::Cell::new(true));
+        cx.update(|cx| {
+            cx.set_global(DesktopLifecycle {
+                backend,
+                updater: updater.clone(),
+                remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                can_background: false,
+                closing: pending.clone(),
+                quit_stop_attempted: Default::default(),
+            });
+            assert!(
+                may_finish_quit(cx),
+                "quit/warning was admitted before installation"
+            );
+            updater.set_test_state(crate::update::State::Installing);
+            assert!(
+                !may_finish_quit(cx),
+                "pending remote-stop completion must recheck"
+            );
+            finish_quit(cx);
+            assert!(!cx.global::<DesktopLifecycle>().quit_stop_attempted.get());
+            assert!(
+                !may_finish_quit(cx),
+                "an earlier Quit anyway warning must recheck too"
+            );
+            updater.set_test_state(crate::update::State::Error);
+            assert!(
+                may_finish_quit(cx),
+                "a failed installation restores ordinary quit"
+            );
+        });
+    }
+
     fn project_shell(cx: &mut gpui::TestAppContext) -> Entity<MapleApp> {
         cx.executor().allow_parking();
         let backend =
@@ -1652,6 +1874,8 @@ mod tests {
                 tray: None,
                 remote_bridges: Default::default(),
                 settings,
+                updater: crate::update::Controller::new(true),
+                restart_prompt_pending: false,
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
             }

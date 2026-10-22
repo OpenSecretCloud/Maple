@@ -129,6 +129,7 @@ pub struct SettingsScreen {
     remote_screen: Entity<super::remote::RemoteScreen>,
     user_id: String,
     settings: AppSettings,
+    update: crate::update::Snapshot,
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
@@ -236,11 +237,23 @@ impl EventEmitter<super::remote::ComputersChanged> for SettingsScreen {}
 impl EventEmitter<super::remote::ConnectComputer> for SettingsScreen {}
 impl EventEmitter<super::remote::ComputerNamed> for SettingsScreen {}
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
+impl EventEmitter<crate::update::UpdateRequested> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
 impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {
+    pub fn show_about(&mut self, cx: &mut Context<Self>) {
+        self.select_section(Section::About, cx);
+    }
+
+    pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
+        if self.update != snapshot {
+            self.update = snapshot;
+            cx.notify();
+        }
+    }
+
     pub fn update_remote_status(
         &mut self,
         status: crate::remote::manager::Status,
@@ -343,6 +356,7 @@ impl SettingsScreen {
             user_id,
             theme: theme::Preference::parse(&settings.theme),
             settings,
+            update: crate::update::Snapshot::initial(),
             section,
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
@@ -1746,14 +1760,37 @@ impl SettingsScreen {
                         "Version",
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
                     ))
-                    .child(info_row(
-                        "Update",
-                        match crate::update::available() {
-                            Some(info) => format!("v{} is available at {}", info.version, info.url),
-                            None if crate::update::enabled() => "Up to date".to_string(),
-                            None => "Update check disabled".to_string(),
-                        },
+                    .child(info_row("Update", self.update.label.clone()))
+                    .child(toggle_row(
+                        "Automatically download updates",
+                        "Download verified updates in the background. Installation always waits for Restart to Update.",
+                        self.settings.automatic_update_downloads,
+                        cx.listener(|this, _, _, cx| {
+                            let enabled = !this.settings.automatic_update_downloads;
+                            this.edit_setting(move |settings| settings.automatic_update_downloads = enabled, cx);
+                            cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::AutomaticDownloads(enabled)));
+                        }),
                     ))
+                    .child(div().flex().gap_3()
+                        .child(widgets::ghost_button("updates-check")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Check))))
+                            .child(if self.update.busy() { "Checking / updating…" } else if self.update.state == crate::update::State::Error { "Retry" } else { "Check for Updates" }))
+                        .when_some(self.update.primary.filter(|action| *action != crate::update::UpdateAction::Check), |row, action| row.child(
+                            widgets::ghost_button("updates-primary")
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(crate::update::UpdateRequested(action))))
+                                .child(self.update.primary_label)
+                        ))
+                        .when(self.update.state == crate::update::State::Error && self.update.manual_download_url.is_some(), |row| row.child(
+                            widgets::ghost_button("updates-manual")
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::ManualDownload))))
+                                .child("Download manually")
+                        ))
+                        .when(self.update.state == crate::update::State::Ready, |row| row.child(
+                            widgets::ghost_button("updates-later")
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Later))))
+                                .child("Later")
+                        ))
+                    )
                     .child(info_row("Backend", self.backend.api_url().to_string()))
                     .child(info_row(
                         "Config directory",
