@@ -28,8 +28,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString, Task,
-    WeakEntity, Window, div, prelude::*, px,
+    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
+    Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
     AgentProjectTrustStatus, AgentSessionSummary, AgentTaskState, RecentProjectRoot,
@@ -362,6 +362,12 @@ pub(super) struct Sidebar {
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
     rename_focus_pending: bool,
+    /// Commits a task's rename when its field loses focus, the way a
+    /// click anywhere else ends one in a native list.
+    rename_focus_out: Option<Subscription>,
+    /// Task renames sent to the backend, for tests.
+    #[cfg(test)]
+    renames_sent: Vec<(String, String)>,
     // Persisted in the app settings.
     pinned_tasks: Vec<String>,
     /// Latest owner metadata seen per path, independent of current membership.
@@ -555,6 +561,9 @@ impl Sidebar {
             rename: None,
             rename_input: None,
             rename_focus_pending: false,
+            rename_focus_out: None,
+            #[cfg(test)]
+            renames_sent: Vec::new(),
             pinned_tasks: remote_settings
                 .as_ref()
                 .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
@@ -895,6 +904,11 @@ impl Sidebar {
         self.project_metadata.clear();
         self.pending_project_names.clear();
         self.rebuild_sections();
+    }
+
+    #[cfg(test)]
+    pub(super) fn renames_sent(&self) -> &[(String, String)] {
+        &self.renames_sent
     }
 
     #[cfg(test)]
@@ -1394,6 +1408,9 @@ impl Sidebar {
                 .with_tab_index(0)
                 .application_vim(application_vim_enabled);
             input.set_text(&current, cx);
+            // The old name opens selected: typing replaces it, an arrow
+            // key keeps it.
+            input.select_all_text(cx);
             input
                 .on_application_escape(move |window, cx| {
                     if in_switcher {
@@ -1403,8 +1420,19 @@ impl Sidebar {
                                 sidebar.update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
                             }
                         });
-                    } else if let Some(chat) = chat.upgrade() {
-                        chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
+                    } else {
+                        // Escape discards: cancel before focus moves, or
+                        // the field losing focus would commit the rename.
+                        let escape = escape.clone();
+                        let chat = chat.clone();
+                        window.defer(cx, move |window, cx| {
+                            if let Some(sidebar) = escape.upgrade() {
+                                sidebar.update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
+                            }
+                            if let Some(chat) = chat.upgrade() {
+                                chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
+                            }
+                        });
                     }
                 })
                 .on_enter(move |_text, _, cx| {
@@ -1439,11 +1467,24 @@ impl Sidebar {
     /// switcher's focus, which a project's field had.
     fn end_rename(&mut self, target: &RenameTarget, cx: &mut Context<Self>) {
         self.rename_input = None;
+        self.rename_focus_out = None;
         self.remeasure(target);
         if matches!(target, RenameTarget::Project(_)) {
             self.popup.refocus(cx);
         }
         cx.notify();
+    }
+
+    /// The pointer or focus left a task's rename field: commit it, unless
+    /// the field's own right-click menu took them (Paste, Cut).
+    fn leave_rename(&mut self, cx: &mut Context<Self>) {
+        let menu_open = self
+            .rename_input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).menu_open());
+        if !menu_open {
+            self.commit_rename(cx);
+        }
     }
 
     pub(super) fn commit_rename(&mut self, cx: &mut Context<Self>) {
@@ -1462,6 +1503,8 @@ impl Sidebar {
         }
         match target {
             RenameTarget::Task(session_id) => {
+                #[cfg(test)]
+                self.renames_sent.push((session_id.clone(), name.clone()));
                 let backend = self.backend.clone();
                 let user_id = self.user_id.clone();
                 self.call(
@@ -2376,9 +2419,21 @@ impl Sidebar {
     /// The rename field for the task being edited, if it is this one.
     /// Renders per visible row per frame, so it compares borrowed ids
     /// instead of building a `RenameTarget` to match against.
-    fn task_rename_field(&self, session_id: &str) -> Option<gpui::Stateful<Div>> {
+    /// A press anywhere outside it commits the rename, even where nothing
+    /// takes focus (another row, the list's empty space).
+    fn task_rename_field(
+        &self,
+        session_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<Div>> {
         match self.rename.as_ref() {
-            Some(RenameTarget::Task(target)) if target == session_id => self.rename_field(),
+            Some(RenameTarget::Task(target)) if target == session_id => {
+                self.rename_field().map(|field| {
+                    field.on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                        this.leave_rename(cx);
+                    }))
+                })
+            }
             _ => None,
         }
     }
@@ -2396,6 +2451,7 @@ impl Sidebar {
         let input = self.rename_input.clone()?;
         Some(
             div()
+                .debug_selector(|| "rename-field".to_string())
                 .id("rename-field")
                 .flex_1()
                 .min_w_0()
@@ -2432,7 +2488,7 @@ impl Sidebar {
         let rung = TaskRung::of(task);
         let step = rung.step();
         let pin_id = row.pin_id.clone();
-        let rename_field = self.task_rename_field(&row.id);
+        let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
         div()
             .relative()
@@ -2459,39 +2515,46 @@ impl Sidebar {
                     .font_weight(gpui::FontWeight::MEDIUM)
             })
             .text_color(gpui::rgb(theme::text_primary()))
-            .hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
+            // A row being renamed is a text field: no hover highlight and
+            // no hover actions over it, so the edit is plain to see.
+            .when(!renaming, |el| {
+                el.hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
             }))
-            .when_some(rename_field, |row, field| row.child(field))
-            .when(!renaming, |el| {
-                el.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().line_clamp(1).text_ellipsis().child(row.title.clone()))
-                        .when(self.computers.len() <= 1, |column| {
-                            column.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(gpui::rgb(if is_selected {
-                                        theme::text_secondary()
-                                    } else {
-                                        theme::text_muted()
-                                    }))
-                                    .line_clamp(1)
-                                    .text_ellipsis()
-                                    .child(row.project_name.clone()),
-                            )
-                        }),
-                )
-            })
+            // The rename field takes the title's line; the project line
+            // stays under it.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .map(|column| match rename_field {
+                        Some(field) => column.child(field),
+                        None => column
+                            .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
+                    })
+                    .when(self.computers.len() <= 1, |column| {
+                        column.child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(if is_selected {
+                                    theme::text_secondary()
+                                } else {
+                                    theme::text_muted()
+                                }))
+                                .line_clamp(1)
+                                .text_ellipsis()
+                                .child(row.project_name.clone()),
+                        )
+                    }),
+            )
             .when_some(activity, |row_element, activity| {
                 row_element.child(activity_indicator(&row.spinner_id, activity))
             })
@@ -2517,45 +2580,47 @@ impl Sidebar {
                         .child(icon("pin", px(13.), theme::accent())),
                 )
             })
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .when(is_pinned, |overlay| overlay.right(px(26.)))
-                    .when(!is_pinned, |overlay| {
-                        overlay.right_0().rounded_r(theme::RADIUS_MD)
-                    })
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
-                    .pl_2()
-                    .pr_6()
-                    .group_hover(row.group.clone(), |style| {
-                        style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    })
-                    .child(self.task_menu_trigger(row, task, window, cx))
-                    .child(row_action(
-                        row.rename_id.clone(),
-                        &row.group,
-                        "pencil",
-                        "Rename",
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
-                        }),
-                    ))
-                    .child(row_action(
-                        row.step_id.clone(),
-                        &row.group,
-                        step.icon,
-                        step.row_label,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.move_task(&step_id, rung.next(), cx);
-                        }),
-                    )),
-            )
+            .when(!renaming, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .when(is_pinned, |overlay| overlay.right(px(26.)))
+                        .when(!is_pinned, |overlay| {
+                            overlay.right_0().rounded_r(theme::RADIUS_MD)
+                        })
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .pl_2()
+                        .pr_6()
+                        .group_hover(row.group.clone(), |style| {
+                            style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        })
+                        .child(self.task_menu_trigger(row, task, window, cx))
+                        .child(row_action(
+                            row.rename_id.clone(),
+                            &row.group,
+                            "pencil",
+                            "Rename",
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
+                            }),
+                        ))
+                        .child(row_action(
+                            row.step_id.clone(),
+                            &row.group,
+                            step.icon,
+                            step.row_label,
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.move_task(&step_id, rung.next(), cx);
+                            }),
+                        )),
+                )
+            })
     }
 
     /// The collapse button in the top row.
@@ -2643,6 +2708,17 @@ impl Render for Sidebar {
             if let Some(input) = self.rename_input.clone() {
                 let handle = input.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
+                // A project's field ends with the switcher around it; a
+                // task's field ends where focus goes next. Deferred, so the
+                // commit never drops this subscription inside its own call.
+                if matches!(self.rename, Some(RenameTarget::Task(_))) {
+                    self.rename_focus_out =
+                        Some(
+                            cx.on_focus_out(&handle, window, |_this, _event, window, cx| {
+                                cx.defer_in(window, |this, _window, cx| this.leave_rename(cx));
+                            }),
+                        );
+                }
             }
         }
         let entity = cx.entity().downgrade();

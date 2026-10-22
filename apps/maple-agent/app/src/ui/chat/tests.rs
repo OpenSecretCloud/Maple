@@ -5506,6 +5506,160 @@ mod state_tests {
         assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
     }
 
+    /// A task's rename ends when its field loses focus or the pointer
+    /// presses anywhere outside it, and keeps what was typed, as Enter
+    /// does: a click anywhere else never leaves the row stuck in its
+    /// field. Escape still discards it.
+    #[gpui::test]
+    fn test_a_task_rename_commits_when_the_user_leaves_it(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let sent = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| sidebar.renames_sent().to_vec())
+        };
+        let rename = |cx: &mut gpui::VisualTestContext, typed: &str| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+            });
+            cx.run_until_parked();
+            cx.simulate_input(typed);
+        };
+        let ended = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none())
+        };
+
+        // Escape, then focus moving on: nothing is sent.
+        rename(cx, "Discarded");
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.focus_search(window, cx)));
+        cx.run_until_parked();
+        assert!(ended(cx));
+        assert!(sent(cx).is_empty(), "Escape discards the rename");
+
+        // Focus moving away commits what was typed, once.
+        rename(cx, "Moved");
+        cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.focus_search(window, cx)));
+        cx.run_until_parked();
+        assert!(ended(cx), "focus leaving ends the rename");
+        assert_eq!(sent(cx), vec![("s1".to_string(), "Moved".to_string())]);
+
+        // A press on another row, which takes no focus, commits too.
+        rename(cx, "Pressed");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let other_row = cx.debug_bounds("menu-session-s2").expect("s2's row");
+        let on_row = other_row.center() - gpui::point(gpui::px(80.), gpui::px(0.));
+        cx.simulate_mouse_down(on_row, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(on_row, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(ended(cx), "a press outside the field ends the rename");
+        assert_eq!(sent(cx).len(), 2, "one request per rename");
+        assert_eq!(sent(cx)[1], ("s1".to_string(), "Pressed".to_string()));
+    }
+
+    /// Under Application Vim, the Escape that leaves the field discards the
+    /// rename before focus moves on, so the move commits nothing.
+    #[gpui::test]
+    fn test_application_vim_escape_discards_a_task_rename(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.set_application_vim_enabled(true, cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_input("Changed");
+        // The first Escape leaves Insert; the next leaves the field.
+        cx.simulate_keystrokes("escape escape");
+        cx.run_until_parked();
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()));
+        assert!(
+            sidebar.update(cx, |sidebar, _| sidebar.renames_sent().is_empty()),
+            "Escape discards the rename"
+        );
+    }
+
+    /// The field's own right-click menu (Paste, Cut) keeps the rename open;
+    /// it ends only once the user really leaves.
+    #[gpui::test]
+    fn test_a_task_rename_survives_its_fields_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let field = cx.debug_bounds("rename-field").expect("the rename field");
+        cx.simulate_mouse_down(
+            field.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            field.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        let input = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
+        assert!(
+            input.is_some_and(|input| input.read_with(cx, |input, _| input.menu_open())),
+            "the field's menu opened"
+        );
+        assert!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_some()),
+            "the field's menu keeps the rename open"
+        );
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.renames_sent().is_empty()));
+    }
+
+    /// A task's rename opens with the old name selected, so typing replaces
+    /// it, and the row drops its hover actions while it is a text field.
+    #[gpui::test]
+    fn test_a_task_rename_opens_selected_without_hover_actions(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let rename_button = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds("rename-session-s1")
+        };
+        assert!(
+            rename_button(cx).is_some(),
+            "a listed row has its hover actions"
+        );
+
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
+        });
+        cx.run_until_parked();
+        assert!(rename_button(cx).is_none(), "a row being renamed has none");
+        cx.simulate_input("Fresh");
+        let field = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
+        assert_eq!(
+            field.map(|field| field.read_with(cx, |field, _| field.text())),
+            Some("Fresh".to_string()),
+            "typing replaces the selected old name"
+        );
+
+        chat.update(cx, |this, cx| this.cancel_rename(cx));
+        assert!(rename_button(cx).is_some(), "the actions come back after");
+    }
+
     /// A project's rename field sits in the switcher. Escape ends the
     /// rename and Enter commits it; either way the switcher stays open and
     /// has the keyboard again.
