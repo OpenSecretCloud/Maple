@@ -1,101 +1,16 @@
-//! Project labels belong to the execution computer, independently of desktop
-//! preferences and the account configuration that an OS profile may roam.
+//! Project labels belong to the execution computer and account. Canonical
+//! paths, names and revisions live only in its injected store-v1 database.
+//! Commands return a single authoritative record; project membership is paged.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
-use serde::{Deserialize, Serialize};
 
 use super::config::*;
 use super::{AgentRuntimeHandle, AgentServiceEvent, RecentProjectRoot, emit_agent_event};
+use crate::store::{AccountId, ProjectRecord, Store};
 
 const MAX_NAME_CHARS: usize = 128;
-
-#[derive(Default, Deserialize, Serialize)]
-struct ProjectNames {
-    #[serde(default)]
-    legacy_imported: bool,
-    #[serde(default)]
-    revision: u64,
-    #[serde(default)]
-    names: BTreeMap<String, ProjectName>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct ProjectName {
-    /// `None` is an explicit reset, not permission to import a legacy alias.
-    name: Option<String>,
-    revision: u64,
-}
-
-impl ProjectNames {
-    fn load(path: &Path) -> Result<Self, String> {
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
-            Err(_) => return Err("Could not read project display names".into()),
-        };
-        let names: Self = serde_json::from_slice(&bytes)
-            .map_err(|_| "Project display names are invalid; restore the saved file".to_string())?;
-        for (path, entry) in &names.names {
-            if !structurally_valid_project_root(path)
-                || entry.revision == 0
-                || entry.revision > names.revision
-                || entry
-                    .name
-                    .as_ref()
-                    .is_some_and(|name| normalize_name(name).ok().as_ref() != Some(name))
-            {
-                return Err("Project display names are invalid; restore the saved file".into());
-            }
-        }
-        Ok(names)
-    }
-
-    fn save(&self, path: &Path) -> Result<(), String> {
-        write_device_local_json_file(path, self)
-            .map_err(|_| "Could not save project display names".into())
-    }
-
-    fn set(&mut self, path: String, name: Option<String>) -> Result<bool, String> {
-        if self
-            .names
-            .get(&path)
-            .is_some_and(|entry| entry.name == name)
-        {
-            return Ok(false);
-        }
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .ok_or("Project display name revision is exhausted")?;
-        self.names.insert(
-            path,
-            ProjectName {
-                name,
-                revision: self.revision,
-            },
-        );
-        Ok(true)
-    }
-
-    fn apply(&self, roots: &mut [RecentProjectRoot], workspace: Option<&Path>) {
-        for root in roots {
-            root.is_default_workspace = workspace.is_some_and(|path| path == Path::new(&root.path));
-            root.name = default_name(root);
-            root.name_revision = 0;
-            if let Some(entry) = self.names.get(&root.path) {
-                root.name_revision = entry.revision;
-                if let Some(name) = &entry.name {
-                    root.name.clone_from(name);
-                }
-            }
-        }
-    }
-}
 
 fn normalize_name(name: &str) -> Result<String, String> {
     let name = name.trim();
@@ -123,165 +38,135 @@ fn normalize_name(name: &str) -> Result<String, String> {
     Ok(name.into())
 }
 
-fn default_name(root: &RecentProjectRoot) -> String {
-    if root.is_default_workspace {
+/// Pure owner-side label projection shared by runtime metadata and SQL search.
+/// The caller resolves the workspace identity; this never reads the filesystem.
+pub(crate) fn owner_project_display_name(
+    path: &str,
+    custom_name: Option<&str>,
+    is_default_workspace: bool,
+) -> String {
+    if let Some(name) = custom_name {
+        return name.into();
+    }
+    if is_default_workspace {
         return super::MAPLE_WORKSPACE_DISPLAY_NAME.into();
     }
-    project_root_record(root.path.clone(), root.last_used_ms).name
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .into()
 }
 
-fn catalog(
-    roots: Vec<RecentProjectRoot>,
-    task_roots: impl IntoIterator<Item = String>,
-    removed: &[String],
-    workspace: Option<&Path>,
-) -> Vec<RecentProjectRoot> {
-    let mut roots = sanitize_recent_project_roots(roots);
-    let mut known = roots
-        .iter()
-        .map(|root| root.path.clone())
-        .collect::<HashSet<_>>();
-    for path in task_roots {
-        if structurally_valid_project_root(&path) && known.insert(path.clone()) {
-            roots.push(project_root_record(path, 0));
+fn metadata(path: String, record: Option<ProjectRecord>) -> Result<RecentProjectRoot, String> {
+    let is_default_workspace = super::is_default_maple_workspace(Path::new(&path));
+    let mut root = RecentProjectRoot {
+        name: owner_project_display_name(&path, None, is_default_workspace),
+        path,
+        last_used_ms: 0,
+        is_default_workspace,
+        name_revision: 0,
+    };
+    if let Some(record) = record {
+        root.last_used_ms = u128::try_from(record.last_used_ms)
+            .map_err(|_| "Project metadata has an invalid timestamp")?;
+        root.name_revision = record.name_revision;
+        if let Some(name) = record.display_name {
+            if normalize_name(&name).ok().as_ref() != Some(&name) {
+                return Err("Project display name is invalid".into());
+            }
+            root.name = name;
         }
     }
-    roots.retain(|root| !is_removed_project_root(&root.path, removed));
-    include_default_maple_workspace(roots, removed, workspace)
+    Ok(root)
+}
+
+fn listed_metadata(
+    store: &Store,
+    account: AccountId,
+    path: &str,
+) -> Result<RecentProjectRoot, String> {
+    if !structurally_valid_project_root(path) {
+        return Err("Project path must be an absolute folder path".into());
+    }
+    let record = store
+        .listed_project(account, path)
+        .map_err(|error| error.to_string())?;
+    if record.is_some() {
+        return metadata(path.into(), record);
+    }
+    // The owner's implicit workspace is offered even before it exists. Its
+    // explicit removal tombstone still wins; no directory is opened or created.
+    if super::is_default_maple_workspace(Path::new(path)) {
+        let record = store
+            .project(account, path)
+            .map_err(|error| error.to_string())?;
+        if record
+            .as_ref()
+            .is_none_or(|record| record.removed_ms.is_none())
+        {
+            return metadata(path.into(), record);
+        }
+    }
+    Err("This project is not in this computer's project list".into())
 }
 
 impl AgentRuntimeHandle {
-    fn project_names_path(&self) -> Result<PathBuf, String> {
-        Ok(account_local_data_dir_path(self.paths(), &self.user_id)
-            .map_err(|error| error.to_string())?
-            .join("project_names.json"))
-    }
-
-    /// The caller holds the settings lock. Names never come from the roaming
-    /// recent-roots cache; the owning daemon resolves both custom and defaults.
-    pub(super) fn project_roots_locked(&self) -> Result<Vec<RecentProjectRoot>, String> {
-        self.project_roots_with_removed_locked(false)
-    }
-
-    fn project_roots_with_removed_locked(
-        &self,
-        include_removed: bool,
-    ) -> Result<Vec<RecentProjectRoot>, String> {
-        let config = load_agent_config_inner(self.paths(), &self.user_id)
-            .map_err(|error| error.to_string())?;
-        let roots = load_recent_project_roots_inner(self.paths(), &self.user_id)
-            .map_err(|error| error.to_string())?;
-        let task_roots = self
-            .store()?
-            .list(None)?
-            .into_iter()
-            .map(|row| row.project_root);
-        let workspace = super::default_maple_workspace_path();
-        let mut roots = catalog(
-            roots,
-            task_roots,
-            if include_removed {
-                &[]
-            } else {
-                &config.removed_project_roots
-            },
-            workspace.as_deref(),
-        );
-        ProjectNames::load(&self.project_names_path()?)?.apply(&mut roots, workspace.as_deref());
-        Ok(roots)
-    }
-
-    pub async fn list_recent_project_roots(&self) -> Result<Vec<RecentProjectRoot>, String> {
-        let _settings = self.lock_settings().await;
+    /// Resolve one owner-authoritative record without loading tasks or a catalog.
+    pub async fn project_root_metadata(&self, path: String) -> Result<RecentProjectRoot, String> {
         self.verify_generation().await?;
-        self.project_roots_locked()
+        let _settings = self.lock_settings().await;
+        let tasks = self.store()?;
+        let root = tokio::task::spawn_blocking(move || {
+            listed_metadata(tasks.store(), tasks.account(), &path)
+        })
+        .await
+        .map_err(|_| "Project settings worker did not complete".to_owned())??;
+        self.verify_generation().await?;
+        Ok(root)
     }
 
-    /// A label mutation only: paths, project trust and tasks are unchanged.
-    /// Typing the owner's default label resets a custom name.
+    /// A label mutation only: paths, trust and tasks are unchanged. Typing the
+    /// owner's default label resets a custom name, retaining a newer revision.
     pub async fn rename_project_root(
         &self,
         path: String,
         name: String,
-    ) -> Result<Vec<RecentProjectRoot>, String> {
+    ) -> Result<RecentProjectRoot, String> {
         let name = normalize_name(&name)?;
         let _settings = self.lock_settings().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
-        let roots = self.project_roots_locked()?;
-        let root = roots
-            .iter()
-            .find(|root| root.path == path)
-            .ok_or("This project is not in this computer's project list")?;
-        let name = (name != default_name(root)).then_some(name);
-        let file = self.project_names_path()?;
-        let mut names = ProjectNames::load(&file)?;
-        if !names.set(path, name)? {
-            return Ok(roots);
-        }
-        names.save(&file)?;
-        let mut roots = roots;
-        names.apply(&mut roots, super::default_maple_workspace_path().as_deref());
-        emit_agent_event(
-            &self.service.host.events,
-            AgentServiceEvent::ProjectsChanged {
-                user_id: self.user_id.to_string(),
-                roots: roots.clone(),
-            },
-        );
-        Ok(roots)
-    }
-
-    /// Once imported, a desktop settings read is no longer needed, including
-    /// after daemon restart. An unrelated UI settings error cannot undo that.
-    pub async fn project_names_migrated(&self) -> Result<bool, String> {
-        let _settings = self.lock_settings().await;
+        let tasks = self.store()?;
+        let (root, changed) = tokio::task::spawn_blocking(move || {
+            let root = listed_metadata(tasks.store(), tasks.account(), &path)?;
+            let name = (name
+                != owner_project_display_name(&root.path, None, root.is_default_workspace))
+            .then_some(name);
+            let changed = tasks
+                .store()
+                .set_project_display_name(tasks.account(), &path, name.as_deref(), pi_ai::now_ms())
+                .map_err(|error| error.to_string())?;
+            let record = tasks
+                .store()
+                .project(tasks.account(), &path)
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((metadata(path, record)?, changed))
+        })
+        .await
+        .map_err(|_| "Project settings worker did not complete".to_owned())??;
         self.verify_generation().await?;
-        Ok(ProjectNames::load(&self.project_names_path()?)?.legacy_imported)
-    }
-
-    /// Preserve legacy owner names without letting a later desktop save or
-    /// repeated import undo a rename/reset already accepted by the daemon.
-    /// Call only with the execution computer's map, never controller aliases.
-    pub async fn migrate_project_names(
-        &self,
-        legacy: HashMap<String, String>,
-    ) -> Result<(), String> {
-        let _settings = self.lock_settings().await;
-        self.verify_generation().await?;
-        self.ensure_accepting_new_work()?;
-        let file = self.project_names_path()?;
-        let mut names = ProjectNames::load(&file)?;
-        if names.legacy_imported {
-            return Ok(());
-        }
-        let roots = self.project_roots_with_removed_locked(true)?;
-        let mut changed = false;
-        for root in &roots {
-            if names.names.contains_key(&root.path) {
-                continue;
-            }
-            if let Some(name) = legacy
-                .get(&root.path)
-                .and_then(|name| normalize_name(name).ok())
-            {
-                let name = (name != default_name(root)).then_some(name);
-                changed |= names.set(root.path.clone(), name)?;
-            }
-        }
-        names.legacy_imported = true;
-        names.save(&file)?;
         if changed {
-            let roots = self.project_roots_locked()?;
             emit_agent_event(
                 &self.service.host.events,
                 AgentServiceEvent::ProjectsChanged {
                     user_id: self.user_id.to_string(),
-                    roots,
+                    roots: vec![root.clone()],
                 },
             );
         }
-        Ok(())
+        Ok(root)
     }
 }
 
@@ -293,31 +178,44 @@ mod tests {
     use crate::agent::store::{TaskKind, TaskRow};
     use crate::agent::tests::Recorder;
     use crate::agent::{AgentPathLayout, MapleAgentHostResources, MapleAgentService};
+    use crate::store::StorePaths;
 
     const USER: &str = "project-names@example.com";
 
-    fn service(config: &Path, data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
-        MapleAgentService::new(MapleAgentHostResources::new(
-            AgentPathLayout::from_app_roots(config.to_owned(), data.to_owned())
-                .with_home(Some(data.join("home"))),
-            recorder,
-            "Project names fixture".into(),
-        ))
+    struct Fixture {
+        temp: tempfile::TempDir,
+        service: MapleAgentService,
+        handle: AgentRuntimeHandle,
+        recorder: Arc<Recorder>,
+        root: String,
     }
 
-    async fn fixture() -> (
-        tempfile::TempDir,
-        MapleAgentService,
-        AgentRuntimeHandle,
-        Arc<Recorder>,
-        String,
-    ) {
+    fn service(
+        config: &Path,
+        data: &Path,
+        recorder: Arc<Recorder>,
+        store: Arc<Store>,
+    ) -> MapleAgentService {
+        MapleAgentService::new(
+            MapleAgentHostResources::new(
+                AgentPathLayout::from_app_roots(config.to_owned(), data.to_owned())
+                    .with_home(Some(data.join("home"))),
+                recorder,
+                "Project names fixture".into(),
+            )
+            .with_store(store),
+        )
+    }
+
+    async fn fixture() -> Fixture {
         let temp = tempfile::tempdir().unwrap();
         let recorder = Arc::new(Recorder::default());
+        let data = temp.path().join("data");
         let service = service(
             &temp.path().join("config"),
-            &temp.path().join("data"),
+            &data,
             recorder.clone(),
+            Arc::new(Store::open(StorePaths::new(data.clone())).unwrap()),
         );
         let handle = service.handle_for_user(USER).await.unwrap();
         let root = temp.path().join("project");
@@ -325,308 +223,259 @@ mod tests {
         let root = handle
             .save_recent_project_root(path_string(&root))
             .await
-            .unwrap()
-            .project_root;
-        (temp, service, handle, recorder, root)
-    }
-
-    fn named<'a>(roots: &'a [RecentProjectRoot], path: &str) -> &'a RecentProjectRoot {
-        roots.iter().find(|root| root.path == path).unwrap()
+            .unwrap();
+        Fixture {
+            temp,
+            service,
+            handle,
+            recorder,
+            root,
+        }
     }
 
     #[tokio::test]
     async fn project_name_is_durable_and_reset_retains_a_newer_revision() {
-        let (temp, _, handle, recorder, root) = fixture().await;
-        let roots = handle
+        let Fixture {
+            temp,
+            service,
+            handle,
+            recorder,
+            root,
+        } = fixture().await;
+        let first = handle
             .rename_project_root(root.clone(), "  Research  ".into())
             .await
             .unwrap();
-        let first = named(&roots, &root);
         assert_eq!(first.name, "Research");
         assert!(first.name_revision > 0);
         assert!(!first.is_default_workspace);
         assert!(
-            matches!(&recorder.events()[0], AgentServiceEvent::ProjectsChanged { user_id, roots: event_roots }
-            if user_id == USER && event_roots == &roots)
+            matches!(&recorder.events()[0], AgentServiceEvent::ProjectsChanged { user_id, roots }
+            if user_id == USER && roots == &vec![first.clone()])
         );
-        let restarted = service(
-            &temp.path().join("config"),
-            &temp.path().join("data"),
-            Arc::new(Recorder::default()),
-        );
+        drop(handle);
+        drop(service);
+        let data = temp.path().join("data");
+        let restarted = service_fn(&temp.path().join("config"), &data);
         let restarted = restarted.handle_for_user(USER).await.unwrap();
         assert_eq!(
-            named(&restarted.list_recent_project_roots().await.unwrap(), &root),
+            restarted.project_root_metadata(root.clone()).await.unwrap(),
             first
         );
         let reset = restarted
             .rename_project_root(root.clone(), "project".into())
             .await
             .unwrap();
-        let reset = named(&reset, &root);
         assert_eq!(reset.name, "project");
         assert!(reset.name_revision > first.name_revision);
-        restarted
-            .migrate_project_names(HashMap::from([(root.clone(), "Old alias".into())]))
-            .await
-            .unwrap();
         assert_eq!(
-            named(&restarted.list_recent_project_roots().await.unwrap(), &root),
+            restarted
+                .rename_project_root(root, "project".into())
+                .await
+                .unwrap(),
             reset
         );
-        let again = restarted
-            .rename_project_root(root.clone(), "project".into())
-            .await
-            .unwrap();
-        assert_eq!(
-            named(&again, &root),
-            reset,
-            "a repeated setter is idempotent"
-        );
+    }
+
+    fn service_fn(config: &Path, data: &Path) -> MapleAgentService {
+        service(
+            config,
+            data,
+            Arc::new(Recorder::default()),
+            Arc::new(Store::open(StorePaths::new(data.to_owned())).unwrap()),
+        )
     }
 
     #[tokio::test]
     async fn project_names_do_not_roam_or_cross_accounts() {
-        let (temp, first_service, handle, _, root) = fixture().await;
-        handle
-            .rename_project_root(root.clone(), "Device one".into())
+        let fixture = fixture().await;
+        fixture
+            .handle
+            .rename_project_root(fixture.root.clone(), "Device one".into())
             .await
             .unwrap();
-        let other_account = first_service
+        let other = fixture
+            .service
             .handle_for_user("other@example.com")
             .await
             .unwrap();
         assert!(
-            other_account
-                .rename_project_root(root.clone(), "Denied".into())
+            other
+                .rename_project_root(fixture.root.clone(), "Denied".into())
                 .await
                 .is_err()
         );
-        other_account
-            .save_recent_project_root(root.clone())
+        other
+            .save_recent_project_root(fixture.root.clone())
             .await
             .unwrap();
         assert_eq!(
-            named(
-                &other_account.list_recent_project_roots().await.unwrap(),
-                &root
-            )
-            .name,
-            "project"
-        );
-        other_account
-            .rename_project_root(root.clone(), "Other account".into())
-            .await
-            .unwrap();
-        assert_eq!(
-            named(&handle.list_recent_project_roots().await.unwrap(), &root).name,
-            "Device one"
-        );
-
-        // The config root is deliberately shared, as with an OS roaming profile.
-        let device_two = service(
-            &temp.path().join("config"),
-            &temp.path().join("device-two"),
-            Arc::new(Recorder::default()),
-        );
-        let device_two = device_two.handle_for_user(USER).await.unwrap();
-        assert_eq!(
-            named(
-                &device_two.list_recent_project_roots().await.unwrap(),
-                &root
-            )
-            .name,
-            "project"
-        );
-        device_two
-            .rename_project_root(root.clone(), "Device two".into())
-            .await
-            .unwrap();
-        assert_eq!(
-            named(&handle.list_recent_project_roots().await.unwrap(), &root).name,
-            "Device one"
-        );
-        assert!(
-            handle
-                .project_names_path()
-                .unwrap()
-                .starts_with(temp.path().join("data"))
-        );
-        let roaming = std::fs::read_to_string(
-            account_config_dir_path(handle.paths(), USER)
-                .unwrap()
-                .join("recent_roots.json"),
-        )
-        .unwrap();
-        assert!(!roaming.contains("Device one"));
-        assert!(!roaming.contains("Device two"));
-    }
-
-    #[tokio::test]
-    async fn legacy_import_is_owner_only_once_and_keeps_explicit_resets() {
-        let (temp, _, handle, _, root) = fixture().await;
-        let removed = temp.path().join("removed");
-        std::fs::create_dir(&removed).unwrap();
-        let removed = handle
-            .save_recent_project_root(path_string(&removed))
-            .await
-            .unwrap()
-            .project_root;
-        handle
-            .remove_project_root(removed.clone(), None)
-            .await
-            .unwrap();
-        let unknown = format!("{root}-not-owned");
-        let legacy = HashMap::from([
-            (root.clone(), "Legacy owner".into()),
-            (removed.clone(), "Legacy removed".into()),
-            (unknown.clone(), "Unknown root".into()),
-        ]);
-        assert!(!handle.project_names_migrated().await.unwrap());
-        handle.migrate_project_names(legacy.clone()).await.unwrap();
-        assert!(handle.project_names_migrated().await.unwrap());
-        assert_eq!(
-            named(&handle.list_recent_project_roots().await.unwrap(), &root).name,
-            "Legacy owner"
-        );
-        let stored = ProjectNames::load(&handle.project_names_path().unwrap()).unwrap();
-        assert!(stored.legacy_imported);
-        assert!(!stored.names.contains_key(&unknown));
-        assert_eq!(
-            stored.names[&removed].name.as_deref(),
-            Some("Legacy removed")
-        );
-        assert!(
-            handle
-                .list_recent_project_roots()
+            other
+                .project_root_metadata(fixture.root.clone())
                 .await
                 .unwrap()
-                .iter()
-                .all(|r| r.path != removed)
-        );
-        let restored = handle
-            .save_recent_project_root(removed.clone())
-            .await
-            .unwrap();
-        assert_eq!(named(&restored.roots, &removed).name, "Legacy removed");
-        handle
-            .rename_project_root(root.clone(), "project".into())
-            .await
-            .unwrap();
-        handle.migrate_project_names(legacy).await.unwrap();
-        assert_eq!(
-            named(&handle.list_recent_project_roots().await.unwrap(), &root).name,
+                .name,
             "project"
+        );
+        other
+            .rename_project_root(fixture.root.clone(), "Other account".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture
+                .handle
+                .project_root_metadata(fixture.root.clone())
+                .await
+                .unwrap()
+                .name,
+            "Device one"
+        );
+        // Identical config with a distinct store is another execution computer.
+        let second = service_fn(
+            &fixture.temp.path().join("config"),
+            &fixture.temp.path().join("second-data"),
+        );
+        let second = second.handle_for_user(USER).await.unwrap();
+        second
+            .save_recent_project_root(fixture.root.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            second
+                .project_root_metadata(fixture.root)
+                .await
+                .unwrap()
+                .name,
+            "project"
+        );
+        assert!(
+            !fixture.temp.path().join("config").exists(),
+            "labels never create legacy config sidecars"
         );
     }
 
     #[tokio::test]
-    async fn concurrent_project_renames_merge_and_publish_committed_names_in_order() {
-        let (temp, _, handle, recorder, root) = fixture().await;
-        let second = temp.path().join("second");
+    async fn concurrent_renames_publish_single_committed_records_in_order() {
+        let fixture = fixture().await;
+        let second = fixture.temp.path().join("second");
         std::fs::create_dir(&second).unwrap();
-        let second = handle
+        let second = fixture
+            .handle
             .save_recent_project_root(path_string(&second))
             .await
-            .unwrap()
-            .project_root;
-        let (a, b) = tokio::join!(
-            handle.rename_project_root(root.clone(), "First label".into()),
-            handle.rename_project_root(second.clone(), "Second label".into())
+            .unwrap();
+        let (first, other) = tokio::join!(
+            fixture
+                .handle
+                .rename_project_root(fixture.root.clone(), "First label".into()),
+            fixture
+                .handle
+                .rename_project_root(second, "Second label".into())
         );
-        a.unwrap();
-        b.unwrap();
-        let roots = handle.list_recent_project_roots().await.unwrap();
-        assert_eq!(named(&roots, &root).name, "First label");
-        assert_eq!(named(&roots, &second).name, "Second label");
-        let events = recorder.events();
+        let (first, other) = (first.unwrap(), other.unwrap());
+        assert_ne!(first.name_revision, other.name_revision);
+        let events = fixture.recorder.events();
         assert_eq!(events.len(), 2);
-        assert!(
-            matches!(&events[1], AgentServiceEvent::ProjectsChanged { roots: event_roots, .. } if event_roots == &roots)
-        );
-        assert_ne!(
-            named(&roots, &root).name_revision,
-            named(&roots, &second).name_revision
-        );
-        // A rename cannot replace settings written by a separate narrow command.
-        let mut config = handle.load_config().await.unwrap();
+        let mut revisions = Vec::new();
+        for event in events {
+            let AgentServiceEvent::ProjectsChanged { roots, .. } = event else {
+                panic!("unexpected event")
+            };
+            assert_eq!(roots.len(), 1, "only a bounded metadata delta is published");
+            revisions.push(roots[0].name_revision);
+        }
+        assert!(revisions[0] < revisions[1]);
+        let mut config = fixture.handle.load_config().await.unwrap();
         config.default_model = "fixture-model".into();
         let (saved, renamed) = tokio::join!(
-            handle.save_config(config),
-            handle.rename_project_root(root.clone(), "Changed".into())
+            fixture.handle.save_config(config),
+            fixture
+                .handle
+                .rename_project_root(fixture.root, "Changed".into())
         );
         saved.unwrap();
         renamed.unwrap();
         assert_eq!(
-            handle.load_config().await.unwrap().default_model,
+            fixture.handle.load_config().await.unwrap().default_model,
             "fixture-model"
-        );
-        assert_eq!(
-            named(&handle.list_recent_project_roots().await.unwrap(), &root).name,
-            "Changed"
         );
     }
 
     #[tokio::test]
-    async fn names_survive_register_remove_restore_and_reorder_without_changing_paths() {
-        let (_temp, _, handle, _, root) = fixture().await;
-        let named_roots = handle
-            .rename_project_root(root.clone(), "Persistent label".into())
+    async fn names_survive_register_remove_restore_without_changing_paths() {
+        let fixture = fixture().await;
+        let expected = fixture
+            .handle
+            .rename_project_root(fixture.root.clone(), "Persistent label".into())
             .await
             .unwrap();
-        let expected = named(&named_roots, &root).clone();
-        let config_before = handle.load_config().await.unwrap();
-        let selected = handle.save_recent_project_root(root.clone()).await.unwrap();
-        assert_eq!(named(&selected.roots, &root), &expected);
-        assert_eq!(selected.project_root, root);
-        handle
-            .remove_project_root(root.clone(), None)
-            .await
-            .unwrap();
-        assert!(
-            handle
-                .list_recent_project_roots()
+        assert_eq!(
+            fixture
+                .handle
+                .save_recent_project_root(fixture.root.clone())
                 .await
-                .unwrap()
-                .iter()
-                .all(|r| r.path != root)
+                .unwrap(),
+            fixture.root
         );
+        assert_eq!(
+            fixture
+                .handle
+                .project_root_metadata(fixture.root.clone())
+                .await
+                .unwrap(),
+            expected
+        );
+        fixture
+            .handle
+            .remove_project_root(fixture.root.clone(), None)
+            .await
+            .unwrap();
         assert!(
-            handle
-                .rename_project_root(root.clone(), "Hidden".into())
+            fixture
+                .handle
+                .project_root_metadata(fixture.root.clone())
                 .await
                 .is_err()
         );
-        let restored = handle.save_recent_project_root(root.clone()).await.unwrap();
-        assert_eq!(named(&restored.roots, &root).name, expected.name);
-        assert_eq!(
-            named(&restored.roots, &root).name_revision,
-            expected.name_revision
+        assert!(
+            fixture
+                .handle
+                .rename_project_root(fixture.root.clone(), "Hidden".into())
+                .await
+                .is_err()
         );
-        let reordered = handle
-            .save_project_root_order(vec![root.clone()])
+        fixture
+            .handle
+            .save_recent_project_root(fixture.root.clone())
             .await
             .unwrap();
-        assert_eq!(named(&reordered, &root).name, expected.name);
-        assert_eq!(
-            handle.load_config().await.unwrap().project_trust,
-            config_before.project_trust
+        let restored = fixture
+            .handle
+            .project_root_metadata(fixture.root.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.name, expected.name);
+        assert_eq!(restored.name_revision, expected.name_revision);
+        assert!(Path::new(&fixture.root).is_dir());
+        assert!(
+            !Path::new(&fixture.root)
+                .with_file_name("Persistent label")
+                .exists()
         );
-        assert!(Path::new(&root).is_dir());
-        assert!(!Path::new(&root).with_file_name("Persistent label").exists());
     }
 
     #[tokio::test]
-    async fn task_only_roots_have_shared_names_and_unknown_roots_are_rejected() {
-        let (temp, _, handle, recorder, root) = fixture().await;
-        let acp = temp.path().join("acp-only");
+    async fn task_only_roots_have_shared_names_and_invalid_names_do_not_publish() {
+        let fixture = fixture().await;
+        let acp = fixture.temp.path().join("acp-only");
         std::fs::create_dir(&acp).unwrap();
         let acp = path_string(&acp.canonicalize().unwrap());
-        handle
+        fixture
+            .handle
             .store()
             .unwrap()
             .insert(&TaskRow::new(
-                "acp-task".into(),
+                "10000000-0000-7000-8000-000000000001".into(),
                 "ACP task".into(),
                 acp.clone(),
                 TaskKind::Acp,
@@ -634,13 +483,42 @@ mod tests {
                 1,
             ))
             .unwrap();
-        let renamed = handle
-            .rename_project_root(acp.clone(), "ACP project".into())
-            .await
+        // Empty task roots are not yet listed. Once acknowledged history exists,
+        // navigation and the rename point-query share the same membership rule.
+        assert!(
+            fixture
+                .handle
+                .rename_project_root(acp.clone(), "Too soon".into())
+                .await
+                .is_err()
+        );
+        let tasks = fixture.handle.store().unwrap();
+        let task = tasks
+            .store()
+            .task(tasks.account(), "10000000-0000-7000-8000-000000000001")
+            .unwrap()
             .unwrap();
-        assert_eq!(named(&renamed, &acp).name, "ACP project");
-        let event_count = recorder.events().len();
-        for bad_name in [
+        let mut facts = task.facts;
+        facts.message_count = 1;
+        tasks
+            .store()
+            .refresh_task_facts(
+                tasks.account(),
+                "10000000-0000-7000-8000-000000000001",
+                &facts,
+            )
+            .unwrap();
+        assert_eq!(
+            fixture
+                .handle
+                .rename_project_root(acp, "ACP project".into())
+                .await
+                .unwrap()
+                .name,
+            "ACP project"
+        );
+        let before = fixture.recorder.events().len();
+        for name in [
             "",
             " \t ",
             "two\nlines",
@@ -649,83 +527,171 @@ mod tests {
             &"x".repeat(129),
         ] {
             assert!(
-                handle
-                    .rename_project_root(root.clone(), bad_name.into())
+                fixture
+                    .handle
+                    .rename_project_root(fixture.root.clone(), name.into())
                     .await
                     .is_err()
             );
         }
         assert!(
-            handle
-                .rename_project_root(format!("{root}-unknown"), "Valid".into())
+            fixture
+                .handle
+                .rename_project_root(format!("{}-unknown", fixture.root), "Valid".into())
                 .await
                 .is_err()
         );
-        assert_eq!(
-            recorder.events().len(),
-            event_count,
-            "rejected mutations do not publish"
-        );
+        assert_eq!(fixture.recorder.events().len(), before);
         assert!(normalize_name(&"é".repeat(128)).is_ok());
     }
 
-    #[test]
-    fn default_workspace_is_owner_resolved_even_when_already_registered() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("Owner Documents").join("Maple");
-        let decoy = temp.path().join("Different").join("Maple");
-        let path = path_string(&workspace);
-        let decoy_path = path_string(&decoy);
-        let mut roots = catalog(
-            vec![
-                project_root_record(path.clone(), 1),
-                project_root_record(decoy_path.clone(), 2),
-            ],
-            [],
-            &[],
-            Some(&workspace),
-        );
-        let mut names = ProjectNames::default();
-        names.apply(&mut roots, Some(&workspace));
-        assert_eq!(named(&roots, &path).name, "Maple Workspace");
-        assert!(named(&roots, &path).is_default_workspace);
-        assert_eq!(named(&roots, &decoy_path).name, "Maple");
-        assert!(!named(&roots, &decoy_path).is_default_workspace);
-        names
-            .set(path.clone(), Some("Custom workspace".into()))
-            .unwrap();
-        names.apply(&mut roots, Some(&workspace));
-        assert_eq!(named(&roots, &path).name, "Custom workspace");
-        assert!(named(&roots, &path).is_default_workspace);
-        names.set(path.clone(), None).unwrap();
-        names.apply(&mut roots, Some(&workspace));
-        assert_eq!(named(&roots, &path).name, "Maple Workspace");
-        assert!(named(&roots, &path).name_revision > 0);
-        let mut synthetic = catalog(Vec::new(), [], &[], Some(&workspace));
-        names.apply(&mut synthetic, Some(&workspace));
-        assert_eq!(
-            named(&synthetic, &path),
-            &RecentProjectRoot {
-                last_used_ms: 0,
-                ..named(&roots, &path).clone()
-            }
-        );
-        assert!(catalog(Vec::new(), [], &[path], Some(&workspace)).is_empty());
-    }
-
     #[tokio::test]
-    async fn invalid_metadata_fails_closed_without_events_or_settings_loss() {
-        let (_temp, _, handle, recorder, root) = fixture().await;
-        let file = handle.project_names_path().unwrap();
-        write_device_local_json_file(&file, &serde_json::json!({"revision": 2, "names": {root.clone(): {"name": "broken\nname", "revision": 2}}})).unwrap();
+    async fn default_workspace_keeps_owner_identity_through_rename_and_reset() {
+        let fixture = fixture().await;
+        let Some(workspace) = super::super::default_maple_workspace_path() else {
+            return;
+        };
+        let path = path_string(&workspace);
+        let initial = fixture
+            .handle
+            .project_root_metadata(path.clone())
+            .await
+            .unwrap();
+        assert_eq!(initial.name, "Maple Workspace");
+        assert!(initial.is_default_workspace);
+        let renamed = fixture
+            .handle
+            .rename_project_root(path.clone(), "My workspace".into())
+            .await
+            .unwrap();
+        assert!(renamed.is_default_workspace);
+        let reset = fixture
+            .handle
+            .rename_project_root(path.clone(), "Maple Workspace".into())
+            .await
+            .unwrap();
+        assert!(reset.is_default_workspace);
+        assert_eq!(reset.name, initial.name);
+        assert!(reset.name_revision > renamed.name_revision);
+        fixture
+            .handle
+            .remove_project_root(path.clone(), None)
+            .await
+            .unwrap();
         assert!(
-            handle
-                .rename_project_root(root, "Replacement".into())
+            fixture
+                .handle
+                .project_root_metadata(path.clone())
                 .await
                 .is_err()
         );
-        assert!(handle.migrate_project_names(HashMap::new()).await.is_err());
-        assert!(recorder.events().is_empty());
-        assert!(std::fs::read_to_string(file).unwrap().contains("broken"));
+        let tasks = fixture.handle.store().unwrap();
+        assert!(
+            tasks
+                .store()
+                .project(tasks.account(), &path)
+                .unwrap()
+                .unwrap()
+                .removed_ms
+                .is_some()
+        );
+        assert!(
+            matches!(fixture.recorder.events().last(), Some(AgentServiceEvent::ProjectRemoved { user_id, project_root }) if user_id == USER && project_root == &path)
+        );
+        // Re-reading after another owner handle attaches cannot resurrect it.
+        let attached = fixture.service.handle_for_user(USER).await.unwrap();
+        assert!(attached.project_root_metadata(path.clone()).await.is_err());
+        let tasks = fixture.handle.store().unwrap();
+        tasks
+            .store()
+            .register_explicit_project(tasks.account(), &path, 2)
+            .unwrap();
+        assert!(
+            attached
+                .project_root_metadata(path)
+                .await
+                .unwrap()
+                .is_default_workspace
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_revision_does_not_publish_or_replace_a_label() {
+        let fixture = fixture().await;
+        let original = fixture
+            .handle
+            .rename_project_root(fixture.root.clone(), "Preserved".into())
+            .await
+            .unwrap();
+        let tasks = fixture.handle.store().unwrap();
+        tasks
+            .store()
+            .set_account_setting(
+                tasks.account(),
+                "project.names.revision",
+                &serde_json::json!(i64::MAX),
+                1,
+            )
+            .unwrap();
+        let event_count = fixture.recorder.events().len();
+        assert!(
+            fixture
+                .handle
+                .rename_project_root(fixture.root.clone(), "Replacement".into())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .handle
+                .project_root_metadata(fixture.root)
+                .await
+                .unwrap(),
+            original
+        );
+        assert_eq!(fixture.recorder.events().len(), event_count);
+    }
+
+    #[tokio::test]
+    async fn successful_archive_publishes_one_project_removal_and_rejection_publishes_none() {
+        let fixture = fixture().await;
+        assert!(
+            fixture
+                .handle
+                .remove_project_root(fixture.root.clone(), Some(fixture.root.clone()))
+                .await
+                .is_err()
+        );
+        assert!(fixture.recorder.events().is_empty());
+        fixture
+            .handle
+            .archive_project_root(fixture.root.clone(), None)
+            .await
+            .unwrap();
+        let events = fixture.recorder.events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], AgentServiceEvent::ProjectRemoved { user_id, project_root } if user_id == USER && project_root == &fixture.root)
+        );
+        assert!(
+            fixture
+                .handle
+                .project_root_metadata(fixture.root)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn default_workspace_and_plain_folder_names_are_owner_resolved() {
+        let Some(workspace) = super::super::default_maple_workspace_path() else {
+            return;
+        };
+        let root = metadata(path_string(&workspace), None).unwrap();
+        assert_eq!(root.name, "Maple Workspace");
+        assert!(root.is_default_workspace);
+        let decoy = metadata("/different/Maple".into(), None).unwrap();
+        assert_eq!(decoy.name, "Maple");
+        assert!(!decoy.is_default_workspace);
     }
 }

@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "maple-agent-updates",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-24",
+  "workers_dev": false,
+  "preview_urls": false,
+  // Owner-provisioned private Agent bucket. This config does not activate delivery;
+  // Worker deployment and owner-managed Routes require separate authorization.
+  "r2_buckets": [
+    {
+      "binding": "AGENT_RELEASES",
+      "bucket_name": "maple-agent-updates",
+    },
+  ],
+}

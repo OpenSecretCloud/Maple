@@ -43,6 +43,10 @@ pub(crate) struct Project {
 pub(crate) struct Computer {
     pub key: Option<String>,
     pub label: SharedString,
+    /// Summary queries go to the owning host; a disconnected computer has no
+    /// handle until its catalog has reconnected.
+    pub backend: Option<Arc<AgentBackend>>,
+    pub project_names: HashMap<String, String>,
     pub projects: Vec<Project>,
     pub sessions: Vec<AgentSessionSummary>,
     pub running: HashSet<String>,
@@ -56,6 +60,8 @@ impl Computer {
         Self {
             key: Some(key),
             label: label.into(),
+            backend: None,
+            project_names: HashMap::new(),
             projects: Vec::new(),
             sessions: Vec::new(),
             running: HashSet::new(),
@@ -81,9 +87,20 @@ impl ChatScreen {
         roots: Vec<RecentProjectRoot>,
         cx: &mut Context<Self>,
     ) {
-        self.apply_recent_roots(roots, cx);
+        self.merge_project_metadata(roots, cx);
         cx.emit(NavigationChanged);
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_projects_for_test(
+        &mut self,
+        roots: Vec<RecentProjectRoot>,
+        cx: &mut Context<Self>,
+    ) {
+        for root in roots {
+            self.restore_selected_project(root, cx);
+        }
     }
 
     pub(crate) fn finish_project_rename(
@@ -165,12 +182,13 @@ impl ChatScreen {
     }
 
     pub(crate) fn computer_snapshot(&self, label: SharedString, cx: &gpui::App) -> Computer {
-        let mut roots: Vec<String> = self
-            .recent_roots
-            .iter()
-            .map(|root| root.path.clone())
-            .collect();
-        for session in &self.sessions {
+        let mut roots = self.sidebar.read(cx).navigation_roots();
+        for session in self.sessions.iter().filter(|session| {
+            !self
+                .sidebar
+                .read(cx)
+                .project_is_removed(&session.project_root)
+        }) {
             if !roots.contains(&session.project_root) {
                 roots.push(session.project_root.clone());
             }
@@ -178,6 +196,8 @@ impl ChatScreen {
         Computer {
             key: self.backend.remote_host().map(str::to_owned),
             label,
+            backend: Some(self.backend.clone()),
+            project_names: self.sidebar.read(cx).project_names(),
             projects: roots
                 .into_iter()
                 .map(|path| Project {
@@ -185,7 +205,18 @@ impl ChatScreen {
                     path,
                 })
                 .collect(),
-            sessions: self.sessions.clone(),
+            sessions: self
+                .sidebar
+                .read(cx)
+                .navigation_sessions()
+                .into_iter()
+                .filter(|session| {
+                    !self
+                        .sidebar
+                        .read(cx)
+                        .project_is_removed(&session.project_root)
+                })
+                .collect(),
             running: self.active_runs.keys().cloned().collect(),
             unread: self.completed_unread_sessions.clone(),
             pinned: self.sidebar.read(cx).pinned_tasks().to_vec(),

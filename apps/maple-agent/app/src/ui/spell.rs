@@ -4,7 +4,6 @@
 
 use std::collections::HashSet;
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{OnceLock, RwLock};
 
@@ -27,20 +26,22 @@ pub fn generation() -> u32 {
 /// in `dictionary.txt` next to the settings file.
 static USER_WORDS: RwLock<Option<HashSet<String>>> = RwLock::new(None);
 
-fn user_words_file() -> PathBuf {
-    crate::backend::app_config_root().join("dictionary.txt")
+/// The host supplies dictionary words after its store opens. The GUI never
+/// opens a dictionary sidecar or SQLite connection.
+pub fn install_user_words(words: impl IntoIterator<Item = String>) {
+    let mut words: HashSet<String> = words.into_iter().collect();
+    words.extend(crate::settings::pending_dictionary_words());
+    *USER_WORDS.write().unwrap_or_else(|e| e.into_inner()) = Some(words);
+    GENERATION.fetch_add(1, Ordering::Release);
+}
+
+pub fn clear_user_words() {
+    *USER_WORDS.write().unwrap_or_else(|e| e.into_inner()) = None;
+    GENERATION.fetch_add(1, Ordering::Release);
 }
 
 fn load_user_words() -> HashSet<String> {
-    std::fs::read_to_string(user_words_file())
-        .map(|text| {
-            text.lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
+    HashSet::new()
 }
 
 /// Remember `word` for this user and write the list in the background.
@@ -51,25 +52,12 @@ pub fn add_word(word: &str) {
     }
     let mut guard = USER_WORDS.write().unwrap_or_else(|e| e.into_inner());
     let words = guard.get_or_insert_with(load_user_words);
-    if !words.insert(word) {
+    if !words.insert(word.clone()) {
         return;
     }
-    let mut lines: Vec<&String> = words.iter().collect();
-    lines.sort();
-    let text = lines.iter().map(|w| format!("{w}\n")).collect::<String>();
     drop(guard);
-    std::thread::spawn(move || {
-        let path = user_words_file();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(error) = std::fs::write(&path, text) {
-            log::warn!(
-                "Cannot save the user dictionary to {}: {error}",
-                path.display()
-            );
-        }
-    });
+    crate::settings::queue_dictionary_word(word);
+    GENERATION.fetch_add(1, Ordering::Release);
 }
 
 /// Whether the user list accepts `word` as typed, or in lower case, or

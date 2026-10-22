@@ -9,6 +9,7 @@ use gpui::{
 use maple_agent::agent::AgentQueuedMessage;
 
 use super::{COMPOSER_PLACEHOLDER, ChatScreen, QUEUE_EDIT_PLACEHOLDER, QueueEdit};
+use crate::backend::QueuedMessageRequest;
 use crate::ui::icons::icon;
 use crate::ui::theme;
 
@@ -27,11 +28,48 @@ impl ChatScreen {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let Some(item) = self.queue.iter().find(|item| item.queue_id == queue_id) else {
+        if self.queue_busy || !self.queue.iter().any(|item| item.queue_id == queue_id) {
             return;
-        };
-        let text = item.text.clone();
-        self.send_to_session(&session_id, text, true, Some(queue_id.to_string()), cx);
+        }
+        // Open-task replies may contain only a queue preview. Fetch the full
+        // message before creating the send's optimistic state or fingerprint.
+        self.queue_busy = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let generation = self.selection_generation;
+        let queue_id = queue_id.to_string();
+        let target = session_id.clone();
+        let queued = queue_id.clone();
+        self.call(
+            async move {
+                backend
+                    .queued_message(
+                        &user_id,
+                        QueuedMessageRequest {
+                            task: session_id,
+                            queue_id,
+                        },
+                    )
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.queue_busy = false;
+                if this.selection_generation != generation || !this.is_selected(&target) {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(item) if item.session_id == target && item.queue_id == queued => {
+                        this.send_to_session(&target, item.text, true, Some(queued), cx);
+                    }
+                    Ok(_) => this.notice = Some("The queued message changed; try again".into()),
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
     }
 
     /// Drop a queued chip.
@@ -45,6 +83,7 @@ impl ChatScreen {
         self.queue_busy = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let generation = self.selection_generation;
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
         self.call(
@@ -59,10 +98,15 @@ impl ChatScreen {
                 match result {
                     Ok(snapshot) => {
                         if this.is_selected(&target) {
-                            this.queue = snapshot.items;
+                            this.set_queue(snapshot.items);
                         }
                     }
-                    Err(message) => this.notice = Some(message.into()),
+                    Err(message)
+                        if this.selection_generation == generation && this.is_selected(&target) =>
+                    {
+                        this.notice = Some(message.into());
+                    }
+                    Err(_) => {}
                 }
                 cx.notify();
             },
@@ -78,27 +122,67 @@ impl ChatScreen {
         if self.queue_busy || self.queue_edit.is_some() {
             return;
         }
-        let Some(item) = self.queue.iter().find(|item| item.queue_id == queue_id) else {
+        if !self.queue.iter().any(|item| item.queue_id == queue_id) {
             return;
-        };
-        let text = item.text.clone();
+        }
         self.queue_busy = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let generation = self.selection_generation;
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
         let held_id = queue_id.clone();
         self.call(
             async move {
+                let item = backend
+                    .queued_message(
+                        &user_id,
+                        QueuedMessageRequest {
+                            task: session_id.clone(),
+                            queue_id: queue_id.clone(),
+                        },
+                    )
+                    .await?;
+                if item.session_id != session_id || item.queue_id != queue_id {
+                    return Err("The queued message changed; try again".to_string());
+                }
                 backend
                     .begin_queued_message_edit(&user_id, &session_id, &queue_id)
+                    .await?;
+                // Read again under the hold: another client could have edited
+                // this message between the first read and acquiring the hold.
+                match backend
+                    .queued_message(
+                        &user_id,
+                        QueuedMessageRequest {
+                            task: session_id.clone(),
+                            queue_id: queue_id.clone(),
+                        },
+                    )
                     .await
+                {
+                    Ok(current)
+                        if current.session_id == session_id && current.queue_id == queue_id =>
+                    {
+                        Ok(current.text)
+                    }
+                    result => {
+                        let _ = backend
+                            .end_queued_message_edit(&user_id, &session_id, &queue_id)
+                            .await;
+                        Err(result
+                            .err()
+                            .unwrap_or_else(|| "The queued message changed; try again".to_string()))
+                    }
+                }
             },
             cx,
             move |this, result, cx| {
                 this.queue_busy = false;
                 match result {
-                    Ok(()) if this.is_selected(&target) => {
+                    Ok(text)
+                        if this.selection_generation == generation && this.is_selected(&target) =>
+                    {
                         let draft = this
                             .composer
                             .as_ref()
@@ -115,15 +199,21 @@ impl ChatScreen {
                             });
                         }
                     }
-                    Ok(()) => {
+                    Ok(_) => {
                         // Selection moved while the hold was requested.
                         this.release_queue_hold(&target, &held_id, cx);
                     }
-                    Err(message) => this.notice = Some(message.into()),
+                    Err(message)
+                        if this.selection_generation == generation && this.is_selected(&target) =>
+                    {
+                        this.notice = Some(message.into());
+                    }
+                    Err(_) => {}
                 }
                 cx.notify();
             },
         );
+        cx.notify();
     }
 
     /// Drop the edit without changing the queued message; the stashed

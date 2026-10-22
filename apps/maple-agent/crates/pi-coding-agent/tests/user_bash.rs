@@ -60,6 +60,34 @@ fn last_llm_text(messages: &[pi_coding_agent::SessionMessage]) -> String {
 }
 
 #[tokio::test]
+async fn user_commands_share_the_task_tool_output_directory() {
+    let harness = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let session = harness
+        .session_with(|options| options.tool_options.output_dir = Some(dir.path().to_path_buf()))
+        .await;
+    let shell = Scripted::new(vec![b"large output\n"; 3000], Some(0));
+    let result = session
+        .execute_bash(
+            "fixture",
+            BashCommandOptions {
+                operations: Some(shell),
+                ..BashCommandOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let path = result.full_output_path.unwrap();
+    assert_eq!(path.parent(), Some(dir.path()));
+    assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 3000);
+}
+
+#[tokio::test]
 async fn a_command_joins_the_conversation_with_its_output_cleaned() {
     let harness = Harness::new();
     let session = harness

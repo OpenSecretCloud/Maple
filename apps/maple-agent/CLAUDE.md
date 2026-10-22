@@ -49,11 +49,26 @@ workspaces can run `maple-agent`; a process name is not ownership. Managed
 workspaces provide `bin/maple-agent` with separate config/data roots and a
 shared proxy-port reservation. Never start two proxies on that reservation.
 
+## Local store
+
+Production stores are opened only by the authoritative host and its bounded
+read-only integrity-check child; desktop and ACP use host APIs. Keep raw SQLite
+handles inside `crates/maple-agent/src/store/`. Never keep a read transaction
+across an await, IPC write or UI frame. Use `BEGIN IMMEDIATE` for writes and
+Durable commits for authoritative data. Append migrations rather than changing
+released schema steps; bump `TIMELINE_FORMAT` when item builders change and test
+plain/keyed parity. Use the fresh `store-v1/` only: no previous app-data import,
+fallback reads or cleanup. General Markdown instruction resources are the stated
+exception. See [local storage](docs/local-store.md) for lifecycle and backup rules.
+
 ## Logs and freezes
 
-The app logs to stderr and to `~/.local/share/maple-agent/logs/maple-agent.log`
+The app logs to stderr and to `~/.local/share/maple-agent/store-v1/logs/maple-agent.log`
 (level `info` by default; `RUST_LOG=debug` for more). Panics are logged
-there too. Tail it with `tail -f ~/.local/share/maple-agent/logs/maple-agent.log`.
+there too. Tail it with `tail -f ~/.local/share/maple-agent/store-v1/logs/maple-agent.log`.
+Use the profile/MDE's actual root on other platforms. Host dump/debug-attachment
+hardening may refuse debugger attachment; `MAPLE_ALLOW_DEBUG_ATTACH=1` bypasses
+that protection only in a debug build started deliberately for local diagnosis.
 
 If the app freezes, dump all thread backtraces while it is still hung:
 

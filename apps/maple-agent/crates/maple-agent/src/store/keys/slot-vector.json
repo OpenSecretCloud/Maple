@@ -1,0 +1,33 @@
+{
+  "provenance": {
+    "argon2-cffi": "25.1.0",
+    "libsodium": "1.0.20",
+    "algorithms": "reference libargon2 Argon2id v1.3, libsodium XChaCha20-Poly1305"
+  },
+  "password": "Maple slot reference 🗝 é 2026!",
+  "normalized_password": "Maple slot reference 🗝 é 2026!",
+  "dek_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "kek_hex": "9d9fadeed5c3b0631fafc87c8090fa897e07dee8f4e8259e3b24537ffe5f5fc5",
+  "slot_bytes_hex": "12006d61706c652d73746f72652d6b6579732f31a0a1a2a3a4a5a6a7a8a9aaabacadaeaf080070617373776f726408006172676f6e32696413000000000001000300000004000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "check_hex": "7dcdb315cd2d4e8b56408d641c8addc5",
+  "key_file": {
+    "format": "maple-store-keys/1",
+    "db_salt": "oKGio6SlpqeoqaqrrK2urw",
+    "slots": [
+      {
+        "type": "password",
+        "kdf": {
+          "alg": "argon2id",
+          "v": 19,
+          "m_kib": 65536,
+          "t": 3,
+          "p": 4,
+          "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        },
+        "nonce": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3",
+        "wrapped": "54ECvpR-SjNKVv5_cclTwpZCtmuYzTWC2pNTJJV3w1dDOzT2PAPVbIVdXwH2F_6u",
+        "check": "fc2zFc0tTotWQI1kHIrdxQ"
+      }
+    ]
+  }
+}

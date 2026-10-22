@@ -11,24 +11,29 @@
 mod config;
 mod convert;
 mod handler;
+mod observer;
+mod paged;
 mod session;
 mod shared;
 mod transport;
 
-pub use config::{AgentAcpConfig, load_acp_config};
+pub use config::{AgentAcpConfig, load_acp_config, save_acp_config};
 use config::{AgentAcpStats, normalize_config};
 use convert::{
     AcpProjection, COMPACTING_NOTICE, COMPACTION_COMPLETED_NOTICE, MAX_ACP_ERROR_CHARS,
-    NOTHING_TO_COMPACT_NOTICE, acp_available_commands, acp_usage, bounded_chars, event_error_text,
-    internal_acp_error, outbound_error, parse_slash_command, project_trust_elicitation_request,
-    project_trust_permission_decision, project_trust_permission_options, prompt_images,
-    prompt_result_from_terminal, prompt_text, text_chunk, timeline_update,
+    NOTHING_TO_COMPACT_NOTICE, acp_available_commands, acp_usage, bounded_chars,
+    checked_timeline_update, event_error_text, internal_acp_error, outbound_error,
+    parse_slash_command, project_trust_elicitation_request, project_trust_permission_decision,
+    project_trust_permission_options, prompt_images, prompt_result_from_terminal, prompt_text,
+    text_chunk, timeline_update,
 };
 use handler::MapleAcpHandler;
+#[cfg(test)]
+use session::find_acp_session;
 use session::{
     AcpConnectionContext, AcpProjectTrustResolution, AcpPromptState, AcpSession,
     AcpSessionOperation, UnpublishedAcpSession, canonical_session_id, canonical_session_id_text,
-    ensure_allowed_project_root, find_acp_session, prepare_session_mcp,
+    ensure_allowed_project_root, prepare_session_mcp,
 };
 use transport::{
     AcpOutboundReservation, AcpOutboundSendError, AcpOutboundTracker, BoundedLineReader,
@@ -53,12 +58,18 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent as AcpAgent, Client, ConnectionTo, Lines};
 use futures_util::StreamExt as _;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
+
+type StartedSessionOperation = (
+    Arc<AcpSessionOperation>,
+    tokio::sync::OwnedMutexGuard<()>,
+    tokio::sync::OwnedMutexGuard<()>,
+);
 
 const ACP_CONNECTION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -178,6 +189,14 @@ impl AcpConnectionContext {
             stats,
             sessions: Mutex::new(HashMap::new()),
             session_operations: Mutex::new(HashMap::new()),
+            observer_slots: Arc::new(tokio::sync::Semaphore::new(
+                observer::MAX_ACP_SESSION_OPERATIONS,
+            )),
+            elicitation_slots: Arc::new(tokio::sync::Semaphore::new(
+                observer::MAX_ACP_SESSION_OPERATIONS,
+            )),
+            #[cfg(test)]
+            observer_dispatches: std::sync::atomic::AtomicUsize::new(0),
             prompt_states: Mutex::new(HashMap::new()),
             owned_runs: Mutex::new(HashMap::new()),
             observing: AtomicBool::new(false),
@@ -193,7 +212,7 @@ impl AcpConnectionContext {
     }
 
     async fn new_session(
-        &self,
+        self: &Arc<Self>,
         cx: &ConnectionTo<Client>,
         request: NewSessionRequest,
     ) -> Result<NewSessionResponse, agent_client_protocol::Error> {
@@ -239,19 +258,29 @@ impl AcpConnectionContext {
         // discards the new task instead of leaking it.
         let unpublished = UnpublishedAcpSession::new(created.lease);
         let session_id = canonical_session_id_text(&created.detail.session.id)?;
+        let (operation, operation_guard, replay_guard) =
+            self.start_session_operation(cx, &session_id).await?;
         let finalization = self.finalization.lock().await;
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.load(Ordering::SeqCst) || operation.cancellation.is_cancelled() {
             drop(finalization);
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
             drop(unpublished);
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection closed while configuring the session"));
         }
         let mut sessions = self.sessions.lock().await;
-        let mut operations = self.session_operations.lock().await;
-        if sessions.contains_key(&session_id) || operations.contains_key(&session_id) {
+        let operations = self.session_operations.lock().await;
+        if sessions.contains_key(&session_id)
+            || !operations
+                .get(&session_id)
+                .is_some_and(|registered| Arc::ptr_eq(registered, &operation))
+        {
             drop(operations);
             drop(sessions);
             drop(finalization);
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
             drop(unpublished);
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection duplicated a new session"));
@@ -274,11 +303,13 @@ impl AcpConnectionContext {
                 project_trust_decision: project_trust.decision,
             },
         );
-        operations.insert(session_id.clone(), AcpSessionOperation::new(&self.lifetime));
         drop(operations);
         drop(sessions);
         self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
         drop(finalization);
+        operation.replaying.store(false, Ordering::Release);
+        drop(replay_guard);
+        drop(operation_guard);
         self.send_available_commands(cx, &session_id, &project_root)
             .await;
         let options = self.refresh_config_options(&session_id).await?;
@@ -286,16 +317,96 @@ impl AcpConnectionContext {
     }
 
     async fn retire_session(&self, session_id: &str) {
-        let session = self.sessions.lock().await.remove(session_id);
-        if let Some(operation) = self.session_operations.lock().await.remove(session_id) {
-            operation.cancellation.cancel();
+        let operation = self
+            .session_operations
+            .lock()
+            .await
+            .get(session_id)
+            .cloned();
+        if let Some(operation) = operation {
+            self.retire_session_if_same(session_id, &operation).await;
         }
-        if let Some(mut session) = session {
-            self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
-            if let Some(lease) = session.lease.take() {
-                lease.release().await;
+    }
+
+    async fn session_operation_is_current(
+        &self,
+        session_id: &str,
+        operation: &Arc<AcpSessionOperation>,
+    ) -> bool {
+        self.session_operations
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|registered| Arc::ptr_eq(registered, operation))
+    }
+
+    async fn retire_session_if_same(&self, session_id: &str, operation: &Arc<AcpSessionOperation>) {
+        operation.cancellation.cancel();
+        let session = {
+            let _finalization = self.finalization.lock().await;
+            let mut sessions = self.sessions.lock().await;
+            let mut operations = self.session_operations.lock().await;
+            if !operations
+                .get(session_id)
+                .is_some_and(|registered| Arc::ptr_eq(registered, operation))
+            {
+                return;
             }
+            operations.remove(session_id);
+            let session = sessions.remove(session_id);
+            if session.is_some() {
+                self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
+            }
+            session
+        };
+        if let Some(mut session) = session
+            && let Some(lease) = session.lease.take()
+        {
+            lease.release().await;
         }
+    }
+
+    /// Reserve one bounded worker before publishing the operation. Both gates
+    /// are acquired before registration, so pushed events cannot overtake the
+    /// initial snapshot or disappear before the session enters `sessions`.
+    async fn start_session_operation(
+        self: &Arc<Self>,
+        cx: &ConnectionTo<Client>,
+        session_id: &str,
+    ) -> Result<StartedSessionOperation, agent_client_protocol::Error> {
+        let slot = Arc::clone(&self.observer_slots)
+            .try_acquire_owned()
+            .map_err(|_| {
+                agent_client_protocol::Error::invalid_request()
+                    .data("This ACP connection has reached its session limit")
+            })?;
+        let operation = AcpSessionOperation::new(&self.lifetime);
+        let operation_guard = Arc::clone(&operation.gate).lock_owned().await;
+        let replay_guard = Arc::clone(&operation.replay_gate).lock_owned().await;
+        let _finalization = self.finalization.lock().await;
+        if self.closed.load(Ordering::SeqCst) || self.lifetime.is_cancelled() {
+            return Err(agent_client_protocol::Error::internal_error()
+                .data("The Maple ACP connection is closing"));
+        }
+        let sessions = self.sessions.lock().await;
+        let mut operations = self.session_operations.lock().await;
+        if sessions.contains_key(session_id) || operations.contains_key(session_id) {
+            return Err(agent_client_protocol::Error::invalid_request()
+                .data("This ACP connection already owns or is loading the requested session"));
+        }
+        operations.insert(session_id.to_owned(), operation.clone());
+        drop(operations);
+        drop(sessions);
+        let mut tasks = self.background_tasks.lock().await;
+        while tasks.try_join_next().is_some() {}
+        self.spawn_session_observer(
+            &mut tasks,
+            cx.clone(),
+            session_id.to_owned(),
+            operation.clone(),
+            slot,
+        );
+        Ok((operation, operation_guard, replay_guard))
     }
 
     /// Block until the lazy runtime start finished. The handshake answers
@@ -379,6 +490,7 @@ impl AcpConnectionContext {
         session_id: &str,
         operation: &Arc<AcpSessionOperation>,
     ) {
+        operation.cancellation.cancel();
         let mut operations = self.session_operations.lock().await;
         if operations
             .get(session_id)
@@ -412,13 +524,23 @@ impl AcpConnectionContext {
             .await
             .map_err(internal_acp_error)?;
         let session_id = canonical_session_id(&request.session_id)?;
-        let persisted_sessions = self
+        let persisted = self
             .agent
-            .list_sessions(Some(project_root_text))
+            .task_summary(session_id.clone())
             .await
             .map_err(internal_acp_error)?;
-        let persisted = find_acp_session(&persisted_sessions, &session_id)
-            .map_err(|error| agent_client_protocol::Error::invalid_request().data(error))?;
+        let persisted_root = ensure_allowed_project_root(
+            Path::new(&persisted.project_root),
+            &config.allowed_project_roots,
+        )
+        .map_err(|_| {
+            agent_client_protocol::Error::invalid_request()
+                .data("The requested task is outside the configured project roots")
+        })?;
+        if persisted_root != project_root {
+            return Err(agent_client_protocol::Error::invalid_request()
+                .data("The requested task does not exist in the supplied project directory"));
+        }
         let available_models = self.available_models().await?;
         if let Some(model) = persisted.model.as_ref()
             && !available_models.iter().any(|available| available == model)
@@ -429,33 +551,11 @@ impl AcpConnectionContext {
         }
         let session_servers = prepare_session_mcp(&request.mcp_servers)?;
         let protocol_session_id = SessionId::new(session_id.clone());
-        let operation = AcpSessionOperation::new(&self.lifetime);
-        // Held until the history is replayed, so a prompt's updates follow it.
-        let operation_guard = Arc::clone(&operation.gate).lock_owned().await;
-        let replay_guard = operation.replay_gate.lock().await;
-        {
-            // Register the operation before the task is held. Close can now
-            // mark it closing and wait, while disconnect linearizes through
-            // the same finalization barrier used by session creation.
-            let _finalization = self.finalization.lock().await;
-            if self.closed.load(Ordering::SeqCst) {
-                return Err(agent_client_protocol::Error::internal_error()
-                    .data("The Maple ACP connection is closing"));
-            }
-            if self.sessions.lock().await.contains_key(&session_id) {
-                return Err(agent_client_protocol::Error::invalid_request()
-                    .data("This ACP connection already owns the requested session"));
-            }
-            let mut operations = self.session_operations.lock().await;
-            if operations.contains_key(&session_id) {
-                return Err(agent_client_protocol::Error::invalid_request()
-                    .data("This ACP connection is already loading the requested session"));
-            }
-            operations.insert(session_id.clone(), Arc::clone(&operation));
-        }
+        let (operation, operation_guard, replay_guard) =
+            self.start_session_operation(cx, &session_id).await?;
         let attached = match self
             .agent
-            .attach_surface_session(&session_id, session_servers)
+            .attach_surface_session_paged(&session_id, session_servers)
             .await
         {
             Ok(attached) => attached,
@@ -466,6 +566,13 @@ impl AcpConnectionContext {
             }
         };
         let lease = attached.lease;
+        if Path::new(&attached.detail.session.project_root) != project_root.as_path() {
+            lease.release().await;
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
+            return Err(agent_client_protocol::Error::invalid_request()
+                .data("The task's project changed while loading"));
+        }
         let Some(model) = attached
             .detail
             .session
@@ -478,20 +585,25 @@ impl AcpConnectionContext {
                 .await;
             return Err(internal_acp_error("Maple returned no models".to_string()));
         };
-        let snapshot_revision = attached.detail.timeline_revision;
-        let timeline = attached.detail.timeline;
         let message_count = attached.detail.session.message_count;
         let finalization = self.finalization.lock().await;
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.load(Ordering::SeqCst) || operation.cancellation.is_cancelled() {
             drop(finalization);
             lease.release().await;
             self.remove_session_operation_if_same(&session_id, &operation)
                 .await;
-            return Err(agent_client_protocol::Error::internal_error()
-                .data("The Maple ACP session closed while it was loading"));
+            return Err(agent_client_protocol::Error::internal_error().data(
+                operation
+                    .failure_message()
+                    .unwrap_or("The Maple ACP session closed while it was loading"),
+            ));
         }
         let mut sessions = self.sessions.lock().await;
-        if sessions.contains_key(&session_id) {
+        if sessions.contains_key(&session_id)
+            || !self
+                .session_operation_is_current(&session_id, &operation)
+                .await
+        {
             drop(sessions);
             drop(finalization);
             lease.release().await;
@@ -521,26 +633,40 @@ impl AcpConnectionContext {
         self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
         drop(finalization);
 
-        let mut projection = AcpProjection::default();
-        for item in &timeline {
-            if let Some(update) = timeline_update(item, &mut projection, true)
-                && let Err(error) = self
-                    .send_session_update(
-                        cx,
-                        SessionNotification::new(protocol_session_id.clone(), update),
-                        &operation.cancellation,
-                    )
-                    .await
-            {
+        let projection = match self
+            .replay_paged_history(
+                cx,
+                &protocol_session_id,
+                &session_id,
+                &operation.cancellation,
+            )
+            .await
+        {
+            Ok(projection) => projection,
+            Err(error) => {
+                drop(replay_guard);
                 drop(operation_guard);
-                self.retire_session(&session_id).await;
-                return Err(outbound_error(error));
+                self.retire_session_if_same(&session_id, &operation).await;
+                return Err(operation
+                    .failure_message()
+                    .map(paged::replay_error)
+                    .unwrap_or(error));
             }
+        };
+        if operation.cancellation.is_cancelled() {
+            drop(replay_guard);
+            drop(operation_guard);
+            self.retire_session_if_same(&session_id, &operation).await;
+            return Err(paged::replay_error(
+                operation
+                    .failure_message()
+                    .unwrap_or("Maple ACP history loading was cancelled"),
+            ));
         }
-        projection.snapshot_revision = snapshot_revision;
         if let Some(session) = self.sessions.lock().await.get_mut(&session_id) {
             session.projection = projection;
         }
+        operation.replaying.store(false, Ordering::Release);
         drop(replay_guard);
         drop(operation_guard);
         for question in self.agent.pending_questions().await {
@@ -550,6 +676,135 @@ impl AcpConnectionContext {
             .await;
         Ok(LoadSessionResponse::new()
             .config_options(self.refresh_config_options(&session_id).await?))
+    }
+
+    async fn replay_paged_history(
+        &self,
+        cx: &ConnectionTo<Client>,
+        protocol_session: &SessionId,
+        task: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<AcpProjection, agent_client_protocol::Error> {
+        let mut captured = None;
+        for _ in 0..4 {
+            let initial = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(paged::replay_error("Maple ACP history loading was cancelled")),
+                page = self.agent.live_task_page(task,usize::from(paged::ACP_HISTORY_ROWS),paged::ACP_HISTORY_BYTES) => page.map_err(internal_acp_error)?,
+            };
+            if initial.has_more {
+                return Err(paged::replay_error(
+                    "The running task has more live history than ACP can replay; load it after the turn finishes",
+                ));
+            }
+            let (account, store) = self
+                .agent
+                .history_replay_source()
+                .map_err(internal_acp_error)?;
+            let expected = crate::store::TaskHistoryStamp {
+                rows_epoch: initial.stored_marker.0,
+                last_seq: initial.stored_marker.1,
+            };
+            match paged::ReplayHistory::capture(
+                &self.agent,
+                store,
+                account,
+                task,
+                expected,
+                cancellation,
+            )
+            .await
+            {
+                Ok(history) => {
+                    captured = Some((initial, history));
+                    break;
+                }
+                // A source commit raced the bounded live snapshot, before the
+                // capture transaction began. Retry before emitting anything.
+                Err(crate::store::StoreError::Conflict) => continue,
+                Err(error) => return Err(paged::history_error(error, cancellation)),
+            }
+        }
+        let (initial, history) = captured.ok_or_else(|| {
+            paged::replay_error(
+                "The task is changing too quickly to capture its history; try loading it again",
+            )
+        })?;
+        let active = initial
+            .items
+            .iter()
+            .filter_map(|item| item.persisted.as_ref())
+            .map(|row| paged::replay_row_id(&row.task_id, row.rows_epoch, row.row_seq))
+            .collect::<std::collections::HashSet<_>>();
+        let mut projection = AcpProjection::default();
+        let mut replayed_through = 0;
+        loop {
+            self.agent
+                .verify_generation()
+                .await
+                .map_err(internal_acp_error)?;
+            let Some((mut item, identity)) = history
+                .next_row(cancellation)
+                .await
+                .map_err(|error| paged::history_error(error, cancellation))?
+            else {
+                break;
+            };
+            let wire_id = paged::replay_row_id(task, identity.rows_epoch, identity.row_seq);
+            replayed_through = identity.row_seq;
+            item.persisted = Some(identity);
+            item.live = None;
+            // Frozen finalized history has no streaming suffix state to retain.
+            // Only rows also in the bounded active overlay seed live projection.
+            let mut one_row = AcpProjection::default();
+            let update = if active.contains(&wire_id) {
+                checked_timeline_update(&item, &mut projection, true)
+                    .map_err(paged::replay_error)?
+            } else {
+                timeline_update(&item, &mut one_row, true)
+            };
+            if let Some(update) = update {
+                self.agent
+                    .verify_generation()
+                    .await
+                    .map_err(internal_acp_error)?;
+                self.send_session_update(
+                    cx,
+                    SessionNotification::new(protocol_session.clone(), update),
+                    cancellation,
+                )
+                .await
+                .map_err(outbound_error)?;
+            }
+        }
+        // The replay source and this overlay share the captured source stamp.
+        // Later commits arrive through the operation's already-registered FIFO
+        // mailbox; ordinary appends must not invalidate the completed snapshot.
+        for item in initial.items {
+            self.agent
+                .verify_generation()
+                .await
+                .map_err(internal_acp_error)?;
+            if let Some(update) = checked_timeline_update(&item, &mut projection, true)
+                .map_err(paged::replay_error)?
+            {
+                self.send_session_update(
+                    cx,
+                    SessionNotification::new(protocol_session.clone(), update),
+                    cancellation,
+                )
+                .await
+                .map_err(outbound_error)?;
+            }
+        }
+        if cancellation.is_cancelled() {
+            return Err(paged::replay_error(
+                "Maple ACP history loading was cancelled",
+            ));
+        }
+        projection.snapshot_revision = initial.timeline_revision;
+        projection.note_replayed_history(task, initial.stored_marker.0, replayed_through);
+        Ok(projection)
     }
 
     async fn list_sessions(
@@ -571,57 +826,64 @@ impl AcpConnectionContext {
             }
             None => None,
         };
-        let sessions = self
-            .agent
-            .list_sessions(
-                project_root
-                    .as_ref()
-                    .map(|root| root.to_string_lossy().into_owned()),
-            )
-            .await
-            .map_err(internal_acp_error)?;
-        let visible = sessions
-            .into_iter()
-            .filter(|session| {
-                ensure_allowed_project_root(
+        let project = project_root
+            .as_ref()
+            .map(|root| root.to_string_lossy().into_owned());
+        let mut cursor = request.cursor;
+        let mut listed = Vec::new();
+        loop {
+            let query = crate::store::NavigationTaskQuery {
+                section: crate::store::TaskSection::Recent,
+                project: project.clone(),
+                pins: crate::store::PinFilter::Ignore,
+                cursor: cursor.clone(),
+                limit: paged::ACP_LIST_ROWS - listed.len() as u16,
+            };
+            let page = tokio::select! {
+                biased;
+                _ = self.lifetime.cancelled() => return Err(paged::replay_error("The Maple ACP connection closed while listing tasks")),
+                result = self.agent.list_tasks_page(query,crate::store::PageTransport::Local) => result.map_err(|error| {
+                    if cursor.is_some() {
+                        agent_client_protocol::Error::invalid_params().data("Invalid or expired Maple ACP session-list cursor")
+                    } else {internal_acp_error(error)}
+                })?,
+            };
+            if page.next_cursor.is_some() && page.next_cursor == cursor {
+                return Err(paged::replay_error(
+                    "Maple ACP session listing did not advance",
+                ));
+            }
+            for session in page.tasks {
+                let Ok(root) = ensure_allowed_project_root(
                     Path::new(&session.project_root),
                     &config.allowed_project_roots,
-                )
-                .is_ok()
-            })
-            .collect::<Vec<_>>();
-        let start = request
-            .cursor
-            .as_deref()
-            .map(str::parse::<usize>)
-            .transpose()
-            .map_err(|_| {
-                agent_client_protocol::Error::invalid_params()
-                    .data("Invalid Maple ACP session-list cursor")
-            })?
-            .unwrap_or(0);
-        if start > visible.len() {
-            return Err(agent_client_protocol::Error::invalid_params()
-                .data("Maple ACP session-list cursor is out of range"));
-        }
-        let end = start.saturating_add(100).min(visible.len());
-        let listed = visible[start..end]
-            .iter()
-            .map(|session| {
-                let mut info =
-                    SessionInfo::new(session.id.clone(), PathBuf::from(&session.project_root))
-                        .title(session.title.clone());
-                if let Some(updated_at) =
-                    chrono::DateTime::from_timestamp_millis(session.updated_ms)
-                {
-                    info = info.updated_at(updated_at.to_rfc3339());
+                ) else {
+                    continue;
+                };
+                let mut info = SessionInfo::new(session.uuid, root).title(session.title);
+                if let Some(updated) = chrono::DateTime::from_timestamp_millis(session.updated_ms) {
+                    info = info.updated_at(updated.to_rfc3339());
                 }
-                info
-            })
-            .collect();
+                listed.push(info);
+            }
+            cursor = page.next_cursor;
+            if listed.len() >= usize::from(paged::ACP_LIST_ROWS) || cursor.is_none() {
+                break;
+            }
+            // A disallowed/missing root consumes a keyset position. Refill with
+            // another bounded query rather than returning short allowed pages.
+        }
         let mut response = ListSessionsResponse::new(listed);
-        if end < visible.len() {
-            response = response.next_cursor(end.to_string());
+        if let Some(cursor) = cursor {
+            response = response.next_cursor(cursor);
+        }
+        let bytes = serde_json::to_vec(&response)
+            .map_err(|_| paged::replay_error("Maple ACP session listing could not be encoded"))?
+            .len();
+        if bytes > paged::ACP_LIST_BYTES {
+            return Err(paged::replay_error(
+                "Maple ACP session listing exceeded its byte limit",
+            ));
         }
         Ok(response)
     }
@@ -635,16 +897,16 @@ impl AcpConnectionContext {
     > {
         let summary = self
             .agent
-            .load_session(session_id.to_string())
+            .task_facts(session_id.to_string())
             .await
-            .map_err(internal_acp_error)?
-            .session;
+            .map_err(internal_acp_error)?;
         let model = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions.get_mut(session_id).ok_or_else(|| {
                 agent_client_protocol::Error::resource_not_found(Some(session_id.into()))
             })?;
-            session.message_count = summary.message_count;
+            session.message_count = usize::try_from(summary.message_count)
+                .map_err(|_| paged::replay_error("Invalid Maple task message count"))?;
             if let Some(model) = summary.model
                 && session.model != model
             {
@@ -762,6 +1024,7 @@ impl AcpConnectionContext {
             })?;
         let _operation_guard = Arc::clone(&operation.gate).lock_owned().await;
         if self.closed.load(Ordering::SeqCst)
+            || operation.cancellation.is_cancelled()
             || !self.sessions.lock().await.contains_key(&session_id)
         {
             return Err(
@@ -798,7 +1061,9 @@ impl AcpConnectionContext {
                 agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
                     .data("ACP session is not owned by this connection")
             })?;
-        if !self.sessions.lock().await.contains_key(&session_id) {
+        if operation.cancellation.is_cancelled()
+            || !self.sessions.lock().await.contains_key(&session_id)
+        {
             return Err(
                 agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
                     .data("ACP session is not available on this connection"),
@@ -828,9 +1093,30 @@ impl AcpConnectionContext {
     async fn send_session_update(
         &self,
         cx: &ConnectionTo<Client>,
-        notification: SessionNotification,
+        mut notification: SessionNotification,
         cancellation: &CancellationToken,
     ) -> Result<(), AcpOutboundSendError> {
+        // Chunk on UTF-8 byte boundaries before JSON encoding. Even a control
+        // character-heavy chunk stays below the outbound credit/frame caps.
+        let text = paged::notification_text(&mut notification.update)
+            .filter(|text| text.len() > paged::ACP_TEXT_CHUNK_BYTES)
+            .map(std::mem::take);
+        if let Some(text) = text {
+            let mut offset = 0;
+            while offset < text.len() {
+                let end = paged::next_text_boundary(&text, offset);
+                let mut part = notification.clone();
+                *paged::notification_text(&mut part.update)
+                    .ok_or(AcpOutboundSendError::UpdateTooLarge)? = text[offset..end].to_string();
+                let encoded = serde_json::to_vec(&part)
+                    .map_err(|_| AcpOutboundSendError::UpdateTooLarge)?
+                    .len();
+                let reservation = self.outbound.reserve(encoded, cancellation).await?;
+                self.outbound.enqueue(cx, part, reservation)?;
+                offset = end;
+            }
+            return Ok(());
+        }
         let encoded_bytes = serde_json::to_vec(&notification)
             .map_err(|error| {
                 AcpOutboundSendError::Transport(
@@ -1384,7 +1670,7 @@ impl AcpConnectionContext {
                 break StreamStop::Overflowed;
             }
             let event = tokio::select! {
-                _ = self.lifetime.cancelled() => return Ok((PromptResponse::new(StopReason::Cancelled), true)),
+                _ = cancellation.cancelled() => return Ok((PromptResponse::new(StopReason::Cancelled), true)),
                 event = events.recv() => event,
             };
             if overflowed.load(Ordering::Acquire) {
@@ -1395,20 +1681,39 @@ impl AcpConnectionContext {
             // with the observer, without holding the gate while waiting for
             // the next model event.
             let _projection = tokio::select! {
-                _ = self.lifetime.cancelled() => return Ok((PromptResponse::new(StopReason::Cancelled), true)),
+                _ = cancellation.cancelled() => return Ok((PromptResponse::new(StopReason::Cancelled), true)),
                 guard = operation.replay_gate.lock() => guard,
             };
+            if cancellation.is_cancelled()
+                || !self
+                    .session_operation_is_current(&session_id, &operation)
+                    .await
+            {
+                return Ok((PromptResponse::new(StopReason::Cancelled), true));
+            }
             let update = match event {
                 Some(AgentRunEvent::TimelineItem(item)) if item.item_type == "error" => {
                     failure = Some(item);
                     None
                 }
-                Some(AgentRunEvent::TimelineItem(item)) => self
-                    .sessions
-                    .lock()
-                    .await
-                    .get_mut(&session_id)
-                    .and_then(|session| timeline_update(&item, &mut session.projection, false)),
+                Some(AgentRunEvent::TimelineItem(item)) => {
+                    let update = self
+                        .sessions
+                        .lock()
+                        .await
+                        .get_mut(&session_id)
+                        .map(|session| {
+                            checked_timeline_update(&item, &mut session.projection, false)
+                        })
+                        .transpose();
+                    match update {
+                        Ok(update) => update.flatten(),
+                        Err(message) => {
+                            operation.fail_observer(observer::ObserverFailure::ProjectionLimit);
+                            return Err(paged::replay_error(message));
+                        }
+                    }
+                }
                 Some(AgentRunEvent::Error(item)) => {
                     failure = Some(item);
                     None

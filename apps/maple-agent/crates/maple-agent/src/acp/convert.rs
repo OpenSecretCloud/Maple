@@ -29,6 +29,15 @@ pub(super) struct AcpProjection {
     revisions: HashMap<String, u64>,
     pub(super) snapshot_revision: u64,
     streamed: HashMap<String, String>,
+    /// Logical retained string bytes in keys, aliases and streamed prefixes.
+    /// Map entry counts separately bound fixed allocator/container overhead.
+    retained_string_bytes: usize,
+    live_wire_ids: HashMap<crate::agent::AgentLiveRowIdentity, String>,
+    persisted_aliases: HashMap<String, String>,
+    /// Canonical rows already emitted by the immutable initial replay. This
+    /// compact boundary lets a later completion update an old tool call without
+    /// retaining a set of every historical tool ID in application memory.
+    replayed_history: Option<(String, i64, i64)>,
 }
 
 /// The model selector is the only config option: Maple has no session
@@ -286,7 +295,58 @@ pub(super) fn timeline_update(
     projection: &mut AcpProjection,
     replay: bool,
 ) -> Option<SessionUpdate> {
+    let mut translated = std::borrow::Cow::Borrowed(item);
+    let persisted_id = item
+        .persisted
+        .as_ref()
+        .map(|row| super::paged::replay_row_id(&row.task_id, row.rows_epoch, row.row_seq));
+    let identity = if let Some(live) = &item.live {
+        let identity = if let Some(known) = projection.live_wire_ids.get(live) {
+            known.clone()
+        } else {
+            // A different interface can attach its own live identity to an
+            // already persisted occurrence. Keep the wire ID first advertised
+            // for that occurrence rather than announcing another tool/message.
+            let identity = persisted_id
+                .as_ref()
+                .and_then(|persisted| projection.persisted_aliases.get(persisted))
+                .cloned()
+                .or_else(|| persisted_id.clone())
+                .unwrap_or_else(|| format!("maple-live:{}:{}", live.run_id, live.occurrence));
+            projection.add_retained_bytes(live.run_id.len().saturating_add(identity.len()));
+            projection
+                .live_wire_ids
+                .insert(live.clone(), identity.clone());
+            identity
+        };
+        if let Some(persisted) = persisted_id {
+            let key_bytes = persisted.len();
+            let previous = projection
+                .persisted_aliases
+                .insert(persisted, identity.clone());
+            match previous {
+                Some(previous) => projection.replace_retained_bytes(previous.len(), identity.len()),
+                None => projection.add_retained_bytes(key_bytes.saturating_add(identity.len())),
+            }
+        }
+        Some(identity)
+    } else {
+        persisted_id.map(|persisted| {
+            projection
+                .persisted_aliases
+                .get(&persisted)
+                .cloned()
+                .unwrap_or(persisted)
+        })
+    };
+    if let Some(identity) = identity {
+        translated.to_mut().id = identity;
+    }
+    let item = translated.as_ref();
     if item.revision > 0 {
+        if !projection.revisions.contains_key(&item.id) {
+            projection.add_retained_bytes(item.id.len());
+        }
         let previous = projection.revisions.entry(item.id.clone()).or_default();
         if item.revision <= *previous {
             return None;
@@ -321,11 +381,115 @@ pub(super) fn timeline_update(
     }
 }
 
+const MAX_PROJECTION_ENTRIES: usize = 4096;
+const MAX_PROJECTION_STRING_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const ACP_PROJECTION_LIMIT_MESSAGE: &str = "This ACP session reached its live projection limit. Reload this session to continue viewing its task; saved history and shared work are unchanged.";
+
+/// Retaining projections fail explicitly instead of forgetting a streamed
+/// prefix or alias. Ordinary `timeline_update` remains available for disposable
+/// one-row history reconstruction, whose independent row bound still applies.
+pub(super) fn checked_timeline_update(
+    item: &AgentTimelineItem,
+    projection: &mut AcpProjection,
+    replay: bool,
+) -> Result<Option<SessionUpdate>, &'static str> {
+    checked_update_with_limits(
+        item,
+        projection,
+        replay,
+        MAX_PROJECTION_ENTRIES,
+        MAX_PROJECTION_STRING_BYTES,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn checked_timeline_update_with_limits(
+    item: &AgentTimelineItem,
+    projection: &mut AcpProjection,
+    replay: bool,
+    max_entries: usize,
+    max_bytes: usize,
+) -> Result<Option<SessionUpdate>, &'static str> {
+    checked_update_with_limits(item, projection, replay, max_entries, max_bytes)
+}
+
+fn checked_update_with_limits(
+    item: &AgentTimelineItem,
+    projection: &mut AcpProjection,
+    replay: bool,
+    max_entries: usize,
+    max_bytes: usize,
+) -> Result<Option<SessionUpdate>, &'static str> {
+    if projection.exceeds_limits(max_entries, max_bytes) {
+        return Err(ACP_PROJECTION_LIMIT_MESSAGE);
+    }
+    let update = timeline_update(item, projection, replay);
+    // At most one already bounded input can overshoot. The caller retires the
+    // operation on Err and must not enqueue the update returned internally.
+    if projection.exceeds_limits(max_entries, max_bytes) {
+        return Err(ACP_PROJECTION_LIMIT_MESSAGE);
+    }
+    Ok(update)
+}
+
 impl AcpProjection {
+    pub(super) fn note_replayed_history(&mut self, task: &str, epoch: i64, through: i64) {
+        let previous = self
+            .replayed_history
+            .as_ref()
+            .map_or(0, |(task, _, _)| task.len());
+        self.replace_retained_bytes(previous, task.len());
+        self.replayed_history = Some((task.to_owned(), epoch, through));
+    }
+
+    fn add_retained_bytes(&mut self, added: usize) {
+        self.retained_string_bytes = self.retained_string_bytes.saturating_add(added);
+    }
+
+    fn replace_retained_bytes(&mut self, previous: usize, next: usize) {
+        self.retained_string_bytes = self
+            .retained_string_bytes
+            .saturating_sub(previous)
+            .saturating_add(next);
+    }
+
+    fn exceeds_limits(&self, max_entries: usize, max_bytes: usize) -> bool {
+        let entries = self
+            .tools
+            .len()
+            .saturating_add(self.revisions.len())
+            .saturating_add(self.streamed.len())
+            .saturating_add(self.live_wire_ids.len())
+            .saturating_add(self.persisted_aliases.len());
+        entries > max_entries || self.retained_string_bytes > max_bytes
+    }
+
+    fn remember_tool(&mut self, id: &str) -> bool {
+        if self.tools.insert(id.to_owned()) {
+            self.add_retained_bytes(id.len());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn replayed_tool(&self, item: &AgentTimelineItem) -> bool {
+        let Some((task, epoch, through)) = &self.replayed_history else {
+            return false;
+        };
+        item.persisted.as_ref().is_some_and(|row| {
+            &row.task_id == task && row.rows_epoch == *epoch && row.row_seq <= *through
+        })
+    }
+
     /// The text of a message row the caller has not been sent yet.
     fn unsent_text(&mut self, item: &AgentTimelineItem) -> Option<String> {
         let text = item.text.as_deref()?;
+        if !self.streamed.contains_key(&item.id) {
+            self.add_retained_bytes(item.id.len());
+        }
         if item.merge == "append" {
+            self.add_retained_bytes(text.len());
             self.streamed
                 .entry(item.id.clone())
                 .or_default()
@@ -341,7 +505,9 @@ impl AcpProjection {
             .filter(|rest| !rest.is_empty())
             .map(str::to_string);
         if suffix.is_some() {
+            let previous = streamed.len();
             *streamed = text.to_string();
+            self.replace_retained_bytes(previous, text.len());
         }
         suffix
     }
@@ -373,7 +539,7 @@ pub(super) fn acp_tool_update(
     let raw_input = item.input.as_ref().map(bounded_raw_json);
     let raw_output = timeline_tool_raw_output(item);
     let title = item.title.clone();
-    if projection.tools.insert(item.id.clone()) {
+    if projection.remember_tool(&item.id) && !projection.replayed_tool(item) {
         let mut call = ToolCall::new(
             item.id.clone(),
             title.unwrap_or_else(|| "Maple tool".to_string()),

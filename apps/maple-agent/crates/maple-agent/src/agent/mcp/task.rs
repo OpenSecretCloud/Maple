@@ -29,7 +29,6 @@ use pi_coding_agent::extensions::{
 use serde_json::Value;
 use tokio::sync::Notify;
 
-use super::super::config::{account_config_dir_path, load_agent_config_file};
 use super::super::cua;
 use super::super::external_agents;
 use super::super::integrations::{cua_default, is_cua_identity};
@@ -40,8 +39,8 @@ use super::super::{
     AgentSessionIntegrationKind, AgentSessionMcpServer, AgentSetSessionMcpServerRequest,
 };
 use super::connection::{Listing, McpServer, ToolsChanged};
-use super::tool::{convert_result, description, parameters, tool_name};
-use super::{RESERVED_KEYS, name_to_key, normalize_mcp_servers};
+use super::tool::{convert_result_in, description, parameters, tool_name};
+use super::{RESERVED_KEYS, name_to_key};
 
 /// How long a run waits for its task's servers to connect before its first
 /// prompt, as Pi's first prompt waits, and a server switched on for a task
@@ -148,16 +147,13 @@ pub(in crate::agent) fn task_servers(
         .collect()
 }
 
-/// The account's saved servers, read without the settings lock since
-/// nothing is written.
+/// Host-only launch projection. Saved values come only from the open store and
+/// are injected only after its definition/target binding has been checked.
 pub(in crate::agent) fn read_saved_servers(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Vec<AgentMcpServer>, String> {
-    let config = account_config_dir_path(paths, user_id)
-        .and_then(|dir| load_agent_config_file(&dir.join("config.json")))
-        .map_err(|error| error.to_string())?;
-    normalize_mcp_servers(config.mcp_servers)
+    super::load_launch_mcp_servers(paths, user_id)
 }
 
 fn transport_label(server: &AgentMcpServer) -> &'static str {
@@ -229,6 +225,7 @@ struct Entry {
 /// The MCP servers of one loaded task.
 pub(crate) struct TaskMcp {
     cwd: PathBuf,
+    output_dir: Option<PathBuf>,
     search_path: Option<String>,
     /// The session's handle on this extension, once the session loads it.
     context: OnceLock<ExtensionContext>,
@@ -244,9 +241,19 @@ pub(crate) struct TaskMcp {
 }
 
 impl TaskMcp {
+    #[cfg(test)]
     pub(crate) fn new(cwd: &Path, search_path: Option<String>) -> Arc<Self> {
+        Self::new_with_output_dir(cwd, search_path, None)
+    }
+
+    pub(crate) fn new_with_output_dir(
+        cwd: &Path,
+        search_path: Option<String>,
+        output_dir: Option<PathBuf>,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|weak| Self {
             cwd: cwd.to_path_buf(),
+            output_dir,
             search_path,
             context: OnceLock::new(),
             servers: Mutex::new(HashMap::new()),
@@ -754,14 +761,20 @@ impl AgentTool for McpTool {
             Value::Object(arguments) => arguments,
             _ => Default::default(),
         };
-        let server = match self.mcp.upgrade() {
-            Some(mcp) => mcp.server_for(&self.key, &self.server_name, &self.tool)?,
+        let mcp = match self.mcp.upgrade() {
+            Some(mcp) => mcp,
             None => return Err(format!("MCP server \"{}\" is disabled.", self.server_name).into()),
         };
+        let server = mcp.server_for(&self.key, &self.server_name, &self.tool)?;
         let result = server
             .call_tool(&self.tool, arguments, invocation.cancel, invocation.updates)
             .await?;
-        Ok(convert_result(&self.server_name, &self.tool, result))
+        Ok(convert_result_in(
+            &self.server_name,
+            &self.tool,
+            result,
+            mcp.output_dir.as_deref(),
+        ))
     }
 }
 
@@ -830,14 +843,18 @@ impl AgentRuntimeHandle {
                 .ok_or_else(|| {
                     format!("MCP server '{name}' is no longer configured and cannot be enabled")
                 })?;
-            if let Some(mcp) = &loaded
-                && let Err(error) = mcp.enable(server.clone()).await
-            {
-                mcp.disable(&key).await;
-                return Err(format!(
-                    "Failed to connect MCP server '{}': {error}",
-                    server.name
-                ));
+            if let Some(mcp) = &loaded {
+                let launch = read_saved_servers(self.paths(), &self.user_id)?
+                    .into_iter()
+                    .find(|configured| name_to_key(&configured.name) == key)
+                    .ok_or("MCP server is no longer configured")?;
+                if let Err(error) = mcp.enable(launch).await {
+                    mcp.disable(&key).await;
+                    return Err(format!(
+                        "Failed to connect MCP server '{}': {error}",
+                        server.name
+                    ));
+                }
             }
             store.update(&session_id, |row| {
                 let mut names = chosen_servers(row);

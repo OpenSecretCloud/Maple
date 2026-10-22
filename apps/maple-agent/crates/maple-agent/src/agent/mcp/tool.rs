@@ -5,10 +5,13 @@
 
 use base64::Engine as _;
 use pi_ai::Content;
-use pi_coding_agent::tools::{format_size, truncate_middle, write_output_file};
+use pi_coding_agent::tools::{
+    format_size, truncate_middle, write_output_file, write_output_file_in,
+};
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, ResourceContents};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 /// Providers take tool names of at most 64 characters of `[A-Za-z0-9_-]`.
 const MAX_TOOL_NAME_CHARS: usize = 64;
@@ -105,7 +108,7 @@ fn extension_of(uri: &str) -> String {
 }
 
 /// What the model gets of one content block.
-fn block_content(block: &ContentBlock) -> Content {
+fn block_content(block: &ContentBlock, output_dir: Option<&Path>) -> Content {
     match block {
         ContentBlock::Text(text) => Content::text(text.text.clone()),
         ContentBlock::Image(image) => Content::image(image.data.clone(), image.mime_type.clone()),
@@ -145,7 +148,7 @@ fn block_content(block: &ContentBlock) -> Content {
                 mime_type,
                 blob,
                 ..
-            } => binary_resource(uri, mime_type.as_deref(), blob),
+            } => binary_resource(uri, mime_type.as_deref(), blob, output_dir),
             _ => Content::text("[unsupported MCP resource omitted]"),
         },
         _ => Content::text("[unsupported MCP content omitted]"),
@@ -154,7 +157,12 @@ fn block_content(block: &ContentBlock) -> Content {
 
 /// A blob that is not an image: its text when it is text, else a file the
 /// model can open.
-fn binary_resource(uri: &str, mime_type: Option<&str>, blob: &str) -> Content {
+fn binary_resource(
+    uri: &str,
+    mime_type: Option<&str>,
+    blob: &str,
+    output_dir: Option<&Path>,
+) -> Content {
     let data = match base64::engine::general_purpose::STANDARD.decode(blob) {
         Ok(data) => data,
         Err(_) => return Content::text(format!("[Binary resource {uri} could not be decoded]")),
@@ -167,7 +175,7 @@ fn binary_resource(uri: &str, mime_type: Option<&str>, blob: &str) -> Content {
         mime_type.unwrap_or("unknown type"),
         format_size(data.len())
     );
-    match write_output_file(OUTPUT_FILE_PREFIX, &extension_of(uri), &data) {
+    match save_output(output_dir, &extension_of(uri), &data) {
         Ok(path) => Content::text(format!(
             "[Binary resource {uri} ({kind}) saved to {}]",
             path.display()
@@ -193,13 +201,27 @@ fn text_of(content: &[Content]) -> String {
 /// error, with a line saying so when the server gave no text. Text over
 /// [`MCP_OUTPUT_MAX_BYTES`] is cut in the middle, in Codex's format, and the
 /// full text saved to a file; images follow it.
+#[cfg(test)]
 pub(super) fn convert_result(
     server: &str,
     tool: &str,
     result: CallToolResult,
 ) -> pi_agent_core::AgentToolResult {
+    convert_result_in(server, tool, result, None)
+}
+
+pub(super) fn convert_result_in(
+    server: &str,
+    tool: &str,
+    result: CallToolResult,
+    output_dir: Option<&Path>,
+) -> pi_agent_core::AgentToolResult {
     let is_error = result.is_error == Some(true);
-    let mut content: Vec<Content> = result.content.iter().map(block_content).collect();
+    let mut content: Vec<Content> = result
+        .content
+        .iter()
+        .map(|block| block_content(block, output_dir))
+        .collect();
     // Servers should mirror a structured result as text, and do not always.
     if content.is_empty()
         && let Some(structured) = &result.structured_content
@@ -217,7 +239,7 @@ pub(super) fn convert_result(
     let combined = text_of(&content);
     let cut = truncate_middle(&combined, MCP_OUTPUT_MAX_BYTES);
     if cut.truncated {
-        let saved = write_output_file(OUTPUT_FILE_PREFIX, ".txt", combined.as_bytes());
+        let saved = save_output(output_dir, ".txt", combined.as_bytes());
         let location = match &saved {
             Ok(path) => format!(
                 "[Full output: {} (read it with offset/limit)]",
@@ -246,6 +268,17 @@ pub(super) fn convert_result(
         details: Some(details),
         is_error,
         ..pi_agent_core::AgentToolResult::default()
+    }
+}
+
+fn save_output(
+    dir: Option<&Path>,
+    extension: &str,
+    data: &[u8],
+) -> std::io::Result<std::path::PathBuf> {
+    match dir {
+        Some(dir) => write_output_file_in(dir, OUTPUT_FILE_PREFIX, extension, data),
+        None => write_output_file(OUTPUT_FILE_PREFIX, extension, data),
     }
 }
 

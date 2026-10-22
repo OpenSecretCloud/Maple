@@ -13,8 +13,13 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::Store::open(crate::store::StorePaths::new(root.path().join("local")))
+                .unwrap(),
+        );
         let layout =
             AgentPathLayout::from_app_roots(root.path().join("config"), root.path().join("local"))
+                .with_store(store)
                 .with_home(Some(root.path().join("home")));
         fs::create_dir_all(root.path().join("project")).unwrap();
         Self { root, layout }
@@ -29,7 +34,7 @@ impl Fixture {
     }
 
     fn account(&self) -> PathBuf {
-        account_config_dir_path(&self.layout, USER).unwrap()
+        account_instruction_dir_path(&self.layout, USER).unwrap()
     }
 
     fn write(&self, path: PathBuf, text: &str) {

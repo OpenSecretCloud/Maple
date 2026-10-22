@@ -1,0 +1,125 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, test } from "bun:test";
+import { fixture, PAYLOAD } from "./fixtures";
+
+// Miniflare is Wrangler's exact locked runtime dependency. Node hosts the
+// harness; assertions make real requests through workerd and its R2 binding.
+const server = `
+ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+ import { readFileSync } from 'node:fs';
+ const mf = new Miniflare(convertV4MiniflareOptions({modules:true, name:'agent-updates-test', script:readFileSync(process.env.MAPLE_TEST_WORKER,'utf8'), compatibilityDate:'2026-08-24', r2Buckets:['AGENT_RELEASES'], port:0, inspectorPort:0}));
+ process.on('SIGTERM', async()=>{await mf.dispose(); process.exit(0);});
+ process.send({origin:(await mf.ready).origin});
+`;
+test("real workerd R2 binding streams exact immutable bytes, ranges, HEAD and redirects", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "agent-updates-workerd-"));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const wrapper = join(directory, "entry.ts");
+    await Bun.write(
+      wrapper,
+      `
+      import worker from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
+      export default { async fetch(request,env) {
+        if (new URL(request.url).pathname === '/__seed' && request.method === 'POST') {
+          const {metadata,payload} = await request.json();
+          const bytes = Uint8Array.from(metadata);
+          await env.AGENT_RELEASES.put('stable/latest.json',bytes);
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/manifest.json',bytes);
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent.app.tar.gz',Uint8Array.from(payload));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent.dmg',Uint8Array.from(payload));
+          return new Response('seeded');
+        }
+        return worker.fetch(request,env);
+      }};
+    `,
+    );
+    const build = await Bun.build({
+      entrypoints: [wrapper],
+      outdir: directory,
+      target: "browser",
+      format: "esm",
+    });
+    if (!build.success) throw new Error("fixture Worker bundle failed");
+    const origin = await new Promise<string>((resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("workerd startup timeout")),
+        20000,
+      );
+      child = Bun.spawn(["node", "--input-type=module", "-e", server], {
+        env: {
+          ...process.env,
+          MAPLE_TEST_WORKER: join(directory, "entry.js"),
+          MAPLE_TEST_METADATA: Buffer.from(fixture().bytes).toString("base64"),
+          MAPLE_TEST_PAYLOAD: Buffer.from(PAYLOAD).toString("base64"),
+        },
+        stdout: "ignore",
+        stderr: "inherit",
+        serialization: "json",
+        ipc(value: unknown) {
+          if (
+            value &&
+            typeof value === "object" &&
+            "origin" in value &&
+            typeof value.origin === "string"
+          )
+            resolve(value.origin);
+        },
+        onExit(_child, code) {
+          reject(new Error(`workerd exited ${code}`));
+        },
+      });
+    });
+    clearTimeout(timer);
+    const seeded = await fetch(`${origin}/__seed`, {
+      method: "POST",
+      body: JSON.stringify({
+        metadata: Array.from(fixture().bytes),
+        payload: Array.from(PAYLOAD),
+      }),
+    });
+    expect(seeded.status).toBe(200);
+    const latest = await fetch(`${origin}/agent/stable/latest.json`);
+    expect(latest.status).toBe(200);
+    expect(new Uint8Array(await latest.arrayBuffer())).toEqual(fixture().bytes);
+    const redirect = await fetch(`${origin}/download/agent/stable/macos`, {
+      redirect: "manual",
+    });
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get("location")).toBe(
+      "/agent/stable/releases/0.0.2/Maple-Agent.dmg",
+    );
+    const artifact = `${origin}/agent/stable/releases/0.0.2/Maple-Agent.app.tar.gz`;
+    const full = await fetch(artifact);
+    expect(full.status).toBe(200);
+    expect(new Uint8Array(await full.arrayBuffer())).toEqual(PAYLOAD);
+    const range = await fetch(artifact, { headers: { range: "bytes=2-7" } });
+    expect(range.status).toBe(206);
+    expect(range.headers.get("content-range")).toBe(
+      `bytes 2-7/${PAYLOAD.length}`,
+    );
+    expect(new Uint8Array(await range.arrayBuffer())).toEqual(
+      PAYLOAD.slice(2, 8),
+    );
+    const head = await fetch(artifact, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe(String(PAYLOAD.length));
+    expect(await head.text()).toBe("");
+    expect(
+      (await fetch(`${origin}/download/agent/stable/linux-appimage`)).status,
+    ).toBe(404);
+    expect((await fetch(`${origin}/latest.json`)).status).toBe(404);
+  } finally {
+    clearTimeout(timer);
+    child?.kill("SIGTERM");
+    if (child) {
+      const forceStop = setTimeout(() => child?.kill("SIGKILL"), 3000);
+      await child.exited;
+      clearTimeout(forceStop);
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 45000);

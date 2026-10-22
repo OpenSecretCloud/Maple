@@ -23,8 +23,10 @@ use pi_coding_agent::{
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use super::attachments::{AgentImageAttachment, image_prompt, split_image_prompt};
-use super::config::{account_attachment_store, unix_ms};
+use super::attachments::{
+    AgentAttachmentStore, AgentImageAttachment, image_prompt, split_image_prompt,
+};
+use super::config::unix_ms;
 use super::runtime::AgentRuntime;
 use super::store::SessionFacts;
 use super::surface::{AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess};
@@ -38,6 +40,9 @@ use super::{
     AgentServiceEvent, AgentTaskState, AgentTimelineItem, emit_agent_event,
 };
 
+mod live;
+use live::LiveSnapshot;
+
 const AGENT_RUN_EVENT_CAPACITY: usize = 256;
 const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
@@ -50,6 +55,10 @@ const STOP_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) const RUN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 static NEXT_TIMELINE_REVISION: AtomicU64 = AtomicU64::new(1);
+
+pub(super) fn next_timeline_revision() -> u64 {
+    NEXT_TIMELINE_REVISION.fetch_add(1, Ordering::SeqCst)
+}
 
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_QUEUE_ID: AtomicU64 = AtomicU64::new(1);
@@ -202,12 +211,6 @@ pub(super) struct RunEvents {
     order: Arc<Mutex<LiveSnapshot>>,
 }
 
-#[derive(Default)]
-struct LiveSnapshot {
-    epoch: u64,
-    items: Vec<AgentTimelineItem>,
-}
-
 impl RunEvents {
     fn new(
         dispatcher: AgentEventDispatcher,
@@ -229,24 +232,29 @@ impl RunEvents {
     }
 
     pub(super) fn publish(&self, event: AgentRunEvent) {
+        self.publish_row(event, None, false);
+    }
+
+    fn publish_row(&self, mut event: AgentRunEvent, tool: Option<&str>, completed: bool) {
         let mut live = lock(&self.order);
+        live.drain_changes(&self.session_id);
         let mut shared = event.clone();
         match &mut shared {
             AgentRunEvent::TimelineItem(item)
             | AgentRunEvent::Error(item)
             | AgentRunEvent::QueuePromoted { item, .. } => {
-                super::timeline::merge_into(&mut live.items, item.clone());
-                let full = live
-                    .items
-                    .iter_mut()
-                    .find(|full| full.id == item.id)
-                    .expect("merged row");
-                full.merge = "replace".into();
-                full.revision = NEXT_TIMELINE_REVISION.fetch_add(1, Ordering::SeqCst);
-                *item = full.clone();
+                item.revision = next_timeline_revision();
+                *item = live.row(item.clone(), &self.run_id, tool, completed);
+                if let AgentRunEvent::TimelineItem(original)
+                | AgentRunEvent::Error(original)
+                | AgentRunEvent::QueuePromoted { item: original, .. } = &mut event
+                {
+                    original.live = item.live.clone();
+                    original.persisted = item.persisted.clone();
+                    original.revision = item.revision;
+                }
             }
             AgentRunEvent::HistoryReplaced => {
-                live.items.clear();
                 live.epoch += 1;
             }
             _ => {}
@@ -264,6 +272,39 @@ impl RunEvents {
         if let Err(mpsc::error::TrySendError::Full(_)) = self.sender.try_send(event) {
             self.overflowed.store(true, Ordering::Release);
         }
+    }
+
+    fn watch_store(&self, store: &Arc<crate::store::Store>, account: crate::store::AccountId) {
+        let mut live = lock(&self.order);
+        live.changes = Some(store.subscribe_changes());
+        live.resolver = Some((Arc::clone(store), account));
+    }
+
+    fn watch_sources(&self, receipts: Option<crate::store::SourceReceipts>) {
+        lock(&self.order).source_receipts = receipts;
+    }
+
+    fn drain_sources(&self) {
+        lock(&self.order).drain_sources();
+    }
+
+    fn begin_message(&self) {
+        lock(&self.order).begin_message();
+    }
+
+    fn note_source(&self, entry: &pi_coding_agent::session::SessionEntry) {
+        let mut live = lock(&self.order);
+        if let Some(receipt) = crate::store::SourceReceipt::of(entry) {
+            live.note_source(receipt);
+        }
+        live.drain_changes(&self.session_id);
+    }
+
+    fn end_message(&self, message: &SessionMessage) -> Vec<AgentTimelineItem> {
+        let mut live = lock(&self.order);
+        let rows = live.end_message(message);
+        live.drain_changes(&self.session_id);
+        rows
     }
 }
 
@@ -463,6 +504,17 @@ impl RunsState {
 }
 
 impl Runs {
+    pub(super) fn while_all_idle<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let state = self.state();
+        if !state.runs.is_empty() {
+            return Err("Agent work is active".into());
+        }
+        action()
+    }
+
     pub(super) fn while_idle<T>(
         &self,
         session_id: &str,
@@ -476,28 +528,36 @@ impl Runs {
     }
 
     pub(super) fn snapshot_marker(&self, session_id: &str) -> Option<(String, u64)> {
-        self.state()
-            .run_of(session_id)
-            .map(|(id, run)| (id.clone(), lock(&run.events.order).epoch))
+        self.state().run_of(session_id).map(|(id, run)| {
+            let mut live = lock(&run.events.order);
+            live.drain_changes(session_id);
+            (id.clone(), live.epoch)
+        })
     }
 
-    pub(super) fn live_snapshot(
+    pub(super) fn live_snapshot_page(
         &self,
         session_id: &str,
-    ) -> (Option<(String, u64)>, u64, Vec<AgentTimelineItem>) {
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> (Option<(String, u64)>, u64, Vec<AgentTimelineItem>, bool) {
         let state = self.state();
         if let Some((id, run)) = state.run_of(session_id) {
-            let live = lock(&run.events.order);
+            let mut live = lock(&run.events.order);
+            live.drain_changes(session_id);
+            let (items, more) = live::bounded_tail(&live.items, max_rows, max_bytes);
             return (
                 Some((id.clone(), live.epoch)),
                 NEXT_TIMELINE_REVISION.load(Ordering::SeqCst) - 1,
-                live.items.clone(),
+                items,
+                more || live.resync_required,
             );
         }
         (
             None,
             NEXT_TIMELINE_REVISION.load(Ordering::SeqCst) - 1,
             Vec::new(),
+            false,
         )
     }
 
@@ -594,7 +654,145 @@ enum Plan {
     Wait,
 }
 
+fn combined_marker(
+    main: Option<(String, u64)>,
+    external_revision: u64,
+) -> Option<super::AgentRunMarker> {
+    if main.is_none() && external_revision == 0 {
+        return None;
+    }
+    let (run_id, epoch) = main.unwrap_or_default();
+    Some(super::AgentRunMarker {
+        run_id,
+        epoch,
+        external_revision,
+    })
+}
+
+async fn runtime_marker(runtime: &AgentRuntime, task: &str) -> Option<super::AgentRunMarker> {
+    combined_marker(
+        runtime.runs.snapshot_marker(task),
+        runtime.external_agents.live_revision(task).await,
+    )
+}
+
 impl AgentRuntimeHandle {
+    /// A run marker without loading Pi or reading transcript payloads.
+    pub async fn live_task_marker(
+        &self,
+        task: &str,
+    ) -> Result<Option<super::AgentRunMarker>, String> {
+        self.verify_generation().await?;
+        Ok(match self.current_runtime().await? {
+            Some(runtime) => runtime_marker(&runtime, task).await,
+            None => None,
+        })
+    }
+
+    /// Capture only the bounded active overlay between stable committed/source
+    /// markers. Whole-history replay remains in history_forward_page.
+    pub async fn live_task_page(
+        &self,
+        task: &str,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<super::AgentLivePage, String> {
+        self.verify_generation().await?;
+        if max_rows == 0 || max_rows > 500 || !(256..=4 * 1024 * 1024).contains(&max_bytes) {
+            return Err("Invalid live page limits".into());
+        }
+        let tasks = self.store()?;
+        let runtime = self.current_runtime().await?;
+        for _ in 0..16 {
+            let before_run = match &runtime {
+                Some(runtime) => runtime_marker(runtime, task).await,
+                None => None,
+            };
+            let (stamp_store, stamp_task) = (Arc::clone(tasks.store()), task.to_string());
+            let account = tasks.account();
+            let before = tokio::task::spawn_blocking(move || {
+                stamp_store.task_history_stamp(account, &stamp_task)
+            })
+            .await
+            .map_err(|_| "Live page worker failed".to_string())?
+            .map_err(|error| error.to_string())?;
+            let (main_marker, revision, mut items, mut has_more) = runtime
+                .as_ref()
+                .map(|runtime| runtime.runs.live_snapshot_page(task, max_rows, max_bytes))
+                .unwrap_or((
+                    None,
+                    NEXT_TIMELINE_REVISION.load(Ordering::SeqCst) - 1,
+                    Vec::new(),
+                    false,
+                ));
+            let external_revision = match &runtime {
+                Some(runtime) => runtime.external_agents.live_revision(task).await,
+                None => 0,
+            };
+            let marker = combined_marker(main_marker, external_revision);
+            if let Some(runtime) = &runtime {
+                for external in runtime.external_agents.live_rows(task).await {
+                    let previous = items.iter_mut().find(|item| {
+                        match (&item.persisted, &external.persisted) {
+                            (Some(a), Some(b)) => {
+                                a.task_id == b.task_id
+                                    && a.rows_epoch == b.rows_epoch
+                                    && a.row_seq == b.row_seq
+                            }
+                            _ => item.live.is_some() && item.live == external.live,
+                        }
+                    });
+                    if let Some(previous) = previous {
+                        let persisted = external
+                            .persisted
+                            .clone()
+                            .or_else(|| previous.persisted.clone());
+                        let alias = external.live.clone().or_else(|| previous.live.clone());
+                        super::timeline::merge_item(previous, external);
+                        previous.persisted = persisted;
+                        previous.live = alias;
+                    } else {
+                        items.push(external);
+                    }
+                }
+                if let Some(failure) = runtime.failures.get(task) {
+                    items.push(failure);
+                }
+            }
+            let (items, omitted) = live::bounded_tail(&items, max_rows, max_bytes);
+            has_more |= omitted;
+            let (stamp_store, stamp_task) = (Arc::clone(tasks.store()), task.to_string());
+            let after = tokio::task::spawn_blocking(move || {
+                stamp_store.task_history_stamp(account, &stamp_task)
+            })
+            .await
+            .map_err(|_| "Live page worker failed".to_string())?
+            .map_err(|error| error.to_string())?;
+            let after_run = match &runtime {
+                Some(runtime) => runtime_marker(runtime, task).await,
+                None => None,
+            };
+            if before != after || before_run != marker || marker != after_run {
+                continue;
+            }
+            return Ok(super::AgentLivePage {
+                marker,
+                stored_marker: (after.rows_epoch, after.last_seq),
+                timeline_revision: revision,
+                items,
+                has_more,
+                queue: runtime
+                    .as_ref()
+                    .map(|runtime| runtime.runs.queue_snapshot(task))
+                    .unwrap_or(super::AgentDesktopQueueSnapshot {
+                        revision: 0,
+                        items: Vec::new(),
+                    }),
+            });
+        }
+        Err("The task changed while its live page was read; reload and try again".into())
+    }
+
     /// Send a message to a task: start a run, or join the task's run as a
     /// queued chip or, with `steer`, as steering.
     pub async fn send_message(
@@ -866,7 +1064,7 @@ impl AgentRuntime {
         if self.store.get(&session_id)?.is_none() {
             return Err(format!("Failed to find Agent task {session_id}"));
         }
-        let store = account_attachment_store(&self.host.paths, &self.user_id)?;
+        let store = AgentAttachmentStore::new(Arc::clone(self.store.store()), self.store.account());
         let uploads = request.attachments.clone();
         let stored =
             tokio::task::spawn_blocking(move || store.store_uploads(&session_id, &uploads))
@@ -1023,8 +1221,10 @@ impl AgentRuntime {
         prompts: Vec<Outgoing>,
         consumed: Vec<String>,
     ) -> NewRun {
+        self.host.cancel_integrity_check();
         let run_id = next_run_id();
         let (events, receiver) = RunEvents::new(self.host.events.clone(), session_id, &run_id);
+        events.watch_store(self.store.store(), self.store.account());
         // Stopping the runtime stops the run, also before it has a task.
         let stopped = self.lifetime.child_token();
         let (steers, steering) = mpsc::unbounded_channel();
@@ -1181,6 +1381,8 @@ impl AgentRuntime {
             steers,
         } = run;
 
+        // Desktop sends and background hidden deliveries share this path.
+        events.watch_sources(self.store.source_receipts(session_id));
         let (terminal_tx, terminal) = watch::channel(None);
         let (usage_tx, usage) = watch::channel(None);
         let overflowed = Arc::clone(&events.overflowed);
@@ -1639,8 +1841,16 @@ struct RunWatchState {
 
 impl RunWatch {
     fn observe(&self, event: &AgentSessionEvent, live: &Mutex<LiveTimeline>, events: &RunEvents) {
+        // Pi has released its session lock before forwarding these callbacks.
+        // Observed identities remain useful even when the preceding SQL write failed.
+        events.drain_sources();
         match event {
             AgentSessionEvent::Agent(event) => {
+                if matches!(event, pi_agent_core::AgentEvent::MessageStart { message }
+                    if matches!(message, SessionMessage::Llm(Message::User(_) | Message::Assistant(_)) | SessionMessage::Custom(_)))
+                {
+                    events.begin_message();
+                }
                 if let pi_agent_core::AgentEvent::MessageEnd {
                     message: SessionMessage::Llm(Message::Assistant(reply)),
                 } = event
@@ -1652,11 +1862,32 @@ impl RunWatch {
                     state.usage.cached_read_tokens += reply.usage.cache_read;
                     state.usage.cached_write_tokens += reply.usage.cache_write;
                 }
-                let rows: Vec<AgentTimelineItem> = lock(live).rows(event);
+                let projected = lock(live).rows(event);
+                let (rows, tool, completed) = if let pi_agent_core::AgentEvent::MessageEnd {
+                    message,
+                } = event
+                {
+                    let rows = events.end_message(message);
+                    (
+                        if rows.is_empty() { projected } else { rows },
+                        LiveSnapshot::tool_for_message(message),
+                        true,
+                    )
+                } else {
+                    let tool = match event {
+                        pi_agent_core::AgentEvent::ToolExecutionStart { tool_call_id, .. }
+                        | pi_agent_core::AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
+                            Some(tool_call_id.as_str())
+                        }
+                        _ => None,
+                    };
+                    (projected, tool, false)
+                };
                 for row in rows {
-                    events.publish(AgentRunEvent::TimelineItem(row));
+                    events.publish_row(AgentRunEvent::TimelineItem(row), tool, completed);
                 }
             }
+            AgentSessionEvent::EntryAppended { entry } => events.note_source(entry),
             AgentSessionEvent::RetryStart { .. } => lock(&self.state).retried = true,
             AgentSessionEvent::CompactionStart { .. } => events.publish(AgentRunEvent::Compacting),
             AgentSessionEvent::CompactionEnd {
@@ -1668,8 +1899,10 @@ impl RunWatch {
             AgentSessionEvent::CompactionEnd {
                 error: Some(error), ..
             } => log::warn!("Agent compaction failed: {error}"),
-            AgentSessionEvent::PersistenceError(error) => {
-                log::warn!("Failed to save the Agent task: {error}");
+            AgentSessionEvent::PersistenceError(_) => {
+                // Store adapters latch the typed failure for visible retry.
+                // Pi's generic error string can contain paths or values.
+                log::warn!("Agent task changes are waiting for a persistence retry");
             }
             AgentSessionEvent::ExtensionError(report) => {
                 log::warn!("An Agent extension failed: {report:?}");
@@ -1717,7 +1950,109 @@ impl AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::tests::{Harness, finished};
+    use crate::agent::tests::{Harness, eventually, finished};
+
+    #[test]
+    fn external_only_markers_retain_revision_after_a_turn_finishes() {
+        assert!(combined_marker(None, 0).is_none());
+        let running = combined_marker(None, 10).unwrap();
+        let finished = combined_marker(None, 11).unwrap();
+        assert!(running.run_id.is_empty());
+        assert_ne!(running, finished);
+        assert_eq!(Some(finished), combined_marker(None, 11));
+        assert_ne!(
+            combined_marker(Some(("run".into(), 3)), 10),
+            combined_marker(Some(("run".into(), 3)), 11)
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_pi_callbacks_reconcile_adapter_receipts_with_saved_rows() {
+        let harness = Harness::new().await;
+        let runtime = harness.runtime().await;
+        let task = harness.create_task().await;
+        let mut identities = Vec::new();
+        for _ in 0..2 {
+            harness.faux.push_text("Repeated answer.");
+            let mut handle = harness.send(&task, "Repeated question.").await;
+            assert_eq!(finished(&mut handle).await, AgentRunTerminal::Completed);
+            let mut completed = HashMap::new();
+            while let Ok(event) = handle.events.try_recv() {
+                if let AgentRunEvent::TimelineItem(row) = event
+                    && let Some(identity) = row.persisted
+                {
+                    assert!(row.live.is_some());
+                    completed.insert(row.role, identity);
+                }
+            }
+            let user = completed
+                .remove(&Some("user".into()))
+                .expect("saved user row");
+            let assistant = completed
+                .remove(&Some("assistant".into()))
+                .expect("saved assistant row");
+            assert_ne!(user.row_seq, assistant.row_seq);
+            identities.extend([user, assistant]);
+        }
+        let history = runtime
+            .store
+            .store()
+            .history_forward_page(
+                runtime.store.account(),
+                &crate::store::HistoryPageRequest {
+                    task: task.clone(),
+                    cursor: None,
+                    limit_rows: Some(20),
+                    limit_bytes: None,
+                },
+                crate::store::PageTransport::Local,
+            )
+            .unwrap();
+        for identity in &identities {
+            assert!(
+                history
+                    .rows
+                    .iter()
+                    .any(|row| row.rows_epoch == identity.rows_epoch
+                        && row.row_seq == identity.row_seq
+                        && row.update_seq == identity.update_seq)
+            );
+        }
+        let unique: HashSet<_> = identities.iter().map(|identity| identity.row_seq).collect();
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn background_hidden_delivery_uses_the_same_adapter_receipt_feed() {
+        let harness = Harness::new().await;
+        let runtime = harness.runtime().await;
+        let task = harness.create_task().await;
+        harness.faux.push_text("Initial answer.");
+        let mut first = harness.send(&task, "Start.").await;
+        assert_eq!(finished(&mut first).await, AgentRunTerminal::Completed);
+        harness.faux.push_text("Background answer.");
+        runtime
+            .deliver_hidden(&task, "maple.test", "Background result.".into())
+            .await
+            .unwrap();
+        eventually(|| runtime.runs.state().runs.is_empty()).await;
+        let saved = harness.recorder.events().into_iter().find_map(|event| {
+            if let AgentServiceEvent::Run {
+                event: AgentRunEvent::TimelineItem(row),
+                ..
+            } = event
+                && row.text.as_deref() == Some("Background answer.")
+            {
+                row.persisted
+            } else {
+                None
+            }
+        });
+        assert!(
+            saved.is_some(),
+            "hidden-triggered assistant replies carry saved identities"
+        );
+    }
 
     #[tokio::test]
     async fn steering_before_session_setup_keeps_its_order_and_survives_stop() {

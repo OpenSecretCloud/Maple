@@ -1,11 +1,9 @@
-//! App settings persisted to ~/.config/maple-agent/settings.json.
+//! GUI settings cache, synchronized through the host-owned SQLite store.
 
 // This module is the desktop frontend's boundary. A headless build (no
 // `desktop` feature) uses only a few entry points, so the rest is unused
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
-
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RemoteSidebarSettings {
@@ -42,8 +40,7 @@ pub struct AppSettings {
     /// Sidebar task ids the user pinned, in pin order.
     #[serde(default)]
     pub pinned_tasks: Vec<String>,
-    /// Legacy owner-side names, read only for the daemon's one-time migration.
-    /// New shared names live in account-scoped device-local daemon metadata.
+    /// Transient compatibility field; authoritative names come from the host store.
     #[serde(default)]
     pub project_names: std::collections::HashMap<String, String>,
     /// Local presentation preferences for each paired endpoint. A remote
@@ -54,6 +51,14 @@ pub struct AppSettings {
     /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
+    /// Explicit permission to send task titles and questions to the operating
+    /// system's notification history while the local store uses a password.
+    #[serde(default)]
+    pub password_notification_details: bool,
+    /// Read-only host snapshot metadata, never a persisted UI preference. An
+    /// absent verified mode must keep notification contents private.
+    #[serde(default = "default_store_password_mode")]
+    pub store_password_mode: bool,
     /// Skip looping and reveal animations. gpui reads no OS preference for
     /// this, so it is a Maple setting.
     #[serde(default)]
@@ -160,6 +165,10 @@ pub const DEFAULT_HARNESS_INSTRUCTIONS: &str =
 You run in the Maple app's Agent Mode; users know you simply as Maple.";
 
 impl AppSettings {
+    pub fn notification_details_enabled(&self) -> bool {
+        !self.store_password_mode || self.password_notification_details
+    }
+
     /// The harness instructions to hand the runtime: the saved text, or the
     /// default when nothing is saved.
     pub fn effective_harness_instructions(&self) -> String {
@@ -196,6 +205,10 @@ fn default_desktop_notifications() -> bool {
     true
 }
 
+fn default_store_password_mode() -> bool {
+    true
+}
+
 fn default_tool_summaries() -> bool {
     true
 }
@@ -214,6 +227,8 @@ impl Default for AppSettings {
             project_names: std::collections::HashMap::new(),
             remote_sidebars: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
+            password_notification_details: false,
+            store_password_mode: default_store_password_mode(),
             reduce_motion: false,
             harness_instructions: String::new(),
             window: None,
@@ -226,170 +241,542 @@ impl Default for AppSettings {
     }
 }
 
-#[cfg(not(test))]
-fn settings_file() -> PathBuf {
-    crate::backend::app_config_root().join("settings.json")
+/// Settings are a GUI cache. Only the host reads or writes their store rows.
+#[derive(Clone)]
+enum SettingsSink {
+    Host(std::sync::Weak<crate::backend::AgentBackend>),
+    #[cfg(test)]
+    Test(std::sync::Arc<maple_agent::store::Store>),
 }
 
-#[cfg(test)]
-fn settings_file() -> PathBuf {
-    test_settings_file()
+struct SettingsCache {
+    generation: u64,
+    value: AppSettings,
+    pending: serde_json::Map<String, serde_json::Value>,
+    words: std::collections::BTreeSet<String>,
+    sink: Option<SettingsSink>,
 }
 
-/// Under `cargo test`, the settings file must never resolve to the
-/// developer's real settings.json: background writes queued by widget
-/// tests would silently rewrite it, and a test process killed mid-write
-/// would litter the real config directory with abandoned temp files.
-/// Tests that verify the on-disk resolution set XDG_CONFIG_HOME
-/// explicitly; every other test lands in a per-process scratch root.
-#[cfg(test)]
-fn test_settings_file() -> PathBuf {
-    static SCRATCH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
-        std::env::temp_dir().join(format!("maple-agent-test-config-{}", std::process::id()))
+static CACHE: std::sync::LazyLock<std::sync::Mutex<SettingsCache>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(SettingsCache {
+            generation: 0,
+            value: AppSettings::default(),
+            pending: Default::default(),
+            words: Default::default(),
+            sink: None,
+        })
     });
-    if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
-        // Resolve from the captured value, not a second read: another
-        // test may restore the variable in between.
-        let base = PathBuf::from(base);
-        if base.is_absolute() {
-            return base
-                .join(crate::backend::APP_DIR_NAME)
-                .join("settings.json");
-        }
-    }
-    SCRATCH.join("settings.json")
+
+/// Install the host snapshot before constructing the main window. Pending
+/// edits survive a reconnect and are replayed over the fresh host snapshot.
+pub fn attach_backend(backend: std::sync::Arc<crate::backend::AgentBackend>, value: AppSettings) {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.pending.remove("store_password_mode");
+    let mut json = serde_json::to_value(value).expect("settings serialize");
+    merge_patch(&mut json, &serde_json::Value::Object(cache.pending.clone()));
+    cache.value = serde_json::from_value(json).unwrap_or_default();
+    cache.generation = cache.generation.wrapping_add(1);
+    cache.sink = Some(SettingsSink::Host(std::sync::Arc::downgrade(&backend)));
+    drop(cache);
+    queue_flush(None);
+}
+
+pub fn clear_decrypted_cache() {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.value = AppSettings::default();
+    // Retain unsynchronized edits privately for this generation, but stop
+    // retries until an Open snapshot supplies a fresh host attachment.
+    cache.sink = None;
+    cache.generation = cache.generation.wrapping_add(1);
+}
+
+/// A destructive local reset or a different verified store generation must
+/// not replay edits from the retired database into the new one.
+pub fn discard_decrypted_cache() {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.value = AppSettings::default();
+    cache.pending.clear();
+    cache.words.clear();
+    cache.sink = None;
+    cache.generation = cache.generation.wrapping_add(1);
 }
 
 pub fn load_settings() -> AppSettings {
-    let path = settings_file();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) => {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("Cannot read settings at {}: {error}", path.display());
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .value
+        .clone()
+}
+
+fn value_patch(before: &serde_json::Value, after: &serde_json::Value) -> Option<serde_json::Value> {
+    if before == after {
+        return None;
+    }
+    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+        let mut patch = serde_json::Map::new();
+        for (key, value) in after {
+            // Missing and explicit null differ: null disables an inherited
+            // shortcut, whereas an absent key retains the shipped binding.
+            let changed = match before.get(key) {
+                Some(previous) => value_patch(previous, value),
+                None => Some(value.clone()),
+            };
+            if let Some(changed) = changed {
+                patch.insert(key.clone(), changed);
             }
-            return AppSettings::default();
         }
-    };
-    serde_json::from_str(&text).unwrap_or_else(|error| {
-        log::warn!(
-            "Settings at {} are not valid; using defaults: {error}",
-            path.display()
-        );
-        AppSettings::default()
-    })
-}
-
-/// Read only the owner's legacy map. An unreadable file must not permanently
-/// record an empty migration; remote sidebar nicknames are deliberately ignored.
-pub fn load_project_names_for_migration()
--> Result<std::collections::HashMap<String, String>, String> {
-    read_legacy_project_names(&settings_file())
-}
-
-fn read_legacy_project_names(
-    path: &std::path::Path,
-) -> Result<std::collections::HashMap<String, String>, String> {
-    #[derive(serde::Deserialize)]
-    struct LegacyNames {
-        #[serde(default)]
-        project_names: std::collections::HashMap<String, String>,
+        for key in before.keys().filter(|key| !after.contains_key(*key)) {
+            patch.insert(key.clone(), serde_json::json!({"$unset":true}));
+        }
+        Some(serde_json::Value::Object(patch))
+    } else {
+        Some(after.clone())
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
-        Err(_) => return Err("Could not read saved project names for migration".into()),
-    };
-    serde_json::from_slice::<LegacyNames>(&bytes)
-        .map(|legacy| legacy.project_names)
-        .map_err(|_| "Saved project names are invalid; migration has not been completed".into())
 }
 
-/// Serializes tests that swap `XDG_CONFIG_HOME` process-wide: while a swap
-/// is live, no other test may resolve or write the settings file. Shared
-/// with the chat screen's persisted-defaults test.
+fn compose_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    if patch.get("$unset") == Some(&serde_json::Value::Bool(true)) {
+        *target = patch.clone();
+    } else if let Some(fields) = patch.as_object() {
+        if !target.is_object() {
+            *target = serde_json::json!({});
+        }
+        for (key, value) in fields {
+            compose_patch(
+                target
+                    .as_object_mut()
+                    .expect("object")
+                    .entry(key.clone())
+                    .or_insert(serde_json::Value::Null),
+                value,
+            );
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
+fn edit_cache(update: impl FnOnce(&mut AppSettings)) {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let before = serde_json::to_value(&cache.value).expect("settings serialize");
+    let store_password_mode = cache.value.store_password_mode;
+    update(&mut cache.value);
+    cache.value.store_password_mode = store_password_mode;
+    cache.value.pinned_roots.clear();
+    let after = serde_json::to_value(&cache.value).expect("settings serialize");
+    let mut patch = value_patch(&before, &after).unwrap_or_else(|| serde_json::json!({}));
+    // Account presentation state is owned by dedicated paged/account APIs.
+    // These legacy struct fields are only transient UI compatibility values.
+    for key in [
+        "pinned_roots",
+        "pinned_tasks",
+        "project_names",
+        "remote_sidebars",
+    ] {
+        patch.as_object_mut().expect("settings patch").remove(key);
+    }
+    let mut pending = serde_json::Value::Object(std::mem::take(&mut cache.pending));
+    compose_patch(&mut pending, &patch);
+    cache.pending = pending.as_object_mut().expect("settings patch").clone();
+}
+
+pub fn update_settings_in_background(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
+    edit_cache(update);
+    queue_flush(None);
+}
+
+/// A synchronous barrier for existing GUI state tests. Runtime callers use
+/// the asynchronous flush_pending barrier before ordinary Quit.
 #[cfg(test)]
-pub(crate) static SETTINGS_IO_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+pub(crate) fn update_settings_and_wait(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
+    edit_cache(update);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    queue_flush(Some(SettingsAck::Sync(sender)));
+    let _ = receiver.recv_timeout(std::time::Duration::from_secs(5));
+}
 
-/// Record the window state for the next launch. Runs on the UI thread at
-/// quit and waits for the write, so updates queued earlier also land.
 pub fn save_window_state(state: WindowState) {
-    update_settings_and_wait(move |settings| settings.window = Some(state));
+    update_settings_in_background(move |settings| settings.window = Some(state));
 }
 
-fn save_settings(settings: &AppSettings) {
-    let path = settings_file();
-    if let Err(error) = maple_agent::private_file::write_private_json(&path, settings) {
-        log::error!("Cannot save settings to {}: {error}", path.display());
-    }
+pub async fn flush_pending() -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    queue_flush(Some(SettingsAck::Async(sender)));
+    receiver
+        .await
+        .map_err(|_| "Maple settings synchronization stopped".to_string())?
 }
 
-type SettingsUpdate = Box<dyn FnOnce(&mut AppSettings) + Send>;
-
-/// One queued change and, optionally, a channel to signal once it is on disk.
-struct SettingsWrite {
-    update: SettingsUpdate,
-    done: Option<std::sync::mpsc::Sender<()>>,
+pub(crate) fn pending_dictionary_words() -> Vec<String> {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .words
+        .iter()
+        .cloned()
+        .collect()
 }
 
-/// The single writer thread. Every change goes through it in call order
-/// as a read-modify-write of the file, so two callers that change
-/// different fields both land and a later change to one field always
-/// wins over an earlier one.
-fn settings_writer() -> &'static std::sync::mpsc::Sender<SettingsWrite> {
-    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<SettingsWrite>> =
+pub(crate) fn queue_dictionary_word(word: String) {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .words
+        .insert(word);
+    queue_flush(None);
+}
+
+enum SettingsAck {
+    #[cfg(test)]
+    Sync(std::sync::mpsc::Sender<Result<(), String>>),
+    Async(tokio::sync::oneshot::Sender<Result<(), String>>),
+}
+
+fn queue_flush(ack: Option<SettingsAck>) {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<Option<SettingsAck>>> =
         std::sync::OnceLock::new();
-    WRITER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<SettingsWrite>();
+    let sender = WRITER.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<Option<SettingsAck>>();
         std::thread::Builder::new()
-            .name("settings-writer".into())
+            .name("settings-host-sync".into())
             .spawn(move || {
-                while let Ok(first) = rx.recv() {
-                    // Coalesce a burst of changes into one write.
-                    let mut batch = vec![first];
-                    while let Ok(next) = rx.try_recv() {
-                        batch.push(next);
+                loop {
+                    let first = match receiver.recv_timeout(std::time::Duration::from_secs(2)) {
+                        Ok(ack) => ack,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let mut acks = first.into_iter().collect::<Vec<_>>();
+                    while let Ok(ack) = receiver.try_recv() {
+                        acks.extend(ack);
                     }
-                    let mut settings = load_settings();
-                    let mut acks = Vec::new();
-                    for write in batch {
-                        (write.update)(&mut settings);
-                        acks.extend(write.done);
-                    }
-                    save_settings(&settings);
+                    let result = synchronize_once();
                     for ack in acks {
-                        let _ = ack.send(());
+                        match ack {
+                            #[cfg(test)]
+                            SettingsAck::Sync(sender) => {
+                                let _ = sender.send(result.clone());
+                            }
+                            SettingsAck::Async(sender) => {
+                                let _ = sender.send(result.clone());
+                            }
+                        }
                     }
                 }
             })
-            .expect("spawn settings writer");
-        tx
-    })
-}
-
-fn queue_settings_write(write: SettingsWrite) {
-    if settings_writer().send(write).is_err() {
-        log::error!("Settings writer is gone; change not saved");
+            .expect("settings sync worker");
+        sender
+    });
+    if sender.send(ack).is_err() {
+        log::error!("Settings synchronization stopped; edits remain in memory");
     }
 }
 
-/// Apply `update` to the settings file from the writer thread so a
-/// toggle never blocks the UI thread on disk I/O.
-pub fn update_settings_in_background(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
-    queue_settings_write(SettingsWrite {
-        update: Box::new(update),
-        done: None,
-    });
+fn synchronize_once() -> Result<(), String> {
+    let (generation, sink, patch, words) = {
+        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.pending.is_empty() && cache.words.is_empty() {
+            return Ok(());
+        }
+        (
+            cache.generation,
+            cache.sink.clone(),
+            cache.pending.clone(),
+            cache.words.clone(),
+        )
+    };
+    match sink.ok_or("Maple host is unavailable; settings edits remain pending")? {
+        SettingsSink::Host(backend) => {
+            let backend = backend
+                .upgrade()
+                .ok_or("Maple host is unavailable; settings edits remain pending")?;
+            backend.runtime_handle().block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    if !patch.is_empty() {
+                        backend
+                            .set_ui_settings(serde_json::Value::Object(patch.clone()))
+                            .await?;
+                    }
+                    for word in &words {
+                        backend.add_word(word.clone()).await?;
+                    }
+                    backend.flush_ui_settings().await
+                })
+                .await
+                .map_err(|_| "Maple settings synchronization timed out".to_string())?
+            })?;
+        }
+        #[cfg(test)]
+        SettingsSink::Test(store) => {
+            apply_host_patch(&store, None, &serde_json::Value::Object(patch.clone()))?;
+            for word in &words {
+                store.add_dictionary_word(word).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.generation != generation {
+        return Ok(());
+    }
+    for (key, value) in patch {
+        if cache.pending.get(&key) == Some(&value) {
+            cache.pending.remove(&key);
+        }
+    }
+    for word in words {
+        cache.words.remove(&word);
+    }
+    Ok(())
 }
 
-/// Apply `update` and block until it and every earlier update are on disk.
-pub fn update_settings_and_wait(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
-    let (done, rx) = std::sync::mpsc::channel::<()>();
-    queue_settings_write(SettingsWrite {
-        update: Box::new(update),
-        done: Some(done),
-    });
-    let _ = rx.recv();
+fn merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    if let Some(patch) = patch.as_object() {
+        if !target.is_object() {
+            *target = serde_json::json!({});
+        }
+        let target = target.as_object_mut().expect("object installed");
+        for (key, value) in patch {
+            if value.get("$unset") == Some(&serde_json::Value::Bool(true)) {
+                target.remove(key);
+            } else {
+                merge_patch(
+                    target.entry(key.clone()).or_insert(serde_json::Value::Null),
+                    value,
+                );
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
+#[cfg(test)]
+fn remote_sidebar_patch(
+    before: &RemoteSidebarSettings,
+    after: &RemoteSidebarSettings,
+) -> serde_json::Value {
+    let mut patch = value_patch(
+        &serde_json::to_value(before).expect("sidebar serialize"),
+        &serde_json::to_value(after).expect("sidebar serialize"),
+    )
+    .unwrap_or_else(|| serde_json::json!({}));
+    if before.pinned_tasks != after.pinned_tasks {
+        let old: std::collections::HashSet<_> = before.pinned_tasks.iter().collect();
+        let new: std::collections::HashSet<_> = after.pinned_tasks.iter().collect();
+        patch["pinned_tasks"] = serde_json::json!({
+            "add": after.pinned_tasks.iter().filter(|id| !old.contains(id)).collect::<Vec<_>>(),
+            "remove": before.pinned_tasks.iter().filter(|id| !new.contains(id)).collect::<Vec<_>>(),
+        });
+    }
+    patch
+}
+
+pub(crate) fn patch_remote_sidebar(
+    value: &mut RemoteSidebarSettings,
+    patch: &serde_json::Value,
+) -> Result<(), String> {
+    let fields = patch
+        .as_object()
+        .ok_or("Remote sidebar patch must be an object")?;
+    if fields
+        .keys()
+        .any(|key| !["display_name", "pinned_tasks"].contains(&key.as_str()))
+    {
+        return Err("Unknown remote sidebar setting".into());
+    }
+    let mut patch = patch.clone();
+    if let Some(operations) = patch
+        .get("pinned_tasks")
+        .and_then(serde_json::Value::as_object)
+    {
+        if operations
+            .keys()
+            .any(|key| !["add", "remove"].contains(&key.as_str()))
+        {
+            return Err("Invalid pin operation".into());
+        }
+        let add: Vec<String> = serde_json::from_value(
+            operations
+                .get("add")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )
+        .map_err(|_| "Invalid pin additions")?;
+        let remove: Vec<String> = serde_json::from_value(
+            operations
+                .get("remove")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )
+        .map_err(|_| "Invalid pin removals")?;
+        let mut pins = value.pinned_tasks.clone();
+        pins.retain(|id| !remove.contains(id));
+        for id in add {
+            if !pins.contains(&id) {
+                pins.push(id);
+            }
+        }
+        patch["pinned_tasks"] = serde_json::json!(pins);
+    }
+    let mut json =
+        serde_json::to_value(&*value).map_err(|_| "Could not encode remote sidebar settings")?;
+    merge_patch(&mut json, &patch);
+    for (key, empty) in [
+        ("display_name", serde_json::json!("")),
+        ("pinned_tasks", serde_json::json!([])),
+    ] {
+        if json.get(key).is_some_and(serde_json::Value::is_null) {
+            json[key] = empty;
+        }
+    }
+    *value = serde_json::from_value(json).map_err(|_| "Invalid remote sidebar setting value")?;
+    Ok(())
+}
+
+pub(crate) fn timestamp_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
+pub(crate) fn load_host_settings(
+    store: &maple_agent::store::Store,
+    _account: Option<maple_agent::store::AccountId>,
+) -> Result<AppSettings, String> {
+    let value = store
+        .app_setting("ui")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut settings: AppSettings =
+        serde_json::from_value(value).map_err(|_| "Saved UI settings are invalid".to_string())?;
+    settings.store_password_mode = store.lock_status().map_err(|error| error.to_string())?.mode
+        == maple_agent::store::lifecycle::StoreMode::Password;
+    settings.pinned_roots.clear();
+    settings.pinned_tasks.clear();
+    settings.project_names.clear();
+    settings.remote_sidebars.clear();
+    if let Some(value) = store
+        .app_setting("agent.harness")
+        .map_err(|e| e.to_string())?
+    {
+        settings.harness_instructions = value
+            .as_str()
+            .ok_or("Saved harness settings are invalid")?
+            .to_owned();
+    }
+    if let Some(value) = store
+        .app_setting("notifications")
+        .map_err(|e| e.to_string())?
+    {
+        settings.desktop_notifications = value
+            .as_bool()
+            .ok_or("Saved notification settings are invalid")?;
+    }
+    Ok(settings)
+}
+
+pub(crate) fn apply_host_patch(
+    store: &maple_agent::store::Store,
+    account: Option<maple_agent::store::AccountId>,
+    patch: &serde_json::Value,
+) -> Result<(), String> {
+    let fields = patch
+        .as_object()
+        .ok_or("Settings patch must be an object")?;
+    if fields.contains_key("store_password_mode") {
+        return Err("Store mode is read-only host metadata".into());
+    }
+    let before = load_host_settings(store, account)?;
+    let mut json = serde_json::to_value(&before).map_err(|_| "Could not encode UI settings")?;
+    for key in fields.keys() {
+        if json.get(key).is_none() {
+            return Err("Unknown UI setting".into());
+        }
+    }
+    merge_patch(&mut json, patch);
+    let mut settings: AppSettings =
+        serde_json::from_value(json).map_err(|_| "Invalid UI setting value")?;
+    settings.pinned_roots.clear();
+    let now = timestamp_ms();
+    if [
+        "pinned_roots",
+        "pinned_tasks",
+        "project_names",
+        "remote_sidebars",
+    ]
+    .iter()
+    .any(|key| fields.contains_key(*key))
+    {
+        return Err("Account presentation settings require their dedicated host operation".into());
+    }
+    let mut global = serde_json::to_value(&settings).map_err(|_| "Could not encode UI settings")?;
+    for key in [
+        "pinned_roots",
+        "pinned_tasks",
+        "project_names",
+        "remote_sidebars",
+        "harness_instructions",
+        "desktop_notifications",
+        "store_password_mode",
+    ] {
+        global.as_object_mut().expect("settings object").remove(key);
+    }
+    store
+        .set_app_setting("ui", &global, now)
+        .map_err(|e| e.to_string())?;
+    if fields.contains_key("harness_instructions") {
+        store
+            .set_app_setting(
+                "agent.harness",
+                &serde_json::Value::String(settings.harness_instructions),
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    if fields.contains_key("desktop_notifications") {
+        store
+            .set_app_setting(
+                "notifications",
+                &serde_json::Value::Bool(settings.desktop_notifications),
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) static SETTINGS_IO_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn install_test_settings(value: AppSettings) {
+    let mut cache = CACHE.lock().unwrap();
+    let generation = cache.generation.wrapping_add(1);
+    *cache = SettingsCache {
+        generation,
+        value,
+        pending: Default::default(),
+        words: Default::default(),
+        sink: None,
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store>) {
+    let value = load_host_settings(&store, None).unwrap();
+    let mut cache = CACHE.lock().unwrap();
+    let generation = cache.generation.wrapping_add(1);
+    *cache = SettingsCache {
+        generation,
+        value,
+        pending: Default::default(),
+        words: Default::default(),
+        sink: Some(SettingsSink::Test(store)),
+    };
 }
 
 #[cfg(test)]
@@ -397,44 +784,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_project_migration_reads_owner_names_and_preserves_read_failures() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        assert!(read_legacy_project_names(&path).unwrap().is_empty());
-        std::fs::write(
-            &path,
-            br#"{
-            "project_names": {"/work/one": "Owner name"},
-            "remote_sidebars": {"endpoint": {"project_names": {"/work/one": "Controller alias"}}}
-        }"#,
-        )
-        .unwrap();
-        assert_eq!(
-            read_legacy_project_names(&path).unwrap(),
-            std::collections::HashMap::from([("/work/one".into(), "Owner name".into())])
-        );
-        std::fs::write(&path, b"{invalid").unwrap();
-        assert!(read_legacy_project_names(&path).is_err());
-        assert!(read_legacy_project_names(dir.path()).is_err());
-    }
-
-    #[test]
-    fn retiring_remote_project_aliases_preserves_personal_pins() {
-        let settings: RemoteSidebarSettings = serde_json::from_str(
-            r#"{
-            "display_name":"Lab", "pinned_tasks":["task-1"],
-            "project_names":{"/work/one":"Old alias"}
-        }"#,
+    fn remote_sidebar_preferences_cannot_override_owner_project_names() {
+        let mut settings: RemoteSidebarSettings = serde_json::from_str(
+            r#"{"display_name":"Lab","pinned_tasks":["task-1"],"project_names":{"/work/one":"Old alias"}}"#,
         )
         .unwrap();
         assert_eq!(settings.pinned_tasks, ["task-1"]);
-        assert_eq!(settings.display_name, "Lab");
         assert!(
-            serde_json::to_value(settings)
+            serde_json::to_value(&settings)
                 .unwrap()
                 .get("project_names")
                 .is_none()
         );
+        assert!(
+            patch_remote_sidebar(&mut settings, &serde_json::json!({"project_names":{}})).is_err()
+        );
+    }
+
+    #[test]
+    fn notification_details_require_password_mode_opt_in_and_known_plain_mode() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(settings.store_password_mode);
+        assert!(!settings.password_notification_details);
+        assert!(!settings.notification_details_enabled());
+
+        settings.store_password_mode = false;
+        assert!(settings.notification_details_enabled());
+        settings.store_password_mode = true;
+        assert!(!settings.notification_details_enabled());
+        settings.password_notification_details = true;
+        assert!(settings.notification_details_enabled());
+    }
+
+    #[test]
+    fn notification_mode_is_host_owned_and_opt_in_is_persisted() {
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        // Even an old or forged persisted mode bit cannot override the host.
+        store
+            .set_app_setting("ui", &serde_json::json!({"store_password_mode": true}), 1)
+            .unwrap();
+        assert!(
+            !load_host_settings(&store, None)
+                .unwrap()
+                .store_password_mode
+        );
+        apply_host_patch(
+            &store,
+            None,
+            &serde_json::json!({"password_notification_details": true}),
+        )
+        .unwrap();
+        assert!(
+            load_host_settings(&store, None)
+                .unwrap()
+                .password_notification_details
+        );
+        let saved = store.app_setting("ui").unwrap().unwrap();
+        assert!(saved.get("store_password_mode").is_none());
+        assert!(
+            apply_host_patch(
+                &store,
+                None,
+                &serde_json::json!({"store_password_mode": false}),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn local_preference_edits_cannot_override_verified_notification_mode() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        install_test_settings(AppSettings::default());
+        edit_cache(|settings| settings.store_password_mode = false);
+        let cache = CACHE.lock().unwrap();
+        assert!(cache.value.store_password_mode);
+        assert!(!cache.pending.contains_key("store_password_mode"));
     }
 
     /// A settings file written while the app still saved a permission mode
@@ -488,92 +915,143 @@ mod tests {
         assert_eq!(settings.chat_font_size, 14);
     }
 
-    /// A queued background change must land on disk and survive a reload:
-    /// this is the contract every settings control relies on.
     #[test]
-    fn queued_updates_reach_disk_and_survive_a_reload() {
+    fn queued_updates_reach_the_host_store_without_sidecar_files() {
         let _guard = SETTINGS_IO_LOCK.lock();
-        let dir = std::env::temp_dir().join(format!(
-            "maple-agent-settings-roundtrip-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-
+        let root = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap(),
+        );
+        install_test_store(store.clone());
         update_settings_in_background(|settings| settings.tts_voice = "neutral_male".into());
-        // A second queued change must not lose the first: both go through
-        // the writer thread in order.
         update_settings_in_background(|settings| settings.tts_speed = 1.5);
+        update_settings_in_background(|settings| {
+            settings
+                .shortcut_overrides
+                .insert("chat.new_task".into(), None);
+        });
         update_settings_and_wait(|_| {});
-
-        let reloaded = load_settings();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-
+        let reloaded = load_host_settings(&store, None).unwrap();
         assert_eq!(reloaded.tts_voice, "neutral_male");
         assert!((reloaded.tts_speed - 1.5).abs() < 0.01);
-    }
-
-    /// Without an explicit XDG_CONFIG_HOME, a test build must resolve the
-    /// settings file outside the developer's real config directory, or
-    /// background writes from widget tests would rewrite it.
-    #[test]
-    fn unit_tests_never_resolve_the_real_settings_file() {
-        let _guard = SETTINGS_IO_LOCK.lock();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-
-        let path = settings_file();
-
-        if let Some(value) = previous {
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", value) };
-        }
-
-        assert!(
-            !path.starts_with(dirs::config_dir().unwrap_or_default()),
-            "test resolution must not touch the real config root: {}",
-            path.display()
-        );
-    }
-
-    #[test]
-    fn existing_settings_files_default_shortcut_overrides_to_empty() {
-        let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
-        json.as_object_mut()
-            .expect("settings object")
-            .remove("shortcut_overrides");
-        let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
-        assert!(settings.shortcut_overrides.is_empty());
-    }
-
-    #[test]
-    fn shortcut_overrides_distinguish_remapped_disabled_and_default_slots() {
-        let mut settings = AppSettings::default();
-        settings
-            .shortcut_overrides
-            .insert("chat.new_task".into(), Some("secondary-shift-n".into()));
-        settings
-            .shortcut_overrides
-            .insert("chat.focus_search".into(), None);
-
-        let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
-            json["shortcut_overrides"]["chat.new_task"],
-            "secondary-shift-n"
+            reloaded.shortcut_overrides.get("chat.new_task"),
+            Some(&None)
         );
-        assert!(json["shortcut_overrides"]["chat.focus_search"].is_null());
+        update_settings_and_wait(|settings| {
+            settings.shortcut_overrides.remove("chat.new_task");
+        });
         assert!(
-            json["shortcut_overrides"]
-                .get("chat.toggle_sidebar")
-                .is_none()
+            !load_host_settings(&store, None)
+                .unwrap()
+                .shortcut_overrides
+                .contains_key("chat.new_task")
         );
+        assert!(
+            !store
+                .paths()
+                .root()
+                .join("staging/config/settings.json")
+                .exists()
+        );
+    }
 
-        let restored: AppSettings = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(restored.shortcut_overrides, settings.shortcut_overrides);
+    #[test]
+    fn settings_without_a_host_keep_edits_pending_in_memory() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        *CACHE.lock().unwrap() = SettingsCache {
+            generation: 0,
+            value: AppSettings::default(),
+            pending: Default::default(),
+            words: Default::default(),
+            sink: None,
+        };
+        edit_cache(|settings| settings.theme = "dark".into());
+        assert!(synchronize_once().is_err());
+        let cache = CACHE.lock().unwrap();
+        assert_eq!(cache.value.theme, "dark");
+        assert_eq!(cache.pending.get("theme"), Some(&serde_json::json!("dark")));
+    }
+
+    #[test]
+    fn maintenance_hides_cached_values_but_reset_discards_pending_generation() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        install_test_settings(AppSettings::default());
+        edit_cache(|settings| settings.harness_instructions = "private pending prompt".into());
+        CACHE.lock().unwrap().words.insert("private-word".into());
+        clear_decrypted_cache();
+        assert!(load_settings().harness_instructions.is_empty());
+        assert!(
+            CACHE
+                .lock()
+                .unwrap()
+                .pending
+                .contains_key("harness_instructions")
+        );
+        discard_decrypted_cache();
+        let cache = CACHE.lock().unwrap();
+        assert!(cache.pending.is_empty());
+        assert!(cache.words.is_empty());
+        assert!(cache.sink.is_none());
+    }
+
+    #[test]
+    fn nested_shortcut_patches_preserve_disables_removals_and_other_edits() {
+        let before = serde_json::json!({"shortcut_overrides":{"a":"primary-a","b":"primary-b"}});
+        let first = serde_json::json!({"shortcut_overrides":{"a":null,"b":"primary-b"}});
+        let second = serde_json::json!({"shortcut_overrides":{"a":null}});
+        let mut pending = value_patch(&before, &first).unwrap();
+        compose_patch(&mut pending, &value_patch(&first, &second).unwrap());
+        let mut host = serde_json::json!({"shortcut_overrides":{"a":"primary-a","b":"primary-b","c":"primary-c"}});
+        merge_patch(&mut host, &pending);
+        assert_eq!(
+            host,
+            serde_json::json!({"shortcut_overrides":{"a":null,"c":"primary-c"}})
+        );
+    }
+
+    #[test]
+    fn settings_snapshot_does_not_include_account_navigation_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        let account = store.upsert_account("account", 1).unwrap();
+        store
+            .set_account_setting(
+                account,
+                "remote.sidebars",
+                &serde_json::json!({"peer":{"display_name":"private"}}),
+                1,
+            )
+            .unwrap();
+        let value = load_host_settings(&store, Some(account)).unwrap();
+        assert!(value.pinned_tasks.is_empty());
+        assert!(value.project_names.is_empty());
+        assert!(value.remote_sidebars.is_empty());
+    }
+
+    #[test]
+    fn remote_pin_patches_preserve_other_windows_additions() {
+        let original = RemoteSidebarSettings::default();
+        let mut first = original.clone();
+        first.pinned_tasks.push("first".into());
+        let mut second = original.clone();
+        second.pinned_tasks.push("second".into());
+        let mut host = original.clone();
+        patch_remote_sidebar(&mut host, &remote_sidebar_patch(&original, &first)).unwrap();
+        patch_remote_sidebar(&mut host, &remote_sidebar_patch(&original, &second)).unwrap();
+        assert_eq!(host.pinned_tasks, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn disabling_an_inherited_shortcut_is_a_real_patch() {
+        let before = serde_json::json!({"shortcut_overrides":{}});
+        let after = serde_json::json!({"shortcut_overrides":{"inherited":null}});
+        let patch = value_patch(&before, &after).unwrap();
+        let mut host = before;
+        merge_patch(&mut host, &patch);
+        assert_eq!(host, after);
     }
 }

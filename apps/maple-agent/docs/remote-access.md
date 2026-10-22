@@ -41,9 +41,8 @@ label, or **Maple Workspace** for its actual default workspace, clears the custo
 name.
 Renaming never changes the folder path, session working directories, or trust.
 Names and the default-workspace identity arrive in initial/reconnect snapshots,
-so controllers do not guess them from another computer's path syntax. Existing
-names saved on the owner are imported once; old controller-only project nicknames
-no longer override them. Task pins and computer nicknames remain viewer-local.
+so controllers do not guess them from another computer's path syntax. Earlier app data is never imported, including project names and controller-only
+project nicknames. New project names are stored only in this version's database. Task pins and computer nicknames remain viewer-local.
 
 The computer name defaults to its OS hostname. In **Remote computers → Computer
 name → Rename**, set the name advertised by this computer for this account and
@@ -52,6 +51,12 @@ hostname. Other paired computers learn changes when refreshing discovery or
 reconnecting; the name is not broadcast over active task streams. **Nickname**
 on a paired row overrides its label on the viewing desktop only. Neither name
 changes device identity or pairing authority.
+
+Identity keys, grants, computer names and nicknames live in this computer's
+account-scoped `store-v1/` records. They share password protection with the rest
+of the current database. Erasing this version's local data leaves a stale peer
+on other computers; remove it from **Remote computers** there. Earlier app data
+is not imported. See [local storage](local-store.md) for scope and backup limits.
 
 Each computer loads independently. The desktop first reads project/task
 summaries and opens a transcript only when that computer is used. Cached groups
@@ -70,11 +75,12 @@ The Integrations pane manages the selected execution computer and labels it;
 account and application preference panes still use this computer. Native
 permission setup must be performed on the execution computer.
 
-Closing a window with remote access enabled keeps the application available
+Closing a window with remote access enabled or an unlocked password store keeps the application available
 (macOS Dock; Windows/Linux tray Open/Quit). On a desktop without a usable tray,
 Close offers Keep open or Quit Maple, explaining that Quit stops remote access.
-Explicit Quit stops that computer's
-local daemon and drains its work. Closing a controller view does not cancel work
+Ordinary Quit stops that computer's local daemon, drains its work and waits for
+ownership release. A shutdown failure keeps the frontend open with a warning
+and retry. Closing a controller view does not cancel work
 on another computer. Revocation and disabling access take effect locally even
 when discovery is unavailable; re-enabling does not restore revoked grants.
 
@@ -83,6 +89,13 @@ CLI equivalents: `remote status`, `remote enable`, `remote disable`,
 `remote pair <endpoint>` (hidden code prompt), and `remote revoke <endpoint>`.
 These administer only the local computer. Never put a pairing code in argv or logs.
 
+A password-protected execution host starts locked and does not load remote
+credentials or its identity until a local unlock succeeds. Unlock in its desktop
+app or with `maple-agent unlock` using a controlling terminal. Controllers cannot
+unlock, change passwords or erase a remote computer. Login alone does not unlock
+the local store. Window close and OS screen lock do not lock an unlocked host;
+Quit or `maple-agent host stop` completes local shutdown.
+
 ## Transport and recovery
 
 Iroh 1.3.0 supplies authenticated QUIC, direct connectivity and relay fallback.
@@ -90,10 +103,13 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 5 with minimum version 5, independent of application builds. Version
-5 adds shared project renames, project-change events and complete project metadata
-in navigation snapshots. Update both computers to use it; version 4 peers receive
-an explicit version refusal. Bounded frames and an explicit task-operation allowlist apply.
+wire version 6 with minimum version 6, independent of application builds. Version
+6 combines shared project names with bounded navigation/history pages, stable
+row identities, attachment ranges, and per-connection task subscriptions.
+Project-change events carry only changed metadata; snapshots and project pages
+provide authoritative names, revisions, and default-workspace flags.
+Update both computers to use it; version 5 and earlier peers receive an explicit
+version refusal. Bounded frames and an explicit task-operation allowlist apply.
 Account operations and whole-host administration cannot be forwarded.
 
 Four pre-admission handshakes and eight paired control connections have capacity
@@ -113,7 +129,7 @@ authoritative snapshot. Transport loss does not cancel an accepted mutation on
 the host or cause an automatic prompt replay; explicit host shutdown still stops
 its work. A stable send identity
 crosses both IPC and Iroh; only the execution daemon records its admission and
-result, account-bound in its receipt database. An uncertain send keeps its original
+result, account-bound in its application database. An uncertain send keeps its original
 identity, text and draft images in the desktop view and queries the execution
 host's receipt after reconnecting. It never replays the command or overwrites a
 newer draft. If the execution daemon restarts before recording a send's result,

@@ -78,6 +78,12 @@ if [[ "$platform" == macos-aarch64 ]]; then
             /usr/sbin/spctl --assess --type execute --verbose=2 "$app"
         else
             grep -Fq 'Signature=adhoc' <<< "$signature"
+            # An ad-hoc signature has no Team ID. Hardened runtime would make
+            # dyld reject the bundled non-system libraries despite valid seals.
+            if ! grep -Eq '^CodeDirectory .* flags=0x0*2\(adhoc\)([[:space:]]|$)' <<< "$signature"; then
+                echo "unsigned macOS app must use only ad-hoc signing flags, without hardened runtime or library validation" >&2
+                return 1
+            fi
         fi
         /usr/bin/codesign --display --entitlements :- "$app" > "$temporary/entitlements.plist" 2>/dev/null
         python3 - "$temporary/entitlements.plist" "$component/app/packaging/macos-entitlements.plist" <<'PY'

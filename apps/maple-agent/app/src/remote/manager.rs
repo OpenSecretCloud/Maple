@@ -92,8 +92,24 @@ impl Manager {
             last_error: Mutex::new(None),
         })
     }
+    pub(crate) async fn host_activity(&self) -> (usize, usize) {
+        let node = self.node.lock().await;
+        match node.as_ref() {
+            Some(node) => (
+                8usize.saturating_sub(node.controllers.available_permits()),
+                4usize.saturating_sub(node.admissions.available_permits()),
+            ),
+            None => (0, 0),
+        }
+    }
+
     pub fn stays_running(&self) -> bool {
         self.resident.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifecycle_revision_for_test(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     pub async fn shutdown(&self) {
@@ -109,9 +125,27 @@ impl Manager {
         }
     }
 
+    fn database(&self) -> Result<Arc<maple_agent::store::Store>, String> {
+        self.backend
+            .store()
+            .cloned()
+            .ok_or_else(|| "Local storage is unavailable".to_owned())
+    }
+
     fn store(&self, account: &str) -> Result<Store, String> {
         Store::open(
-            &self.backend.remote_storage_root(),
+            self.database()?,
+            self.backend.remote_api_url(),
+            &crate::backend::local::configured_client_id().to_string(),
+            crate::profile::PROFILE,
+            account,
+        )
+    }
+
+    fn store_exists(&self, account: &str) -> Result<bool, String> {
+        let database = self.database()?;
+        Store::exists(
+            &database,
             self.backend.remote_api_url(),
             &crate::backend::local::configured_client_id().to_string(),
             crate::profile::PROFILE,
@@ -122,13 +156,8 @@ impl Manager {
     pub async fn restore(self: &Arc<Self>) {
         let current = self.node.lock().await;
         let enabled = self.backend.saved_user_id().is_some_and(|account| {
-            Store::exists(
-                &self.backend.remote_storage_root(),
-                self.backend.remote_api_url(),
-                &crate::backend::local::configured_client_id().to_string(),
-                crate::profile::PROFILE,
-                &account,
-            ) && self.store(&account).is_ok_and(|s| s.enabled())
+            self.store_exists(&account).is_ok_and(|exists| exists)
+                && self.store(&account).is_ok_and(|s| s.enabled())
         });
         if !enabled {
             return;
@@ -136,7 +165,7 @@ impl Manager {
         self.resident.store(true, Ordering::Release);
         drop(current);
         // Invalid configuration is actionable, not a network outage to retry.
-        if let Err(error) = configuration() {
+        if let Err(error) = configuration(self.backend.remote_api_url()) {
             *self.last_error.lock().unwrap() = Some(error);
             return;
         }
@@ -210,7 +239,7 @@ impl Manager {
             "prod"
         }
         .to_string();
-        let (relays, relay_only) = configuration()?;
+        let (relays, relay_only, loopback_only) = configuration(self.backend.remote_api_url())?;
         // Register possession before asking an authenticated Maple relay to
         // accept this key. Addresses are refreshed after binding.
         register(
@@ -229,7 +258,7 @@ impl Manager {
         {
             return Err("The signed-in account changed".into());
         }
-        let endpoint = network::bind(key, relays, relay_only).await?;
+        let endpoint = network::bind(key, relays, relay_only, loopback_only).await?;
         if self.generation.load(Ordering::SeqCst) != generation
             || !session.remote_session_active().await
             || self.backend.saved_user_id().as_deref() != Some(&account)
@@ -324,13 +353,7 @@ impl Manager {
                 .backend
                 .saved_user_id()
                 .ok_or("Sign in before using remote access")?;
-            if !Store::exists(
-                &self.backend.remote_storage_root(),
-                self.backend.remote_api_url(),
-                &crate::backend::local::configured_client_id().to_string(),
-                crate::profile::PROFILE,
-                &account,
-            ) {
+            if !self.store_exists(&account)? {
                 return encode(Status {
                     name: super::store::default_name().into(),
                     enabled: false,
@@ -992,13 +1015,60 @@ async fn register(
     .map_err(|_| "Remote registration timed out")?
 }
 
-fn configuration() -> Result<(RelayMode, bool), String> {
+fn configuration(api_url: &str) -> Result<(RelayMode, bool, bool), String> {
     let configured = crate::env::env_string("MAPLE_REMOTE_RELAYS").unwrap_or_default();
-    relay_configuration(
+    let relay_only = crate::env::env_string("MAPLE_REMOTE_RELAY_ONLY").as_deref() == Some("1");
+    let loopback_only = loopback_configuration(
         crate::profile::PROFILE,
+        cfg!(debug_assertions),
+        api_url,
         &configured,
-        crate::env::env_string("MAPLE_REMOTE_RELAY_ONLY").as_deref() == Some("1"),
-    )
+        relay_only,
+        crate::env::env_string("MAPLE_REMOTE_BIND_LOOPBACK").as_deref(),
+    )?;
+    let (relays, relay_only) =
+        relay_configuration(crate::profile::PROFILE, &configured, relay_only)?;
+    Ok((relays, relay_only, loopback_only))
+}
+
+/// Only an explicit Local debug qualification may restrict Iroh to the same
+/// machine. This neither adds an address override nor alters packaged defaults.
+fn loopback_configuration(
+    profile: &str,
+    debug: bool,
+    api_url: &str,
+    configured_relays: &str,
+    relay_only: bool,
+    requested: Option<&str>,
+) -> Result<bool, String> {
+    let Some(requested) = requested else {
+        return Ok(false);
+    };
+    let invalid = || {
+        "Loopback remote qualification requires MAPLE_REMOTE_BIND_LOOPBACK=1, an unpackaged debug build, a Local HTTP loopback API, MAPLE_REMOTE_RELAYS=none, and relay-only mode disabled.".to_owned()
+    };
+    let api = url::Url::parse(api_url).map_err(|_| invalid())?;
+    let local_host = match api.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    if requested != "1"
+        || profile != "unpackaged"
+        || !debug
+        || api.scheme() != "http"
+        || !local_host
+        || !api.username().is_empty()
+        || api.password().is_some()
+        || api.query().is_some()
+        || api.fragment().is_some()
+        || configured_relays != "none"
+        || relay_only
+    {
+        return Err(invalid());
+    }
+    Ok(true)
 }
 
 fn relay_configuration(
@@ -1079,6 +1149,63 @@ fn validate_devices(devices: &[RemoteDevice]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_qualification_requires_every_local_debug_boundary() {
+        for api in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://127.4.3.2:3000",
+            "http://[::1]:3000",
+        ] {
+            assert_eq!(
+                loopback_configuration("unpackaged", true, api, "none", false, Some("1")),
+                Ok(true),
+                "{api}"
+            );
+        }
+        let api = "http://127.0.0.1:3000";
+        for profile in ["dev", "prod", "unknown"] {
+            assert!(loopback_configuration(profile, true, api, "none", false, Some("1")).is_err());
+        }
+        assert!(
+            loopback_configuration("unpackaged", false, api, "none", false, Some("1")).is_err()
+        );
+        assert!(loopback_configuration("unpackaged", true, api, "none", true, Some("1")).is_err());
+        for relays in ["", "public-test", "https://relay.example/"] {
+            assert!(
+                loopback_configuration("unpackaged", true, api, relays, false, Some("1")).is_err()
+            );
+        }
+        for flag in ["0", "true", "127.0.0.1", ""] {
+            assert!(
+                loopback_configuration("unpackaged", true, api, "none", false, Some(flag)).is_err()
+            );
+        }
+        for remote in [
+            "https://localhost:3000",
+            "http://localhost.example:3000",
+            "http://192.168.1.2:3000",
+            "http://0.0.0.0:3000",
+            "http://[::]:3000",
+            "http://api.example:3000",
+            "http://user@localhost:3000",
+            "http://localhost:3000?forward=elsewhere",
+            "http://localhost:3000#fragment",
+            "not a URL",
+        ] {
+            assert!(
+                loopback_configuration("unpackaged", true, remote, "none", false, Some("1"))
+                    .is_err(),
+                "{remote}"
+            );
+        }
+        // An absent validation flag leaves existing networking selection alone.
+        assert_eq!(
+            loopback_configuration("prod", false, "https://api.example", "", false, None),
+            Ok(false)
+        );
+    }
 
     #[test]
     fn packaged_profiles_default_to_their_maple_relay_fleet_with_normal_path_selection() {
