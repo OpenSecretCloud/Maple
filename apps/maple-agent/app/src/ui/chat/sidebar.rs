@@ -95,12 +95,12 @@ pub(super) enum SessionActivity {
 /// Which tasks wait on the user, run, or ended while nobody watched. The
 /// screen owns these sets and pushes them together.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct TaskActivity {
-    pub(super) running: HashSet<String>,
+pub(crate) struct TaskActivity {
+    pub(crate) running: HashSet<String>,
     /// Tasks with a question waiting for an answer.
-    pub(super) waiting: HashSet<String>,
-    pub(super) failed: HashSet<String>,
-    pub(super) unread: HashSet<String>,
+    pub(crate) waiting: HashSet<String>,
+    pub(crate) failed: HashSet<String>,
+    pub(crate) unread: HashSet<String>,
 }
 
 impl TaskActivity {

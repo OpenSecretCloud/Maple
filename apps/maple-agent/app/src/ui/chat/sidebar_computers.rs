@@ -76,7 +76,8 @@ impl Sidebar {
                     .iter()
                     .filter(|task| {
                         task.project_root == project.path
-                            && (task.message_count > 0 || computer.running.contains(&task.id))
+                            && (task.message_count > 0
+                                || computer.activity.running.contains(&task.id))
                             && (task.state != AgentTaskState::Archived || self.archived_expanded)
                             && (matches_group || task.title.to_lowercase().contains(&self.filter))
                     })
@@ -128,13 +129,7 @@ impl Sidebar {
                             id: format!("computer-{computer_index}-task-{}", task.id).into(),
                             title: task.title.clone().into(),
                             pinned: computer.pinned.contains(&task.id),
-                            activity: if computer.running.contains(&task.id) {
-                                Some(SessionActivity::Running)
-                            } else if computer.unread.contains(&task.id) {
-                                Some(SessionActivity::CompletedUnread)
-                            } else {
-                                None
-                            },
+                            activity: computer.activity.of(&task.id),
                         });
                         entries.push(SidebarEntry::OtherTask(index));
                     }
@@ -145,6 +140,12 @@ impl Sidebar {
             entries.push(SidebarEntry::ArchivedHeader);
         }
         entries
+    }
+
+    /// What another computer's task row indicates.
+    #[cfg(test)]
+    pub(in crate::ui::chat) fn other_task_activity(&self, index: usize) -> Option<SessionActivity> {
+        self.other_tasks.get(index)?.activity
     }
 
     pub(in crate::ui::chat) fn computer_target(
