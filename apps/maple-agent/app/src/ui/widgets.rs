@@ -148,6 +148,30 @@ pub fn icon_button(
     size: Pixels,
     color: u32,
 ) -> Stateful<Div> {
+    icon_button_base(id, name, label, size, color).tooltip(tooltip(label, None))
+}
+
+/// [`icon_button`] for a control that fires `action`: its tooltip also
+/// names the shortcut bound to it. gpui allows one tooltip per element,
+/// so this is the way to add the hint, not a second `.tooltip`.
+pub fn icon_button_for_action(
+    id: impl Into<ElementId>,
+    name: &'static str,
+    label: &'static str,
+    size: Pixels,
+    color: u32,
+    action: &dyn Action,
+) -> Stateful<Div> {
+    icon_button_base(id, name, label, size, color).tooltip(tooltip_for_action(label, action))
+}
+
+fn icon_button_base(
+    id: impl Into<ElementId>,
+    name: &'static str,
+    label: &'static str,
+    size: Pixels,
+    color: u32,
+) -> Stateful<Div> {
     div()
         .id(id)
         .role(Role::Button)
@@ -166,7 +190,6 @@ pub fn icon_button(
         })
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .tooltip_show_delay(ICON_TOOLTIP_DELAY)
-        .tooltip(tooltip(label, None))
         .child(icon(name, size, color))
 }
 

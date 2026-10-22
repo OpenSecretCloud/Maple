@@ -7193,6 +7193,23 @@ mod state_tests {
         bytes
     }
 
+    /// The lightbox draws in a debug build, where gpui asserts each
+    /// element has at most one tooltip, and Escape closes it.
+    #[gpui::test]
+    fn test_lightbox_draws_and_escape_closes_it(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
+            this.open_lightbox(Arc::new(image), cx);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        chat.update(cx, |this, cx| {
+            assert!(this.lightbox.is_some());
+            this.escape(cx);
+            assert!(this.lightbox.is_none());
+        });
+    }
+
     #[gpui::test]
     fn test_paste_image_stages_a_draft(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
