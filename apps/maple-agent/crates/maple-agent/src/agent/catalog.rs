@@ -119,6 +119,14 @@ impl AgentRuntimeHandle {
         Ok(Arc::clone(&self.runtime().await?.api))
     }
 
+    /// Full presentation metadata from the advanced catalog, including labels
+    /// for concrete models and aliases. Does not select or add any models.
+    pub async fn model_catalog(&self) -> Result<maple_sdk::ModelCatalogResponse, String> {
+        let catalog = self.api().await?.model_catalog().await?;
+        self.verify_generation().await?;
+        Ok(catalog)
+    }
+
     /// The models a task may pick, the runtime's default first.
     pub async fn available_model_ids(&self) -> Result<Vec<String>, String> {
         let runtime = self.runtime().await?;

@@ -2742,6 +2742,10 @@ mod state_tests {
             this.default_model = Some("glm-5-3".into());
             this.selected_model = Some("glm-5-3".into());
 
+            this.model_labels.insert("kimi-k3".into(), "Kimi K3".into());
+            assert_eq!(this.model_label("kimi-k3"), "Kimi K3");
+            assert_eq!(this.model_label("unknown-model"), "unknown-model");
+
             let mut glm = summary("glm-task", "GLM");
             glm.model = Some("glm-5-3".into());
             glm.message_count = 2;
