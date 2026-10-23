@@ -79,6 +79,12 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
+/// Geometry shared by the expanded wordmark row and the collapsed mark.
+pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
+pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
+pub(super) const TOP_ROW_HEIGHT: gpui::Pixels = px(28.);
+pub(super) const TOP_ROW_GUTTER: gpui::Pixels = px(12.);
+
 pub(super) fn session_from_summary(
     summary: &maple_agent::store::TaskSummary,
 ) -> AgentSessionSummary {
@@ -2892,7 +2898,7 @@ impl Sidebar {
         div()
             .id("sidebar-toggle")
             .flex_none()
-            .size_7()
+            .size(TOP_ROW_HEIGHT)
             .flex()
             .items_center()
             .justify_center()
@@ -3004,13 +3010,16 @@ impl Render for Sidebar {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .pl_4()
-                    .pr_3()
+                    .pl(WORDMARK_LEFT)
+                    .pr(TOP_ROW_GUTTER)
                     // The wordmark row sits under the traffic lights, not
                     // beside them; the space above it is still the bar.
-                    .pt(titlebar::top_row_top(px(12.)))
+                    .pt(titlebar::top_row_top(TOP_ROW_GUTTER))
                     .pb_2()
-                    .child(wordmark(px(16.), theme::text_primary()))
+                    .child(
+                        wordmark(WORDMARK_HEIGHT, theme::text_primary())
+                            .debug_selector(|| "sidebar-wordmark".to_string()),
+                    )
                     .child(self.render_toggle()),
             ))
             .child(
