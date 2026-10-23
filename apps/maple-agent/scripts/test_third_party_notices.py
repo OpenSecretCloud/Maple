@@ -148,7 +148,7 @@ class NoticeTests(unittest.TestCase):
                                  f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
                 self.assertEqual([json.loads(line) for line in commands.read_text().splitlines()], [
                     ["fetch", "--locked"],
-                    ["build", "--release", "-p", "maple-agent-app", "--locked"],
+                ["build", "--release", "-p", "maple-agent-app", "--locked", "--timings"],
                     ["offline-inventory"],
                 ])
 

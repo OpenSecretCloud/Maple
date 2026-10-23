@@ -87,7 +87,7 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                 self.assertNotIn("${{", step.get("run", ""))
                 action = step.get("uses", "")
                 if action:
-                    self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+                    self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?@[0-9a-f]{40}$")
                 if action.startswith("actions/checkout@"):
                     self.assertIs(step["with"]["persist-credentials"], False)
                 if action.startswith("DeterminateSystems/determinate-nix-action@"):
@@ -117,6 +117,91 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("needs.changes.result != 'success'", condition)
         self.assertIn("needs.changes.outputs.agent != 'false'", condition)
         self.assertNotIn("head.repo", condition)
+
+    def test_parallel_jobs_retain_selection_platforms_and_required_gate(self):
+        jobs = workflow("agent-ci.yml")["jobs"]
+        for name in ("desktop", "provider", "linux-release"):
+            with self.subTest(job=name):
+                job = jobs[name]
+                self.assertEqual(job["needs"], "changes")
+                self.assertEqual(job["if"], jobs["desktop"]["if"])
+                self.assertFalse(any(step.get("continue-on-error") for step in job["steps"]))
+        self.assertEqual(jobs["provider"]["strategy"], jobs["desktop"]["strategy"])
+        self.assertEqual(jobs["provider"]["runs-on"], jobs["desktop"]["runs-on"])
+        self.assertEqual(jobs["linux-release"]["runs-on"], "blacksmith-8vcpu-ubuntu-2404")
+        self.assertEqual(jobs["required"]["needs"], ["changes", "desktop", "provider", "linux-release"])
+        self.assertEqual(jobs["required"]["if"], "${{ always() && !cancelled() }}")
+        gate = jobs["required"]["steps"][0]["run"]
+        success = {"SELECTOR_RESULT": "success", "AGENT_SELECTED": "true",
+                   "DESKTOP_RESULT": "success", "PROVIDER_RESULT": "success", "RELEASE_RESULT": "success"}
+        for selected in ("true", "", "false"):
+            for selector in ("success", "failure", "skipped"):
+                for key in ("DESKTOP_RESULT", "PROVIDER_RESULT", "RELEASE_RESULT"):
+                    for result in ("success", "failure", "skipped", "cancelled"):
+                        env = {**success, "SELECTOR_RESULT": selector, "AGENT_SELECTED": selected, key: result}
+                        omitted = selector == "success" and selected == "false"
+                        if omitted:
+                            env.update({name: "skipped" for name in success if name.endswith("_RESULT") and name != "SELECTOR_RESULT"})
+                            env[key] = result
+                        command = subprocess.run(["bash", "-c", gate], env={**os.environ, **env}, capture_output=True)
+                        expected = result == ("skipped" if omitted else "success")
+                        self.assertEqual(command.returncode == 0, expected, env)
+
+    def test_dependency_cache_restore_prefix_uses_actual_environment_without_lock_hash(self):
+        for filename, names in (("agent-ci.yml", ("desktop", "linux-release")),
+                                ("agent-desktop-build.yml", ("macos-build", "linux"))):
+            for name in names:
+                with self.subTest(workflow=filename, job=name):
+                    steps = workflow(filename)["jobs"][name]["steps"]
+                    fingerprint = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
+                    cache_index = next(i for i, step in enumerate(steps) if "rust-cache@" in step.get("uses", ""))
+                    self.assertLess(fingerprint, cache_index)
+                    cache = steps[cache_index]["with"]
+                    self.assertEqual(cache["add-rust-environment-hash-key"], "true")
+                    self.assertIn("steps.environment.outputs.compatibility", cache["key"])
+                    self.assertNotIn("hashFiles", cache["key"])
+                    self.assertIn("nix develop --no-update-lock-file", cache["cmd-format"])
+                    self.assertIn("github.workspace", cache["cmd-format"])
+                    self.assertEqual(cache["save-if"], "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
+                    self.assertIn("nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py", steps[fingerprint]["run"])
+
+    def test_provider_restores_only_after_verified_graph_with_no_compatible_fallback(self):
+        steps = workflow("agent-ci.yml")["jobs"]["provider"]["steps"]
+        prepare = next(i for i, step in enumerate(steps) if step.get("id") == "provider")
+        restore = next(i for i, step in enumerate(steps) if step.get("id") == "provider-cache")
+        test = next(i for i, step in enumerate(steps) if step.get("name") == "Test released rusqlite against the static provider")
+        save = next(i for i, step in enumerate(steps) if "actions/cache/save@" in step.get("uses", ""))
+        environment = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
+        self.assertLess(prepare, environment)
+        self.assertLess(environment, restore)
+        self.assertIn('--cargo-config-dir "$PROVIDER_WORK"', steps[environment]["run"])
+        self.assertLess(restore, test)
+        self.assertLess(test, save)
+        cache = steps[restore]["with"]
+        self.assertNotIn("restore-keys", cache)
+        self.assertEqual(cache["path"], "${{ env.PROVIDER_TARGET }}")
+        self.assertIn("steps.environment.outputs.compatibility", cache["key"])
+        self.assertIn("steps.provider.outputs.dependency-fingerprint", cache["key"])
+        self.assertIn("--phase prepare", steps[prepare]["run"])
+        self.assertIn("--phase run", steps[test]["run"])
+        self.assertIn("success() && github.event_name == 'push' && github.ref == 'refs/heads/master'", steps[save]["if"])
+        self.assertEqual(steps[save]["with"]["key"], "${{ steps.provider-cache.outputs.cache-primary-key }}")
+
+    def test_workspace_checks_and_plain_release_keep_original_coverage(self):
+        jobs = workflow("agent-ci.yml")["jobs"]
+        workspace = "\n".join(step.get("run", "") for step in jobs["desktop"]["steps"])
+        for command in ("-- just ci", "cargo build --workspace --all-targets --locked --timings",
+                        "cargo test --workspace --locked --timings", "./scripts/macos-debug-app.sh",
+                        "scripts/audit-sqlcipher-dependencies.py", "dependencies/sqlcipher/verify_sqlcipher.py",
+                        "scripts/verify-sqlcipher-build.py", "verify-agent-rust-deps.py"):
+            self.assertIn(command, workspace)
+        self.assertNotIn("test-rusqlite-provider.py", workspace)
+        self.assertNotIn("cargo build --release", workspace)
+        release = "\n".join(step.get("run", "") for step in jobs["linux-release"]["steps"])
+        for command in ("cargo build --release -p maple-agent-app --locked --timings",
+                        "generate-third-party-notices.py --check", "scripts/verify-sqlcipher-build.py",
+                        "verify-agent-rust-deps.py"):
+            self.assertIn(command, release)
 
     def test_namespaced_agent_releases_do_not_enter_research_jobs(self):
         release = workflow("release.yml")
@@ -245,7 +330,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 self.assertNotIn("${{", step.get("run", ""))
                 action = step.get("uses", "")
                 if action:
-                    self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+                    self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?@[0-9a-f]{40}$")
                     self.assertNotIn("release", action.lower())
                     if "attest" in action.lower():
                         self.assertEqual(action, self.ATTEST_ACTION)
@@ -317,7 +402,8 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                                     if "./scripts/" + script in step.get("run", ""))
                 self.assertIn('"$MAPLE_RELEASE_PROFILE"', profile_step["run"])
                 uploads = [step for step in job["steps"]
-                           if step.get("uses", "").startswith("actions/upload-artifact@")]
+                           if step.get("uses", "").startswith("actions/upload-artifact@")
+                           and step.get("with", {}).get("path") != "apps/maple-agent/target/ci-metrics/"]
                 self.assertEqual(len(uploads), 1)
                 upload = uploads[0]
                 self.assertNotIn("if", upload)

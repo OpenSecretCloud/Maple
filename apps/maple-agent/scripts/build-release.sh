@@ -25,7 +25,7 @@ fi
 # Populate all targets before the offline notice inventory on this unprivileged
 # worker; signing workers consume the generated output without Cargo.
 cargo fetch --locked
-cargo build --release -p maple-agent-app --locked
+cargo build --release -p maple-agent-app --locked --timings
 python3 "$component/scripts/generate-third-party-notices.py"
 "$component/target/release/maple-agent" --build-info |
     python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; assert info["profile"] == expected, "incorrect release profile"' "$1"
