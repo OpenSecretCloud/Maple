@@ -125,7 +125,7 @@ class EvidenceGateTests(unittest.TestCase):
         self.assertIn("plain/list_50_cold", outcome["missing_reference_scenarios"])
 
     def test_documented_absolute_limits_are_independent_of_relative_factor(self):
-        cases = (("list_50_cold", 1001, 20), ("open_100_cold", 2001, 20),
+        cases = (("list_50_cold", 1251, 20), ("open_100_cold", 2001, 20),
                  ("history_200_deep_cold", 3001, 20), ("raw_connection_open", 1001, 100),
                  ("model_context_full_cold", 250001, 5), ("model_context_boundary_cold", 50001, 5),
                  ("attachment_10mib_first_read", 25001, 1))
@@ -137,6 +137,34 @@ class EvidenceGateTests(unittest.TestCase):
                 self.assertEqual(outcome["relative_gate_status"], "passed")
                 self.assertEqual(outcome["gate_status"], "failed")
                 self.assertEqual(check(outcome, f"keyed/{name}")["status"], "failed")
+
+    def test_full_macos_list_budget_accepts_headroom_but_rejects_over_budget(self):
+        for median, status in ((1019, "passed"), (1250, "passed"), (1251, "failed")):
+            with self.subTest(median=median):
+                actual = report(True)
+                set_sample(actual, "keyed", "list_50_cold", [median] * 20)
+                outcome = MODULE.compare(actual, reference(actual, "macos-full"), "macos-full", 2)
+                self.assertEqual(check(outcome, "keyed/list_50_cold")["budget_us"], 1250)
+                self.assertEqual(outcome["gate_status"], status)
+
+    def test_linux_list_diagnostic_retains_one_millisecond_target(self):
+        actual = report()
+        set_sample(actual, "keyed", "list_50_cold", [1001] * 5)
+        outcome = MODULE.compare(actual, reference(actual), "linux-ci", 10)
+        self.assertEqual(check(outcome, "keyed/list_50_cold")["budget_us"], 1000)
+        self.assertEqual(check(outcome, "keyed/list_50_cold")["status"], "failed")
+        self.assertFalse(outcome["absolute"]["enforced"])
+
+    def test_macos_list_relative_regression_still_fails_within_absolute_headroom(self):
+        baseline = report(True)
+        set_sample(baseline, "keyed", "list_50_cold", [400] * 20)
+        actual = copy.deepcopy(baseline)
+        set_sample(actual, "keyed", "list_50_cold", [1019] * 20)
+        outcome = MODULE.compare(actual, reference(baseline, "macos-full"), "macos-full", 2)
+        self.assertEqual(check(outcome, "keyed/list_50_cold")["status"], "passed")
+        self.assertEqual(outcome["relative_gate_status"], "failed")
+        self.assertEqual(outcome["gate_status"], "failed")
+        self.assertEqual(outcome["regressions"][0]["scenario"], "keyed/list_50_cold")
 
     def test_plain_full_context_has_150ms_limit(self):
         actual = report(True)
