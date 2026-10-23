@@ -110,10 +110,26 @@ def native_build_tools(environment: dict[str, str]) -> dict[str, object]:
     # native-configuration boundary using a compatible target-cache restore.
     for name in ("nasm", "cmake", "pkg-config"):
         selected = shutil.which(name)
-        result[name] = (
-            {"path": str(Path(selected).resolve()), "version": command([selected, "--version"])}
-            if selected else None
-        )
+        if not selected:
+            result[name] = None
+            continue
+        path = Path(selected).resolve()
+        identity = {"path": str(path), "sha256": file_digest(path), "version": None}
+        # Windows images may contain an incidental pkg-config.BAT whose Perl
+        # wrapper cannot even report its version. Bind its bytes and probe
+        # outcome without requiring an optional tool that this lane may not use.
+        # Required compiler/Perl probes and the actual build gates still fail.
+        try:
+            probe = subprocess.run([str(path), "--version"], capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace", check=False,
+                                   timeout=10)
+            identity["version_probe_exit"] = probe.returncode
+            if probe.returncode == 0:
+                identity["version"] = "\n".join(
+                    part.strip() for part in (probe.stdout, probe.stderr) if part.strip()) or None
+        except (OSError, subprocess.TimeoutExpired) as error:
+            identity["version_probe_error"] = type(error).__name__
+        result[name] = identity
     return result
 
 

@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import shutil
 import tempfile
 import unittest
@@ -219,6 +220,39 @@ class AgentCacheTests(unittest.TestCase):
 
 
 class NativeEnvironmentTests(unittest.TestCase):
+    def test_optional_windows_wrapper_probe_failure_is_fingerprinted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            wrapper = Path(temporary) / "pkg-config.BAT"
+            wrapper.write_bytes(b"broken preinstalled Perl wrapper")
+            with patch.object(agent_cache, "executable", return_value="/native/perl"), \
+                    patch.object(agent_cache, "command", return_value="v5.40"), \
+                    patch.object(agent_cache.shutil, "which", side_effect=lambda name: str(wrapper) if name == "pkg-config" else None), \
+                    patch.object(agent_cache.subprocess, "run", return_value=subprocess.CompletedProcess([], 29, "", "wrapper error")):
+                before = agent_cache.native_build_tools({})
+                self.assertEqual(before["pkg-config"]["version_probe_exit"], 29)
+                self.assertIsNone(before["pkg-config"]["version"])
+                self.assertNotIn("wrapper error", json.dumps(before))
+                wrapper.write_bytes(b"updated wrapper")
+                self.assertNotEqual(agent_cache.native_build_tools({}), before)
+
+    def test_required_perl_probe_still_fails_closed(self):
+        with patch.object(agent_cache, "executable", return_value="/native/perl"), \
+                patch.object(agent_cache, "command", side_effect=ValueError("required Perl failed")):
+            with self.assertRaisesRegex(ValueError, "required Perl failed"):
+                agent_cache.native_build_tools({})
+
+    def test_optional_version_probe_timeout_keeps_file_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            wrapper = Path(temporary) / "pkg-config.BAT"
+            wrapper.write_bytes(b"preinstalled wrapper")
+            with patch.object(agent_cache, "executable", return_value="/native/perl"), \
+                    patch.object(agent_cache, "command", return_value="v5.40"), \
+                    patch.object(agent_cache.shutil, "which", side_effect=lambda name: str(wrapper) if name == "pkg-config" else None), \
+                    patch.object(agent_cache.subprocess, "run", side_effect=subprocess.TimeoutExpired("optional", 10)):
+                tools = agent_cache.native_build_tools({})
+                self.assertEqual(tools["pkg-config"]["version_probe_error"], "TimeoutExpired")
+                self.assertEqual(len(tools["pkg-config"]["sha256"]), 64)
+
     def test_windows_requires_selected_toolset_and_sdk(self):
         with self.assertRaisesRegex(ValueError, "MSVC developer environment"):
             agent_cache.native_identity("Windows", {})
