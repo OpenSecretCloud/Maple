@@ -2,49 +2,16 @@
 //! matched back to a checkout. Falls back to `unknown` outside a git
 //! repository (e.g. a tarball build), never fails the build.
 
-use std::process::Command;
-
+mod git_metadata;
 #[path = "../release_profile.rs"]
 mod release_profile;
 
-fn git(args: &[&str]) -> Option<String> {
-    Command::new("git")
-        .args(args)
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
 fn main() {
     release_profile::emit("../release-profiles.json", "../release_profile.rs", true);
-    // A new commit must re-bake the hash, but cargo only reruns build
-    // scripts when declared inputs change. Watch the git pointers: HEAD
-    // moves on branch switches, and the ref file it names moves on every
-    // commit to that branch. Narrowing the triggers means the -dirty
-    // suffix only refreshes alongside these files, which is acceptable:
-    // the revision is the load-bearing part.
-    if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
-        println!("cargo:rerun-if-changed={git_dir}/HEAD");
-        if let Ok(head) = std::fs::read_to_string(format!("{git_dir}/HEAD"))
-            && let Some(reference) = head.trim().strip_prefix("ref: ")
-            && let Some(reference_path) = git(&["rev-parse", "--git-path", reference])
-        {
-            // Worktree HEAD lives in its own git dir, while branch refs live
-            // in the common git dir. Ask Git for the real path in either case.
-            println!("cargo:rerun-if-changed={reference_path}");
-        }
-        if let Some(packed_refs) = git(&["rev-parse", "--git-path", "packed-refs"]) {
-            println!("cargo:rerun-if-changed={packed_refs}");
-        }
-    }
-    let mut revision = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    if git(&["status", "--porcelain"]).is_some_and(|status| !status.is_empty()) {
-        revision.push_str("-dirty");
-    }
-    println!("cargo:rustc-env=MAPLE_GIT_HASH={revision}");
-    let source_sha = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    println!("cargo:rustc-env=MAPLE_GIT_SOURCE_SHA={source_sha}");
+    let git_metadata::GitMetadata {
+        revision,
+        source_sha,
+    } = git_metadata::emit();
 
     // The CLI and macOS signing preflight read the same immutable public
     // metadata. Signing must inspect the Mach-O section without running a

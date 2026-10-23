@@ -13,12 +13,31 @@ from unittest.mock import patch
 import agent_cache
 
 
+SYSTEMS = ("Linux", "Darwin", "Windows")
+PROFILES = ("ci", "provider", "release")
+# Independent command-ownership expectations. Mutating every file below must
+# invalidate exactly these OS/profile combinations, with common ABI/source
+# guards retained even where a verification helper is not the compiler owner.
+CONFIG_INPUTS = {
+    "apps/maple-agent/flake.nix": ({"Linux", "Darwin"}, set(PROFILES)),
+    "apps/maple-agent/flake.lock": ({"Linux", "Darwin"}, set(PROFILES)),
+    "apps/maple-agent/justfile": ({"Linux"}, {"ci"}),
+    "apps/maple-agent/dependencies/sqlcipher/provenance.json": (set(SYSTEMS), set(PROFILES)),
+    "apps/maple-agent/dependencies/sqlcipher/verify_sources.py": (set(SYSTEMS), set(PROFILES)),
+    "apps/maple-agent/scripts/verify-sqlcipher-build.py": (set(SYSTEMS), set(PROFILES)),
+    "apps/maple-agent/scripts/test-rusqlite-provider.py": (set(SYSTEMS), {"provider"}),
+    "apps/maple-agent/scripts/build-release.sh": (set(SYSTEMS), {"release"}),
+    "scripts/ci/agent_cache.py": (set(SYSTEMS), set(PROFILES)),
+    "scripts/ci/agent_windows.py": ({"Windows"}, set(PROFILES)),
+}
+
+
 class AgentCacheTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        for name in agent_cache.CONFIG_FILES:
+        for name in CONFIG_INPUTS:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("pinned configuration\n", encoding="utf-8")
@@ -44,8 +63,11 @@ class AgentCacheTests(unittest.TestCase):
             selected.start()
             self.addCleanup(selected.stop)
 
-    def identity(self, profile="ci"):
-        return agent_cache.build_identity(profile, self.root)
+    def identity(self, profile="ci", system=None):
+        if system is None:
+            return agent_cache.build_identity(profile, self.root)
+        with patch.object(agent_cache.platform, "system", return_value=system):
+            return agent_cache.build_identity(profile, self.root)
 
     def change_file(self, name, suffix="changed\n"):
         path = self.root / name
@@ -66,12 +88,50 @@ class AgentCacheTests(unittest.TestCase):
         path.write_text(path.read_text().replace('"1.0.0"', '"1.0.1"'))
         self.assertEqual(agent_cache.digest(self.identity()), before)
 
-    def test_provider_configuration_and_helper_invalidate_prefix(self):
-        for name in ("apps/maple-agent/dependencies/sqlcipher/provenance.json", "apps/maple-agent/scripts/test-rusqlite-provider.py"):
-            with self.subTest(name=name):
-                before = agent_cache.digest(self.identity())
-                self.change_file(name)
-                self.assertNotEqual(agent_cache.digest(self.identity()), before)
+    def test_configuration_mutations_follow_platform_and_profile_ownership(self):
+        before = {(system, profile): self.identity(profile, system)
+                  for system in SYSTEMS for profile in PROFILES}
+        for (system, profile), identity in before.items():
+            with self.subTest(system=system, profile=profile):
+                expected = {name for name, (systems, profiles) in CONFIG_INPUTS.items()
+                            if system in systems and profile in profiles}
+                self.assertEqual(set(identity["configuration"]["files"]), expected)
+        for name, (systems, profiles) in CONFIG_INPUTS.items():
+            path = self.root / name
+            original = path.read_text(encoding="utf-8")
+            self.change_file(name)
+            try:
+                for (system, profile), identity in before.items():
+                    with self.subTest(file=name, system=system, profile=profile):
+                        changed = agent_cache.digest(self.identity(profile, system)) != agent_cache.digest(identity)
+                        self.assertEqual(changed, system in systems and profile in profiles)
+            finally:
+                path.write_text(original, encoding="utf-8")
+
+    def test_linux_packaging_recipes_do_not_invalidate_mac_or_windows_workspace(self):
+        path = self.root / "apps/maple-agent/justfile"
+        path.write_text(
+            'set shell := ["bash", "-euo", "pipefail", "-c"]\n'
+            'ci: fmt-check clippy test\n'
+            'test:\n    cargo test --workspace --locked\n'
+            'packaging-test:\n'
+            '    python3 ./scripts/test_linux_release_appimage.py\n',
+            encoding="utf-8",
+        )
+        before = {system: self.identity("ci", system) for system in SYSTEMS}
+        # These packaging-test additions caused a fresh cache generation on
+        # both direct-Cargo workspace lanes despite unchanged native settings.
+        self.change_file("apps/maple-agent/justfile",
+                         '    python3 ./scripts/test_linux_release_bundle.py\n'
+                         '    python3 ./scripts/test_linux_install.py\n'
+                         '    python3 ./scripts/test_smoke_linux_bundle_host.py\n')
+        for system in SYSTEMS:
+            with self.subTest(system=system):
+                after = self.identity("ci", system)
+                if system == "Linux":
+                    self.assertNotEqual(after, before[system])
+                else:
+                    self.assertEqual(after, before[system])
 
     def test_feature_and_profile_changes_invalidate_prefix(self):
         path = self.root / "apps/maple-agent/Cargo.toml"

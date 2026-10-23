@@ -51,6 +51,52 @@ def variants_for(job, event):
 
 
 class AgentWorkflowBoundaryTests(unittest.TestCase):
+    def test_native_workspace_commands_keep_the_declared_cache_profile(self):
+        steps = workflow("agent-ci.yml")["jobs"]["desktop"]["steps"]
+        expected = {
+            "Build macOS workspace and test targets": (
+                "runner.os == 'macOS'",
+                "nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase macos-build --target target -- cargo build --workspace --all-targets --locked --timings",
+            ),
+            "Test macOS workspace": (
+                "runner.os == 'macOS'",
+                "nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase macos-test --target target -- cargo test --workspace --locked --timings",
+            ),
+            "Build Windows workspace and test targets": (
+                "runner.os == 'Windows'",
+                "python3 ../../scripts/ci/agent_measure.py --phase windows-build --target target -- cargo build --workspace --all-targets --locked --timings",
+            ),
+            "Test Windows workspace": (
+                "runner.os == 'Windows'",
+                "python3 ../../scripts/ci/agent_measure.py --phase windows-test --target target -- cargo test --workspace --locked --timings",
+            ),
+        }
+        for name, (condition, command) in expected.items():
+            with self.subTest(step=name):
+                selected = [step for step in steps if step.get("name") == name]
+                self.assertEqual(len(selected), 1)
+                self.assertEqual(selected[0]["if"], condition)
+                self.assertEqual(selected[0]["run"].strip(), command)
+                self.assertNotIn("env", selected[0])
+        self.assertEqual(workflow("agent-ci.yml")["defaults"]["run"]["working-directory"], "apps/maple-agent")
+
+    def test_git_metadata_freshness_is_checked_with_each_platform_toolchain(self):
+        steps = workflow("agent-ci.yml")["jobs"]["desktop"]["steps"]
+        freshness = next(step for step in steps if step.get("name") == "Verify Git metadata freshness on native workspace builds")
+        self.assertEqual(freshness["if"], "runner.os != 'Linux'")
+        self.assertEqual(freshness["run"].strip(),
+                         'if [ "$RUNNER_OS" = Windows ]; then\n'
+                         '  python3 scripts/test_git_metadata.py\n'
+                         'else\n'
+                         '  nix develop --no-update-lock-file . -c python3 scripts/test_git_metadata.py\n'
+                         'fi')
+        self.assertNotIn("continue-on-error", freshness)
+        recipes = (ROOT / "apps/maple-agent/justfile").read_text()
+        self.assertIn("ci: fmt-check git-metadata-test clippy test", recipes)
+        self.assertIn("git-metadata-test:\n    python3 scripts/test_git_metadata.py", recipes)
+        hook = (ROOT / "apps/maple-agent/.githooks/pre-commit").read_text()
+        self.assertIn("hook_run python3 scripts/test_git_metadata.py", hook)
+
     def test_windows_linker_is_pinned_and_smoked_before_fingerprint_or_cache(self):
         jobs = workflow("agent-ci.yml")["jobs"]
         for name in ("desktop", "provider"):
