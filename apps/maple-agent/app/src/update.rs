@@ -251,9 +251,25 @@ impl Controller {
         snapshot.show_banner = true;
         self.publish(snapshot);
     }
-    /// Best effort on graceful exit. Keep the authenticated downloaded payload
-    /// for restoration, but remove the derived same-volume staging bundle.
-    pub async fn cleanup_on_exit(&self) {
+    /// Start best-effort cleanup before GPUI drops the windows and their backend
+    /// owners. GPUI polls its quit future without a Tokio reactor, so both the
+    /// lock timeout and blocking filesystem work must run on the backend runtime.
+    pub fn cleanup_on_exit(
+        &self,
+        backend: Arc<crate::backend::AgentBackend>,
+    ) -> tokio::task::JoinHandle<()> {
+        let controller = self.clone();
+        let cleanup_backend = backend.clone();
+        backend.spawn(async move {
+            // A Handle does not keep an owned runtime alive. Retain its owner
+            // even if GPUI's 200 ms shutdown budget stops awaiting this task.
+            let _backend = cleanup_backend;
+            controller.cleanup_staging_on_exit().await;
+        })
+    }
+    /// Keep the authenticated downloaded payload for restoration, but remove
+    /// only the derived uncommitted same-volume staging bundle.
+    async fn cleanup_staging_on_exit(&self) {
         let Ok(_operation) =
             tokio::time::timeout(Duration::from_secs(2), self.0.operation.lock()).await
         else {
@@ -876,6 +892,69 @@ fn manual_macos_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn quit_cleanup_without_tokio_preserves_download_and_installation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let installed = root.join("Maple Agent.app");
+        let staging = root.join(".maple-agent-update-abcdefghijklmnop");
+        let staged = staging.join("Maple Agent.app");
+        let cached = root.join("download.payload");
+        std::fs::create_dir(&installed).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(installed.join("sentinel"), b"current installation").unwrap();
+        std::fs::write(&cached, b"authenticated download remains").unwrap();
+        let payload = staging.join("payload");
+        std::fs::write(&payload, b"derived staging copy").unwrap();
+        let lock = maple_agent_updater::installer::acquire_install_lock(&installed).unwrap();
+        let controller = Controller::new(true);
+        {
+            let mut releases = controller.0.releases.try_lock().unwrap();
+            releases.installation = Some(maple_agent_updater::installer::InstallPreparation {
+                installed_path: installed.clone(),
+                staging_dir: staging.clone(),
+                payload_path: payload,
+                staged_path: staged,
+                version: "0.0.2".into(),
+                build: "489".into(),
+                size: 20,
+                sha256: "0".repeat(64),
+            });
+            releases.install_lock = Some(lock);
+        }
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .unwrap(),
+        );
+        // No other owner keeps this backend runtime alive. Hold the operation
+        // gate until the handoff returns so cleanup cannot finish before then.
+        let operation = controller.0.operation.try_lock().unwrap();
+        controller.shutdown();
+        let cleanup = controller.cleanup_on_exit(backend);
+        drop(operation);
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        // GPUI's test shutdown skips quit futures; poll the production handoff
+        // directly on the same reactor-free kind of foreground executor.
+        gpui::block_on(cleanup).unwrap();
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        assert!(!staging.exists());
+        assert_eq!(
+            std::fs::read(installed.join("sentinel")).unwrap(),
+            b"current installation"
+        );
+        assert_eq!(
+            std::fs::read(cached).unwrap(),
+            b"authenticated download remains"
+        );
+        maple_agent_updater::installer::acquire_install_lock(&installed).unwrap();
+    }
 
     #[test]
     fn discovery_state_stays_outside_the_resettable_sql_store() {

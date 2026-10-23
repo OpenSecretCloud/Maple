@@ -266,6 +266,15 @@ fn refused_reset_preflight_never_publishes_intent_or_retires_source() {
             let generation = read_generation(&store.paths.db()).unwrap().unwrap();
             let foreign = store.paths.db().join(".DS_Store");
             fs::write(&foreign, b"foreign file must remain untouched").unwrap();
+            // Finish any in-flight WAL checkpoint before comparing physical
+            // database bytes. Keep every SQL handle and the source state open:
+            // refusal must still preserve the live source and cold recovery.
+            let worker = store.checkpoint_worker.lock().unwrap().take().unwrap();
+            worker
+                .sender
+                .send(super::super::CheckpointMessage::Stop)
+                .unwrap();
+            worker.thread.join().unwrap();
             let before = fs::read(store.paths.database()).unwrap();
             if after == ResetAfter::StartFresh {
                 set_state(

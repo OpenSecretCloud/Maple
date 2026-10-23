@@ -2352,6 +2352,13 @@ mod update_install_tests {
             acquire_update_fence_endpoint(&endpoint, Duration::from_secs(2), || Ok(())).unwrap();
         let controller = crate::update::Controller::new(true);
         controller.set_test_installed_with_fence(directory.path().join("Maple Agent.app"), fence);
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .unwrap(),
+        );
+        backend.retire_after_update();
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        gpui::block_on(controller.cleanup_on_exit(backend)).unwrap();
         let last_handle = controller.clone();
         drop(controller);
         drop(last_handle);
