@@ -198,12 +198,15 @@ class GitMetadataTests(unittest.TestCase):
         self.git("pack-refs", "--all", "--prune")
         self.build_and_test(self.expected(), 1)
         packed = self.repo / ".git/packed-refs"
-        contents = packed.read_text(encoding="utf-8")
-        self.assertEqual(contents.count(f"{second} refs/heads/main"), 1)
+        contents = packed.read_bytes()
+        old_pointer = f"{second} refs/heads/main".encode("ascii")
+        new_pointer = f"{first} refs/heads/main".encode("ascii")
+        self.assertEqual(contents.count(old_pointer), 1)
         # Move the packed pointer between existing objects without touching
         # HEAD or the loose-ref directory, isolating the packed-file input.
-        packed.write_text(contents.replace(f"{second} refs/heads/main", f"{first} refs/heads/main"),
-                          encoding="utf-8")
+        # Git metadata uses LF on every platform. Preserve its bytes rather
+        # than translating newlines to CRLF through Windows text-mode IO.
+        packed.write_bytes(contents.replace(old_pointer, new_pointer))
         self.assertFalse((self.repo / ".git/refs/heads/main").exists())
         self.build_and_test(self.expected(), 2)
 
