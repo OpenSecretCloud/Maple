@@ -194,24 +194,44 @@ fn saved_catalog_is_redacted_and_launch_injects_values_from_only_the_new_store()
 }
 
 #[test]
-fn remote_catalog_save_cannot_redirect_or_remove_an_existing_value() {
+fn remote_catalog_save_requires_replacement_for_redirect_and_allows_removal() {
     let (_root, paths, _store) = store_layout();
     let mut configured = stdio("Example", "synthetic-mcp");
     if let AgentMcpTransport::Stdio { environment, .. } = &mut configured.transport {
         environment.push(pair("TOKEN", "synthetic-local-value"));
     }
-    save_saved_mcp_servers(&paths, "synthetic", vec![configured], McpEditOrigin::Local).unwrap();
+    save_saved_mcp_servers(&paths, "synthetic", vec![configured], McpEditOrigin::Remote).unwrap();
     let mut safe = load_saved_mcp_servers(&paths, "synthetic").unwrap();
     safe[0].enabled = false;
     save_saved_mcp_servers(&paths, "synthetic", safe.clone(), McpEditOrigin::Remote).unwrap();
     if let AgentMcpTransport::Stdio { command, .. } = &mut safe[0].transport {
         *command = "synthetic-capture".into();
     }
-    assert!(save_saved_mcp_servers(&paths, "synthetic", safe, McpEditOrigin::Remote).is_err());
-    assert!(save_saved_mcp_servers(&paths, "synthetic", vec![], McpEditOrigin::Remote).is_err());
+    assert!(
+        save_saved_mcp_servers(&paths, "synthetic", safe.clone(), McpEditOrigin::Remote).is_err()
+    );
     assert!(
         matches!(&read_saved_servers(&paths,"synthetic").unwrap()[0].transport,
         AgentMcpTransport::Stdio { command,environment } if command=="synthetic-mcp" && environment[0].value=="synthetic-local-value")
+    );
+    if let AgentMcpTransport::Stdio { environment, .. } = &mut safe[0].transport {
+        environment[0].value = "synthetic-replacement".into();
+    }
+    save_saved_mcp_servers(&paths, "synthetic", safe, McpEditOrigin::Remote).unwrap();
+    assert!(
+        matches!(&read_saved_servers(&paths,"synthetic").unwrap()[0].transport,
+        AgentMcpTransport::Stdio { command,environment } if command=="synthetic-capture" && environment[0].value=="synthetic-replacement")
+    );
+    assert!(
+        !serde_json::to_string(&load_saved_mcp_servers(&paths, "synthetic").unwrap())
+            .unwrap()
+            .contains("synthetic-replacement")
+    );
+    save_saved_mcp_servers(&paths, "synthetic", vec![], McpEditOrigin::Remote).unwrap();
+    assert!(
+        load_saved_mcp_servers(&paths, "synthetic")
+            .unwrap()
+            .is_empty()
     );
 }
 

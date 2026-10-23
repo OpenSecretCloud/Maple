@@ -3045,7 +3045,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn typed_mcp_host_boundary_hides_values_and_remote_edits_cannot_change_them() {
+    async fn remote_mcp_host_boundary_accepts_write_only_values_and_keeps_account_fences() {
         let root = tempfile::tempdir().unwrap();
         let backend = LocalBackend::isolated_for_test(root.path());
         assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
@@ -3062,10 +3062,11 @@ mod tests {
         };
         let edit = serde_json::json!({
             "key":"example","name":"Example","description":"Synthetic","enabled":true,"timeoutSeconds":30,
-            "target":{"type":"stdio","command":"synthetic-mcp --serve"},
-            "environment":[{"name":"TOKEN","update":{"operation":"set","value":"synthetic-private-value"}}],"headers":[]
+            "target":{"type":"streamable_http","url":"https://mcp.example.invalid/"},
+            "environment":[{"name":"TOKEN","update":{"operation":"set","value":"synthetic-private-value"}}],
+            "headers":[{"name":"Authorization","update":{"operation":"set","value":"synthetic-private-header"}}]
         });
-        let saved = super::super::dispatch(
+        let saved = super::super::dispatch_remote_inner(
             &backend,
             request(
                 "save_mcp_definition_edits",
@@ -3074,76 +3075,114 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!saved.to_string().contains("synthetic-private-value"));
-        assert_eq!(
-            saved.pointer("/0/environment/0/hasValue"),
-            Some(&serde_json::Value::Bool(true))
+        assert!(!saved.to_string().contains("synthetic-private"));
+        for kind in ["environment", "headers"] {
+            assert_eq!(
+                saved.pointer(&format!("/0/{kind}/0/hasValue")),
+                Some(&serde_json::Value::Bool(true))
+            );
+        }
+        assert!(
+            super::super::dispatch_remote_inner(
+                &backend,
+                request(
+                    "save_mcp_definition_edits",
+                    serde_json::json!(["other-user", [edit.clone()]])
+                )
+            )
+            .await
+            .is_err()
         );
-        let safe = super::super::dispatch(
+        let mut keep = edit;
+        keep["description"] = "Remote metadata edit".into();
+        for kind in ["environment", "headers"] {
+            keep[kind][0]["update"] = serde_json::json!({"operation":"keep"});
+        }
+        let updated = super::super::dispatch_remote_inner(
+            &backend,
+            request(
+                "save_mcp_definition_edits",
+                serde_json::json!(["fixture-user", [keep.clone()]]),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!updated.to_string().contains("synthetic-private"));
+        let store = backend.store().unwrap();
+        let account = store.account_id("fixture-user").unwrap().unwrap();
+        let definition = store.mcp_definitions(account).unwrap().remove(0);
+        let launch = store
+            .mcp_launch_secrets(account, "example", &definition.target)
+            .unwrap();
+        assert_eq!(
+            launch.environment["TOKEN"].expose(),
+            "synthetic-private-value"
+        );
+        assert_eq!(
+            launch.headers["authorization"].expose(),
+            "synthetic-private-header"
+        );
+        drop(launch);
+
+        let mut replace = keep;
+        replace["environment"][0]["update"] =
+            serde_json::json!({"operation":"set","value":"synthetic-replacement-value"});
+        replace["headers"][0]["update"] =
+            serde_json::json!({"operation":"set","value":"synthetic-replacement-header"});
+        let replaced = super::super::dispatch_remote_inner(
+            &backend,
+            request(
+                "save_mcp_definition_edits",
+                serde_json::json!(["fixture-user", [replace.clone()]]),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!replaced.to_string().contains("synthetic-replacement"));
+        let launch = store
+            .mcp_launch_secrets(account, "example", &definition.target)
+            .unwrap();
+        assert_eq!(
+            launch.environment["TOKEN"].expose(),
+            "synthetic-replacement-value"
+        );
+        assert_eq!(
+            launch.headers["authorization"].expose(),
+            "synthetic-replacement-header"
+        );
+        drop(launch);
+
+        for kind in ["environment", "headers"] {
+            replace[kind][0]["update"] = serde_json::json!({"operation":"clear"});
+        }
+        let cleared = super::super::dispatch_remote_inner(
+            &backend,
+            request(
+                "save_mcp_definition_edits",
+                serde_json::json!(["fixture-user", [replace]]),
+            ),
+        )
+        .await
+        .unwrap();
+        for kind in ["environment", "headers"] {
+            assert_eq!(
+                cleared.pointer(&format!("/0/{kind}/0/hasValue")),
+                Some(&serde_json::Value::Bool(false))
+            );
+        }
+        let listed = super::super::dispatch_remote_inner(
             &backend,
             request("list_mcp_definitions", serde_json::json!(["fixture-user"])),
         )
         .await
         .unwrap();
-        assert_eq!(safe, saved);
-        for mut rejected in [edit.clone(), edit.clone(), edit.clone()]
-            .into_iter()
-            .enumerate()
-        {
-            match rejected.0 {
-                0 => {
-                    rejected.1["environment"][0]["update"] =
-                        serde_json::json!({"operation":"set","value":"remote-new-value"})
-                }
-                1 => {
-                    rejected.1["environment"][0]["update"] =
-                        serde_json::json!({"operation":"clear"})
-                }
-                _ => {
-                    rejected.1["environment"][0]["update"] =
-                        serde_json::json!({"operation":"keep"});
-                    rejected.1["target"]["command"] = "different-target".into();
-                }
-            }
-            assert!(
-                super::super::dispatch_remote_inner(
-                    &backend,
-                    request(
-                        "save_mcp_definition_edits",
-                        serde_json::json!(["fixture-user", [rejected.1]])
-                    )
-                )
-                .await
-                .is_err()
-            );
-        }
-        let mut keep = edit;
-        keep["description"] = "Remote metadata edit".into();
-        keep["environment"][0]["update"] = serde_json::json!({"operation":"keep"});
-        let updated = super::super::dispatch_remote_inner(
-            &backend,
-            request(
-                "save_mcp_definition_edits",
-                serde_json::json!(["fixture-user", [keep]]),
-            ),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            updated.pointer("/0/environment/0/hasValue"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert!(!updated.to_string().contains("synthetic-private-value"));
-        let store = backend.store().unwrap();
-        let account = store.account_id("fixture-user").unwrap().unwrap();
-        let definition = store.mcp_definitions(account).unwrap().remove(0);
-        assert_eq!(
+        assert_eq!(listed, cleared);
+        assert!(
             store
                 .mcp_launch_secrets(account, "example", &definition.target)
                 .unwrap()
-                .environment["TOKEN"]
-                .expose(),
-            "synthetic-private-value"
+                .environment
+                .is_empty()
         );
     }
 

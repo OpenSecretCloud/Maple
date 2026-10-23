@@ -30,7 +30,6 @@ impl SettingsScreen {
         headers: bool,
         cx: &mut Context<Self>,
     ) -> Div {
-        let remote = self.integrations_backend.remote_host().is_some();
         div()
             .flex()
             .flex_col()
@@ -54,46 +53,42 @@ impl SettingsScreen {
                                 }),
                         ),
                 );
-                if !remote {
-                    row = row.child(
-                        div().flex().gap_2().children(
-                            [
-                                (McpSecretAction::Keep, "Keep"),
-                                (McpSecretAction::Set, "Replace"),
-                                (McpSecretAction::Clear, "Clear"),
-                            ]
-                            .into_iter()
-                            .map(|(action, label)| {
-                                pill_button(
-                                    format!(
-                                        "mcp-secret-{}-{index}-{label}",
-                                        if headers { "header" } else { "env" }
-                                    ),
-                                    label,
-                                    field.action == action,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        if let Some(editor) = &mut this.mcp_editor {
-                                            let fields = if headers {
-                                                &mut editor.saved_headers
-                                            } else {
-                                                &mut editor.saved_environment
-                                            };
-                                            if let Some(field) = fields.get_mut(index) {
-                                                field.action = action;
-                                                if action != McpSecretAction::Set {
-                                                    field
-                                                        .input
-                                                        .update(cx, |input, cx| input.clear(cx));
-                                                }
+                row = row.child(
+                    div().flex().gap_2().children(
+                        [
+                            (McpSecretAction::Keep, "Keep"),
+                            (McpSecretAction::Set, "Replace"),
+                            (McpSecretAction::Clear, "Clear"),
+                        ]
+                        .into_iter()
+                        .map(|(action, label)| {
+                            pill_button(
+                                format!(
+                                    "mcp-secret-{}-{index}-{label}",
+                                    if headers { "header" } else { "env" }
+                                ),
+                                label,
+                                field.action == action,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    if let Some(editor) = &mut this.mcp_editor {
+                                        let fields = if headers {
+                                            &mut editor.saved_headers
+                                        } else {
+                                            &mut editor.saved_environment
+                                        };
+                                        if let Some(field) = fields.get_mut(index) {
+                                            field.action = action;
+                                            if action != McpSecretAction::Set {
+                                                field.input.update(cx, |input, cx| input.clear(cx));
                                             }
                                         }
-                                        cx.notify();
-                                    }),
-                                )
-                            }),
-                        ),
-                    );
-                }
+                                    }
+                                    cx.notify();
+                                }),
+                            )
+                        }),
+                    ),
+                );
                 if field.action == McpSecretAction::Set {
                     row = row.child(field.input.clone());
                 }
@@ -128,15 +123,11 @@ pub(super) fn name_collides(servers: &[McpDefinition], original: Option<&str>, n
 
 pub(super) fn field_edits(
     fields: &[McpSecretField],
-    remote: bool,
     cx: &Context<SettingsScreen>,
 ) -> Result<Vec<McpSecretEdit>, String> {
     fields
         .iter()
         .map(|field| {
-            if remote && field.action != McpSecretAction::Keep {
-                return Err("Saved values can be changed on the host computer.".into());
-            }
             let update = match field.action {
                 McpSecretAction::Keep => McpSecretUpdate::Keep,
                 McpSecretAction::Clear => McpSecretUpdate::Clear,
@@ -161,12 +152,9 @@ pub(super) fn field_edits(
 
 /// New entries always mean Set. Blank fields mean no new entries; malformed
 /// entries never disappear silently and errors never quote the supplied value.
-pub(super) fn new_value_edits(text: &str, remote: bool) -> Result<Vec<McpSecretEdit>, String> {
+pub(super) fn new_value_edits(text: &str) -> Result<Vec<McpSecretEdit>, String> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
-    }
-    if remote {
-        return Err("New values can be entered on the host computer.".into());
     }
     text.split(';')
         .filter(|entry| !entry.trim().is_empty())
@@ -268,16 +256,34 @@ mod tests {
     }
 
     #[test]
-    fn remote_new_values_and_malformed_local_entries_are_rejected_without_echo() {
-        assert!(new_value_edits("TOKEN=synthetic-secret", true).is_err());
-        let error = new_value_edits("synthetic-secret", false).unwrap_err();
-        assert!(!error.contains("synthetic-secret"));
-        assert!(new_value_edits("TOKEN=", false).is_err());
-        assert!(new_value_edits("", true).unwrap().is_empty());
-        let edits = new_value_edits("TOKEN=synthetic-secret", false).unwrap();
+    fn new_environment_and_header_values_are_redacted_set_edits() {
+        let edits =
+            new_value_edits("TOKEN=synthetic-secret; Authorization=Bearer synthetic-header==")
+                .unwrap();
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].name, "TOKEN");
         assert!(
             matches!(&edits[0].update,McpSecretUpdate::Set(value) if value.expose()=="synthetic-secret")
         );
+        assert_eq!(edits[1].name, "Authorization");
+        assert!(
+            matches!(&edits[1].update,McpSecretUpdate::Set(value) if value.expose()=="Bearer synthetic-header==")
+        );
         assert!(!format!("{edits:?}").contains("synthetic-secret"));
+        assert!(!format!("{edits:?}").contains("synthetic-header"));
+        assert!(new_value_edits(" ; ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_new_entries_are_rejected_without_echo() {
+        for input in [
+            "synthetic-secret",
+            "TOKEN=synthetic-secret; malformed-synthetic-secret",
+            "=synthetic-secret",
+            "TOKEN=",
+        ] {
+            let error = new_value_edits(input).unwrap_err();
+            assert!(!error.contains("synthetic-secret"));
+        }
     }
 }
