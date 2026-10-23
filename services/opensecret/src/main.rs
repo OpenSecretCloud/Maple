@@ -391,6 +391,9 @@ pub enum ApiError {
         client_replay_safe: bool,
     },
 
+    #[error("Account inference rate limit exceeded. Retry after the cooldown.")]
+    InferenceRateLimited { retry_after: Duration },
+
     #[error("{0}")]
     InferenceProvider(web::provider_error::PublicProviderError),
     #[error("{0}")]
@@ -492,6 +495,7 @@ impl IntoResponse for ApiError {
             ApiError::BillingCleanupUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::ImageDescriptionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InferenceCapacity { status, .. } => *status,
+            ApiError::InferenceRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::InferenceProvider(error) => error.status(),
             ApiError::Transcription(error) => error.status(),
             ApiError::SystemOneRequest(error) => error.status(),
@@ -520,6 +524,7 @@ impl IntoResponse for ApiError {
         // Preserve the legacy flat fields while making these application
         // rejections readable by independently versioned OpenAI clients.
         let openai_error_code = match &self {
+            ApiError::InferenceRateLimited { .. } => Some("rate_limit_exceeded"),
             ApiError::UsageLimitReached => Some("usage_limit_reached"),
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
@@ -533,6 +538,7 @@ impl IntoResponse for ApiError {
         // OpenAI's `type` and `param` are published only where the rejection
         // is one OpenAI itself defines; existing bodies stay byte-identical.
         let (error_type, error_param) = match &self {
+            ApiError::InferenceRateLimited { .. } => (Some("rate_limit_error"), None),
             ApiError::UnsupportedReasoningEffort(error) => {
                 (Some("invalid_request_error"), Some(error.param()))
             }
@@ -573,6 +579,11 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(ERROR_CODE_HEADER, HeaderValue::from_static(error_code));
+        }
+        if let ApiError::InferenceRateLimited { retry_after } = &self {
+            if let Ok(value) = HeaderValue::from_str(&retry_after.as_secs().to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
         }
         if let ApiError::InferenceCapacity {
             retry_after,
@@ -1023,6 +1034,7 @@ pub struct AppState {
     provider_client: Arc<ProviderClient>,
     proxy_router: Arc<ProxyRouter>,
     provider_router: Arc<ProviderRouter>,
+    inference_rate_limiter: Arc<web::inference_rate_limit::InferenceRateLimiter>,
     resend_api_key: Option<String>,
     ephemeral_keys: Arc<RwLock<BoundedTtlCache<PendingAttestationKey, EphemeralSecret>>>,
     session_states: Arc<tokio::sync::Mutex<LeaseAwareTtlCache<Uuid, SessionState>>>,
@@ -1142,6 +1154,7 @@ struct AuthenticatedUser {
 
 #[derive(Default)]
 pub struct AppStateBuilder {
+    inference_rate_limiter: Arc<web::inference_rate_limit::InferenceRateLimiter>,
     app_mode: Option<AppMode>,
     db: Option<Arc<dyn DBConnection + Send + Sync>>,
     enclave_key: Option<Vec<u8>>,
@@ -1171,6 +1184,13 @@ pub struct AppStateBuilder {
 }
 
 impl AppStateBuilder {
+    fn inference_rate_limiter(
+        mut self,
+        limiter: web::inference_rate_limit::InferenceRateLimiter,
+    ) -> Self {
+        self.inference_rate_limiter = Arc::new(limiter);
+        self
+    }
     pub fn remote_relay_token(mut self, token: Option<zeroize::Zeroizing<String>>) -> Self {
         self.remote_relay_token = token;
         self
@@ -1480,6 +1500,7 @@ impl AppStateBuilder {
             provider_client,
             proxy_router,
             provider_router,
+            inference_rate_limiter: self.inference_rate_limiter,
             resend_api_key: self.resend_api_key,
             ephemeral_keys: Arc::new(RwLock::new(BoundedTtlCache::new(
                 NonZeroUsize::new(MAX_PENDING_ATTESTATIONS)
@@ -4132,6 +4153,10 @@ async fn main() -> Result<(), Error> {
         web::remote::relay::load_token(&app_mode, aws_credential_manager.clone(), db.clone())
             .await?;
     let app_state = AppStateBuilder::default()
+        .inference_rate_limiter(
+            web::inference_rate_limit::InferenceRateLimiter::from_env()
+                .map_err(Error::BuilderError)?,
+        )
         .app_mode(app_mode.clone())
         .db(db)
         .enclave_key(enclave_key)

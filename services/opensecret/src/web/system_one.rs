@@ -201,10 +201,15 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
     Router::new()
         .route(
             SYSTEM_ONE_PATH,
-            post(system_one).layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                decrypt_request::<SystemOneBody>,
-            )),
+            post(system_one)
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.inference_rate_limiter.clone(),
+                    super::inference_rate_limit::enforce,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    decrypt_request::<SystemOneBody>,
+                )),
         )
         .with_state(app_state)
 }

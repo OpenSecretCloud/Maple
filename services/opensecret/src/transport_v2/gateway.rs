@@ -1327,6 +1327,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_rate_limit_is_an_encrypted_429_without_capacity_recovery() {
+        let test = test_session(17);
+        let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
+        sessions.insert(Arc::clone(&test.server)).unwrap();
+        let limiter = Arc::new(crate::web::inference_rate_limit::InferenceRateLimiter::default());
+        let account = uuid::Uuid::new_v4();
+        for _ in 0..100 {
+            limiter.check(account).unwrap();
+        }
+        let application = Router::new().route(
+            "/v1/embeddings",
+            any(move || {
+                let limiter = limiter.clone();
+                async move {
+                    limiter.check(account)?;
+                    Ok::<_, crate::ApiError>("should not be dispatched")
+                }
+            }),
+        );
+        let router = request_router(application, sessions);
+        let request_id = RequestId::from_bytes([0xa7; 16]);
+        let response = router
+            .oneshot(outer_request(
+                test.server.id(),
+                &test.routing_key,
+                seal_request(&test.client, request_id, "/v1/embeddings", None),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::RETRY_AFTER));
+        assert!(!response.headers().contains_key(crate::ERROR_CODE_HEADER));
+        let records = decrypt_records(&test.client, request_id, response).await;
+        let ResponseRecord::Start(start) = &records[0] else {
+            panic!("missing response start")
+        };
+        assert_eq!(start.status(), 429);
+        assert!(start
+            .headers()
+            .iter()
+            .any(|header| header.name() == "retry-after" && header.value() == "60"));
+        assert!(start
+            .headers()
+            .iter()
+            .any(|header| header.name() == crate::ERROR_CODE_HEADER
+                && header.value() == "rate_limit_exceeded"));
+        assert!(!start
+            .headers()
+            .iter()
+            .any(|header| header.name() == crate::CLIENT_REPLAY_HEADER));
+        let body: Vec<u8> = records
+            .iter()
+            .filter_map(|record| match record {
+                ResponseRecord::Chunk(bytes) => Some(&bytes[..]),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["status"], 429);
+        assert_eq!(body["error"]["code"], "rate_limit_exceeded");
+        assert_eq!(body["error"]["type"], "rate_limit_error");
+        assert!(matches!(records.last(), Some(ResponseRecord::End)));
+    }
+
+    #[tokio::test]
     async fn inference_capacity_metadata_is_authenticated_and_does_not_allow_record_replay() {
         for status in [
             StatusCode::TOO_MANY_REQUESTS,

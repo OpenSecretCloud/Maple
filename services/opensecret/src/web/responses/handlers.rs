@@ -3629,10 +3629,15 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/v1/responses",
-            post(create_response_stream).layer(from_fn_with_state(
-                state.clone(),
-                decrypt_request::<ResponsesCreateRequest>,
-            )),
+            post(create_response_stream)
+                .layer(from_fn_with_state(
+                    state.inference_rate_limiter.clone(),
+                    crate::web::inference_rate_limit::enforce,
+                ))
+                .layer(from_fn_with_state(
+                    state.clone(),
+                    decrypt_request::<ResponsesCreateRequest>,
+                )),
         )
         .route(
             "/v1/responses/:id",
