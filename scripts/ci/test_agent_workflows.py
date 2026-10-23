@@ -12,6 +12,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+RUST_CACHE_COMMAND = 'python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}'
+MASTER_CACHE_SAVE = "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
 
 
 @functools.cache
@@ -181,8 +183,8 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         for cache in caches:
             self.assertEqual(cache["workspaces"], "apps/maple-agent -> target")
             self.assertTrue(cache["key"].startswith("maple-agent-"))
-            self.assertEqual(cache["save-if"],
-                             "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
+            expected_save = MASTER_CACHE_SAVE if cache["add-rust-environment-hash-key"] == "true" else "false"
+            self.assertEqual(cache["save-if"], expected_save)
         for step in steps:
             action = step.get("uses", "")
             self.assertNotIn("release", action.lower())
@@ -241,10 +243,56 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                     self.assertEqual(cache["add-rust-environment-hash-key"], "true")
                     self.assertIn("steps.environment.outputs.compatibility", cache["key"])
                     self.assertNotIn("hashFiles", cache["key"])
-                    self.assertIn("nix develop --no-update-lock-file", cache["cmd-format"])
-                    self.assertIn("github.workspace", cache["cmd-format"])
+                    self.assertEqual(cache["cmd-format"], RUST_CACHE_COMMAND)
                     self.assertEqual(cache["save-if"], "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
                     self.assertIn("nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py", steps[fingerprint]["run"])
+
+    def test_legacy_cache_restore_preserves_abi_scope_and_never_writes(self):
+        for filename, names in (("agent-ci.yml", ("desktop", "linux-release")),
+                                ("agent-desktop-build.yml", ("macos-build", "linux"))):
+            for name in names:
+                with self.subTest(workflow=filename, job=name):
+                    steps = workflow(filename)["jobs"][name]["steps"]
+                    primary_index = next(i for i, step in enumerate(steps) if step.get("id") == "rust-cache")
+                    marker_index = next(i for i, step in enumerate(steps) if step.get("id") == "restored-target")
+                    caches = [(i, step) for i, step in enumerate(steps) if "rust-cache@" in step.get("uses", "")]
+                    self.assertEqual(len(caches), 2)
+                    fallback_index, fallback = caches[1]
+                    primary = steps[primary_index]
+                    self.assertLess(primary_index, marker_index)
+                    self.assertLess(marker_index, fallback_index)
+                    self.assertEqual(fallback["uses"], primary["uses"])
+                    self.assertEqual(fallback["if"],
+                                     "${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}")
+                    # Disabling the upstream hash is permitted only on this
+                    # read-only fallback, scoped to the very same actual ABI.
+                    self.assertEqual(fallback["with"], {**primary["with"],
+                                     "add-rust-environment-hash-key": "false", "save-if": "false"})
+                    self.assertEqual(primary["with"]["add-rust-environment-hash-key"], "true")
+                    self.assertEqual(primary["with"]["save-if"], MASTER_CACHE_SAVE)
+                    self.assertNotIn("continue-on-error", fallback)
+
+    def test_primary_prefix_restore_does_not_download_a_second_archive(self):
+        # cache-hit=false also means a successful upstream prefix restore.
+        # Exercise the actual workflow's marker script against an empty target
+        # and a restored Cargo target before evaluating that fallback guard.
+        for filename, name in (("agent-ci.yml", "desktop"), ("agent-ci.yml", "linux-release"),
+                               ("agent-desktop-build.yml", "macos-build"), ("agent-desktop-build.yml", "linux")):
+            steps = workflow(filename)["jobs"][name]["steps"]
+            marker = next(step for step in steps if step.get("id") == "restored-target")
+            with tempfile.TemporaryDirectory(prefix="cache restore ") as directory:
+                root = Path(directory)
+                target = root / "apps/maple-agent/target"
+                target.mkdir(parents=True)
+                for present in (False, True):
+                    with self.subTest(workflow=filename, job=name, restored=present):
+                        if present:
+                            (target / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+                        output = root / f"outputs-{present}"
+                        subprocess.run(["bash", "-eu", "-c", marker["run"]], check=True,
+                                       env={**os.environ, "GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(output)},
+                                       capture_output=True)
+                        self.assertEqual(output.read_text(), f"present={str(present).lower()}\n")
 
     def test_provider_restores_only_after_verified_graph_with_no_compatible_fallback(self):
         steps = workflow("agent-ci.yml")["jobs"]["provider"]["steps"]
@@ -425,8 +473,8 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                     self.assertEqual(cache["workspaces"], "apps/maple-agent -> target")
                     self.assertTrue(cache["key"].startswith("maple-agent-release-"))
                     self.assertIn("${{ matrix.variant }}", cache["key"])
-                    self.assertEqual(cache["save-if"],
-                                     "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
+                    expected_save = MASTER_CACHE_SAVE if cache["add-rust-environment-hash-key"] == "true" else "false"
+                    self.assertEqual(cache["save-if"], expected_save)
 
     def test_unsigned_pr_jobs_are_fail_safe_and_never_use_signed_macos_artifact_names(self):
         jobs = workflow(self.WORKFLOW)["jobs"]

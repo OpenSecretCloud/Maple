@@ -143,7 +143,14 @@ targets. This catches Git Bash's unrelated `link.exe` shadowing Microsoft tools.
 The workspace and Desktop caches use this compatibility prefix with
 `rust-cache`'s automatic dependency suffix. PRs only read; successful master
 pushes write. Application version changes can reuse compatible dependencies;
-Cargo still checks freshness. The provider cache additionally requires the
+Cargo still checks freshness. Cache probes use `agent_cache_command.py` to
+identify only the actual selected compiler; incidental installed Rustup
+toolchains do not describe these builds and are excluded from the inventory.
+After a complete target-cache miss, a read-only lookup can restore an older
+archive within the same actual compiler/native ABI, job, OS and architecture
+prefix. A restored Cargo target marker prevents a second archive download
+after an ordinary dependency-prefix hit. The primary action retains its exact
+dependency hash and remains the only writer. The provider cache additionally requires the
 verified, resolved upstream test-only lockfile and transformed manifest, with
 no fallback across provider dependency graphs. Its temporary source and target
 remain outside shipping workspace outputs.
