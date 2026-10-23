@@ -6474,17 +6474,17 @@ impl Render for ChatScreen {
                         )
                         .child(
                             div().absolute().top_3().right_3().child(
-                                widgets::icon_button(
+                                widgets::icon_button_for_action(
                                     "lightbox-close",
                                     "x",
                                     "Close",
                                     px(16.),
                                     theme::on_accent(),
+                                    &ChatEscape,
                                 )
                                 .size_8()
                                 .rounded_full()
-                                .bg(theme::overlay_hover())
-                                .tooltip(widgets::tooltip_for_action("Close", &ChatEscape)),
+                                .bg(theme::overlay_hover()),
                             ),
                         ),
                     "lightbox-reveal",
