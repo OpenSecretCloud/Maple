@@ -11,6 +11,17 @@ pub struct UsageResponse {
     pub is_free: bool,
 }
 
+/// V2 reports API admission and frontend plan identity together. All fields are
+/// required: an incomplete response must not become a permissive decision or
+/// trigger a second, potentially different authorization evaluation.
+#[derive(Debug, Deserialize)]
+struct UsageResponseV2 {
+    api_can_use: bool,
+    #[serde(rename = "frontend_can_use")]
+    _frontend_can_use: bool,
+    is_free: bool,
+}
+
 const fn default_is_free() -> bool {
     true
 }
@@ -119,7 +130,7 @@ impl BillingClient {
                 .build()
                 .expect("failed to build billing HTTP client"),
             api_key,
-            base_url,
+            base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
 
@@ -202,6 +213,54 @@ impl BillingClient {
         }
     }
 
+    /// `None` means an older Billing deployment does not expose this endpoint.
+    /// Only explicit endpoint/method absence permits the legacy fallback; a
+    /// denial, dependency failure, or invalid response is authoritative for this
+    /// attempt. The caller's existing total deadline covers both versions.
+    async fn check_usage_v2(&self, user_id: Uuid) -> Result<Option<UsageResponseV2>, BillingError> {
+        let mut response = self
+            .client
+            .get(format!(
+                "{}/v2/admin/check-usage",
+                self.base_url.trim_end_matches('/')
+            ))
+            .query(&[
+                ("user_id", user_id.to_string()),
+                ("product", "maple".to_string()),
+            ])
+            .header("x-api-key", &self.api_key)
+            .send()
+            .await?;
+
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                return Ok(None);
+            }
+            reqwest::StatusCode::OK => {}
+            status => {
+                // Provider/service bodies are not part of this contract and may
+                // contain private operational details.
+                return Err(BillingError::ServiceError(format!(
+                    "billing usage v2 returned HTTP {}",
+                    status.as_u16()
+                )));
+            }
+        }
+
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len().saturating_add(chunk.len()) > 4096 {
+                return Err(BillingError::ParseError(
+                    "billing usage v2 response exceeds limit".into(),
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body)
+            .map(Some)
+            .map_err(|_| BillingError::ParseError("invalid billing usage v2 response".into()))
+    }
+
     pub(crate) async fn chat_access(
         &self,
         user_id: Uuid,
@@ -214,6 +273,19 @@ impl BillingClient {
                 .map(ChatBillingAccess::from_frontend_usage);
         }
 
+        if let Some(usage) = self.check_usage_v2(user_id).await? {
+            return Ok(ChatBillingAccess {
+                can_use: usage.api_can_use,
+                // Preserve the existing API-denial behavior: quota denial must
+                // never grant paid-model access, regardless of plan metadata.
+                is_free: usage.is_free || !usage.api_can_use,
+            });
+        }
+
+        self.api_chat_access_v1(user_id).await
+    }
+
+    async fn api_chat_access_v1(&self, user_id: Uuid) -> Result<ChatBillingAccess, BillingError> {
         // The API usage response intentionally reports `is_free: false` for
         // API-credit users, regardless of their subscription. Keep its quota
         // decision, but source plan identity from the frontend usage response.
@@ -402,6 +474,297 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn api_chat_access_uses_one_complete_v2_response() {
+        use axum::http::HeaderMap;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        // Purchased API credits grant API admission without changing Free plan
+        // identity, even when the independent frontend allowance is exhausted.
+        for (api_can_use, frontend_can_use, is_free) in [
+            (true, true, false),
+            (true, true, true),
+            (true, false, true),
+            (false, false, false),
+            (false, false, true),
+        ] {
+            let user_id = Uuid::new_v4();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let legacy_calls = Arc::new(AtomicUsize::new(0));
+            let observed_legacy = legacy_calls.clone();
+            let (url, server) = deletion_server(
+                Router::new()
+                    .route(
+                        "/v2/admin/check-usage",
+                        get(move |headers: HeaderMap, Query(query): Query<HashMap<String, String>>| {
+                            let observed = observed.clone();
+                            async move {
+                                observed.fetch_add(1, Ordering::SeqCst);
+                                assert_eq!(headers["x-api-key"], "synthetic-admin-key");
+                                assert_eq!(query.len(), 2);
+                                assert_eq!(query["user_id"], user_id.to_string());
+                                assert_eq!(query["product"], "maple");
+                                Json(serde_json::json!({
+                                    "api_can_use": api_can_use,
+                                    "frontend_can_use": frontend_can_use,
+                                    "is_free": is_free,
+                                }))
+                            }
+                        }),
+                    )
+                    .route(
+                        "/v1/admin/check-usage",
+                        get(move || {
+                            observed_legacy.fetch_add(1, Ordering::SeqCst);
+                            async { Json(serde_json::json!({"can_use": true,"is_free":false})) }
+                        }),
+                    ),
+            )
+            .await;
+            let client = BillingClient::new("synthetic-admin-key".into(), format!("{url}/"));
+            let access = client.chat_access(user_id, true).await.unwrap();
+            assert_eq!(access.can_use(), api_can_use);
+            assert_eq!(access.is_paid(), !is_free && api_can_use);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn api_chat_access_falls_back_only_when_v2_is_absent() {
+        use axum::http::StatusCode;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        for status in [StatusCode::NOT_FOUND, StatusCode::METHOD_NOT_ALLOWED] {
+            let v2_calls = Arc::new(AtomicUsize::new(0));
+            let observed_v2 = v2_calls.clone();
+            let api_calls = Arc::new(AtomicUsize::new(0));
+            let observed_api = api_calls.clone();
+            let plan_calls = Arc::new(AtomicUsize::new(0));
+            let observed_plan = plan_calls.clone();
+            let (url, server) = deletion_server(
+                Router::new()
+                    .route(
+                        "/v2/admin/check-usage",
+                        get(move || {
+                            observed_v2.fetch_add(1, Ordering::SeqCst);
+                            async move { status }
+                        }),
+                    )
+                    .route(
+                        "/v1/admin/check-usage",
+                        get(move |Query(query): Query<HashMap<String, String>>| {
+                            let api = query.get("api").is_some_and(|value| value == "true");
+                            if api {
+                                observed_api.fetch_add(1, Ordering::SeqCst);
+                            } else {
+                                observed_plan.fetch_add(1, Ordering::SeqCst);
+                            }
+                            async move { Json(serde_json::json!({"can_use":true,"is_free":!api})) }
+                        }),
+                    ),
+            )
+            .await;
+            // A slash-suffixed configured origin must also work when an older
+            // Billing deployment requires the v1 compatibility path.
+            let client = BillingClient::new("synthetic-admin-key".into(), format!("{url}/"));
+            let access = client.chat_access(Uuid::new_v4(), true).await.unwrap();
+            assert!(access.can_use());
+            assert!(!access.is_paid());
+            assert_eq!(v2_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(api_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(plan_calls.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn v2_http_failures_never_fan_out_to_v1_or_expose_service_bodies() {
+        use axum::http::StatusCode;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        for status in [
+            202, 204, 301, 302, 307, 400, 401, 403, 408, 409, 429, 500, 503,
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let legacy_calls = Arc::new(AtomicUsize::new(0));
+            let observed_legacy = legacy_calls.clone();
+            let (url, server) = deletion_server(
+                Router::new()
+                    .route(
+                        "/v2/admin/check-usage",
+                        get(move || {
+                            observed.fetch_add(1, Ordering::SeqCst);
+                            async move {
+                                (
+                                    StatusCode::from_u16(status).unwrap(),
+                                    "private-service-detail",
+                                )
+                            }
+                        }),
+                    )
+                    .route(
+                        "/v1/admin/check-usage",
+                        get(move || {
+                            observed_legacy.fetch_add(1, Ordering::SeqCst);
+                            async { StatusCode::OK }
+                        }),
+                    ),
+            )
+            .await;
+            let client = BillingClient::new("synthetic-admin-key".into(), url);
+            let error = client.chat_access(Uuid::new_v4(), true).await.unwrap_err();
+            assert!(matches!(error, BillingError::ServiceError(_)));
+            assert!(!error.to_string().contains("private-service-detail"));
+            assert!(error.to_string().contains(&status.to_string()));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn incomplete_malformed_or_oversized_v2_responses_do_not_fall_back() {
+        use axum::http::StatusCode;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        for body in [
+            "private-service-detail".to_string(),
+            "x".repeat(4097),
+            serde_json::json!({"api_can_use":true,"frontend_can_use":true}).to_string(),
+            serde_json::json!({"api_can_use":true,"is_free":false}).to_string(),
+            serde_json::json!({"frontend_can_use":true,"is_free":false}).to_string(),
+            serde_json::json!({"api_can_use":"true","frontend_can_use":true,"is_free":false})
+                .to_string(),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let legacy_calls = Arc::new(AtomicUsize::new(0));
+            let observed_legacy = legacy_calls.clone();
+            let (url, server) = deletion_server(
+                Router::new()
+                    .route(
+                        "/v2/admin/check-usage",
+                        get(move || {
+                            observed.fetch_add(1, Ordering::SeqCst);
+                            let body = body.clone();
+                            async move { body }
+                        }),
+                    )
+                    .route(
+                        "/v1/admin/check-usage",
+                        get(move || {
+                            observed_legacy.fetch_add(1, Ordering::SeqCst);
+                            async { StatusCode::OK }
+                        }),
+                    ),
+            )
+            .await;
+            let client = BillingClient::new("synthetic-admin-key".into(), url);
+            let error = client.chat_access(Uuid::new_v4(), true).await.unwrap_err();
+            assert!(matches!(error, BillingError::ParseError(_)));
+            assert!(!error.to_string().contains("private-service-detail"));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn frontend_chat_access_keeps_the_single_v1_request() {
+        use axum::http::StatusCode;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let v2_calls = Arc::new(AtomicUsize::new(0));
+        let observed_v2 = v2_calls.clone();
+        let v1_calls = Arc::new(AtomicUsize::new(0));
+        let observed_v1 = v1_calls.clone();
+        let (url, server) = deletion_server(
+            Router::new()
+                .route(
+                    "/v2/admin/check-usage",
+                    get(move || {
+                        observed_v2.fetch_add(1, Ordering::SeqCst);
+                        async { StatusCode::OK }
+                    }),
+                )
+                .route(
+                    "/v1/admin/check-usage",
+                    get(move |Query(query): Query<HashMap<String, String>>| {
+                        observed_v1.fetch_add(1, Ordering::SeqCst);
+                        assert!(!query.contains_key("api"));
+                        async { Json(serde_json::json!({"can_use":true,"is_free":false})) }
+                    }),
+                ),
+        )
+        .await;
+        let client = BillingClient::new("synthetic-admin-key".into(), url);
+        let access = client.chat_access(Uuid::new_v4(), false).await.unwrap();
+        assert!(access.can_use());
+        assert!(access.is_paid());
+        assert_eq!(v1_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(v2_calls.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn slow_v2_preserves_the_callers_deadline_without_fallback() {
+        use axum::http::StatusCode;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let v2_calls = Arc::new(AtomicUsize::new(0));
+        let observed_v2 = v2_calls.clone();
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let observed_legacy = legacy_calls.clone();
+        let (url, server) = deletion_server(
+            Router::new()
+                .route(
+                    "/v2/admin/check-usage",
+                    get(move || {
+                        observed_v2.fetch_add(1, Ordering::SeqCst);
+                        pending::<StatusCode>()
+                    }),
+                )
+                .route(
+                    "/v1/admin/check-usage",
+                    get(move || {
+                        observed_legacy.fetch_add(1, Ordering::SeqCst);
+                        async { StatusCode::OK }
+                    }),
+                ),
+        )
+        .await;
+        let client = BillingClient::new("synthetic-admin-key".into(), url);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(200),
+            client.chat_access(Uuid::new_v4(), true)
+        )
+        .await
+        .is_err());
+        assert_eq!(v2_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+        server.abort();
     }
 
     #[tokio::test]
