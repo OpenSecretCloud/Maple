@@ -19,6 +19,13 @@ use crate::{
 
 const PAYLOAD: &[u8] = b"signed payload fixture bytes";
 
+// Frozen pre-Linux validator from 264560b0, exercising the installed macOS
+// client's complete parsing and signature contract against new publisher bytes.
+#[allow(dead_code)]
+mod legacy_v1 {
+    include!("../tests/fixtures/legacy-v1-validator.rs");
+}
+
 fn key(seed: u8) -> String {
     let signing = SigningKey::from_bytes(&[seed; 32]);
     let mut bytes = b"Ed12345678".to_vec();
@@ -75,10 +82,44 @@ fn manifest(version: &str) -> Manifest {
             artifact(version, "Maple-Agent.app.tar.gz"),
         )]),
         downloads: Downloads {
-            macos: artifact(version, "Maple-Agent.dmg"),
+            macos: Some(artifact(version, "Maple-Agent.dmg")),
             linux_appimage: None,
+            linux_bundle: None,
         },
     }
+}
+
+fn legacy_linux_manifest(version: &str) -> Manifest {
+    let mut value = manifest(version);
+    let linux = artifact(version, "Maple-Agent.AppImage");
+    value.artifacts.insert("linux-x86_64".into(), linux.clone());
+    value.downloads.linux_appimage = Some(linux);
+    value
+}
+
+fn linux_manifest(version: &str) -> Manifest {
+    let linux = artifact(version, "Maple-Agent-linux-x86_64.tar.gz");
+    Manifest {
+        format: "maple-agent-update-v2".into(),
+        artifacts: BTreeMap::from([("linux-x86_64".into(), linux.clone())]),
+        downloads: Downloads {
+            macos: None,
+            linux_appimage: None,
+            linux_bundle: Some(linux),
+        },
+        ..manifest(version)
+    }
+}
+
+fn envelope_value(value: &serde_json::Value) -> Vec<u8> {
+    sign_text(
+        &serde_json::to_string(value).unwrap(),
+        &format!(
+            "product=maple-agent channel=stable version={}",
+            value["version"].as_str().unwrap()
+        ),
+        7,
+    )
 }
 
 fn origin() -> crate::Url {
@@ -95,8 +136,192 @@ fn static_public_publisher_fixture_uses_the_same_authenticated_contract() {
     .unwrap();
     assert_eq!(release.manifest, manifest("0.0.2"));
     assert_eq!(
+        serde_json::to_vec(&release.manifest).unwrap(),
+        include_bytes!("../tests/fixtures/manifest.json")
+    );
+    assert_eq!(
         release.manifest.artifacts["darwin-aarch64"].sha256,
         hex::encode(Sha256::digest(PAYLOAD))
+    );
+}
+
+#[test]
+fn installed_v1_validator_accepts_new_macos_bytes_and_rejects_linux_v2() {
+    let macos = envelope(&manifest("0.0.4"));
+    let legacy = legacy_v1::verify_envelope(&macos, &origin(), &[key(7)]).unwrap();
+    assert_eq!(legacy.manifest.format, "maple-agent-update-v1");
+    assert_eq!(legacy.manifest.artifacts.len(), 1);
+    assert!(legacy.manifest.artifacts.contains_key("darwin-aarch64"));
+    assert!(legacy.manifest.downloads.linux_appimage.is_none());
+    assert!(
+        legacy_v1::verify_envelope(&envelope(&linux_manifest("0.0.4")), &origin(), &[key(7)])
+            .is_err()
+    );
+}
+
+#[test]
+fn static_linux_v2_fixture_uses_the_same_public_test_key() {
+    let signed = include_bytes!("../tests/fixtures/signed-linux-v2-envelope.json");
+    let release = verify_envelope(
+        signed,
+        &origin(),
+        &[include_str!("../tests/fixtures/public-test-key.pub").to_owned()],
+    )
+    .unwrap();
+    assert_eq!(release.manifest, linux_manifest("0.0.2"));
+    assert_eq!(
+        serde_json::to_vec(&release.manifest).unwrap(),
+        include_bytes!("../tests/fixtures/linux-v2-manifest.json")
+    );
+    assert!(legacy_v1::verify_envelope(signed, &origin(), &[key(7)]).is_err());
+}
+
+#[test]
+fn legacy_v1_schema_behavior_is_preserved_including_optional_appimage() {
+    for value in [manifest("0.0.4"), legacy_linux_manifest("0.0.4")] {
+        let signed = envelope(&value);
+        assert!(legacy_v1::verify_envelope(&signed, &origin(), &[key(7)]).is_ok());
+        let release = verify_envelope(&signed, &origin(), &[key(7)]).unwrap();
+        assert!(release.artifact(Target::DarwinAarch64).is_ok());
+        assert!(release.artifact(Target::LinuxX86_64).is_err());
+    }
+    let mut value = serde_json::to_value(manifest("0.0.4")).unwrap();
+    value["downloads"]["linux-appimage"] = serde_json::Value::Null;
+    let signed = envelope_value(&value);
+    assert!(legacy_v1::verify_envelope(&signed, &origin(), &[key(7)]).is_ok());
+    assert!(verify_envelope(&signed, &origin(), &[key(7)]).is_ok());
+
+    let mutations: Vec<fn(&mut serde_json::Value)> = vec![
+        |m| m["unknown"] = json!(true),
+        |m| m["downloads"]["unknown"] = json!(true),
+        |m| m["downloads"]["linux-bundle"] = serde_json::Value::Null,
+        |m| m["downloads"]["macos"] = serde_json::Value::Null,
+        |m| {
+            m["downloads"].as_object_mut().unwrap().remove("macos");
+        },
+        |m| m["artifacts"]["darwin-aarch64"]["unknown"] = json!(true),
+    ];
+    for mutation in mutations {
+        let mut value = serde_json::to_value(manifest("0.0.4")).unwrap();
+        mutation(&mut value);
+        let signed = envelope_value(&value);
+        assert!(legacy_v1::verify_envelope(&signed, &origin(), &[key(7)]).is_err());
+        assert!(verify_envelope(&signed, &origin(), &[key(7)]).is_err());
+    }
+}
+
+#[test]
+fn linux_v2_is_an_exact_linux_bundle_inventory() {
+    let release =
+        verify_envelope(&envelope(&linux_manifest("0.0.4")), &origin(), &[key(7)]).unwrap();
+    assert!(release.artifact(Target::DarwinAarch64).is_err());
+    assert_eq!(
+        release.artifact(Target::LinuxX86_64).unwrap(),
+        release.manifest.downloads.linux_bundle.as_ref().unwrap()
+    );
+    let mutations: Vec<fn(&mut Manifest)> = vec![
+        |m| m.format = "maple-agent-update-v1".into(),
+        |m| m.product = "research".into(),
+        |m| m.channel = "dev".into(),
+        |m| m.version = "0.0.4-beta.1".into(),
+        |m| m.build = "04".into(),
+        |m| m.source_sha = "A".repeat(40),
+        |m| m.pub_date = "2026-10-21T15:00:00+00:00".into(),
+        |m| m.notes = "bad\u{0}".into(),
+        |m| {
+            m.artifacts.clear();
+        },
+        |m| {
+            m.artifacts.insert(
+                "darwin-aarch64".into(),
+                artifact("0.0.4", "Maple-Agent.app.tar.gz"),
+            );
+        },
+        |m| m.downloads.macos = Some(artifact("0.0.4", "Maple-Agent.dmg")),
+        |m| m.downloads.linux_appimage = Some(artifact("0.0.4", "Maple-Agent.AppImage")),
+        |m| m.downloads.linux_bundle = None,
+        |m| m.downloads.linux_bundle.as_mut().unwrap().size += 1,
+        |m| {
+            m.artifacts.get_mut("linux-x86_64").unwrap().path =
+                "/agent/stable/releases/0.0.4/Maple-Agent.AppImage".into();
+            m.downloads.linux_bundle = m.artifacts.get("linux-x86_64").cloned();
+        },
+    ];
+    for mutation in mutations {
+        let mut value = linux_manifest("0.0.4");
+        mutation(&mut value);
+        assert!(
+            verify_envelope(&envelope(&value), &origin(), &[key(7)]).is_err(),
+            "accepted {value:?}"
+        );
+    }
+}
+
+#[test]
+fn linux_v2_rejects_unknown_and_null_legacy_fields() {
+    let mutations: Vec<fn(&mut serde_json::Value)> = vec![
+        |m| m["unknown"] = json!(true),
+        |m| m["downloads"]["unknown"] = serde_json::Value::Null,
+        |m| m["downloads"]["macos"] = serde_json::Value::Null,
+        |m| m["downloads"]["linux-appimage"] = serde_json::Value::Null,
+        |m| m["artifacts"]["linux-x86_64"]["unknown"] = json!(true),
+    ];
+    for mutation in mutations {
+        let mut value = serde_json::to_value(linux_manifest("0.0.4")).unwrap();
+        mutation(&mut value);
+        assert!(verify_envelope(&envelope_value(&value), &origin(), &[key(7)]).is_err());
+    }
+}
+
+#[test]
+fn linux_v2_payload_bounds_apply_even_when_the_download_matches() {
+    let mut invalid = Vec::new();
+    for path in [
+        "/agent/stable/releases/0.0.3/Maple-Agent.tar.gz",
+        "/agent/stable/releases/0.0.4/../Maple-Agent.tar.gz",
+        "/agent/stable/releases/0.0.4/Maple-Agent.tar.gz?token=x",
+        "/agent/stable/releases/0.0.4/Maple-Agent.AppImage",
+        "https://evil.test/Maple-Agent.tar.gz",
+    ] {
+        let mut artifact = artifact("0.0.4", "Maple-Agent.tar.gz");
+        artifact.path = path.into();
+        invalid.push(artifact);
+    }
+    for size in [0, manifest::MAX_ARTIFACT_BYTES + 1] {
+        let mut artifact = artifact("0.0.4", "Maple-Agent.tar.gz");
+        artifact.size = size;
+        invalid.push(artifact);
+    }
+    let mut bad_digest = artifact("0.0.4", "Maple-Agent.tar.gz");
+    bad_digest.sha256 = "A".repeat(64);
+    invalid.push(bad_digest);
+    for artifact in invalid {
+        let mut value = linux_manifest("0.0.4");
+        value
+            .artifacts
+            .insert("linux-x86_64".into(), artifact.clone());
+        value.downloads.linux_bundle = Some(artifact);
+        assert!(verify_envelope(&envelope(&value), &origin(), &[key(7)]).is_err());
+    }
+}
+
+#[test]
+fn target_metadata_paths_keep_legacy_macos_and_separate_linux() {
+    assert_eq!(
+        Target::DarwinAarch64.feed_path(),
+        "/agent/stable/latest.json"
+    );
+    assert_eq!(
+        Target::LinuxX86_64.feed_path(),
+        "/agent/stable/linux/latest.json"
+    );
+    assert_eq!(
+        Target::DarwinAarch64.manifest_path("0.0.4"),
+        "/agent/stable/releases/0.0.4/manifest.json"
+    );
+    assert_eq!(
+        Target::LinuxX86_64.manifest_path("0.0.4"),
+        "/agent/stable/releases/0.0.4/linux-manifest.json"
     );
 }
 
@@ -265,13 +490,29 @@ impl Fixture {
     }
 
     fn config(&self, temp: &tempfile::TempDir) -> Config {
-        let installed = temp.path().join("Maple Agent.app");
-        std::fs::create_dir_all(&installed).unwrap();
+        self.config_for_target(temp, Target::DarwinAarch64)
+    }
+
+    fn config_for_target(&self, temp: &tempfile::TempDir, target: Target) -> Config {
+        let installed = match target {
+            Target::DarwinAarch64 => {
+                let path = temp.path().join("Maple Agent.app");
+                std::fs::create_dir_all(&path).unwrap();
+                path
+            }
+            Target::LinuxX86_64 => {
+                let path = temp.path().join("maple-agent");
+                std::fs::write(&path, b"old installed executable").unwrap();
+                path
+            }
+        };
+        let mut feed_url = self.url.clone();
+        feed_url.set_path(target.feed_path());
         Config {
-            feed_url: self.url.clone(),
+            feed_url,
             public_keys: vec![key(7)],
             current_version: Version::new(0, 0, 1),
-            target: Target::DarwinAarch64,
+            target,
             installed_path: installed,
             state_dir: temp.path().join("updates"),
         }
@@ -572,17 +813,123 @@ async fn redirect_loops_and_oversized_metadata_are_bounded() {
 }
 
 #[tokio::test]
-async fn absent_linux_does_not_invalidate_macos_and_offers_no_linux_update() {
-    let signed = envelope(&manifest("0.0.2"));
-    assert!(verify_envelope(&signed, &origin(), &[key(7)]).is_ok());
-    let server = Fixture::new(vec![ok(&signed)]).await;
+async fn wrong_target_feed_cannot_advance_rollback_memory_or_start_a_download() {
+    for (target, value) in [
+        (Target::LinuxX86_64, manifest("0.0.2")),
+        (Target::LinuxX86_64, legacy_linux_manifest("0.0.2")),
+        (Target::DarwinAarch64, linux_manifest("0.0.2")),
+    ] {
+        let signed = envelope(&value);
+        let server = Fixture::new(vec![ok(&signed)]).await;
+        let release = verify_envelope(&signed, &server.url, &[key(7)]).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let config = server.config_for_target(&temp, target);
+        let installed_path = config.installed_path.clone();
+        let updater = test_updater(config).unwrap();
+        assert!(updater.check().await.is_err());
+        assert!(updater.download(&release).await.is_err());
+        let state =
+            crate::state::StateStore::new(&temp.path().join("updates"), &installed_path).unwrap();
+        assert!(state.highest_verified().unwrap().is_none());
+        assert!(state.prepared().unwrap().is_none());
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn linux_v2_download_restore_revalidate_and_commit_use_the_linux_feed() {
+    let signed = envelope(&linux_manifest("0.0.2"));
+    let server = Fixture::new(vec![ok(&signed), ok(PAYLOAD), ok(&signed)]).await;
     let temp = tempfile::tempdir().unwrap();
-    let mut config = server.config(&temp);
-    config.target = Target::LinuxX86_64;
+    let updater = test_updater(server.config_for_target(&temp, Target::LinuxX86_64)).unwrap();
+    let release = available(&updater).await;
+    let prepared = updater.download(&release).await.unwrap();
+    assert_eq!(std::fs::read(&prepared.payload_path).unwrap(), PAYLOAD);
+    assert!(updater.restore_prepared().await.unwrap().is_some());
     assert!(matches!(
-        test_updater(config).unwrap().check().await.unwrap(),
-        CheckOutcome::Current
+        updater.revalidate(&prepared).await.unwrap(),
+        Revalidation::Ready(_)
     ));
+    let committed = std::cell::Cell::new(false);
+    updater
+        .with_commit_guard(&prepared, || {
+            committed.set(true);
+            Ok(())
+        })
+        .unwrap();
+    assert!(committed.get());
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].starts_with("GET /agent/stable/linux/latest.json "));
+    assert!(
+        requests[1]
+            .starts_with("GET /agent/stable/releases/0.0.2/Maple-Agent-linux-x86_64.tar.gz ")
+    );
+    assert!(requests[2].starts_with("GET /agent/stable/linux/latest.json "));
+}
+
+#[tokio::test]
+async fn linux_clears_a_saved_legacy_appimage_preparation_without_installing_it() {
+    let server = Fixture::new(vec![]).await;
+    let temp = tempfile::tempdir().unwrap();
+    let config = server.config_for_target(&temp, Target::LinuxX86_64);
+    let state = crate::state::StateStore::new(&config.state_dir, &config.installed_path).unwrap();
+    let release = verify_envelope(
+        &envelope(&legacy_linux_manifest("0.0.2")),
+        &server.url,
+        &[key(7)],
+    )
+    .unwrap();
+    state.advance(&release.version()).unwrap();
+    state.save_prepared(&release).unwrap();
+    let payload_path =
+        state.payload_path(&release.manifest.artifacts["linux-x86_64"].sha256, false);
+    std::fs::write(&payload_path, PAYLOAD).unwrap();
+    let prepared = crate::PreparedUpdate {
+        release,
+        payload_path,
+        installed_path: config.installed_path.clone(),
+    };
+    let updater = test_updater(config).unwrap();
+    let committed = std::cell::Cell::new(false);
+    assert!(
+        updater
+            .with_commit_guard(&prepared, || {
+                committed.set(true);
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(!committed.get());
+    assert!(updater.restore_prepared().await.is_err());
+    assert!(state.prepared().unwrap().is_none());
+    assert_eq!(
+        state.highest_verified().unwrap(),
+        Some(Version::new(0, 0, 2))
+    );
+    assert!(server.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn wrong_target_revalidation_keeps_a_good_linux_preparation_for_retry() {
+    let signed = envelope(&linux_manifest("0.0.2"));
+    let server = Fixture::new(vec![
+        ok(&signed),
+        ok(PAYLOAD),
+        ok(&envelope(&manifest("0.0.3"))),
+    ])
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let updater = test_updater(server.config_for_target(&temp, Target::LinuxX86_64)).unwrap();
+    let prepared = updater.download(&available(&updater).await).await.unwrap();
+    assert!(updater.revalidate(&prepared).await.is_err());
+    assert!(updater.restore_prepared().await.unwrap().is_some());
+    let state =
+        crate::state::StateStore::new(&temp.path().join("updates"), &prepared.installed_path)
+            .unwrap();
+    assert_eq!(
+        state.highest_verified().unwrap(),
+        Some(Version::new(0, 0, 2))
+    );
 }
 
 #[test]

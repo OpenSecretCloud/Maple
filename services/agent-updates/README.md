@@ -31,13 +31,16 @@ successful packaged update.
 Only GET and HEAD are supported. Metadata and errors use `no-store` at both
 browser and CDN layers. No origin fetch is made on failure.
 
-| Path                                     | Behavior                                                                         |
-| ---------------------------------------- | -------------------------------------------------------------------------------- |
-| `/agent/stable/latest.json`              | Exact signed envelope from `stable/latest.json`                                  |
-| `/agent/stable/releases/V/manifest.json` | Immutable signed envelope                                                        |
-| `/agent/stable/releases/V/FILE`          | Signed, enumerated artifact; GET/HEAD, single byte ranges, ETag, immutable cache |
-| `/download/agent/stable/macos`           | Uncached 302 to the current DMG                                                  |
-| `/download/agent/stable/linux-appimage`  | Uncached 302 only when Linux is present                                          |
+| Path                                           | Behavior                                                                         |
+| ---------------------------------------------- | -------------------------------------------------------------------------------- |
+| `/agent/stable/latest.json`                    | Exact v1 signed envelope from `stable/latest.json`                               |
+| `/agent/stable/linux/latest.json`              | Exact Linux v2 signed envelope from `stable/linux/latest.json`                   |
+| `/agent/stable/releases/V/manifest.json`       | Immutable v1 signed envelope                                                     |
+| `/agent/stable/releases/V/linux-manifest.json` | Immutable Linux v2 signed envelope                                               |
+| `/agent/stable/releases/V/FILE`                | Signed, enumerated artifact; GET/HEAD, single byte ranges, ETag, immutable cache |
+| `/download/agent/stable/macos`                 | Uncached 302 to the current DMG                                                  |
+| `/download/agent/stable/linux-appimage`        | Uncached 302 only when Linux is present                                          |
+| `/download/agent/stable/linux`                 | Uncached 302 to the current v2 Linux tar bundle                                  |
 
 Missing objects/targets return 404. Malformed metadata, mismatched stored sizes
 and bucket failures return bounded 503 responses. The Worker checks schema and
@@ -57,6 +60,22 @@ same `.AppImage`. Each artifact contains exactly `path`, positive `size` (at mos
 `/agent/stable/releases/<version>/` and end in one ASCII filename using letters,
 digits, `.`, `_`, `-`; traversal and encoded separators are rejected. Supporting
 build-info and provenance objects in R2 are private, not public artifact routes.
+
+The separate Linux feed uses `format: maple-agent-update-v2` with the same exact
+top-level fields and limits. Its `artifacts` contains only `linux-x86_64`, a
+`.tar.gz` bundle; its `downloads` contains only `linux-bundle`, describing that
+same path, size and hash. It cannot contain macOS or legacy AppImage targets.
+The original latest feed and immutable `manifest.json` require v1; Linux latest
+and `linux-manifest.json` require v2. The historical v1 schema and AppImage alias
+remain supported without reinterpreting stored signed bytes.
+
+Artifact lookup reads the requested version's fixed `manifest.json` first and
+serves an exact enumerated match without consulting Linux metadata. A missing
+or valid nonmatching v1 manifest permits an exact match from that version's
+`linux-manifest.json`. Every consulted manifest must have its required format
+and requested version; corrupt metadata returns 503 without fallback. No latest
+pointer authorizes a release artifact, and no unsigned auxiliary object is
+exposed by either feed.
 
 Limits: 128 KiB envelope, 64 KiB manifest, 4 KiB minisign signature, 16 KiB notes.
 Signature format is prehashed minisign Ed25519 with exact trusted comment

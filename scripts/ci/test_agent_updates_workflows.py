@@ -38,6 +38,9 @@ class AgentUpdatesWorkflows(unittest.TestCase):
         self.assertEqual(config["concurrency"], {
             "group": "agent-updates-production", "cancel-in-progress": False,
         })
+        # Normal releases keep both platforms on one version. Historical
+        # macOS-only runs remain available through an explicit override.
+        self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["include_linux"]["default"], True)
         jobs = config["jobs"]
         self.assertEqual(set(jobs), {"verify", "reserve", "sign", "publish"})
         self.assertNotIn("environment", jobs["verify"])

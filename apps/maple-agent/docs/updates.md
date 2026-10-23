@@ -1,12 +1,13 @@
 # Agent updates
 
 Packaged Prod builds use the Agent-only signed update service at
-`https://updates.trymaple.ai/agent/stable/latest.json`. Dev and unpackaged
+`https://updates.trymaple.ai/agent/stable/latest.json` on macOS and
+`https://updates.trymaple.ai/agent/stable/linux/latest.json` on Linux. Dev and unpackaged
 builds do not check that service. The Prod profile now pins the reviewed primary
 and backup public keys, so packaged Prod builds check the compiled feed after
-launch. Publication remains disabled pending owner service and routing setup;
-pinning keys does not deploy or publish anything. Invitations still require the
-signed installed-update rehearsal below. Environment
+launch. Builds and production publication remain separate operations;
+pinning keys does not deploy or publish anything. Invitations require the
+platform-specific signed installed-update rehearsal below. Environment
 variables cannot supply a feed or signing key. `MAPLE_DISABLE_UPDATE_CHECK=1`
 can only disable checks. A profile with no keys still shows **Updates not
 configured** and makes no updater requests.
@@ -29,7 +30,7 @@ The installer holds the per-application lock while staging a verified bundle
 beside the installed application and while that update is ready. It checks the
 fresh signed offer again and holds the profile's existing startup and host ownership locks from host stop
 through replacement. It checks the payload and staged tree again before macOS's
-atomic bundle exchange. A previous bundle remains in the staging directory until
+atomic bundle exchange or Linux directory exchange. A previous bundle remains in the staging directory until
 the new installed version starts successfully and validates its receipt. This
 is crash recovery retention, not automatic rollback or permission to install an
 older signed version.
@@ -44,14 +45,23 @@ the old process. A relaunch failure never triggers an automatic downgrade.
 Read-only locations, disk images, translocated bundles and accounts lacking
 replacement permission offer a manual download before active tasks stop. The
 installation lock uses one shared inode for the canonical application, readable
-by other Mac accounts; separate profile locks do not replace that exclusion.
+by other Mac accounts; Linux also binds staging and cleanup to its canonical
+installation. Separate profile locks do not replace that exclusion.
 Permissions are rechecked before host shutdown and replacement can still fail
 safely if the filesystem changes afterward.
 
-Linux currently offers manual installation: the AppImage self-launch
-repair is a prerequisite, and does not by itself prove safe replacement and
-relaunch. Enabling Linux automatic installation requires the packaged gates
-below. Unsupported architectures do not install another architecture's payload.
+Linux x86_64 uses a persistent user-local directory bundle distributed as a
+`.tar.gz`, with launcher and desktop integration. The bundle carries its loader
+and client libraries; users need no FUSE mount or Nix runtime. Host graphics
+drivers, CA certificates and desktop services remain required. Read-only,
+inconsistent or unsupported installations offer the signed manual download.
+Unsupported architectures do not install another architecture's payload.
+See [desktop builds](desktop-builds.md) for installation commands.
+
+The bundled loader makes `current_exe()` refer to the loader. Detached hosts and
+reopen use the validated persistent `AppRun`; the bounded SQL integrity child
+executes the validated loader/payload directly to preserve parent ownership and
+private stdin. After replacement, restart targets the committed bundle's `AppRun`.
 
 ## Wire and trust contract
 
@@ -65,8 +75,14 @@ The `maple-agent-update-v1` manifest identifies `maple-agent`, `stable`, a
 canonical stable SemVer, a positive decimal build number, the source commit,
 UTC publication date, bounded plain-text notes, updater artifacts, and manual
 downloads. macOS arm64 uses `.app.tar.gz` for installation and `.dmg` for manual
-download. Optional Linux x86_64 entries reference the same `.AppImage` in both
-inventories. Each object has a signed path, byte size, and SHA-256.
+download. Legacy v1 parsing retains its optional `.AppImage` contract, but new
+macOS publications remain mac-only for compatibility with installed clients.
+Linux uses a separate `maple-agent-update-v2` envelope with only
+`artifacts["linux-x86_64"]` and `downloads["linux-bundle"]`, both describing the
+same `.tar.gz`. Its immutable envelope is `releases/<version>/linux-manifest.json`;
+macOS retains `releases/<version>/manifest.json`. Clients bind their target to the
+matching schema and compiled feed before advancing state. Each artifact has a
+signed path, byte size, and SHA-256.
 
 Paths stay under `/agent/stable/releases/<version>/<filename>`. Metadata is
 bounded to 128 KiB, manifest text to 64 KiB, signature text to 4 KiB, release notes
@@ -102,6 +118,15 @@ archive. Extraction bounds entries, expanded bytes and path lengths; it rejects
 path traversal, hard links, special files, duplicate paths and escaping or cyclic
 symlinks while allowing internal framework links. No downloaded executable runs
 before replacement.
+
+Linux installation additionally requires canonical `bundle.json` identity,
+matching running version/source and the expected persistent layout. Preparation
+uses the same bounded archive/tree scanner. Under the install lock, replacement
+rechecks the actual installed version and atomically exchanges directories with
+`RENAME_EXCHANGE`; unsupported filesystems fail before commit. A stale process
+cannot replace a newer installed bundle. Stage names are installation-specific,
+and cleanup authenticates the receipt and new installed tree after successful
+store bootstrap before deleting a retained previous bundle.
 
 ## Owner setup before activation
 
@@ -163,7 +188,7 @@ signature/notarization checks remain intact.
 They do not prove Developer ID distribution, deployed service behavior, or a
 successful real package update.
 
-Before invites, publish an unadvertised signed `0.0.1`, then `0.0.2`, and run the
+Before invites, publish two unadvertised signed increasing versions and run the
 actual installed application's check, download, confirmation, host stop, swap
 and relaunch through the production service. Verify active host clients cannot
 start during installation, the new version works, and a failed or interrupted
@@ -171,12 +196,15 @@ attempt preserves a runnable installation. Keep version, build, source SHA,
 workflow run, manifest, artifact hashes, OS, install location and observed result
 with the rehearsal evidence. The invitation date slips if these gates fail.
 
-For Linux, first verify AppImage GUI, host, ACP and reopen behavior on the target
-Ubuntu environment, including spaces in the path and the supported extraction
-mode. Then verify a real AppImage N-to-N+1 replacement and relaunch with host
-exclusion and failure recovery. Until that evidence exists, Linux automatic
-installation stays disabled and Linux does not count as passing the preview's
-updater gate. Do not infer package proof from a launcher fixture or Rust unit test.
+For Linux, first verify tar-bundle installation, GUI, host, ACP and reopen on the
+available Ubuntu environment, including spaces in the path, a clean runtime
+environment and no FUSE or Nix runtime. The first release targets `0.0.4`; an
+owner Omarchy test provides additional desktop coverage. Fedora and other distro
+compatibility remain unverified until exercised. Then verify a real signed
+N-to-N+1 directory replacement/relaunch through the production UI with host
+exclusion, persistence and failure recovery. The first installation alone does
+not pass the preview's updater gate. Do not infer package proof from a launcher
+fixture or Rust unit test; assess audio, portals, CUA and GPU support separately.
 
 Recovery must preserve the signed high-water mark. Fix a bad offer by publishing
 a new, higher version; do not rewrite an immutable version or lower the pointer

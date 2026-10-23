@@ -39,6 +39,8 @@ class GuiSmokeTests(unittest.TestCase):
             }, target)
 
     def fixture(self, behavior):
+        # Timeout fixtures allow cold sandbox Python initialization before
+        # cleanup assertions depend on the child's PID record and signal setup.
         program = '''import json, os, pathlib, signal, sys, time
 record = pathlib.Path(sys.argv[1])
 record.write_text(json.dumps({"pid": os.getpid(), "environment": dict(os.environ), "cwd": os.getcwd()}))
@@ -78,7 +80,7 @@ print("startup: window open at 20 ms", file=sys.stderr, flush=True)
 time.sleep(30)
 ''')
         with self.assertRaisesRegex(smoke.SmokeError, "startup timeout"):
-            smoke.observe_gui(command, timeout=0.4, settle=0.1)
+            smoke.observe_gui(command, timeout=5, settle=0.1)
         self.assert_cleaned()
         self.assertIsNone(unrelated.poll())
 
@@ -154,7 +156,7 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN)
 time.sleep(30)
 ''')
         with self.assertRaisesRegex(smoke.SmokeError, "startup timeout"):
-            smoke.observe_gui(command, timeout=0.4, settle=0.1)
+            smoke.observe_gui(command, timeout=5, settle=0.1)
         self.assert_cleaned()
 
     def test_regular_agent_bundle_and_non_agent_or_symlink_rejection(self):

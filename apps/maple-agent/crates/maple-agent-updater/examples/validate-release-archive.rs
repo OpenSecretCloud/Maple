@@ -3,7 +3,7 @@
 
 use std::{fs::File, io::Read, path::Path};
 
-use maple_agent_updater::installer::validate_archive;
+use maple_agent_updater::installer::{validate_archive, validate_linux_bundle_archive};
 use sha2::{Digest, Sha256};
 
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -37,12 +37,23 @@ fn digest(path: &Path) -> anyhow::Result<(String, u64)> {
 
 fn main() -> anyhow::Result<()> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    anyhow::ensure!(
-        arguments.len() == 2,
-        "usage: validate-release-archive ARCHIVE EXPECTED_SHA256"
-    );
-    let path = Path::new(&arguments[0]);
-    let expected = arguments[1]
+    let (archive, expected, profile) = match arguments.as_slice() {
+        [archive, expected] => (archive, expected, None),
+        [mode, flag, profile, archive, expected]
+            if mode == "--linux-bundle" && flag == "--profile" =>
+        {
+            let profile = profile
+                .to_str()
+                .filter(|value| matches!(*value, "dev" | "prod"))
+                .ok_or_else(|| anyhow::anyhow!("Linux bundle profile must be dev or prod"))?;
+            (archive, expected, Some(profile))
+        }
+        _ => anyhow::bail!(
+            "usage: validate-release-archive [--linux-bundle --profile dev|prod] ARCHIVE EXPECTED_SHA256"
+        ),
+    };
+    let path = Path::new(archive);
+    let expected = expected
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("digest must be ASCII"))?;
     anyhow::ensure!(
@@ -57,7 +68,11 @@ fn main() -> anyhow::Result<()> {
         before.0 == expected,
         "archive does not match the package checksum"
     );
-    validate_archive(path)?;
+    if let Some(profile) = profile {
+        validate_linux_bundle_archive(path, profile)?;
+    } else {
+        validate_archive(path)?;
+    }
     anyhow::ensure!(digest(path)? == before, "archive changed during validation");
     println!(
         "{}",

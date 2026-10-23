@@ -99,9 +99,11 @@ ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 
 Packaged Agent Prod uses its independently signed R2 update feed with compiled
-primary and backup public-key pins. Packaged Prod checks the compiled feed;
-publication remains disabled pending owner service setup. Invitations still
-require the signed installed-update rehearsal.
+primary and backup public-key pins. Packaged Prod checks the compiled platform
+feed; publication is a separate protected operation. Invitations require the
+platform-specific signed installed-update rehearsal. Linux uses user-owned tar
+bundles and a separate v2 wire schema, preserving the shipped macOS v1 feed;
+one release may update both platforms to the same version.
 Dev and unpackaged builds have no production updater. Empty-key profiles still
 disable update traffic. Do not substitute a test key or inherit feed/key overrides
 from the launch environment. Embedded profiles, bundle IDs and state namespaces

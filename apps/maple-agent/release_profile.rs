@@ -18,8 +18,21 @@ pub struct ReleaseProfile {
     pub pcr_environment: String,
     pub update_tag_prefix: String,
     pub update_feed_url: Option<String>,
+    pub linux_update_feed_url: Option<String>,
     pub update_public_keys: Vec<String>,
     pub prerelease: bool,
+}
+
+impl ReleaseProfile {
+    /// The platform feed is compiled into both constants and build metadata.
+    /// Unsupported targets never inherit another platform's update protocol.
+    pub fn update_feed_for_target_os(&self, target_os: &str) -> Option<&str> {
+        match target_os {
+            "macos" => self.update_feed_url.as_deref(),
+            "linux" => self.linux_update_feed_url.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
@@ -87,6 +100,12 @@ fn validate_profiles(profiles: &BTreeMap<String, ReleaseProfile>) -> Result<(), 
             } else {
                 None
             }
+            || profile.linux_update_feed_url.as_deref()
+                != if channel == "prod" {
+                    Some("https://updates.trymaple.ai/agent/stable/linux/latest.json")
+                } else {
+                    None
+                }
             || (channel == "dev" && !profile.update_public_keys.is_empty())
             || !matches!(profile.update_public_keys.len(), 0 | 2)
             || profile
@@ -141,6 +160,7 @@ pub fn select_profile(
         // Development binaries must never discover or install a Prod update,
         // even if the selected packaged profile gains signing keys later.
         profile.update_feed_url = None;
+        profile.linux_update_feed_url = None;
         profile.update_public_keys.clear();
         // Local/MDE builds keep the existing explicit PCR override. Invalid
         // values still fail runtime validation rather than being normalized.
@@ -210,7 +230,8 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
     constants.push_str(&format!(
         "pub const AUTH_ORIGIN: Option<&str> = {auth_origin};\n"
     ));
-    let update_feed_url = match profile.update_feed_url.as_deref() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo target OS");
+    let update_feed_url = match profile.update_feed_for_target_os(&target_os) {
         Some(url) => format!(
             "Some({})",
             serde_json::to_string(url).expect("profile update feed URL")
@@ -313,6 +334,38 @@ mod tests {
         let mut profiles = original;
         profiles.get_mut("dev").unwrap().update_public_keys = vec!["unapproved-key".into()];
         assert!(validate_profiles(&profiles).is_err());
+    }
+
+    #[test]
+    fn compiled_update_feeds_match_platform_and_disable_unsupported_targets() {
+        let (_, prod) = select_profile(Some("prod"), None).unwrap();
+        assert_eq!(
+            prod.update_feed_for_target_os("macos"),
+            Some("https://updates.trymaple.ai/agent/stable/latest.json")
+        );
+        assert_eq!(
+            prod.update_feed_for_target_os("linux"),
+            Some("https://updates.trymaple.ai/agent/stable/linux/latest.json")
+        );
+        for target_os in ["windows", "freebsd", ""] {
+            assert_eq!(prod.update_feed_for_target_os(target_os), None);
+        }
+        for channel in [None, Some("dev")] {
+            let (_, profile) = select_profile(channel, None).unwrap();
+            for target_os in ["macos", "linux", "windows"] {
+                assert_eq!(profile.update_feed_for_target_os(target_os), None);
+            }
+        }
+        for channel in ["dev", "prod"] {
+            for feed in [None, Some("https://wrong.example/latest.json".into())] {
+                let mut configured = profiles().unwrap();
+                configured.get_mut(channel).unwrap().linux_update_feed_url = feed;
+                assert_eq!(
+                    validate_profiles(&configured).is_ok(),
+                    channel == "dev" && configured["dev"].linux_update_feed_url.is_none()
+                );
+            }
+        }
     }
 
     #[test]

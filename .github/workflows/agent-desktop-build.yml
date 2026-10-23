@@ -269,7 +269,7 @@ jobs:
           retention-days: 30
 
   linux:
-    name: Linux AppImage (${{ matrix.variant }})
+    name: Linux bundle (${{ matrix.variant }})
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') && (github.event_name == 'pull_request' || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -311,7 +311,7 @@ jobs:
           cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
       - name: Build optimized Agent with embedded profile
         run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
-      - name: Package Linux AppImage
+      - name: Package Linux installed bundle
         run: |
           args=()
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
@@ -320,7 +320,7 @@ jobs:
         run: |
           args=()
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" "${args[@]}"
+          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" "${args[@]}" --platform linux-x86_64
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -351,16 +351,36 @@ jobs:
       id-token: write
       attestations: write
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        with:
+          source-tag: v3.23.3
+          github-token: ""
+      - name: Verify pinned Nix runtime
+        working-directory: .
+        run: bash scripts/ci/verify-nix-runtime.sh
+      - name: Build trusted installer archive scanner
+        run: nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
           path: artifacts
+      - name: Validate exact Linux artifact inventory and identity
+        run: python3 scripts/release-info.py verify "$MAPLE_RELEASE_PROFILE" ../../artifacts --source-sha "$GITHUB_SHA" --platform linux-x86_64
+      - name: Scan actual Linux bundle with installer parser
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh ../../artifacts --profile "$MAPLE_RELEASE_PROFILE" --platform linux-x86_64
       - name: Attest exact downloadable Linux packages
         uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
         with:
@@ -472,26 +492,37 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Build trusted installer archive scanner
+        run: nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
+      - name: Scan downloaded Linux bundle with installer parser
+        run: |
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
+          nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh "../../artifacts" --profile "$MAPLE_RELEASE_PROFILE" --platform linux-x86_64 "${args[@]}"
       - name: Verify downloaded hashes and profile
         run: |
           args=()
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
-          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts" "${args[@]}"
-      - name: Smoke downloaded AppImage without Nix
+          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts" "${args[@]}" --platform linux-x86_64
+      - name: Smoke downloaded Linux bundle without Nix
         working-directory: .
         run: |
           set -euo pipefail
-          image="$(find artifacts -maxdepth 1 -type f -name '*.AppImage')"
-          test -n "$image"
-          test "$(printf '%s\n' "$image" | wc -l)" -eq 1
+          shopt -s nullglob
+          archives=(artifacts/*-linux-x86_64.tar.gz)
+          test "${#archives[@]}" -eq 1
+          test -d /etc/ssl/certs
           docker run --rm --platform linux/amd64 --user 65534:65534 \
             --network none --read-only --tmpfs /tmp:exec,mode=1777 \
             --volume "$PWD/artifacts:/artifacts:ro" \
+            --volume "$PWD/apps/maple-agent/scripts/smoke-linux-bundle-host.sh:/checks/smoke-linux-bundle-host.sh:ro" \
+            --volume /etc/ssl/certs:/etc/ssl/certs:ro \
             ubuntu@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b /bin/sh -ec '
               cd /tmp
-              /artifacts/*.AppImage --appimage-extract >/dev/null
-              ./squashfs-root/AppRun --version >&2
-              ./squashfs-root/AppRun --build-info
+              tar -xzpf /artifacts/*-linux-x86_64.tar.gz
+              ./maple-agent*.app/AppRun --version >&2
+              ./maple-agent*.app/AppRun --build-info
+              MAPLE_AGENT_SMOKE_DIAGNOSTICS=1 /bin/sh /checks/smoke-linux-bundle-host.sh ./maple-agent*.app/AppRun >&2
             ' > "$RUNNER_TEMP/portable-build-info.json"
           python3 - "$MAPLE_RELEASE_PROFILE" "$RUNNER_TEMP/portable-build-info.json" artifacts/build-info.json <<'PY'
           import json
@@ -499,6 +530,6 @@ jobs:
           actual = json.load(open(sys.argv[2]))
           expected = json.load(open(sys.argv[3]))
           if actual != expected or actual.get("profile") != sys.argv[1]:
-              raise SystemExit("portable AppImage build profile differs from verified package")
+              raise SystemExit("portable Linux bundle build profile differs from verified package")
           print("Verified Agent launch and embedded profile without a Nix installation")
           PY

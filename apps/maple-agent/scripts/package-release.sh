@@ -41,13 +41,14 @@ if [[ "$platform" == macos-aarch64 ]]; then
 else
     "$binary" --build-info > "$staging/build-info.json"
 fi
-python3 "$metadata_tool" validate "$profile" "$staging/build-info.json" --source-sha "$source_sha"
-field() { python3 "$metadata_tool" field "$profile" "$staging/build-info.json" --field "$1"; }
+python3 "$metadata_tool" validate "$profile" "$staging/build-info.json" --source-sha "$source_sha" --platform "$platform"
+field() { python3 "$metadata_tool" field "$profile" "$staging/build-info.json" --field "$1" --platform "$platform"; }
 export MAPLE_PACKAGE_CHANNEL="$profile"
 export MAPLE_PACKAGE_APP_NAME="$(field display_name)"
 export MAPLE_PACKAGE_BUNDLE_ID="$(field bundle_id)"
 export MAPLE_PACKAGE_VERSION="$(field version)"
 export MAPLE_PACKAGE_BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"
+export MAPLE_PACKAGE_SOURCE_SHA="$source_sha"
 export SOURCE_DATE_EPOCH="$(git -C "$component" show -s --format=%ct "$source_sha")"
 name="maple-agent-${profile}-${MAPLE_PACKAGE_VERSION}-$(field git_revision)-${platform}"
 
@@ -59,13 +60,13 @@ if [[ "$platform" == macos-aarch64 ]]; then
     APPLE_TEAM_ID="${APPLE_TEAM_ID:-}" \
         "$component/scripts/macos-release-app.sh" "$binary" "$staging" "$name" "${unsigned[@]}"
 else
-    "$component/scripts/linux-release-appimage.sh" "$binary" "$staging/${name}.AppImage"
+    "$component/scripts/linux-release-bundle.sh" "$binary" "$staging/${name}.tar.gz"
 fi
 python3 "$metadata_tool" manifest "$profile" "$staging/build-info.json" \
     --output "$staging" --platform "$platform" "${unsigned[@]}"
 verification=()
 [[ "$platform" != macos-aarch64 ]] || verification=(--static)
-"$component/scripts/verify-release.sh" "$profile" "$staging" "${unsigned[@]}" "${verification[@]}"
+"$component/scripts/verify-release.sh" "$profile" "$staging" "${unsigned[@]}" "${verification[@]}" --platform "$platform"
 
 # Keep the previous package until the complete new package passes verification.
 destination="$component/dist/$profile"

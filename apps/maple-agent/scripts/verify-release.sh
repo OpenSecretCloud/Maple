@@ -3,27 +3,33 @@
 set +x
 set -euo pipefail
 umask 077
-if [[ $# -lt 2 || $# -gt 4 || ( "$1" != dev && "$1" != prod ) ]]; then
-    echo "usage: verify-release.sh dev|prod ARTIFACT_DIRECTORY [--unsigned] [--static]" >&2
+if [[ $# -lt 2 || ( "$1" != dev && "$1" != prod ) ]]; then
+    echo "usage: verify-release.sh dev|prod ARTIFACT_DIRECTORY [--unsigned] [--static] [--platform PLATFORM]" >&2
     exit 2
 fi
 profile="$1"
 directory="$(cd "$2" && pwd)"
 unsigned=()
 static=false
+platform_options=()
 shift 2
-for option in "$@"; do
-    case "$option" in
-        --unsigned) [[ ${#unsigned[@]} == 0 ]] || exit 2; unsigned=(--unsigned) ;;
-        --static) [[ "$static" == false ]] || exit 2; static=true ;;
-        *) echo "unknown verification option: $option" >&2; exit 2 ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --unsigned) [[ ${#unsigned[@]} == 0 ]] || exit 2; unsigned=(--unsigned); shift ;;
+        --static) [[ "$static" == false ]] || exit 2; static=true; shift ;;
+        --platform)
+            [[ ${#platform_options[@]} == 0 && $# -ge 2 && ( "$2" == macos-aarch64 || "$2" == linux-x86_64 ) ]] || exit 2
+            platform_options=(--platform "$2")
+            shift 2
+            ;;
+        *) echo "unknown verification option: $1" >&2; exit 2 ;;
     esac
 done
 component="$(cd "$(dirname "$0")/.." && pwd)"
 unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_PASSWORD APPLE_TEAM_ID
 unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 expected_source="$(git -C "$component" rev-parse HEAD)"
-manifest="$(python3 "$component/scripts/release-info.py" verify "$profile" "$directory" --source-sha "$expected_source" "${unsigned[@]}")"
+manifest="$(python3 "$component/scripts/release-info.py" verify "$profile" "$directory" --source-sha "$expected_source" "${unsigned[@]}" "${platform_options[@]}")"
 platform="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["platform"])' "$manifest")"
 package="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["package"])' "$manifest")"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/maple-agent-verify.XXXXXX")"
@@ -135,15 +141,16 @@ PY
 else
     [[ "$static" == false ]] || { echo "static verification is only supported for macOS packages" >&2; exit 2; }
     [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]] || { echo "Linux artifacts require x86_64 verification" >&2; exit 1; }
-    # GitHub artifact download preserves bytes but resets executable file modes.
-    # Restore public execution before the subsequent non-root/no-Nix smoke.
-    chmod 0755 "$directory/$package"
-    # Preserve stored public modes for audit. Keep private verifier files under
-    # the outer 077 umask, and do not mask unsafe archive modes into safe ones.
-    (umask 000; cd "$temporary" && "$directory/$package" --appimage-extract >/dev/null)
-    python3 "$component/scripts/linux-release-appimage.py" audit "$temporary/squashfs-root"
-    "$temporary/squashfs-root/AppRun" --build-info > "$temporary/build-info.json"
+    # Parse and audit stored bundle paths/modes before executing the payload.
+    # Extraction remains private and does not install into the user's app tree.
+    python3 "$component/scripts/linux-release-bundle.py" extract "$directory/$package" \
+        "$temporary/extracted" --profile "$profile"
+    bundle_root=maple-agent.app
+    [[ "$profile" == prod ]] || bundle_root=maple-agent-dev.app
+    app="$temporary/extracted/$bundle_root"
+    python3 "$component/scripts/linux-release-bundle.py" audit "$app"
+    "$app/AppRun" --build-info > "$temporary/build-info.json"
     cmp "$directory/build-info.json" "$temporary/build-info.json"
-    "$temporary/squashfs-root/AppRun" --version
+    "$app/AppRun" --version
 fi
 echo "verified ${profile} ${platform} release artifacts"

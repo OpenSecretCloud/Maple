@@ -25,7 +25,7 @@ class TrustTests(unittest.TestCase):
         self.jobs = {"total_count": 5, "jobs": [
             {"name": name, "status": "completed", "conclusion": "success"}
             for name in ("Signed macOS (prod)", "Verify downloaded macOS (prod)",
-                         "Linux AppImage (prod)", "Attest Linux packages (prod)",
+                         "Linux bundle (prod)", "Attest Linux packages (prod)",
                          "Verify downloaded Linux (prod)")
         ]}
 
@@ -120,6 +120,18 @@ class PinTests(unittest.TestCase):
         for bad in ({"prod": {}}, {"prod": {"update_feed_url": "https://elsewhere.invalid", "update_public_keys": [self.key]}}):
             with self.assertRaises(p.PublishError):
                 p.validate_pins(self.key, self.profile, bad)
+
+    def test_linux_feed_is_pinned_on_both_profiles_only_when_linux_selected(self):
+        # Historical Mac-only producers need no Linux profile field.
+        p.validate_pins(self.key, self.profile, deepcopy(self.profile), False)
+        profile = deepcopy(self.profile)
+        profile["prod"]["linux_update_feed_url"] = p.LINUX_FEED_URL
+        p.validate_pins(self.key, profile, deepcopy(profile), True)
+        for side in (0, 1):
+            profiles = [deepcopy(profile), deepcopy(profile)]
+            profiles[side]["prod"]["linux_update_feed_url"] = p.FEED_URL
+            with self.subTest(side=side), self.assertRaisesRegex(p.PublishError, "Linux update feed"):
+                p.validate_pins(self.key, *profiles, linux=True)
 
     def test_source_profile_is_read_at_exact_source_sha(self):
         with tempfile.TemporaryDirectory() as temporary:

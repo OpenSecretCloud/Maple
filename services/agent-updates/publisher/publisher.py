@@ -46,6 +46,7 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 ROOT = Path(__file__).resolve().parents[3]
 FEED_URL = "https://updates.trymaple.ai/agent/stable/latest.json"
+LINUX_FEED_URL = "https://updates.trymaple.ai/agent/stable/linux/latest.json"
 MACOS_METADATA_NAMES = {"macos-" + name for name in ("build-info.json", "manifest.json", "SHA256SUMS", "notarization-log.json", "dmg-notarization-log.json")}
 LINUX_METADATA_NAMES = {"linux-" + name for name in ("build-info.json", "manifest.json", "SHA256SUMS")}
 METADATA_NAMES = {"provenance.json"} | MACOS_METADATA_NAMES | LINUX_METADATA_NAMES
@@ -153,7 +154,7 @@ def validate_manifest(data):
     manifest = decode_json(data, MAX_MANIFEST)
     fields = {"format", "product", "channel", "version", "build", "source_sha", "pub_date", "notes", "artifacts", "downloads"}
     need(isinstance(manifest, dict) and set(manifest) == fields, "invalid manifest fields")
-    need(manifest["format"] == "maple-agent-update-v1" and manifest["product"] == "maple-agent" and manifest["channel"] == "stable", "wrong update identity")
+    need(manifest["format"] in {"maple-agent-update-v1", "maple-agent-update-v2"} and manifest["product"] == "maple-agent" and manifest["channel"] == "stable", "wrong update identity")
     version_tuple(manifest["version"])
     build = manifest["build"]
     need(isinstance(build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", build), "invalid build number")
@@ -168,8 +169,14 @@ def validate_manifest(data):
     need(isinstance(notes, str) and len(notes.encode("utf-8")) <= MAX_NOTES, "oversized notes")
     need(all(ord(char) >= 32 or char in "\n\t" for char in notes) and "\x7f" not in notes, "notes contain ASCII controls")
     artifacts, downloads = manifest["artifacts"], manifest["downloads"]
-    need(isinstance(artifacts, dict) and {"darwin-aarch64"} <= set(artifacts) <= {"darwin-aarch64", "linux-x86_64"}, "invalid update targets")
-    need(isinstance(downloads, dict) and set(downloads) == ({"macos", "linux-appimage"} if "linux-x86_64" in artifacts else {"macos"}), "downloads do not match update targets")
+    linux_v2 = manifest["format"] == "maple-agent-update-v2"
+    if linux_v2:
+        need(isinstance(artifacts, dict) and set(artifacts) == {"linux-x86_64"}, "invalid Linux v2 update targets")
+        need(isinstance(downloads, dict) and set(downloads) == {"linux-bundle"}, "invalid Linux v2 downloads")
+    else:
+        # Retain the legacy v1 contract when interpreting historical envelopes.
+        need(isinstance(artifacts, dict) and {"darwin-aarch64"} <= set(artifacts) <= {"darwin-aarch64", "linux-x86_64"}, "invalid update targets")
+        need(isinstance(downloads, dict) and set(downloads) == ({"macos", "linux-appimage"} if "linux-x86_64" in artifacts else {"macos"}), "downloads do not match update targets")
     for kind, entries in (("artifacts", artifacts), ("downloads", downloads)):
         for target, entry in entries.items():
             need(isinstance(entry, dict) and set(entry) == {"path", "size", "sha256"}, "invalid artifact record")
@@ -179,12 +186,12 @@ def validate_manifest(data):
             need(path.startswith(prefix), "artifact path has wrong release root")
             filename = path[len(prefix):]
             need(public_path(manifest["version"], filename) == path, "invalid artifact path")
-            suffix = ".app.tar.gz" if target == "darwin-aarch64" else ".dmg" if target == "macos" else ".AppImage"
+            suffix = ".tar.gz" if linux_v2 else ".app.tar.gz" if target == "darwin-aarch64" else ".dmg" if target == "macos" else ".AppImage"
             need(filename.endswith(suffix), "wrong artifact suffix")
             need(type(entry["size"]) is int and 0 < entry["size"] <= MAX_ARTIFACT, "invalid artifact size")
             need(isinstance(entry["sha256"], str) and DIGEST.fullmatch(entry["sha256"]), "invalid artifact digest")
     if "linux-x86_64" in artifacts:
-        need(artifacts["linux-x86_64"] == downloads["linux-appimage"], "Linux download and update differ")
+        need(artifacts["linux-x86_64"] == downloads["linux-bundle" if linux_v2 else "linux-appimage"], "Linux download and update differ")
     return manifest
 
 
@@ -240,7 +247,7 @@ def validate_run(run, jobs, linux=False):
     need(isinstance(jobs, dict) and jobs.get("total_count") == len(jobs.get("jobs", [])), "incomplete build job inventory")
     required = {"Signed macOS (prod)", "Verify downloaded macOS (prod)"}
     if linux:
-        required |= {"Linux AppImage (prod)", "Attest Linux packages (prod)", "Verify downloaded Linux (prod)"}
+        required |= {"Linux bundle (prod)", "Attest Linux packages (prod)", "Verify downloaded Linux (prod)"}
     for name in required:
         matches = [job for job in jobs["jobs"] if job.get("name") == name]
         need(len(matches) == 1 and matches[0].get("status") == "completed" and matches[0].get("conclusion") == "success", "required Prod package job did not succeed: " + name)
@@ -289,16 +296,18 @@ def public_key_text(path):
     return lines[0]
 
 
-def validate_pins(key, local_profile, source_profile):
+def validate_pins(key, local_profile, source_profile, linux=False):
     for profile in (local_profile, source_profile):
         need(isinstance(profile, dict) and isinstance(profile.get("prod"), dict), "missing Prod release profile")
         prod = profile["prod"]
         need(prod.get("update_feed_url") == FEED_URL, "Prod update feed does not match the production feed")
+        if linux:
+            need(prod.get("linux_update_feed_url") == LINUX_FEED_URL, "Prod Linux update feed does not match the production feed")
         keys = prod.get("update_public_keys")
         need(isinstance(keys, list) and all(isinstance(item, str) for item in keys) and key in keys, "signing key is not pinned by the selected source and trusted publisher")
 
 
-def check_source_pins(public_key, source_sha):
+def check_source_pins(public_key, source_sha, linux=False):
     key = public_key_text(public_key)
     local = decode_json(read_bytes(ROOT / "apps/maple-agent/release-profiles.json", MAX_MANIFEST))
     response = gh_json(f"repos/{REPOSITORY}/contents/apps/maple-agent/release-profiles.json?ref={source_sha}")
@@ -307,7 +316,7 @@ def check_source_pins(public_key, source_sha):
         source_bytes = base64.b64decode(response["content"].replace("\n", ""), validate=True)
     except ValueError as error:
         raise PublishError("selected source profile encoding is invalid") from error
-    validate_pins(key, local, decode_json(source_bytes, MAX_MANIFEST))
+    validate_pins(key, local, decode_json(source_bytes, MAX_MANIFEST), linux)
     return key
 
 
@@ -397,6 +406,49 @@ def validate_archive_build(archive, version, build, bundle_id="cloud.opensecret.
     need(found.get("CFBundleVersion") == build and found.get("CFBundleShortVersionString") == version and found.get("CFBundleIdentifier") == bundle_id, "app Info.plist build, version or identity differs from selected run")
 
 
+class LinuxTarInfo(BoundedTarInfo):
+    def _proc_member(self, archive):
+        need(getattr(archive, "maple_headers", 0) < 20_000, "Linux archive exceeds bounded header inventory")
+        if self.type in {tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE, tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK}:
+            need(self.size <= 16 * 1024, "Linux archive extension metadata exceeds bounds")
+        return super()._proc_member(archive)
+
+
+def validate_linux_archive_build(archive, version, build, source_sha, bundle_id):
+    """Bind the small descriptor without extracting or executing the Linux app.
+
+    The producer and downloaded consumer additionally scan the complete layout.
+    This publisher check independently binds their payload to the selected run.
+    """
+    expected = {"format": "maple-agent-linux-bundle-v1", "product": "maple-agent",
+                "profile": "prod", "version": version, "build": build,
+                "source_sha": source_sha, "bundle_id": bundle_id,
+                "entrypoint": "AppRun", "executable": "usr/bin/maple-agent"}
+    need(isinstance(build, str) and re.fullmatch(r"[1-9][0-9]{0,17}", build), "Linux package build must match the selected run")
+    found, count, expanded = None, 0, 0
+    try:
+        with regular_file(archive) as compressed:
+            with tarfile.open(fileobj=compressed, mode="r|gz", tarinfo=LinuxTarInfo) as source:
+                for member in source:
+                    count += 1
+                    expanded += member.size
+                    need(count <= 20_000 and len(member.name.encode("utf-8")) <= 1024
+                         and 0 <= member.size <= 2 * 1024**3 and expanded <= 4 * 1024**3,
+                         "Linux archive exceeds bounded inventory")
+                    if member.name != "maple-agent.app/bundle.json":
+                        continue
+                    need(found is None and member.isfile() and 0 < member.size <= MAX_MANIFEST,
+                         "invalid or duplicate Linux bundle descriptor")
+                    with source.extractfile(member) as payload:
+                        data = payload.read(MAX_MANIFEST + 1)
+                    need(len(data) == member.size, "truncated Linux bundle descriptor")
+                    found = decode_json(data, MAX_MANIFEST)
+                    need(isinstance(found, dict), "invalid Linux bundle descriptor")
+    except (tarfile.TarError, EOFError, OSError, RecursionError) as error:
+        raise PublishError("invalid Linux bundle archive") from error
+    need(found == expected, "Linux bundle build, version, source or identity differs from selected run")
+
+
 def validate_package(directory, platform, source_sha, version, attestor=attest, expected_build=None, metadata_records=None):
     directory = Path(directory)
     need(directory.is_dir() and not directory.is_symlink(), "package input must be a directory")
@@ -407,12 +459,12 @@ def validate_package(directory, platform, source_sha, version, attestor=attest, 
     release_info = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(release_info)
     try:
-        release_info.validate_info("prod", info, source_sha)
+        release_info.validate_info("prod", info, source_sha, platform)
     except (ValueError, KeyError, TypeError) as error:
         raise PublishError("package does not match the Prod build identity") from error
     need(info["version"] == version, "package version differs from publication version")
     stem = f"maple-agent-prod-{version}-{info['git_revision']}-{platform}"
-    package = stem + (".dmg" if platform == "macos-aarch64" else ".AppImage")
+    package = stem + (".dmg" if platform == "macos-aarch64" else ".tar.gz")
     binaries = [package, stem + ".app.tar.gz"] if platform == "macos-aarch64" else [package]
     expected = {"build-info.json", "manifest.json", "SHA256SUMS", *binaries}
     if platform == "macos-aarch64":
@@ -442,6 +494,8 @@ def validate_package(directory, platform, source_sha, version, attestor=attest, 
             need(isinstance(notary, dict) and notary.get("status") == "Accepted" and notary.get("issues") in (None, []), "package notarization was not accepted")
         if expected_build is not None:
             validate_archive_build(directory / binaries[1], version, expected_build, info["bundle_id"])
+    if platform == "linux-x86_64":
+        validate_linux_archive_build(directory / binaries[0], version, expected_build, source_sha, info["bundle_id"])
     for name in sorted(expected):
         attestor(directory / name, source_sha)
     if metadata_records is not None:
@@ -453,21 +507,25 @@ def prepare(run_id, version, build, macos, linux, notes_file, output, public_key
     version_tuple(version)
     proof = trust_run(run_id, bool(linux))
     need(build == proof["build"], "build number must match the package run number")
-    key = check_source_pins(public_key, proof["source_sha"])
+    key = check_source_pins(public_key, proof["source_sha"], bool(linux))
     notes = read_bytes(notes_file, MAX_NOTES).decode("utf-8")
     mac_metadata, linux_metadata = {}, {}
     mac = validate_package(macos, "macos-aarch64", proof["source_sha"], version, expected_build=proof["build"], metadata_records=mac_metadata)
-    lin = validate_package(linux, "linux-x86_64", proof["source_sha"], version, metadata_records=linux_metadata) if linux else []
+    lin = validate_package(linux, "linux-x86_64", proof["source_sha"], version, expected_build=proof["build"], metadata_records=linux_metadata) if linux else []
     manifest = {"format": "maple-agent-update-v1", "product": "maple-agent", "channel": "stable", "version": version, "build": build, "source_sha": proof["source_sha"], "pub_date": pub_date or proof["pub_date"], "notes": notes, "artifacts": {"darwin-aarch64": mac[1][1]}, "downloads": {"macos": mac[0][1]}}
-    if lin:
-        manifest["artifacts"]["linux-x86_64"] = lin[0][1]
-        manifest["downloads"]["linux-appimage"] = lin[0][1]
     data = encode_json(manifest)
     validate_manifest(data)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     need(not output.is_symlink(), "bundle directory must not be a symlink")
     write_once(output / "manifest.json", data)
+    if lin:
+        linux_manifest = {**manifest, "format": "maple-agent-update-v2",
+                          "artifacts": {"linux-x86_64": lin[0][1]},
+                          "downloads": {"linux-bundle": lin[0][1]}}
+        linux_data = encode_json(linux_manifest)
+        validate_manifest(linux_data)
+        write_once(output / "linux-manifest.json", linux_data)
     write_once(output / "trust.json", encode_json(proof))
     write_once(output / "public-key.pub", ("untrusted comment: Maple Agent update key\n" + key + "\n").encode("ascii"))
     metadata = output / "metadata"
@@ -502,10 +560,59 @@ def prepare(run_id, version, build, macos, linux, notes_file, output, public_key
     return manifest
 
 
+def bundle_manifests(bundle):
+    """Both exact unsigned wire documents are prepared before reservation/signing.
+
+    The first document remains compatible with shipped v1 Mac clients. Linux v2
+    has a separate pointer, immutable envelope and reservation in the same bucket.
+    """
+    bundle = Path(bundle)
+    publications = []
+    for name, envelope, reservation, pointer in (
+        ("manifest.json", "envelope.json", "publication-manifest.json", "stable/latest.json"),
+        ("linux-manifest.json", "linux-envelope.json", "publication-linux-manifest.json", "stable/linux/latest.json"),
+    ):
+        path = bundle / name
+        if name == "linux-manifest.json" and not (path.exists() or path.is_symlink()):
+            need(not ((bundle / envelope).exists() or (bundle / envelope).is_symlink()), "Linux envelope has no prepared manifest")
+            continue
+        data = read_bytes(path, MAX_MANIFEST)
+        manifest = validate_manifest(data)
+        if not publications:
+            need(manifest["format"] == "maple-agent-update-v1" and set(manifest["artifacts"]) == {"darwin-aarch64"}, "new Mac publication must remain mac-only v1")
+        else:
+            need(manifest["format"] == "maple-agent-update-v2", "Linux publication must use v2")
+            primary = publications[0]["manifest"]
+            need(all(manifest[field] == primary[field] for field in
+                     ("product", "channel", "version", "build", "source_sha", "pub_date", "notes")),
+                 "Mac and Linux release identity differs")
+        publications.append({"name": name, "envelope_name": envelope, "reservation": reservation,
+                             "pointer": pointer, "data": data, "manifest": manifest})
+    return publications
+
+
+def reservation_receipt(publications, metadata_inventory):
+    primary = publications[0]
+    receipt = {"manifest_sha256": hashlib.sha256(primary["data"]).hexdigest(),
+               "metadata_inventory_sha256": hashlib.sha256(metadata_inventory).hexdigest(),
+               "version": primary["manifest"]["version"]}
+    if len(publications) == 2:
+        receipt["linux_manifest_sha256"] = hashlib.sha256(publications[1]["data"]).hexdigest()
+    return receipt
+
+
 def bundle_records(bundle, manifest):
     payloads = Path(bundle) / "payloads"
     need(payloads.is_dir() and not payloads.is_symlink(), "invalid prepared payload directory")
-    records = {record["path"].rsplit("/", 1)[1]: record for record in [*manifest["artifacts"].values(), *manifest["downloads"].values()]}
+    publications = bundle_manifests(bundle)
+    need(publications[0]["manifest"] == manifest, "primary prepared manifest differs")
+    records = {}
+    for publication in publications:
+        wire = publication["manifest"]
+        for record in [*wire["artifacts"].values(), *wire["downloads"].values()]:
+            name = record["path"].rsplit("/", 1)[1]
+            need(name not in records or records[name] == record, "conflicting prepared artifact records")
+            records[name] = record
     need(set(path.name for path in payloads.iterdir()) == set(records), "prepared payload inventory differs")
     for name, record in records.items():
         need(hash_file(payloads / name, record["size"]) == (record["sha256"], record["size"]), "prepared artifact hash differs")
@@ -519,7 +626,7 @@ def bundle_metadata(bundle, manifest):
     data = read_bytes(index, MAX_MANIFEST)
     inventory = decode_json(data, MAX_MANIFEST)
     expected = {"provenance.json"} | MACOS_METADATA_NAMES
-    if "linux-x86_64" in manifest["artifacts"]:
+    if len(bundle_manifests(bundle)) == 2:
         expected |= LINUX_METADATA_NAMES
     need(isinstance(inventory, dict) and set(inventory) == expected, "private metadata inventory must contain the exact sidecars for every included target")
     directory = bundle / "metadata"
@@ -663,102 +770,113 @@ def immutable_put(store, key, data, content_type="application/octet-stream", max
 
 def reserve(bundle, store, public_key=None):
     bundle = Path(bundle)
-    data = read_bytes(bundle / "manifest.json", MAX_MANIFEST)
-    manifest = validate_manifest(data)
+    publications = bundle_manifests(bundle)
+    manifest = publications[0]["manifest"]
     bundle_records(bundle, manifest)
     metadata_inventory, _ = bundle_metadata(bundle, manifest)
-    # Reserve exact unsigned bytes before any signing job can use the version.
-    immutable_put(store, release_key(manifest["version"], "publication-manifest.json"), data, "application/json")
-    reserved = store.get(release_key(manifest["version"], "publication-manifest.json"), MAX_MANIFEST)
-    need(reserved is not None and reserved[0] == data, "reserved manifest read-back differs")
+    # Bind both exact unsigned documents and the complete sidecar inventory
+    # before the signing job can retrieve a key or use this release version.
+    for publication in publications:
+        key = release_key(manifest["version"], publication["reservation"])
+        immutable_put(store, key, publication["data"], "application/json")
+        reserved = store.get(key, MAX_MANIFEST)
+        need(reserved is not None and reserved[0] == publication["data"], "reserved manifest read-back differs")
     immutable_put(store, release_key(manifest["version"], "publication-metadata.json"), metadata_inventory, "application/json")
     reserved_metadata = store.get(release_key(manifest["version"], "publication-metadata.json"), MAX_MANIFEST)
     need(reserved_metadata is not None and reserved_metadata[0] == metadata_inventory, "reserved metadata read-back differs")
-    existing = store.get(release_key(manifest["version"], "manifest.json"), MAX_ENVELOPE)
-    if existing:
-        envelope, old_manifest = parse_envelope(existing[0])
-        need(envelope["manifest"].encode("utf-8") == data, "reserved envelope has different manifest bytes")
-        if public_key:
-            minisign_verify(existing[0], public_key)
-        write_once(bundle / "envelope.json", existing[0])
-    receipt = {"manifest_sha256": hashlib.sha256(data).hexdigest(), "metadata_inventory_sha256": hashlib.sha256(metadata_inventory).hexdigest(), "version": manifest["version"]}
-    write_once(bundle / "reservation.json", encode_json(receipt))
+    for publication in publications:
+        existing = store.get(release_key(manifest["version"], publication["name"]), MAX_ENVELOPE)
+        if existing:
+            envelope, _ = parse_envelope(existing[0])
+            need(envelope["manifest"].encode("utf-8") == publication["data"], "reserved envelope has different manifest bytes")
+            if public_key:
+                minisign_verify(existing[0], public_key)
+            write_once(bundle / publication["envelope_name"], existing[0])
+    write_once(bundle / "reservation.json", encode_json(reservation_receipt(publications, metadata_inventory)))
     return manifest
 
 
 def sign(bundle, secret_key, public_key):
     bundle = Path(bundle)
     need(public_key_text(public_key) == public_key_text(bundle / "public-key.pub"), "signing key differs from the prepared pinned key")
-    data = read_bytes(bundle / "manifest.json", MAX_MANIFEST)
-    manifest = validate_manifest(data)
+    publications = bundle_manifests(bundle)
+    manifest = publications[0]["manifest"]
     bundle_records(bundle, manifest)
     metadata_inventory, _ = bundle_metadata(bundle, manifest)
     receipt = decode_json(read_bytes(bundle / "reservation.json", MAX_MANIFEST))
-    need(receipt == {"manifest_sha256": hashlib.sha256(data).hexdigest(), "metadata_inventory_sha256": hashlib.sha256(metadata_inventory).hexdigest(), "version": manifest["version"]}, "manifest has not been reserved before signing")
-    if (bundle / "envelope.json").exists():
-        existing = read_bytes(bundle / "envelope.json", MAX_ENVELOPE)
-        need(parse_envelope(existing)[0]["manifest"].encode("utf-8") == data, "existing envelope differs")
-        minisign_verify(existing, public_key)
-        return manifest
-    with tempfile.TemporaryDirectory(prefix="maple-agent-sign-") as temporary:
-        message = Path(temporary) / "manifest.json"
-        signature = Path(temporary) / "signature.minisig"
-        message.write_bytes(data)
-        result = subprocess.run(["minisign", "-S", "-W", "-s", str(secret_key), "-m", str(message), "-x", str(signature), "-c", "Maple Agent update", "-t", trusted_comment(manifest["version"])], stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
-        need(result.returncode == 0, "minisign signing failed")
-        signature_data = read_bytes(signature, MAX_SIGNATURE).decode("utf-8")
-    envelope = encode_json({"manifest": data.decode("utf-8"), "signature": signature_data})
-    minisign_verify(envelope, public_key)
-    write_once(bundle / "envelope.json", envelope)
+    need(receipt == reservation_receipt(publications, metadata_inventory), "manifest has not been reserved before signing")
+    for publication in publications:
+        target = bundle / publication["envelope_name"]
+        data = publication["data"]
+        if target.exists() or target.is_symlink():
+            existing = read_bytes(target, MAX_ENVELOPE)
+            need(parse_envelope(existing)[0]["manifest"].encode("utf-8") == data, "existing envelope differs")
+            minisign_verify(existing, public_key)
+            continue
+        with tempfile.TemporaryDirectory(prefix="maple-agent-sign-") as temporary:
+            message = Path(temporary) / "manifest.json"
+            signature = Path(temporary) / "signature.minisig"
+            message.write_bytes(data)
+            result = subprocess.run(["minisign", "-S", "-W", "-s", str(secret_key), "-m", str(message), "-x", str(signature), "-c", "Maple Agent update", "-t", trusted_comment(manifest["version"])], stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+            need(result.returncode == 0, "minisign signing failed")
+            signature_data = read_bytes(signature, MAX_SIGNATURE).decode("utf-8")
+        envelope = encode_json({"manifest": data.decode("utf-8"), "signature": signature_data})
+        minisign_verify(envelope, public_key)
+        write_once(target, envelope)
     return manifest
 
 
 def publish(bundle, store, public_key, verifier=minisign_verify, previous_verifier=verify_current):
     bundle = Path(bundle)
     need(public_key_text(public_key) == public_key_text(bundle / "public-key.pub"), "publication key differs from the prepared pinned key")
-    data = read_bytes(bundle / "manifest.json", MAX_MANIFEST)
-    envelope = read_bytes(bundle / "envelope.json", MAX_ENVELOPE)
-    manifest = verifier(envelope, public_key)
-    need(parse_envelope(envelope)[0]["manifest"].encode("utf-8") == data, "signed and reserved manifest bytes differ")
+    publications = bundle_manifests(bundle)
+    manifest = publications[0]["manifest"]
     records = bundle_records(bundle, manifest)
     metadata_inventory, metadata_records = bundle_metadata(bundle, manifest)
-    reserved = store.get(release_key(manifest["version"], "publication-manifest.json"), MAX_MANIFEST)
-    need(reserved is not None and reserved[0] == data, "version must be reserved before signing and publication")
+    for publication in publications:
+        envelope = read_bytes(bundle / publication["envelope_name"], MAX_ENVELOPE)
+        verified = verifier(envelope, public_key)
+        need(verified == publication["manifest"] and parse_envelope(envelope)[0]["manifest"].encode("utf-8") == publication["data"], "signed and reserved manifest bytes differ")
+        publication["envelope"] = envelope
+        reserved = store.get(release_key(manifest["version"], publication["reservation"]), MAX_MANIFEST)
+        need(reserved is not None and reserved[0] == publication["data"], "version must be reserved before signing and publication")
     reserved_metadata = store.get(release_key(manifest["version"], "publication-metadata.json"), MAX_MANIFEST)
     need(reserved_metadata is not None and reserved_metadata[0] == metadata_inventory, "metadata must be reserved before signing and publication")
-    # Snapshot before uploading. An operator changing the pointer while this
-    # publisher runs must win over this attempt; retry requires fresh review.
-    pointer = store.get("stable/latest.json", MAX_ENVELOPE)
-    if pointer:
-        previous = previous_verifier(pointer[0], public_key)
-        if pointer[0] == envelope:
-            # Repair deleted/missing objects with create-only writes; existing
-            # different bytes remain a hard conflict, even on a feed retry.
-            # The already matching pointer never needs to be rewritten.
-            for path, record in records:
-                immutable_put(store, record["path"][len("/agent/"):], path, maximum=record["size"])
-                need(store.same(record["path"][len("/agent/"):], record["sha256"], record["size"]), "published artifact differs or is missing")
-            publish_metadata(store, manifest["version"], metadata_records)
-            immutable_put(store, release_key(manifest["version"], "manifest.json"), envelope, "application/json")
-            immutable = store.get(release_key(manifest["version"], "manifest.json"), MAX_ENVELOPE)
-            need(immutable is not None and immutable[0] == envelope, "published envelope differs or is missing")
-            return "already-published"
-        need(version_tuple(manifest["version"]) > version_tuple(previous["version"]), "release version must advance the published version")
+    # Snapshot ALL selected feeds before uploading or promoting either. A later
+    # operator change wins its CAS. Partial dual promotion resumes by exact retry;
+    # there is no unsafe multi-pointer rollback or unconditional replacement.
+    for publication in publications:
+        pointer = store.get(publication["pointer"], MAX_ENVELOPE)
+        publication["previous"] = pointer
+        if pointer:
+            previous = previous_verifier(pointer[0], public_key)
+            need(previous["format"] == publication["manifest"]["format"], "published feed format differs")
+            if pointer[0] != publication["envelope"]:
+                need(version_tuple(manifest["version"]) > version_tuple(previous["version"]), "release version must advance the published version")
     for path, record in records:
-        immutable_put(store, record["path"][len("/agent/"):], path, maximum=record["size"])
-        need(store.same(record["path"][len("/agent/"):], record["sha256"], record["size"]), "uploaded artifact read-back differs")
+        key = record["path"][len("/agent/"):]
+        immutable_put(store, key, path, maximum=record["size"])
+        need(store.same(key, record["sha256"], record["size"]), "uploaded artifact read-back differs")
     publish_metadata(store, manifest["version"], metadata_records)
-    immutable_put(store, release_key(manifest["version"], "manifest.json"), envelope, "application/json")
-    complete = store.get(release_key(manifest["version"], "manifest.json"), MAX_ENVELOPE)
-    need(complete is not None and complete[0] == envelope, "complete manifest read-back differs")
-    condition = ("If-Match", pointer[1]) if pointer else ("If-None-Match", "*")
-    try:
-        store.put("stable/latest.json", envelope, condition=condition, content_type="application/json")
-    except StoreError as error:
-        if error.status == 412:
-            raise PublishError("publication pointer changed concurrently; inspect it before retrying") from None
-        raise
-    return "published"
+    for publication in publications:
+        key = release_key(manifest["version"], publication["name"])
+        immutable_put(store, key, publication["envelope"], "application/json")
+        complete = store.get(key, MAX_ENVELOPE)
+        need(complete is not None and complete[0] == publication["envelope"], "complete manifest read-back differs")
+    changed = False
+    for publication in publications:
+        pointer = publication["previous"]
+        if pointer and pointer[0] == publication["envelope"]:
+            continue
+        condition = ("If-Match", pointer[1]) if pointer else ("If-None-Match", "*")
+        try:
+            store.put(publication["pointer"], publication["envelope"], condition=condition, content_type="application/json")
+        except StoreError as error:
+            if error.status == 412:
+                raise PublishError("publication pointer changed concurrently; inspect it before retrying") from None
+            raise
+        changed = True
+    return "published" if changed else "already-published"
 
 
 def live_request(opener, url, *, method="GET", headers=None, maximum=MAX_ENVELOPE):
@@ -778,30 +896,35 @@ def live_request(opener, url, *, method="GET", headers=None, maximum=MAX_ENVELOP
 def verify_live(bundle, public_key, base_url):
     bundle = Path(bundle)
     origin = https_origin(base_url)
-    envelope = read_bytes(bundle / "envelope.json", MAX_ENVELOPE)
-    manifest = minisign_verify(envelope, public_key)
+    publications = bundle_manifests(bundle)
+    manifest = publications[0]["manifest"]
     bundle_records(bundle, manifest)
     opener = urllib.request.build_opener(NoRedirect)
-    # Match the native updater and preserve the exact bytes being verified,
-    # including full payload GETs that do not go through live_request.
+    # Match the native updater on every request, including separate full GETs.
     opener.addheaders = [("User-Agent", "Maple-Agent-Updater/1"), ("Accept-Encoding", "identity")]
-    for path, expected in (("/agent/stable/latest.json", envelope), (public_path(manifest["version"], "manifest.json"), envelope)):
-        status, _, body = live_request(opener, origin + path)
-        need(status == 200 and body == expected, f"live signed metadata differs at {path} (HTTP {status})")
-    for record in {item["path"]: item for item in [*manifest["artifacts"].values(), *manifest["downloads"].values()]}.values():
-        status, headers, _ = live_request(opener, origin + record["path"], method="HEAD", maximum=0)
-        need(status == 200 and headers.get("Content-Length") == str(record["size"]), "live artifact HEAD failed")
-        status, headers, part = live_request(opener, origin + record["path"], headers={"Range": "bytes=0-0"}, maximum=1)
-        need(status == 206 and len(part) == 1 and headers.get("Content-Range") == f"bytes 0-0/{record['size']}", "live artifact range request failed")
-        request = urllib.request.Request(origin + record["path"])
-        try:
-            with opener.open(request, timeout=120) as response:
-                need(response.status == 200 and hash_stream(response, record["size"]) == (record["sha256"], record["size"]), "live artifact digest differs")
-        except (urllib.error.URLError, OSError):
-            raise PublishError("live artifact download failed") from None
-    for target, record in manifest["downloads"].items():
-        status, headers, _ = live_request(opener, origin + f"/download/agent/stable/{target}", maximum=1024)
-        need(status in {302, 307} and headers.get("Location") in {record["path"], origin + record["path"]}, "live download redirect differs")
+    for publication in publications:
+        envelope = read_bytes(bundle / publication["envelope_name"], MAX_ENVELOPE)
+        verified = minisign_verify(envelope, public_key)
+        need(verified == publication["manifest"] and parse_envelope(envelope)[0]["manifest"].encode("utf-8") == publication["data"], "live verification envelope differs from preparation")
+        for path in ("/agent/" + publication["pointer"], public_path(manifest["version"], publication["name"])):
+            status, _, body = live_request(opener, origin + path)
+            need(status == 200 and body == envelope, f"live signed metadata differs at {path} (HTTP {status})")
+        wire = publication["manifest"]
+        for record in {item["path"]: item for item in [*wire["artifacts"].values(), *wire["downloads"].values()]}.values():
+            status, headers, _ = live_request(opener, origin + record["path"], method="HEAD", maximum=0)
+            need(status == 200 and headers.get("Content-Length") == str(record["size"]), "live artifact HEAD failed")
+            status, headers, part = live_request(opener, origin + record["path"], headers={"Range": "bytes=0-0"}, maximum=1)
+            need(status == 206 and len(part) == 1 and headers.get("Content-Range") == f"bytes 0-0/{record['size']}", "live artifact range request failed")
+            request = urllib.request.Request(origin + record["path"])
+            try:
+                with opener.open(request, timeout=120) as response:
+                    need(response.status == 200 and hash_stream(response, record["size"]) == (record["sha256"], record["size"]), "live artifact digest differs")
+            except (urllib.error.URLError, OSError):
+                raise PublishError("live artifact download failed") from None
+        for target, record in wire["downloads"].items():
+            alias = "linux" if target == "linux-bundle" else target
+            status, headers, _ = live_request(opener, origin + f"/download/agent/stable/{alias}", maximum=1024)
+            need(status in {302, 307} and headers.get("Location") in {record["path"], origin + record["path"]}, "live download redirect differs")
     return manifest
 
 

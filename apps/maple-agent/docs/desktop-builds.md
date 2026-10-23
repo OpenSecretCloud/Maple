@@ -13,9 +13,10 @@ Unrelated master commits have no new Agent artifacts. Existing downloads keep
 their original source SHA and provenance; they are never relabeled as a newer
 commit. A manual dispatch from `master` forces fresh packages, including when
 the previous run's 30-day artifacts have expired. macOS ARM64 builds are
-Developer ID signed, notarized, and stapled. Linux x86_64 builds are AppImages
-with a bundled runtime; CI also checks each downloaded AppImage's command-line
-startup in an Ubuntu 24.04 container with no Nix installation and no network
+Developer ID signed, notarized, and stapled. Linux x86_64 builds are tar bundles
+with a bundled runtime and a normal application directory. CI checks each
+downloaded bundle's command-line startup and detached host lifecycle in an
+Ubuntu 24.04 container with no Nix installation and no network
 access. Each master run completes independently; newer PR updates cancel older
 previews.
 
@@ -73,9 +74,38 @@ retry can reuse a successful compilation while that internal artifact is retaine
 Final packages are retained for 30 days; internal prebuilt binaries for 7 days.
 macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
-coexist with Maple Research. Linux packages contain an AppImage; make it
-executable and launch it. Each artifact also contains public build information,
-a package manifest, and checksums.
+coexist with Maple Research. Linux packages contain
+`maple-agent-PROFILE-VERSION-SHA-linux-x86_64.tar.gz`. Extract the archive and run
+the contained `install.sh` as your desktop user:
+
+```sh
+tar -xzpf maple-agent-prod-VERSION-SHA-linux-x86_64.tar.gz
+./maple-agent.app/install.sh
+```
+
+The `-p` option preserves the archive's reviewed file modes, including when your
+shell uses a restrictive umask. The installer requires those modes unchanged.
+
+The Dev archive uses `maple-agent-dev.app`. The installer creates a per-user
+application directory at `~/.local/maple-agent.app` (Dev:
+`~/.local/maple-agent-dev.app`), a command in `~/.local/bin`, and a desktop entry.
+Python 3 is required for initial installation only. First install
+refuses existing installation or integration paths; subsequent upgrades use the
+application's updater. Its `AppRun` entrypoint starts the
+bundled executable and runtime directly, without an AppImage mount or FUSE.
+The host must provide its normal CA certificate trust store for TLS validation;
+existing user certificate-path overrides remain supported. The isolated CI
+container mounts the runner's public `/etc/ssl/certs` read-only and keeps TLS
+validation enabled.
+Compose and dead-key input use the host's `/usr/share/X11/locale` data when
+available; an explicit `XLOCALEDIR` override remains unchanged.
+Initial installation leaves profile, SQL, authentication, and settings data
+untouched. Managed uninstall is not yet provided.
+The final Linux artifact contains exactly that tar archive, `build-info.json`,
+`manifest.json`, and `SHA256SUMS`. The archive has one application root,
+including `bundle.json`, the entrypoint, executable, runtime libraries, licenses,
+and installer helpers. Package verification extracts to temporary storage and
+does not install into your application directory.
 
 Native BSDtar creation explicitly disables xattrs, file flags, ACLs and macOS
 metadata, while preserving signed file bytes, public modes and symlink targets.
@@ -86,9 +116,11 @@ notarization, Gatekeeper and DMG comparison checks remain required.
 
 Every final master package file, including its public metadata and checksums,
 receives GitHub build provenance. The trusted macOS signing job mints provenance
-after packaging. Linux compilation uses a read-only token; a separate trusted
-job downloads and attests the final Linux artifacts without checking out or
-executing repository code or launching artifacts. Fresh verifiers check the
+after packaging. Linux compilation uses a read-only token and builds each
+profile once. A separate trusted job checks out the run's exact master source,
+compiles the updater-only archive scanner, and reads each downloaded tar through
+the installer's Linux parser before attesting its final files. That job never
+launches artifact code. Fresh verifiers repeat the actual archive scan and check the
 downloaded files against this workflow, `master`, and the exact source commit.
 For a downloaded file, verify the provenance with the GitHub CLI:
 
@@ -112,8 +144,11 @@ may still require macOS's **Open Anyway** approval. PR previews are not attested
 
 The macOS GUI smoke establishes window creation, entry into the first render,
 and process survival; it does not capture a presented frame or verify login, chat,
-microphone or capture permissions. Linux command-line checks do not exercise
-X11/Wayland or host GPU drivers; those remain beta runtime checks. Dev checkout
+microphone or capture permissions. The Linux host smoke uses empty private state
+and a sanitized environment. Two signed-out ACP clients must reuse one host and
+receive a fixed sign-in or local store setup guard; stopping that isolated
+host must release its owner lock and socket. These command-line checks do not exercise
+X11/Wayland or host GPU drivers; those remain native runtime checks. Dev checkout
 and portal requests use the Dev billing API, and pricing/payment return links
 use `app-dev.maple.ai`, which is protected by Cloudflare Access. Prod uses
 `app.maple.ai`. Profile changes require checkout success/cancellation and portal
@@ -129,6 +164,14 @@ nix develop --no-update-lock-file . -c ./scripts/package-release.sh dev --unsign
 nix develop --no-update-lock-file . -c ./scripts/verify-release.sh dev dist/dev --unsigned
 ```
 
+On Linux these commands produce and verify the installed bundle tar. The
+standalone AppImage builder remains a separate packaging option and is not the
+official updater artifact. Linux metadata validation explicitly selects
+`linux-x86_64`, including its platform-specific update feed; macOS metadata
+continues to use the macOS feed. Dev has no update feed on either platform.
+Both platforms retain one release version and source commit; separate feed
+paths preserve compatibility with existing macOS clients.
+
 For a produced Prod updater archive, compile the trusted data-only scanner and
 validate the exact package directory (add `--unsigned` for PR packages):
 
@@ -136,6 +179,11 @@ validate the exact package directory (add `--unsigned` for PR packages):
 nix develop --no-update-lock-file . -c cargo build --locked -p maple-agent-updater --example validate-release-archive
 nix develop --no-update-lock-file . -c ./scripts/verify-updater-archive.sh dist/prod --unsigned
 ```
+
+For Linux, pass `--platform linux-x86_64`; the scanner accepts both hosted
+profiles (`--profile dev` for a Dev archive). The scanner checks the actual tar
+bytes against `SHA256SUMS` and validates archive data without extracting or
+executing the application.
 
 Use `prod` for the production service profile. Official macOS signing is run
 only by the trusted master CI job, reusing the existing `desktop-signing` GitHub
@@ -150,8 +198,9 @@ The independent Agent publisher promotes only verified Prod artifacts into the
 Agent R2 bucket. It creates no GitHub Release/tag and does not redeploy Research.
 The client accepts only its signed Agent product/channel/target manifest, with
 the primary and backup keys embedded in the Prod profile. Packaged Prod builds
-check that feed; publication remains disabled pending owner service setup, and
-invitations still require the signed update rehearsal. An empty-key profile
+check their platform's feed. Publication remains separately gated, and
+invitations require a signed native update rehearsal on every required launch
+platform. An empty-key profile
 still disables updater traffic. See
 [updater activation](updates.md).
 

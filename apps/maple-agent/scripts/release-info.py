@@ -22,8 +22,8 @@ PUBLIC_FIELDS = (
 BUILD_FIELDS = set(PUBLIC_FIELDS) | {"profile", "version", "git_revision", "source_sha"}
 
 
-def read_info(profile, path, source_sha=None):
-    return validate_info(profile, json.loads(Path(path).read_text()), source_sha)
+def read_info(profile, path, source_sha=None, platform=None):
+    return validate_info(profile, json.loads(Path(path).read_text()), source_sha, platform)
 
 
 def validate_update_keys(keys):
@@ -47,16 +47,21 @@ def validate_update_keys(keys):
         public_points.add(decoded[10:])
 
 
-def validate_info(profile, info, source_sha=None):
+def validate_info(profile, info, source_sha=None, platform=None):
     profiles = json.loads((COMPONENT / "release-profiles.json").read_text())
     if profile not in ("dev", "prod"):
         raise ValueError("release profile must be dev or prod")
+    if platform not in (None, "macos-aarch64", "linux-x86_64"):
+        raise ValueError("unsupported artifact platform")
     if not isinstance(info, dict) or set(info) != BUILD_FIELDS:
         raise ValueError("build-info must contain only the documented public release fields")
     if info["profile"] != profile:
         raise ValueError("binary release profile does not match the requested package")
     for field in PUBLIC_FIELDS:
-        if info[field] != profiles[profile][field]:
+        expected = profiles[profile]["linux_update_feed_url"] if (
+            field == "update_feed_url" and platform == "linux-x86_64"
+        ) else profiles[profile][field]
+        if info[field] != expected:
             raise ValueError(f"binary {field} does not match the checked-in release profile")
     if not isinstance(info["prerelease"], bool):
         raise ValueError("binary prerelease marker must be a boolean")
@@ -104,12 +109,32 @@ def write_plist(info, path, build_number):
     Path(path).write_bytes(plistlib.dumps(plist))
 
 
+def linux_package_name(info):
+    return f"maple-agent-{info['profile']}-{info['version']}-{info['git_revision']}-linux-x86_64.tar.gz"
+
+
+def public_files(directory):
+    files = list(directory.iterdir())
+    if any(path.is_symlink() or not path.is_file() for path in files):
+        raise ValueError("artifact directory contains a symlink or unsupported file")
+    return {path.name for path in files}
+
+
 def write_manifest(info, directory, platform, unsigned):
     directory = Path(directory)
-    suffix = ".dmg" if platform == "macos-aarch64" else ".AppImage"
-    packages = sorted(p.name for p in directory.iterdir() if p.is_file() and p.name.endswith(suffix))
+    if platform not in ("macos-aarch64", "linux-x86_64"):
+        raise ValueError("unsupported artifact platform")
+    files = public_files(directory)
+    suffix = ".dmg" if platform == "macos-aarch64" else ".tar.gz"
+    packages = sorted(name for name in files if name.endswith(suffix))
     if len(packages) != 1:
         raise ValueError("artifact directory must contain exactly one platform package")
+    if platform == "linux-x86_64" and (
+        packages[0] != linux_package_name(info)
+        or not {"build-info.json", packages[0]} <= files
+        or files - {"build-info.json", "manifest.json", "SHA256SUMS", packages[0]}
+    ):
+        raise ValueError("Linux artifact directory must contain only the expected bundle and public metadata")
     manifest = {
         "schema_version": 1,
         "profile": info["profile"],
@@ -132,17 +157,21 @@ def write_manifest(info, directory, platform, unsigned):
     ))
     for path in directory.iterdir():
         if path.is_file():
-            path.chmod(0o755 if path.name.endswith(".AppImage") else 0o644)
+            path.chmod(0o644)
     directory.chmod(0o755)
 
 
-def verify_artifacts(profile, directory, unsigned, source_sha=None):
+def verify_artifacts(profile, directory, unsigned, source_sha=None, platform=None):
     directory = Path(directory).resolve()
-    info = read_info(profile, directory / "build-info.json", source_sha)
+    files = public_files(directory)
     manifest = json.loads((directory / "manifest.json").read_text())
-    platform = manifest.get("platform")
-    if platform not in ("macos-aarch64", "linux-x86_64"):
+    manifest_platform = manifest.get("platform")
+    if manifest_platform not in ("macos-aarch64", "linux-x86_64"):
         raise ValueError("unsupported artifact platform")
+    if platform is not None and manifest_platform != platform:
+        raise ValueError("manifest platform does not match the requested platform")
+    platform = manifest_platform
+    info = read_info(profile, directory / "build-info.json", source_sha, platform)
     if manifest.get("schema_version") != 1 or any(
         manifest.get(key) != info[key] for key in ("profile", "source_sha", "version")
     ):
@@ -153,6 +182,13 @@ def verify_artifacts(profile, directory, unsigned, source_sha=None):
         "ad-hoc" if unsigned else "developer-id-notarized"
     ):
         raise ValueError("unexpected macOS signing policy")
+    if platform == "linux-x86_64":
+        if manifest.get("macos_signing", "missing") is not None or manifest.get("linux_integrity") != "sha256":
+            raise ValueError("unexpected Linux integrity policy")
+        if manifest.get("package") != linux_package_name(info) or files != {
+            "build-info.json", "manifest.json", "SHA256SUMS", linux_package_name(info),
+        }:
+            raise ValueError("Linux artifact directory must contain exactly the expected bundle and public metadata")
     lines = (directory / "SHA256SUMS").read_text().splitlines()
     checked = set()
     for line in lines:
@@ -166,11 +202,10 @@ def verify_artifacts(profile, directory, unsigned, source_sha=None):
         if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise ValueError(f"artifact checksum failed: {name}")
         checked.add(name)
-    files = {p.name for p in directory.iterdir() if p.is_file() and p.name != "SHA256SUMS"}
-    if checked != files or any(not p.is_file() or p.is_symlink() for p in directory.iterdir()):
+    if checked != files - {"SHA256SUMS"}:
         raise ValueError("artifact directory contains unchecked files or directories")
     package = manifest.get("package", "")
-    suffix = ".dmg" if platform == "macos-aarch64" else ".AppImage"
+    suffix = ".dmg" if platform == "macos-aarch64" else ".tar.gz"
     if package not in checked or not package.endswith(suffix):
         raise ValueError("manifest package is missing or has the wrong format")
     return manifest
@@ -261,7 +296,7 @@ def main():
     parser.add_argument("--unsigned", action="store_true")
     args = parser.parse_args()
     if args.operation == "verify":
-        print(json.dumps(verify_artifacts(args.profile, args.path, args.unsigned, args.source_sha)))
+        print(json.dumps(verify_artifacts(args.profile, args.path, args.unsigned, args.source_sha, args.platform)))
         return
     if args.operation == "extract-app":
         app_name = json.loads((COMPONENT / "release-profiles.json").read_text())[args.profile]["display_name"]
@@ -270,7 +305,7 @@ def main():
     if args.operation == "compare-apps":
         compare_app_payloads(args.path, args.output)
         return
-    info = read_info(args.profile, args.path, args.source_sha)
+    info = read_info(args.profile, args.path, args.source_sha, args.platform)
     if args.operation == "field":
         if args.field not in BUILD_FIELDS:
             raise ValueError("field is not public release metadata")

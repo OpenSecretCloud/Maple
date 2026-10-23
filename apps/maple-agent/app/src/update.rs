@@ -349,14 +349,7 @@ impl Controller {
         }
         let startup = async {
             if let Ok(service) = self.service().await {
-                let installed = service.installed_path.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    maple_agent_updater::installer::cleanup_current_installation(
-                        &installed,
-                        env!("CARGO_PKG_VERSION"),
-                    )
-                })
-                .await;
+                cleanup_installed_update(service).await;
                 match service.updater.restore_prepared().await {
                     Ok(Some(prepared)) => {
                         let mut releases = self.0.releases.lock().await;
@@ -755,9 +748,10 @@ impl Controller {
                 }
                 // Retire old-process RPC admission and retain host ownership
                 // until this PID exits, including if the restart helper fails.
+                let restart_path = installed.restart_path();
                 backend.retire_after_update();
-                controller.installed(installed.installed_path.clone(), &installed_version, host_fence.take());
-                Ok(installed.installed_path)
+                controller.installed(restart_path.clone(), &installed_version, host_fence.take());
+                Ok(restart_path)
             }).map_err(|error| error.to_string());
             drop(host_fence);
             if result.is_err() {
@@ -801,6 +795,46 @@ async fn discard_preparation(preparation: maple_agent_updater::installer::Instal
     discard_preparation_with_lock(preparation, None).await;
 }
 
+async fn cleanup_installed_update(service: &Service) {
+    let installed = service.installed_path.clone();
+    #[cfg(target_os = "linux")]
+    {
+        if service.manual_only() {
+            return;
+        }
+        let Ok(origin) = compiled_feed_url(Target::LinuxX86_64) else {
+            return;
+        };
+        let keys = crate::profile::UPDATE_PUBLIC_KEYS
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect::<Vec<_>>();
+        // Equal-version prepared downloads are deliberately rejected during
+        // restore. Authenticate the install receipt against this running build
+        // and the compiled feed/key pins before removing its retained backup.
+        let _ = tokio::task::spawn_blocking(move || {
+            maple_agent_updater::installer::cleanup_current_linux_bundle(
+                &installed,
+                env!("CARGO_PKG_VERSION"),
+                env!("MAPLE_GIT_SOURCE_SHA"),
+                &origin,
+                &keys,
+            )
+        })
+        .await;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = tokio::task::spawn_blocking(move || {
+            maple_agent_updater::installer::cleanup_current_installation(
+                &installed,
+                env!("CARGO_PKG_VERSION"),
+            )
+        })
+        .await;
+    }
+}
+
 async fn discard_preparation_with_lock(
     preparation: maple_agent_updater::installer::InstallPreparation,
     lock: Option<maple_agent_updater::installer::InstallLock>,
@@ -813,10 +847,18 @@ async fn discard_preparation_with_lock(
 }
 
 fn manual_download_url(release: &VerifiedRelease) -> Option<String> {
-    let artifact = if cfg!(target_os = "linux") {
-        release.manifest.downloads.linux_appimage.as_ref()?
+    let target = if cfg!(target_os = "linux") {
+        Target::LinuxX86_64
     } else {
-        &release.manifest.downloads.macos
+        Target::DarwinAarch64
+    };
+    manual_download_url_for_target(release, target)
+}
+
+fn manual_download_url_for_target(release: &VerifiedRelease, target: Target) -> Option<String> {
+    let artifact = match target {
+        Target::DarwinAarch64 => release.manifest.downloads.macos.as_ref()?,
+        Target::LinuxX86_64 => release.manifest.downloads.linux_bundle.as_ref()?,
     };
     release
         .origin
@@ -826,7 +868,10 @@ fn manual_download_url(release: &VerifiedRelease) -> Option<String> {
 }
 
 fn build_service() -> Result<Service, String> {
-    let (installed_path, manual_only) = installation()?;
+    let Installation {
+        installed_path,
+        manual_only,
+    } = installation()?;
     let target = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Target::DarwinAarch64
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -835,10 +880,7 @@ fn build_service() -> Result<Service, String> {
         return Err("Updates are not supported on this platform".into());
     };
     let config = Config {
-        feed_url: crate::profile::UPDATE_FEED_URL
-            .ok_or("Updates not configured")?
-            .parse()
-            .map_err(|_| "Invalid packaged update configuration")?,
+        feed_url: compiled_feed_url(target)?,
         public_keys: crate::profile::UPDATE_PUBLIC_KEYS
             .iter()
             .map(|key| (*key).to_owned())
@@ -859,14 +901,49 @@ fn build_service() -> Result<Service, String> {
     })
 }
 
+fn compiled_feed_url(target: Target) -> Result<maple_agent_updater::Url, String> {
+    feed_url_for_target(
+        crate::profile::UPDATE_FEED_URL.ok_or("Updates not configured")?,
+        target,
+    )
+}
+
+fn feed_url_for_target(feed: &str, target: Target) -> Result<maple_agent_updater::Url, String> {
+    let feed = feed
+        .parse::<maple_agent_updater::Url>()
+        .map_err(|_| "Invalid packaged update configuration")?;
+    // The profile and embedded build-info must describe the pointer we use.
+    // Do not silently turn a shipped Mac v1 pointer into a Linux v2 pointer.
+    if feed.path() != target.feed_path() {
+        return Err("Invalid packaged update configuration".into());
+    }
+    Ok(feed)
+}
+
 fn update_state_dir() -> PathBuf {
     // Signed discovery/anti-rollback state survives local-store reset/repair.
     crate::backend::profile_data_root().join("updates")
 }
 
-fn installation() -> Result<(PathBuf, bool), String> {
+struct Installation {
+    installed_path: PathBuf,
+    manual_only: bool,
+}
+
+impl Installation {
+    #[cfg(any(not(target_os = "macos"), all(test, unix)))]
+    fn manual(executable: &Path) -> Self {
+        Self {
+            installed_path: executable.to_owned(),
+            manual_only: true,
+        }
+    }
+}
+
+fn installation() -> Result<Installation, String> {
     let exe = std::env::current_exe().map_err(|_| "Could not locate the installed app")?;
-    if cfg!(target_os = "macos") {
+    #[cfg(target_os = "macos")]
+    {
         let app = exe
             .ancestors()
             .nth(3)
@@ -875,13 +952,45 @@ fn installation() -> Result<(PathBuf, bool), String> {
         let app = std::fs::canonicalize(app).map_err(|_| "Could not locate the installed app")?;
         let manual = manual_macos_path(&app)
             || maple_agent_updater::installer::discover_installation(&exe, None).is_err();
-        Ok((app, manual))
-    } else {
-        // Linux stays notify-only until packaged host/update/relaunch gates are
-        // demonstrated. The launch helper fix is an independent prerequisite.
-        Ok((exe, true))
+        Ok(Installation {
+            installed_path: app,
+            manual_only: manual,
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(linux_installation(
+            &exe,
+            maple_agent::self_launch::executable(),
+        ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Ok(Installation::manual(&exe))
     }
 }
+
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn linux_installation(executable: &Path, resolved: Result<PathBuf, String>) -> Installation {
+    // AppRun may execute through the bundled loader. Resolve that entrypoint
+    // through the shared launcher, then let the installer validate its bundle
+    // layout, compiled identity and replacement permissions.
+    let Ok(path) = resolved else {
+        return Installation::manual(executable);
+    };
+    match maple_agent_updater::installer::discover_linux_installation(
+        &path,
+        env!("CARGO_PKG_VERSION"),
+        env!("MAPLE_GIT_SOURCE_SHA"),
+    ) {
+        Ok(installed_path) => Installation {
+            installed_path,
+            manual_only: false,
+        },
+        Err(_) => Installation::manual(executable),
+    }
+}
+#[cfg(any(target_os = "macos", test))]
 fn manual_macos_path(path: &Path) -> bool {
     path.starts_with("/Volumes")
         || path
@@ -894,6 +1003,100 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    fn linux_bundle_fixture(parent: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bundle = parent.join("maple-agent.app");
+        for directory in [
+            bundle.clone(),
+            bundle.join("usr"),
+            bundle.join("usr/bin"),
+            bundle.join("usr/lib"),
+        ] {
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for executable in [
+            bundle.join("AppRun"),
+            bundle.join("usr/bin/maple-agent"),
+            bundle.join("usr/lib/ld-linux-x86-64.so.2"),
+        ] {
+            std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            bundle.join("bundle.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "format": "maple-agent-linux-bundle-v1",
+                "product": "maple-agent",
+                "profile": "prod",
+                "version": env!("CARGO_PKG_VERSION"),
+                "build": "1",
+                "source_sha": env!("MAPLE_GIT_SOURCE_SHA"),
+                "bundle_id": "cloud.opensecret.maple.agent",
+                "entrypoint": "AppRun",
+                "executable": "usr/bin/maple-agent",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bundle.join("bundle.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        bundle
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_bundle_discovery_uses_the_bundle_directory_and_manual_fallbacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().canonicalize().unwrap();
+        let bundle = linux_bundle_fixture(&parent);
+        let loader = bundle.join("usr/lib/ld-linux-x86-64.so.2");
+        let legacy_appimage = parent.join("old-maple.AppImage");
+        std::fs::write(&legacy_appimage, b"legacy AppImage context").unwrap();
+        let automatic = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        assert!(!automatic.manual_only);
+        assert_eq!(automatic.installed_path, bundle);
+
+        for resolved in [
+            Err("invalid launcher context".into()),
+            Ok(loader.clone()),
+            Ok(legacy_appimage),
+        ] {
+            let manual = linux_installation(&loader, resolved);
+            assert!(manual.manual_only);
+            assert_eq!(manual.installed_path, loader);
+        }
+        std::fs::remove_file(bundle.join("bundle.json")).unwrap();
+        let invalid = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        assert!(invalid.manual_only);
+        assert_eq!(invalid.installed_path, loader);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_bundle_with_read_only_parent_remains_manual_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A privileged test process can replace a mode-0555 directory's child.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().canonicalize().unwrap();
+        let bundle = linux_bundle_fixture(&parent);
+        let loader = bundle.join("usr/lib/ld-linux-x86-64.so.2");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let manual = linux_installation(&loader, Ok(bundle.join("AppRun")));
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(manual.manual_only);
+        assert_eq!(manual.installed_path, loader);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn quit_cleanup_without_tokio_preserves_download_and_installation() {
         use std::os::unix::fs::PermissionsExt;
@@ -901,10 +1104,21 @@ mod tests {
         assert!(tokio::runtime::Handle::try_current().is_err());
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
+        #[cfg(target_os = "linux")]
+        let installed = linux_bundle_fixture(&root);
+        #[cfg(not(target_os = "linux"))]
         let installed = root.join("Maple Agent.app");
+        #[cfg(target_os = "linux")]
+        let staging = {
+            use sha2::Digest;
+            let binding = sha2::Sha256::digest(installed.as_os_str().as_encoded_bytes());
+            root.join(format!(".maple-agent-update-{binding:x}-abcdefghijklmnop"))
+        };
+        #[cfg(not(target_os = "linux"))]
         let staging = root.join(".maple-agent-update-abcdefghijklmnop");
-        let staged = staging.join("Maple Agent.app");
+        let staged = staging.join(installed.file_name().unwrap());
         let cached = root.join("download.payload");
+        #[cfg(not(target_os = "linux"))]
         std::fs::create_dir(&installed).unwrap();
         std::fs::create_dir(&staging).unwrap();
         std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -962,6 +1176,80 @@ mod tests {
         let store = maple_agent::store::StorePaths::new(&profile);
         assert_eq!(update_state_dir(), profile.join("updates"));
         assert!(!update_state_dir().starts_with(store.root()));
+    }
+
+    #[test]
+    fn platform_feed_selection_uses_the_exact_compiled_target_pointer() {
+        for origin in ["https://updates.trymaple.ai", "https://updates.maple.ai"] {
+            let mac = format!("{origin}/agent/stable/latest.json");
+            let linux = format!("{origin}/agent/stable/linux/latest.json");
+            assert_eq!(
+                feed_url_for_target(&mac, Target::DarwinAarch64)
+                    .unwrap()
+                    .as_str(),
+                mac
+            );
+            assert_eq!(
+                feed_url_for_target(&linux, Target::LinuxX86_64)
+                    .unwrap()
+                    .as_str(),
+                linux
+            );
+            assert!(feed_url_for_target(&mac, Target::LinuxX86_64).is_err());
+            assert!(feed_url_for_target(&linux, Target::DarwinAarch64).is_err());
+        }
+        assert!(feed_url_for_target("not a URL", Target::LinuxX86_64).is_err());
+    }
+
+    #[test]
+    fn mac_manual_download_remains_available_without_a_linux_bundle() {
+        let feed = feed_url_for_target(
+            "https://updates.trymaple.ai/agent/stable/latest.json",
+            Target::DarwinAarch64,
+        )
+        .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            &feed,
+            &[key],
+        )
+        .unwrap();
+        assert!(
+            manual_download_url_for_target(&release, Target::DarwinAarch64)
+                .unwrap()
+                .ends_with("/Maple-Agent.dmg")
+        );
+        assert!(manual_download_url_for_target(&release, Target::LinuxX86_64).is_none());
+    }
+
+    #[test]
+    fn linux_manual_download_uses_the_signed_bundle_without_a_mac_download() {
+        let feed = feed_url_for_target(
+            "https://updates.trymaple.ai/agent/stable/linux/latest.json",
+            Target::LinuxX86_64,
+        )
+        .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!(
+                "../../crates/maple-agent-updater/tests/fixtures/signed-linux-v2-envelope.json"
+            ),
+            &feed,
+            &[key],
+        )
+        .unwrap();
+        assert_eq!(
+            manual_download_url_for_target(&release, Target::LinuxX86_64).as_deref(),
+            Some(
+                "https://updates.trymaple.ai/agent/stable/releases/0.0.2/Maple-Agent-linux-x86_64.tar.gz"
+            )
+        );
+        assert!(manual_download_url_for_target(&release, Target::DarwinAarch64).is_none());
     }
 
     #[tokio::test]
@@ -1111,23 +1399,45 @@ mod tests {
         assert_eq!(controller.snapshot().state, State::RestartRequired);
         assert!(controller.0.service.get().is_none());
     }
-    // This exercises macOS installation permissions with the macOS-only signed
-    // fixture. Linux discovery requires its own artifact/download inventory.
-    #[cfg(target_os = "macos")]
+    // Each platform uses its authenticated inventory, including Linux's v2
+    // bundle-only manifest, when replacement permissions require manual install.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[tokio::test]
     async fn permission_failure_switches_to_signed_manual_download_before_host_stop() {
         let controller = Controller::new(true);
         let temp = tempfile::tempdir().unwrap();
-        let installed = temp.path().join("Maple Agent.app");
+        let installed = temp.path().join(if cfg!(target_os = "linux") {
+            "maple-agent.app"
+        } else {
+            "Maple Agent.app"
+        });
         std::fs::create_dir_all(&installed).unwrap();
-        let feed: maple_agent_updater::Url = "https://updates.trymaple.ai/agent/stable/latest.json"
-            .parse()
-            .unwrap();
+        #[cfg(target_os = "linux")]
+        let (target, envelope, filename) = (
+            Target::LinuxX86_64,
+            include_bytes!(
+                "../../crates/maple-agent-updater/tests/fixtures/signed-linux-v2-envelope.json"
+            )
+            .as_slice(),
+            "Maple-Agent-linux-x86_64.tar.gz",
+        );
+        #[cfg(target_os = "macos")]
+        let (target, envelope, filename) = (
+            Target::DarwinAarch64,
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json")
+                .as_slice(),
+            "Maple-Agent.dmg",
+        );
+        let feed = feed_url_for_target(
+            &format!("https://updates.trymaple.ai{}", target.feed_path()),
+            target,
+        )
+        .unwrap();
         let key =
             include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
                 .to_owned();
         let release = maple_agent_updater::manifest::verify_envelope(
-            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            envelope,
             &feed,
             std::slice::from_ref(&key),
         )
@@ -1138,7 +1448,7 @@ mod tests {
                     feed_url: feed,
                     public_keys: vec![key],
                     current_version: "0.0.1".parse().unwrap(),
-                    target: Target::DarwinAarch64,
+                    target,
                     installed_path: installed.clone(),
                     state_dir: temp.path().join("updates"),
                 })
@@ -1165,7 +1475,7 @@ mod tests {
             snapshot
                 .manual_download_url
                 .unwrap()
-                .ends_with("/Maple-Agent.dmg")
+                .ends_with(&format!("/{filename}"))
         );
         assert!(snapshot.label.contains("install manually"));
         assert!(controller.restart_path().is_none());

@@ -477,8 +477,37 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                     self.assertEqual(job["steps"][download]["with"], {
                         "name": linux_upload["name"], "path": "artifacts",
                     })
-                    for step in job["steps"]:
-                        self.assertNotIn("run", step)
+                    scanner_build = next(i for i, step in enumerate(job["steps"])
+                                         if "cargo build --locked -p maple-agent-updater --example validate-release-archive"
+                                         in step.get("run", ""))
+                    metadata = next(i for i, step in enumerate(job["steps"])
+                                    if "release-info.py verify" in step.get("run", ""))
+                    scanner = next(i for i, step in enumerate(job["steps"])
+                                   if "./scripts/verify-updater-archive.sh" in step.get("run", ""))
+                    self.assertLess(scanner_build, scanner)
+                    self.assertLess(download, metadata)
+                    self.assertLess(metadata, scanner)
+                    self.assertLess(scanner, attests[0])
+                    self.assertNotIn("if", job["steps"][scanner_build])
+                    self.assertNotIn("if", job["steps"][scanner])
+                    self.assertIn('--profile "$MAPLE_RELEASE_PROFILE"', job["steps"][scanner]["run"])
+                    self.assertIn("--platform linux-x86_64", job["steps"][scanner]["run"])
+                    self.assertFalse(any("verify-release.sh" in step.get("run", "")
+                                         or "AppRun" in step.get("run", "")
+                                         for step in job["steps"]),
+                                     "attestation inspects data without executing artifact code")
+
+    def test_linux_official_bundle_reuses_one_profile_build_and_has_no_appimage_runtime(self):
+        job = workflow(self.WORKFLOW)["jobs"]["linux"]
+        self.assertEqual(job["name"], "Linux bundle (${{ matrix.variant }})")
+        builds = [step for step in job["steps"]
+                  if "./scripts/build-release.sh" in step.get("run", "")]
+        self.assertEqual(len(builds), 1)
+        self.assertFalse(any("cargo build" in step.get("run", "") for step in job["steps"]))
+        package = (ROOT / "apps/maple-agent/scripts/package-release.sh").read_text()
+        self.assertIn('scripts/linux-release-bundle.sh" "$binary" "$staging/${name}.tar.gz"', package)
+        self.assertIn('export MAPLE_PACKAGE_SOURCE_SHA="$source_sha"', package)
+        self.assertNotIn("linux-release-appimage", package)
 
     def test_macos_packaging_uses_verified_prebuilt_binaries_on_fresh_runners(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
@@ -640,6 +669,18 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 self.assertLess(provenance, verify)
                 if name == "verify-macos":
                     self.assertNotIn("--unsigned", job["steps"][verify]["run"])
+                else:
+                    scanner_build = next(i for i, step in enumerate(job["steps"])
+                                         if "cargo build --locked -p maple-agent-updater --example validate-release-archive"
+                                         in step.get("run", ""))
+                    scanner = next(i for i, step in enumerate(job["steps"])
+                                   if "./scripts/verify-updater-archive.sh" in step.get("run", ""))
+                    self.assertLess(provenance, scanner_build)
+                    self.assertLess(scanner_build, scanner)
+                    self.assertLess(download, scanner)
+                    self.assertLess(scanner, verify)
+                    self.assertNotIn("if", job["steps"][scanner_build])
+                    self.assertNotIn("if", job["steps"][scanner])
         smoke = next(step for step in jobs["verify-linux"]["steps"]
                      if "docker run" in step.get("run", ""))["run"]
         self.assertRegex(smoke, r"ubuntu@sha256:[0-9a-f]{64}")
@@ -650,6 +691,13 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         self.assertRegex(smoke, r"--tmpfs /tmp:[^\s]*mode=1777")
         self.assertIn("--build-info", smoke)
         self.assertIn("actual != expected", smoke)
+        self.assertIn("tar -xzpf /artifacts/*-linux-x86_64.tar.gz", smoke)
+        self.assertIn("./maple-agent*.app/AppRun", smoke)
+        self.assertIn("/bin/sh /checks/smoke-linux-bundle-host.sh ./maple-agent*.app/AppRun >&2", smoke)
+        self.assertIn("--volume \"$PWD/apps/maple-agent/scripts/smoke-linux-bundle-host.sh:/checks/smoke-linux-bundle-host.sh:ro\"", smoke)
+        self.assertIn("test -d /etc/ssl/certs", smoke)
+        self.assertIn("--volume /etc/ssl/certs:/etc/ssl/certs:ro", smoke)
+        self.assertNotIn("--appimage-extract", smoke)
 
     def test_downloaded_provenance_enforces_workflow_ref_commit_and_every_file(self):
         for name in ("verify-macos", "verify-linux"):
@@ -714,7 +762,26 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                             expected.append(directory.format(profile=profile))
                         if event == "pull_request":
                             expected.append("--unsigned")
+                        if script == "verify-release.sh":
+                            expected.extend(["--platform", "linux-x86_64"])
                         self.assertEqual(arguments[script_index + 1:], expected)
+
+        scanner = next(step for step in jobs["verify-linux"]["steps"]
+                       if "./scripts/verify-updater-archive.sh" in step.get("run", ""))
+        for profile in ("dev", "prod"):
+            for event in ("pull_request", "push", "workflow_dispatch"):
+                with self.subTest(scanner_profile=profile, event=event):
+                    command = r'''nix() { printf '%s\0' "$@"; }
+''' + scanner["run"]
+                    result = subprocess.run(["bash", "-c", command], check=True, capture_output=True,
+                                            env={**os.environ, "GITHUB_EVENT_NAME": event,
+                                                 "MAPLE_RELEASE_PROFILE": profile})
+                    arguments = [value.decode() for value in result.stdout.split(b"\0")[:-1]]
+                    script_index = arguments.index("./scripts/verify-updater-archive.sh")
+                    expected = ["../../artifacts", "--profile", profile, "--platform", "linux-x86_64"]
+                    if event == "pull_request":
+                        expected.append("--unsigned")
+                    self.assertEqual(arguments[script_index + 1:], expected)
 
 
 class AgentDiffSelectionTests(unittest.TestCase):

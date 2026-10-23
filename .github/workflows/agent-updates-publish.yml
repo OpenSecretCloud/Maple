@@ -17,9 +17,9 @@ on:
         required: true
         type: string
       include_linux:
-        description: Include Linux only after its packaged update launch gate passes
+        description: Publish this release for Linux too (disable only for a legacy macOS-only run)
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:

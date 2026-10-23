@@ -63,6 +63,7 @@ class FakeStore:
         self.fail_once = None
         self.corrupt_once = None
         self.before_pointer = None
+        self.before_linux_pointer = None
 
     def set(self, key, data):
         self.objects[key] = data
@@ -89,6 +90,9 @@ class FakeStore:
         self.calls.append(("put", key, condition, content_type))
         if key == "stable/latest.json" and self.before_pointer:
             callback, self.before_pointer = self.before_pointer, None
+            callback()
+        if key == "stable/linux/latest.json" and self.before_linux_pointer:
+            callback, self.before_linux_pointer = self.before_linux_pointer, None
             callback()
         if key == self.fail_once:
             self.fail_once = None
@@ -135,6 +139,14 @@ class FixtureOrigin:
         if path in {"/agent/stable/latest.json", immutable} and method == "GET":
             return FakeResponse(self.envelope)
         records = [*self.manifest["artifacts"].values(), *self.manifest["downloads"].values()]
+        linux_path = self.bundle / "linux-manifest.json"
+        if linux_path.exists():
+            linux = publisher.validate_manifest(linux_path.read_bytes())
+            if path in {"/agent/stable/linux/latest.json", publisher.public_path(linux["version"], "linux-manifest.json")} and method == "GET":
+                return FakeResponse((self.bundle / "linux-envelope.json").read_bytes())
+            if path == "/download/agent/stable/linux" and method == "GET":
+                return FakeResponse(b"", status=302, headers={"Location": linux["downloads"]["linux-bundle"]["path"]})
+            records += list(linux["artifacts"].values())
         record = next((item for item in records if item["path"] == path), None)
         if record:
             data = (self.bundle / "payloads" / path.rsplit("/", 1)[1]).read_bytes()
@@ -172,7 +184,7 @@ class PublicationTests(unittest.TestCase):
         artifacts = {}
         binaries = [("agent.app.tar.gz", b"archive fixture"), ("agent.dmg", b"disk image fixture")]
         if linux:
-            binaries.append(("agent.AppImage", b"AppImage fixture"))
+            binaries.append(("agent-linux.tar.gz", b"Linux tar fixture"))
         for filename, data in binaries:
             (payloads / filename).write_bytes(data)
             artifacts[filename] = {
@@ -187,8 +199,11 @@ class PublicationTests(unittest.TestCase):
             "downloads": {"macos": artifacts["agent.dmg"]},
         }
         if linux:
-            manifest["artifacts"]["linux-x86_64"] = artifacts["agent.AppImage"]
-            manifest["downloads"]["linux-appimage"] = artifacts["agent.AppImage"]
+            linux_manifest = {**manifest, "format": "maple-agent-update-v2",
+                              "artifacts": {"linux-x86_64": artifacts["agent-linux.tar.gz"]},
+                              "downloads": {"linux-bundle": artifacts["agent-linux.tar.gz"]}}
+            (bundle / "linux-manifest.json").write_bytes(publisher.encode_json(linux_manifest))
+            (bundle / "linux-envelope.json").write_bytes(synthetic_envelope(linux_manifest))
         envelope = synthetic_envelope(manifest)
         (bundle / "manifest.json").write_bytes(publisher.encode_json(manifest))
         (bundle / "envelope.json").write_bytes(envelope)
@@ -345,6 +360,131 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.publish(bundle), "published")
         for name in (*MACOS_METADATA, *LINUX_METADATA):
             self.assertEqual(self.store.objects[self.metadata_key(name)], (bundle / "metadata" / name).read_bytes())
+
+    def test_linux_v2_has_separate_reserved_bytes_envelope_and_pointer(self):
+        bundle, mac, mac_envelope = self.make_bundle("1.2.3", "dual-feed", linux=True)
+        linux_data = (bundle / "linux-manifest.json").read_bytes()
+        linux = publisher.validate_manifest(linux_data)
+        self.assertEqual(set(mac["artifacts"]), {"darwin-aarch64"})
+        self.assertEqual(set(mac["downloads"]), {"macos"})
+        self.assertEqual(linux["format"], "maple-agent-update-v2")
+        self.assertEqual(linux["artifacts"]["linux-x86_64"], linux["downloads"]["linux-bundle"])
+        self.assertTrue(linux["downloads"]["linux-bundle"]["path"].endswith(".tar.gz"))
+        publisher.reserve(bundle, self.store)
+        receipt = json.loads((bundle / "reservation.json").read_bytes())
+        self.assertEqual(receipt["linux_manifest_sha256"], hashlib.sha256(linux_data).hexdigest())
+        self.assertEqual(self.store.objects[self.release_key("publication-linux-manifest.json")], linux_data)
+        self.assertEqual(self.publish(bundle), "published")
+        self.assertEqual(self.store.objects["stable/latest.json"], mac_envelope)
+        self.assertEqual(self.store.objects["stable/linux/latest.json"], (bundle / "linux-envelope.json").read_bytes())
+        self.assertEqual(self.store.objects[self.release_key("linux-manifest.json")], (bundle / "linux-envelope.json").read_bytes())
+        self.assertNotEqual(self.store.objects["stable/latest.json"], self.store.objects["stable/linux/latest.json"])
+        self.store.calls.clear()
+        self.assertEqual(self.publish(bundle), "already-published")
+        self.assertFalse(any(call[0] == "put" for call in self.store.calls))
+
+    def test_mac_only_publication_never_reads_or_writes_linux_pointer(self):
+        self.store.set("stable/linux/latest.json", b"unrelated Linux pointer")
+        self.reserve()
+        self.assertEqual(self.publish(), "published")
+        self.assertEqual(self.store.objects["stable/linux/latest.json"], b"unrelated Linux pointer")
+        self.assertFalse(any(call[1] == "stable/linux/latest.json" for call in self.store.calls))
+
+    def test_linux_v2_rejects_mixed_targets_wrong_suffix_and_different_download(self):
+        bundle, mac, _ = self.make_bundle("1.2.3", "linux-schema", linux=True)
+        valid = json.loads((bundle / "linux-manifest.json").read_bytes())
+        for variant in ("mac-target", "mac-download", "appimage", "different-download", "unknown-field"):
+            with self.subTest(variant=variant):
+                value = json.loads(json.dumps(valid))
+                if variant == "mac-target":
+                    value["artifacts"]["darwin-aarch64"] = mac["artifacts"]["darwin-aarch64"]
+                elif variant == "mac-download":
+                    value["downloads"]["macos"] = mac["downloads"]["macos"]
+                elif variant == "appimage":
+                    value["artifacts"]["linux-x86_64"]["path"] += ".AppImage"
+                    value["downloads"]["linux-bundle"]["path"] += ".AppImage"
+                elif variant == "different-download":
+                    value["downloads"]["linux-bundle"]["sha256"] = "b" * 64
+                else:
+                    value["unknown"] = True
+                with self.assertRaises(publisher.PublishError):
+                    publisher.validate_manifest(publisher.encode_json(value))
+
+    def test_dual_feed_identity_and_payloads_fail_before_any_reservation(self):
+        for variant in ("source_sha", "version", "build", "notes", "pub_date", "missing-payload"):
+            with self.subTest(variant=variant):
+                bundle, _, _ = self.make_bundle("1.2.3", "identity-" + variant, linux=True)
+                if variant == "missing-payload":
+                    (bundle / "payloads/agent-linux.tar.gz").unlink()
+                else:
+                    value = json.loads((bundle / "linux-manifest.json").read_bytes())
+                    value[variant] = {"source_sha": "b" * 40, "version": "1.2.4", "build": "43",
+                                      "notes": "other notes", "pub_date": "2026-10-22T18:00:00Z"}[variant]
+                    (bundle / "linux-manifest.json").write_bytes(publisher.encode_json(value))
+                store = FakeStore()
+                with self.assertRaises(publisher.PublishError):
+                    publisher.reserve(bundle, store)
+                self.assertFalse(store.calls)
+
+    def test_linux_reservation_conflict_cannot_authorize_signing(self):
+        bundle, _, _ = self.make_bundle("1.2.3", "linux-conflict", linux=True)
+        self.store.set(self.release_key("publication-linux-manifest.json"), b"different bytes")
+        with self.assertRaisesRegex(publisher.PublishError, "immutable object differs"):
+            publisher.reserve(bundle, self.store)
+        self.assertFalse((bundle / "reservation.json").exists())
+        self.assertNotIn("stable/latest.json", self.store.objects)
+        self.assertNotIn("stable/linux/latest.json", self.store.objects)
+
+    def test_linux_partial_promotion_retry_repairs_only_unpromoted_pointer(self):
+        bundle, _, mac_envelope = self.make_bundle("1.2.3", "linux-interruption", linux=True)
+        publisher.reserve(bundle, self.store)
+        self.store.fail_once = "stable/linux/latest.json"
+        with self.assertRaises(publisher.StoreError):
+            self.publish(bundle)
+        self.assertEqual(self.store.objects["stable/latest.json"], mac_envelope)
+        self.assertNotIn("stable/linux/latest.json", self.store.objects)
+        self.store.calls.clear()
+        self.assertEqual(self.publish(bundle), "published")
+        writes = [call[1] for call in self.store.calls if call[0] == "put"]
+        self.assertEqual(writes, ["stable/linux/latest.json"])
+
+    def test_linux_pointer_race_preserves_competitor_and_retry_cannot_roll_it_back(self):
+        bundle, _, _ = self.make_bundle("1.2.3", "linux-race", linux=True)
+        competitor, _, _ = self.make_bundle("1.2.4", "linux-competitor", linux=True)
+        competing_envelope = (competitor / "linux-envelope.json").read_bytes()
+        publisher.reserve(bundle, self.store)
+        self.store.before_linux_pointer = lambda: self.store.set("stable/linux/latest.json", competing_envelope)
+        with self.assertRaisesRegex(publisher.PublishError, "changed concurrently"):
+            self.publish(bundle)
+        self.assertEqual(self.store.objects["stable/linux/latest.json"], competing_envelope)
+        self.store.calls.clear()
+        with self.assertRaisesRegex(publisher.PublishError, "must advance"):
+            self.publish(bundle)
+        self.assertFalse(any(call[0] == "put" for call in self.store.calls))
+
+    def test_dual_retry_repairs_missing_linux_objects_without_replacing_pointers(self):
+        bundle, _, _ = self.make_bundle("1.2.3", "linux-repair", linux=True)
+        publisher.reserve(bundle, self.store)
+        self.publish(bundle)
+        linux = json.loads((bundle / "linux-manifest.json").read_bytes())
+        missing = linux["artifacts"]["linux-x86_64"]["path"][len("/agent/"):]
+        del self.store.objects[missing]
+        del self.store.objects[self.release_key("linux-manifest.json")]
+        before = {key: self.store.get(key) for key in ("stable/latest.json", "stable/linux/latest.json")}
+        self.store.calls.clear()
+        self.assertEqual(self.publish(bundle), "already-published")
+        self.assertEqual({call[1] for call in self.store.calls if call[0] == "put"},
+                         {missing, self.release_key("linux-manifest.json")})
+        self.assertEqual(before, {key: self.store.get(key) for key in before})
+
+    def test_linux_reservation_recovers_existing_envelope_exactly(self):
+        bundle, _, _ = self.make_bundle("1.2.3", "linux-existing", linux=True)
+        publisher.reserve(bundle, self.store)
+        self.publish(bundle)
+        envelope = (bundle / "linux-envelope.json").read_bytes()
+        (bundle / "linux-envelope.json").unlink()
+        publisher.reserve(bundle, self.store)
+        self.assertEqual((bundle / "linux-envelope.json").read_bytes(), envelope)
 
     def test_metadata_missing_corrupt_unchecked_and_symlink_files_fail_before_reservation(self):
         for variant in ("missing", "corrupt", "unchecked", "symlink"):
@@ -723,6 +863,32 @@ class PublicationTests(unittest.TestCase):
             for method, range_header in (("HEAD", None), ("GET", "bytes=0-0"), ("GET", None)):
                 self.assertIn((method, record["path"], range_header), origin.calls)
 
+    def test_live_dual_feed_verification_checks_linux_envelope_payload_and_alias(self):
+        bundle, manifest, envelope = self.make_bundle("1.2.3", "dual-live", linux=True)
+        origin = FixtureOrigin(bundle, manifest, envelope)
+        with patch.object(publisher, "minisign_verify", fixture_verifier), \
+                patch.object(publisher.urllib.request, "build_opener", return_value=origin):
+            publisher.verify_live(bundle, bundle / "public-key.pub", "https://updates.example")
+        for path in ("/agent/stable/linux/latest.json", publisher.public_path("1.2.3", "linux-manifest.json"),
+                     "/download/agent/stable/linux"):
+            self.assertIn(("GET", path, None), origin.calls)
+        record = json.loads((bundle / "linux-manifest.json").read_bytes())["artifacts"]["linux-x86_64"]
+        for method, range_header in (("HEAD", None), ("GET", "bytes=0-0"), ("GET", None)):
+            self.assertIn((method, record["path"], range_header), origin.calls)
+
+    def test_linux_bytes_cannot_change_after_reservation_to_obtain_a_signature(self):
+        bundle, _, _ = self.make_bundle("1.2.3", "changed-linux-sign", linux=True)
+        publisher.reserve(bundle, self.store)
+        changed = json.loads((bundle / "linux-manifest.json").read_bytes())
+        changed["artifacts"]["linux-x86_64"]["path"] = publisher.public_path("1.2.3", "other-linux.tar.gz")
+        changed["downloads"]["linux-bundle"] = changed["artifacts"]["linux-x86_64"]
+        (bundle / "payloads/agent-linux.tar.gz").rename(bundle / "payloads/other-linux.tar.gz")
+        (bundle / "linux-manifest.json").write_bytes(publisher.encode_json(changed))
+        with patch.object(publisher.subprocess, "run") as signer, \
+                self.assertRaisesRegex(publisher.PublishError, "not been reserved"):
+            publisher.sign(bundle, self.root / "unused-secret", bundle / "public-key.pub")
+        signer.assert_not_called()
+
     def test_live_verification_sends_native_headers_through_urllib_for_every_request(self):
         origin = FixtureOrigin(self.bundle, self.manifest, self.envelope)
         requests = []
@@ -1025,6 +1191,123 @@ class PackageBoundaryTests(unittest.TestCase):
                 self.assertFalse(self.attested)
 
 
+class LinuxPackageBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        profiles = json.loads((publisher.ROOT / "apps/maple-agent/release-profiles.json").read_text())
+        spec = importlib.util.spec_from_file_location("linux_fixture_info", publisher.ROOT / "apps/maple-agent/scripts/release-info.py")
+        release_info = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(release_info)
+        self.info = {field: profiles["prod"][field] for field in release_info.PUBLIC_FIELDS}
+        self.info.update({"profile": "prod", "version": "1.2.3", "source_sha": SOURCE_SHA,
+                          "git_revision": SOURCE_SHA[:9], "update_feed_url": publisher.LINUX_FEED_URL})
+        self.stem = "maple-agent-prod-1.2.3-" + SOURCE_SHA[:9] + "-linux-x86_64"
+        self.descriptor = {"format": "maple-agent-linux-bundle-v1", "product": "maple-agent",
+                           "profile": "prod", "version": "1.2.3", "build": "42",
+                           "source_sha": SOURCE_SHA, "bundle_id": "cloud.opensecret.maple.agent",
+                           "entrypoint": "AppRun", "executable": "usr/bin/maple-agent"}
+        metadata = {"schema_version": 1, "profile": "prod", "platform": "linux-x86_64",
+                    "source_sha": SOURCE_SHA, "version": "1.2.3", "package": self.stem + ".tar.gz",
+                    "distribution": "master", "macos_signing": None, "linux_integrity": "sha256"}
+        (self.directory / "build-info.json").write_bytes(publisher.encode_json(self.info))
+        (self.directory / "manifest.json").write_bytes(publisher.encode_json(metadata))
+        self.write_archive()
+        self.checksums()
+        self.attested = []
+
+    def write_archive(self, entries=None):
+        if entries is None:
+            entries = [("maple-agent.app/bundle.json", tarfile.REGTYPE, publisher.encode_json(self.descriptor))]
+        with tarfile.open(self.directory / (self.stem + ".tar.gz"), "w:gz") as archive:
+            for name, kind, data in entries:
+                member = tarfile.TarInfo(name)
+                member.type, member.mode = kind, 0o644
+                if kind == tarfile.REGTYPE:
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+                else:
+                    member.linkname = "other.json"
+                    archive.addfile(member)
+
+    def checksums(self):
+        (self.directory / "SHA256SUMS").write_text("".join(
+            hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.name + "\n"
+            for path in sorted(self.directory.iterdir()) if path.name != "SHA256SUMS"
+        ))
+
+    def validate(self):
+        return publisher.validate_package(self.directory, "linux-x86_64", SOURCE_SHA, "1.2.3",
+                                          attestor=lambda path, source: self.attested.append((path.name, source)),
+                                          expected_build="42")
+
+    def test_actual_tar_descriptor_binds_build_source_identity_and_attests_all_four_files(self):
+        records = self.validate()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][0].name, self.stem + ".tar.gz")
+        self.assertEqual(len(self.attested), 4)
+        self.assertTrue(all(source == SOURCE_SHA for _, source in self.attested))
+
+    def test_wrong_or_extra_descriptor_identity_fields_fail_before_attestation(self):
+        original = dict(self.descriptor)
+        for field, value in (("build", "43"), ("source_sha", "b" * 40), ("version", "1.2.4"),
+                             ("profile", "dev"), ("entrypoint", "other"), ("executable", "other"),
+                             ("bundle_id", "other"), ("extra", True)):
+            with self.subTest(field=field):
+                self.descriptor = {**original, field: value}
+                self.write_archive()
+                self.checksums()
+                with self.assertRaisesRegex(publisher.PublishError, "differs from selected run"):
+                    self.validate()
+                self.assertFalse(self.attested)
+
+    def test_missing_duplicate_nonregular_or_oversized_linux_descriptor_fails(self):
+        entry = ("maple-agent.app/bundle.json", tarfile.REGTYPE, publisher.encode_json(self.descriptor))
+        for entries in ([], [entry, entry], [(entry[0], tarfile.SYMTYPE, b"")],
+                        [(entry[0], tarfile.REGTYPE, b"null"), entry],
+                        [(entry[0], tarfile.REGTYPE, bytes(publisher.MAX_MANIFEST + 1))]):
+            with self.subTest(entries=len(entries)):
+                self.write_archive(entries)
+                self.checksums()
+                with self.assertRaises(publisher.PublishError):
+                    self.validate()
+                self.assertFalse(self.attested)
+
+    def test_actual_preparation_keeps_mac_wire_compatible_and_reserves_linux_separately(self):
+        mac = PackageBoundaryTests()
+        mac.setUp()
+        self.addCleanup(mac.doCleanups)
+        notes = self.directory.parent / (self.directory.name + "-notes")
+        notes.write_text("release notes")
+        self.addCleanup(notes.unlink)
+        output = self.directory / "prepared"
+        key = self.directory.parent / (self.directory.name + "-key")
+        key.write_text(PUBLIC_KEY + "\n")
+        self.addCleanup(key.unlink)
+        proof = {"run_id": 123, "run_attempt": 1, "source_sha": SOURCE_SHA, "build": "42",
+                 "pub_date": "2026-10-21T18:00:00Z", "artifacts": {"macos": "mac", "linux": "linux"}}
+        validator = publisher.validate_package
+        def offline_validation(*args, **kwargs):
+            return validator(*args, **kwargs, attestor=lambda path, source: None)
+        with patch.object(publisher, "trust_run", return_value=proof), \
+                patch.object(publisher, "check_source_pins", return_value=PUBLIC_KEY) as pins, \
+                patch.object(publisher, "validate_package", side_effect=offline_validation):
+            prepared = publisher.prepare(123, "1.2.3", "42", mac.directory, self.directory, notes, output, key)
+        pins.assert_called_once_with(key, SOURCE_SHA, True)
+        self.assertEqual(set(prepared["artifacts"]), {"darwin-aarch64"})
+        self.assertEqual(set(prepared["downloads"]), {"macos"})
+        linux = publisher.validate_manifest((output / "linux-manifest.json").read_bytes())
+        self.assertEqual(linux["format"], "maple-agent-update-v2")
+        self.assertEqual(linux["build"], prepared["build"])
+        self.assertEqual(linux["source_sha"], prepared["source_sha"])
+        self.assertEqual(len(list((output / "payloads").iterdir())), 3)
+        store = FakeStore()
+        publisher.reserve(output, store)
+        self.assertEqual(store.objects[publisher.release_key("1.2.3", "publication-manifest.json")], (output / "manifest.json").read_bytes())
+        self.assertEqual(store.objects[publisher.release_key("1.2.3", "publication-linux-manifest.json")], (output / "linux-manifest.json").read_bytes())
+
+
 class TrustedRunTests(unittest.TestCase):
     def setUp(self):
         self.run = {
@@ -1053,7 +1336,7 @@ class TrustedRunTests(unittest.TestCase):
     def test_linux_is_optional_but_each_linux_gate_is_required_when_selected(self):
         with self.assertRaises(publisher.PublishError):
             publisher.validate_run(self.run, self.jobs(), linux=True)
-        names = self.names | {"Linux AppImage (prod)", "Attest Linux packages (prod)", "Verify downloaded Linux (prod)"}
+        names = self.names | {"Linux bundle (prod)", "Attest Linux packages (prod)", "Verify downloaded Linux (prod)"}
         publisher.validate_run(self.run, self.jobs(names), linux=True)
         for name in names - self.names:
             with self.subTest(name=name), self.assertRaises(publisher.PublishError):

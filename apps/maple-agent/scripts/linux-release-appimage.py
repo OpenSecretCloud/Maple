@@ -219,10 +219,17 @@ def stage_closure(appdir, binary, closure, glibc):
 
 APPRUN = r'''#!/bin/sh
 set -eu
-appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+if [ "${APPDIR:-}" != "$appdir" ]; then
+    unset APPIMAGE APPIMAGE_EXTRACT_AND_RUN
+fi
+export APPDIR="$appdir"
 # Only the main Agent process receives this loader path. External CLI tools
 # continue to use their host loader and environment.
 library_path="$appdir/usr/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib64:/usr/lib64:/lib:/usr/lib"
+case "${FONTCONFIG_FILE:-}" in
+    */usr/share/maple-agent/fonts.conf) unset FONTCONFIG_FILE ;;
+esac
 if [ -z "${FONTCONFIG_FILE:-}" ]; then
     if [ -f /etc/fonts/fonts.conf ]; then
         export FONTCONFIG_FILE=/etc/fonts/fonts.conf
@@ -231,14 +238,24 @@ if [ -z "${FONTCONFIG_FILE:-}" ]; then
         export FONTCONFIG_FILE="$appdir/usr/share/maple-agent/fonts.conf"
     fi
 fi
+# Compose data belongs to the desktop, not the bundled library's build store.
+# Preserve an explicit XLOCALEDIR, including an intentionally empty value.
+if [ -z "${XLOCALEDIR+x}" ] && [ -r /usr/share/X11/locale/compose.dir ]; then
+    export XLOCALEDIR=/usr/share/X11/locale
+fi
 # ALSA's package defaults point into the build store. Use the desktop's audio
 # routing and plugins (including PulseAudio/PipeWire) when they are installed.
 if [ -f /usr/share/alsa/alsa.conf ]; then
     export ALSA_CONFIG_PATH="${ALSA_CONFIG_PATH:-/usr/share/alsa/alsa.conf}"
     export ALSA_CONFIG_DIR="${ALSA_CONFIG_DIR:-/usr/share/alsa}"
 fi
-if [ -d /usr/lib/x86_64-linux-gnu/alsa-lib ]; then
-    export ALSA_PLUGIN_DIR="${ALSA_PLUGIN_DIR:-/usr/lib/x86_64-linux-gnu/alsa-lib}"
+if [ -z "${ALSA_PLUGIN_DIR:-}" ]; then
+    for plugins in /usr/lib/x86_64-linux-gnu/alsa-lib /usr/lib64/alsa-lib /usr/lib/alsa-lib; do
+        if [ -d "$plugins" ]; then
+            export ALSA_PLUGIN_DIR="$plugins"
+            break
+        fi
+    done
 fi
 # The Nix loader cannot use the host ld.so.cache. Select host GPU manifests
 # explicitly, and include standard host library directories above for their
@@ -307,7 +324,7 @@ def normalize_public_permissions(appdir):
         if path.is_dir():
             path.chmod(0o755)
         elif path.is_file():
-            path.chmod(0o755 if path.name == "AppRun" or elf(path) else 0o644)
+            path.chmod(0o755 if path in (appdir / "AppRun", appdir / "install.sh") or elf(path) else 0o644)
 
 
 def glibc_version_needs(output):
@@ -357,7 +374,7 @@ def audit(appdir, metadata=None):
         if path.is_dir() and not path.is_symlink() and path.stat().st_mode & 0o777 != 0o755:
             raise PackagingError(f"Restrictive or unsafe public package directory permissions: {path}")
         if path.is_file() and not path.is_symlink():
-            expected_mode = 0o755 if path.name == "AppRun" or elf(path) else 0o644
+            expected_mode = 0o755 if path in (appdir / "AppRun", appdir / "install.sh") or elf(path) else 0o644
             if path.stat().st_mode & 0o7777 != expected_mode:
                 raise PackagingError(f"Restrictive or unsafe public package file permissions: {path}")
         if not path.is_file() or path.is_symlink() or not elf(path):

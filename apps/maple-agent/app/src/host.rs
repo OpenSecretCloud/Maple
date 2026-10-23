@@ -574,8 +574,7 @@ async fn connect(
 }
 
 fn spawn_host() -> Result<(), String> {
-    let mut command =
-        std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    let mut command = crate::self_launch::command()?;
     command
         .args(["host", "serve"])
         .stdin(std::process::Stdio::null())
