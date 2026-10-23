@@ -83,6 +83,57 @@ new slowest job determine the result. Dev/Prod packages and the plain CI binary
 have different build inputs; their outputs have not been proved interchangeable.
 Runner upgrades and further scheduling experiments should follow these results.
 
+## macOS cache retention and repeated application compilation
+
+The [master macOS workspace job at `dbb8e397`](https://github.com/MaplePrivacyLabs/Maple/actions/runs/39915101523/job/120286893796)
+passed in **18m31s** after restoring its exact target cache. Its measured build
+phase was **8m26s** and its test phase **4m42s**. Native dependencies were reused.
+The [later `c9cf8522` job](https://github.com/MaplePrivacyLabs/Maple/actions/runs/39919954389/job/120302912965)
+passed in **50m08s**, with a cache miss and **33m21s** measured compilation. Its
+SQLCipher/OpenSSL native build alone occupied **13m23s**, overlapping other
+compilation. Source revisions and hosted runners differ; these are observed
+phases, not a controlled hardware benchmark or additive estimates of savings.
+
+The two environment identities differed only in the complete Agent `justfile`
+hash. Three Linux packaging-test recipe additions had invalidated macOS and
+Windows even though those workspace jobs invoke Cargo directly. Configuration
+fingerprints now follow the command owner:
+
+- Linux workspace CI retains the entire `justfile`, including recipe variables
+  and dependencies. Direct macOS/Windows workspace builds do not hash it.
+- Nix flake inputs apply to macOS/Linux; the Windows native-setup helper applies
+  to Windows. Provider and release helpers apply to their respective profiles.
+- Actual Rust/Cargo, compiler/native binaries, SDK, flags, Cargo configuration,
+  manifest features/profiles and common SQLCipher provenance checks remain
+  part of the compatibility boundary. Exact dependency keys and successful
+  master-only cache writes retain their existing policies.
+
+Changing this fingerprint policy intentionally creates a new cache generation.
+Its first successful master run must seed it; a cold first PR is not evidence
+that the new scope failed. Keep sufficient storage for overlapping native-cache
+generations. The read-only audit found a configured **10 GiB** GitHub cap and
+**10.085 GiB** of entries, including an obsolete **2.42 GiB** Windows generation.
+That establishes quota pressure, not the cause of every missing entry. Blacksmith
+Desktop/Linux caches use a separate backend and are outside that GitHub total.
+
+The app build script also watched Git reference files when they did not exist.
+Cargo treats missing watched inputs as dirty, so an unchanged build followed by
+test could rerun the script and recompile the app test binary. The warm macOS
+sample repeated **3m18s** of app test compilation; the later cold sample repeated
+**5m22s**. Hosted timings identify the repeated units; they did not capture the
+original Cargo fingerprint reason.
+
+The production Git metadata helper now watches existing Git pointers, using the
+nearest existing parent for an absent active branch reference. That parent is
+needed to detect a packed branch advancing into a newly created loose ref.
+Simply ignoring all missing references can embed an old commit SHA. Offline
+fixtures import the production helper and verify unchanged build/test freshness
+plus full/short SHA correctness across detached, loose, packed and linked
+worktree transitions. The existing dirty-suffix refresh policy remains intact.
+The platform CI jobs and component checks run those fixtures with their selected
+toolchain. Quantify hosted savings only after the retained Cargo reports confirm
+that the repeated application unit is fresh and tests still execute.
+
 ## Pull-request package profiles
 
 Agent desktop pull requests build only the Dev profile on macOS and Linux.

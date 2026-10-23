@@ -28,7 +28,11 @@ store-bench-ci:
     python3 -m unittest discover -s crates/store-bench/tests -p 'test_*.py'
 
 # Run all the checks that CI runs.
-ci: fmt-check clippy test
+ci: fmt-check git-metadata-test clippy test
+
+# Exercise the production Git metadata helper without compiling the app graph.
+git-metadata-test:
+    python3 scripts/test_git_metadata.py
 
 # Format all code.
 fmt:

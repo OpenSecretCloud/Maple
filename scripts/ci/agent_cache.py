@@ -25,16 +25,10 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPONENT = ROOT / "apps/maple-agent"
 SCHEMA = 1
 CONFIG_FILES = (
-    "apps/maple-agent/flake.nix",
-    "apps/maple-agent/flake.lock",
-    "apps/maple-agent/justfile",
     "apps/maple-agent/dependencies/sqlcipher/provenance.json",
     "apps/maple-agent/dependencies/sqlcipher/verify_sources.py",
     "apps/maple-agent/scripts/verify-sqlcipher-build.py",
-    "apps/maple-agent/scripts/test-rusqlite-provider.py",
-    "apps/maple-agent/scripts/build-release.sh",
     "scripts/ci/agent_cache.py",
-    "scripts/ci/agent_windows.py",
 )
 ENV_KEYS = {
     "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC",
@@ -244,8 +238,27 @@ def cargo_configuration(directory: Path, root: Path, cargo_home: Path) -> dict[s
     return result
 
 
-def configuration(root: Path, cargo_config_dir: Path | None = None) -> dict[str, object]:
-    files = {name: file_digest(root / name) for name in CONFIG_FILES}
+def configuration_files(system: str, profile: str) -> list[str]:
+    """Bind command owners only where that platform/profile executes them."""
+    files = list(CONFIG_FILES)
+    if system != "Windows":
+        files.extend(("apps/maple-agent/flake.nix", "apps/maple-agent/flake.lock"))
+    else:
+        files.append("scripts/ci/agent_windows.py")
+    if system == "Linux" and profile == "ci":
+        # Mac/Windows call Cargo directly. Keep the whole Just command surface
+        # conservative for Linux, including recipe variables and dependencies.
+        files.append("apps/maple-agent/justfile")
+    if profile == "provider":
+        files.append("apps/maple-agent/scripts/test-rusqlite-provider.py")
+    if profile == "release":
+        files.append("apps/maple-agent/scripts/build-release.sh")
+    return files
+
+
+def configuration(root: Path, system: str, profile: str,
+                  cargo_config_dir: Path | None = None) -> dict[str, object]:
+    files = {name: file_digest(root / name) for name in configuration_files(system, profile)}
     for directory in (root, root / "apps", root / "apps/maple-agent"):
         for name in ("rust-toolchain", "rust-toolchain.toml"):
             path = directory / name
@@ -295,7 +308,8 @@ def build_identity(profile: str, root: Path = ROOT, cargo_config_dir: Path | Non
         "clippy": command([cargo, "clippy", "--version"]) if system == "Linux" and profile == "ci" else None,
         "native": native_identity(system, environment),
         "native_build_tools": native_build_tools(environment),
-        "environment": selected_environment, "configuration": configuration(root, cargo_config_dir),
+        "environment": selected_environment,
+        "configuration": configuration(root, system, profile, cargo_config_dir),
     }
 
 

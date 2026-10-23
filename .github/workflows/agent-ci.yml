@@ -158,6 +158,15 @@ jobs:
           mkdir -p target/ci-metrics
           cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
 
+      - name: Verify Git metadata freshness on native workspace builds
+        if: runner.os != 'Linux'
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python3 scripts/test_git_metadata.py
+          else
+            nix develop --no-update-lock-file . -c python3 scripts/test_git_metadata.py
+          fi
+
       - name: Verify the canonical SDK and proxy dependency graph
         run: |
           metadata="$(mktemp)"
