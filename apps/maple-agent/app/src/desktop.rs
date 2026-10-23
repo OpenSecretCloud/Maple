@@ -3001,22 +3001,22 @@ pub fn run() {
                 let expected = cx.try_global::<DesktopLifecycle>().is_some_and(|state| {
                     state.quit_completed.get() || state.frontend_detached.get()
                 });
-                let updater = cx
-                    .try_global::<DesktopLifecycle>()
-                    .map(|state| state.updater.clone());
-                if let Some(updater) = &updater {
-                    updater.shutdown();
-                }
+                let cleanup = cx.try_global::<DesktopLifecycle>().map(|state| {
+                    state.updater.shutdown();
+                    state.updater.cleanup_on_exit(state.backend.clone())
+                });
                 async move {
                     if !expected {
                         log::warn!(
                             "Maple frontend terminated outside completed Quit or intentional detach"
                         );
                     }
-                    if let Some(updater) = updater {
+                    if let Some(cleanup) = cleanup {
                         // Best effort only; durable SQL shutdown was completed
                         // by the coordinator before this 200 ms GPUI callback.
-                        updater.cleanup_on_exit().await;
+                        // Only the JoinHandle is polled by GPUI; the cleanup's
+                        // timer and filesystem work run on the backend runtime.
+                        let _ = cleanup.await;
                     }
                 }
             })
