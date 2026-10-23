@@ -70,6 +70,8 @@ macos_release_main() {
     [[ -x "$binary" && -f "$output_dir/build-info.json" ]] || { echo "missing release binary/build-info" >&2; return 1; }
     local app_name="${MAPLE_PACKAGE_APP_NAME:?}" bundle_id="${MAPLE_PACKAGE_BUNDLE_ID:?}"
     local profile="${MAPLE_PACKAGE_CHANNEL:?}" build_number="${MAPLE_PACKAGE_BUILD_NUMBER:-1}"
+    local bundle_name
+    bundle_name="$(python3 "$component/scripts/release-info.py" bundle-name "$profile" "$output_dir/build-info.json")"
     local arches
     arches="$(macos_native lipo -archs "$binary")"
     [[ "$arches" == arm64 ]] || { echo "release binary must contain exactly the arm64 slice" >&2; return 1; }
@@ -83,7 +85,7 @@ macos_release_main() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
-    local app="$macos_release_staging/$app_name.app"
+    local app="$macos_release_staging/$bundle_name.app"
     local frameworks="$app/Contents/Frameworks" executable="$app/Contents/MacOS/maple-agent"
     mkdir -p "$frameworks" "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$executable"
@@ -222,7 +224,7 @@ print(matches[0])' "$APPLE_TEAM_ID")"
     local image_root="$macos_release_staging/image"
     mkdir "$image_root"
     chmod 0755 "$image_root"
-    macos_native ditto "$app" "$image_root/$app_name.app"
+    macos_native ditto "$app" "$image_root/$bundle_name.app"
     ln -s /Applications "$image_root/Applications"
     # hdiutil's own -srcfolder size estimate can come up short and fail with
     # "No space left on device". Size the image from the payload with headroom,
@@ -256,7 +258,7 @@ print(-(-total//(1024*1024)))' "$image_root")"
         macos_native xcrun stapler validate "$output_dir/$basename.dmg"
         macos_native spctl --assess --type open --context context:primary-signature --verbose=2 "$output_dir/$basename.dmg"
     fi
-    macos_archive_app "$macos_release_staging" "$app_name" "$output_dir/$basename.app.tar.gz"
+    macos_archive_app "$macos_release_staging" "$bundle_name" "$output_dir/$basename.app.tar.gz"
     chmod 0644 "$output_dir/$basename.dmg" "$output_dir/$basename.app.tar.gz"
 }
 

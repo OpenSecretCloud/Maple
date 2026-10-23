@@ -25,7 +25,7 @@ NATIVE_RUN = packaging.run
 HEADER = b"\x7fELF\x02\x01" + b"\x00" * 12 + b"\x3e\x00"
 METADATA = {
     "channel": "dev",
-    "app_name": "Maple Agent Dev",
+    "app_name": "Maple Work Dev",
     "bundle_id": "cloud.opensecret.maple.agent.dev",
     "version": "0.1.0",
     "build_number": "1",

@@ -653,7 +653,7 @@ fn validate_destination(installed: &Path) -> Result<()> {
         || installed.starts_with("/Volumes")
     {
         return Err(InstallError::NotifyOnly(
-            "move Maple Agent to a writable installed application directory",
+            "move Maple Work to a writable installed application directory",
         ));
     }
     if fs::symlink_metadata(installed)?.file_type().is_symlink()

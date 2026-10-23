@@ -22,8 +22,8 @@ previews.
 
 | Profile | Application | macOS bundle ID | Configuration/data namespace | Update delivery |
 | --- | --- | --- | --- | --- |
-| Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
-| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed with primary/backup pins; publication separately gated |
+| Dev | Maple Work Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Disabled; master Actions artifacts |
+| Prod | Maple Work | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Signed Agent feed with primary/backup pins; publication separately gated |
 
 The binary embeds its profile, hosted API/client/billing settings, and PCR
 environment. `--build-info` prints the public build identity as JSON without

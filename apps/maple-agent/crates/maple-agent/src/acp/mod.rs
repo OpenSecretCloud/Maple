@@ -546,7 +546,7 @@ impl AcpConnectionContext {
             && !available_models.iter().any(|available| available == model)
         {
             return Err(agent_client_protocol::Error::invalid_request().data(format!(
-                "This Maple Agent task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
+                "This Maple Work task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
             )));
         }
         let session_servers = prepare_session_mcp(&request.mcp_servers)?;
@@ -1552,7 +1552,7 @@ impl AcpConnectionContext {
                 return Err(agent_client_protocol::Error::resource_not_found(Some(
                     session_id.to_string(),
                 ))
-                .data("The Maple Agent task was removed outside this ACP connection"));
+                .data("The Maple Work task was removed outside this ACP connection"));
             }
             Err(error) => return Err(internal_acp_error(error)),
         };
@@ -1762,7 +1762,7 @@ impl AcpConnectionContext {
                             .await
                         }
                         None => Err(agent_client_protocol::Error::internal_error()
-                            .data("Maple Agent run ended without a terminal result")),
+                            .data("Maple Work run ended without a terminal result")),
                     };
                 }
             };

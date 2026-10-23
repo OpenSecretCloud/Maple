@@ -21,8 +21,8 @@ FORMAT = "maple-agent-linux-bundle-v1"
 FIELDS = {"format", "product", "profile", "version", "build", "source_sha",
           "bundle_id", "entrypoint", "executable"}
 PROFILES = {
-    "prod": ("maple-agent.app", "maple-agent", "cloud.opensecret.maple.agent", "Maple Agent"),
-    "dev": ("maple-agent-dev.app", "maple-agent-dev", "cloud.opensecret.maple.agent.dev", "Maple Agent Dev"),
+    "prod": ("maple-agent.app", "maple-agent", "cloud.opensecret.maple.agent", "Maple Work"),
+    "dev": ("maple-agent-dev.app", "maple-agent-dev", "cloud.opensecret.maple.agent.dev", "Maple Work Dev"),
 }
 MAX_ENTRIES = 20_000
 MAX_FILE = 2 * 1024**3

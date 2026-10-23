@@ -94,7 +94,8 @@ def write_plist(info, path, build_number):
         raise ValueError("package build number must be a positive integer")
     plist = plistlib.loads((COMPONENT / "app/macos/Info.plist").read_bytes())
     plist.update({
-        "CFBundleDisplayName": info["display_name"],
+        # Finder localizes only when this base name matches the bundle path.
+        "CFBundleDisplayName": macos_bundle_name(info["profile"]),
         "CFBundleName": info["display_name"],
         "CFBundleIdentifier": info["bundle_id"],
         "CFBundleShortVersionString": info["version"].split("-", 1)[0],
@@ -107,6 +108,17 @@ def write_plist(info, path, build_number):
     })
     plist.pop("LSEnvironment", None)
     Path(path).write_bytes(plistlib.dumps(plist))
+    localized = Path(path).parent / "Resources/en.lproj/InfoPlist.strings"
+    localized.parent.mkdir(parents=True, exist_ok=True)
+    localized.write_bytes(plistlib.dumps({
+        "CFBundleDisplayName": info["display_name"],
+        "CFBundleName": info["display_name"],
+    }))
+
+
+def macos_bundle_name(profile):
+    # Installed paths and updater archive roots predate the display branding.
+    return {"dev": "Maple Agent Dev", "prod": "Maple Agent"}[profile]
 
 
 def linux_package_name(info):
@@ -285,7 +297,7 @@ def compare_app_payloads(first, second):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("validate", "field", "plist", "manifest", "verify", "extract-app", "compare-apps"))
+    parser.add_argument("operation", choices=("validate", "field", "bundle-name", "plist", "manifest", "verify", "extract-app", "compare-apps"))
     parser.add_argument("profile", choices=("dev", "prod"))
     parser.add_argument("path")
     parser.add_argument("--source-sha")
@@ -299,14 +311,15 @@ def main():
         print(json.dumps(verify_artifacts(args.profile, args.path, args.unsigned, args.source_sha, args.platform)))
         return
     if args.operation == "extract-app":
-        app_name = json.loads((COMPONENT / "release-profiles.json").read_text())[args.profile]["display_name"]
-        extract_app_archive(args.path, args.output, app_name)
+        extract_app_archive(args.path, args.output, macos_bundle_name(args.profile))
         return
     if args.operation == "compare-apps":
         compare_app_payloads(args.path, args.output)
         return
     info = read_info(args.profile, args.path, args.source_sha, args.platform)
-    if args.operation == "field":
+    if args.operation == "bundle-name":
+        print(macos_bundle_name(args.profile))
+    elif args.operation == "field":
         if args.field not in BUILD_FIELDS:
             raise ValueError("field is not public release metadata")
         print(info[args.field])

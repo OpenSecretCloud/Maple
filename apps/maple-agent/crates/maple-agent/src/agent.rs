@@ -72,7 +72,7 @@ const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const AGENT_SERVICE_OPEN: u8 = 0;
 const AGENT_SERVICE_DRAINING: u8 = 1;
 const AGENT_SERVICE_DRAINING_ERROR: &str =
-    "Maple Agent services are draining and cannot accept new work";
+    "Maple Work services are draining and cannot accept new work";
 const RUNTIME_NOT_RUNNING_ERROR: &str = "Agent runtime is not running";
 const RUNTIME_SAVE_PENDING_ERROR: &str =
     "Agent history is waiting to be saved. Retry saving before starting more work.";

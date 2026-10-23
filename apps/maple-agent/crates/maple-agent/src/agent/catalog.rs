@@ -88,7 +88,7 @@ async fn cached_model_ids(
             models
         }
         Err(error) => {
-            log::warn!("Failed to fetch the Maple Agent model catalog: {error}");
+            log::warn!("Failed to fetch the Maple Work model catalog: {error}");
             Vec::new()
         }
     }
@@ -158,7 +158,7 @@ impl AgentRuntimeHandle {
         match self.api().await?.model_catalog().await {
             Ok(catalog) => Ok(Some(catalog_entry(&catalog, model_id).unwrap_or_default())),
             Err(error) => {
-                log::warn!("Failed to fetch the Maple Agent model catalog: {error}");
+                log::warn!("Failed to fetch the Maple Work model catalog: {error}");
                 Ok(None)
             }
         }

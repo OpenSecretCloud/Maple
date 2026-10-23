@@ -1,6 +1,6 @@
 {
   "dev": {
-    "display_name": "Maple Agent Dev",
+    "display_name": "Maple Work Dev",
     "bundle_id": "cloud.opensecret.maple.agent.dev",
     "data_namespace": "maple-agent-dev",
     "api_url": "https://enclave.secretgpt.ai",
@@ -16,7 +16,7 @@
     "prerelease": true
   },
   "prod": {
-    "display_name": "Maple Agent",
+    "display_name": "Maple Work",
     "bundle_id": "cloud.opensecret.maple.agent",
     "data_namespace": "maple-agent-prod",
     "api_url": "https://enclave.trymaple.ai",

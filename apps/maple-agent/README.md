@@ -1,4 +1,4 @@
-# Maple Agent (GPUI prototype)
+# Maple Work (GPUI prototype)
 
 Maple’s desktop-v2 prototype lives in `apps/maple-agent/` in this monorepo.
 Its Cargo package is `maple-agent-app` and its executable is `maple-agent`. It rebuilds Maple Agent Mode in
@@ -331,7 +331,8 @@ identity, discovers and embeds any Swift compatibility libraries required by
 native dependencies, signs nested code before sealing the bundle, and prints
 the exact bundle path to launch. This requires a full Xcode toolchain but does
 not require a Developer ID or produce a release artifact. The default ad hoc
-bundle is named Maple Agent Debug with identifier
+bundle displays Maple Work Debug and keeps the filename `Maple Agent Debug.app`
+with identifier
 `cloud.opensecret.maple.agent.debug`, separate from both packaged profiles. Its
 identity changes when Maple is rebuilt, so macOS may require the development
 app's privacy grants again. Set `MAPLE_DEBUG_CODESIGN_IDENTITY` to the name or

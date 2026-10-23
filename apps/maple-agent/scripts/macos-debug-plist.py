@@ -43,3 +43,10 @@ if __name__ == "__main__":
         configured = configure(plistlib.load(source), os.environ)
     with path.open("wb") as output:
         plistlib.dump(configured, output)
+    # Localize presentation while retaining the debug bundle's installed name.
+    localized = path.parent / "Resources/en.lproj/InfoPlist.strings"
+    localized.parent.mkdir(parents=True, exist_ok=True)
+    localized.write_bytes(plistlib.dumps({
+        "CFBundleDisplayName": configured["CFBundleName"],
+        "CFBundleName": configured["CFBundleName"],
+    }))

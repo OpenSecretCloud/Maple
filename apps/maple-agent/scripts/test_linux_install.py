@@ -98,6 +98,8 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(paths["wrapper"].stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(paths["receipt"].stat().st_mode), 0o600)
         desktop = paths["desktop"].read_text()
+        self.assertIn("Name=Maple Work\n", desktop)
+        self.assertEqual(paths["desktop"].name, "cloud.opensecret.maple.agent.desktop")
         self.assertIn("Exec=\"", desktop)
         self.assertIn("%%", desktop)
         self.assertIn(" %U\n", desktop)
@@ -113,6 +115,7 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertEqual(dev["bundle"].name, "maple-agent-dev.app")
         self.assertEqual(dev["wrapper"].name, "maple-agent-dev")
         self.assertEqual(dev["desktop"].name, "cloud.opensecret.maple.agent.dev.desktop")
+        self.assertIn("Name=Maple Work Dev\n", dev["desktop"].read_text())
         self.assertTrue(set(prod.values()).isdisjoint(dev.values()))
 
     def test_every_preexisting_managed_path_is_refused_without_replacement(self):
