@@ -86,6 +86,13 @@ API account/auth/billing/API-key/host-stop commands are excluded. Protocol versi
 identity scope, grant checks and account fences are checked before dispatch;
 account-local receipt lookup cannot expose another account's outcome.
 
+Paired controllers can configure MCP servers, including adding, replacing and
+clearing environment variables and HTTP headers. Saved values are write-only:
+listing or saving returns names and presence flags, never stored values. Changing
+a server's command or URL requires replacing or clearing its saved values instead
+of silently supplying them to the new target. The existing account and pairing
+authorization applies; MCP setup does not add a separate approval flow.
+
 Tests on one machine can prove separate profiles, identity/authentication,
 framing, public-relay traffic, cancellation, snapshot recovery and receipt behavior.
 They cannot prove two independent NATs, sleep/wake routing, Windows/Linux native

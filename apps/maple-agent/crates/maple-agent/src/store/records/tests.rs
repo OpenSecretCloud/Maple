@@ -58,6 +58,18 @@ fn mcp(value: McpSecretUpdate) -> McpServerEdit {
     }
 }
 
+fn http_mcp(environment: McpSecretUpdate, header: McpSecretUpdate) -> McpServerEdit {
+    let mut definition = mcp(environment);
+    definition.target = McpTarget::StreamableHttp {
+        url: "https://example.invalid/mcp".into(),
+    };
+    definition.headers.push(McpSecretEdit {
+        name: "Authorization".into(),
+        update: header,
+    });
+    definition
+}
+
 #[test]
 fn credential_rotation_and_clear_bind_account_session_and_revision() {
     let (_directory, store, alice, bob, _task) = fixture();
@@ -833,53 +845,316 @@ fn mcp_values_never_enter_definitions_and_keep_is_bound_to_target() {
 }
 
 #[test]
-fn remote_mcp_edits_cannot_change_secrets_or_redirect_them_and_roll_back() {
-    let (_directory, store, alice, _bob, _task) = fixture();
-    let configured = mcp(McpSecretUpdate::Set(SecretString::new(
-        "synthetic-only".into(),
-    )));
+fn remote_mcp_values_can_be_created_kept_replaced_and_cleared_without_readback() {
+    let (_directory, store, alice, bob, _task) = fixture();
+    let configured = http_mcp(
+        McpSecretUpdate::Set(SecretString::new("synthetic-env-original".into())),
+        McpSecretUpdate::Set(SecretString::new("synthetic-header-original".into())),
+    );
     store
         .save_mcp_definitions(
             alice,
             std::slice::from_ref(&configured),
-            McpEditOrigin::Local,
+            McpEditOrigin::Remote,
+        )
+        .unwrap();
+    let listed = store.mcp_definitions(alice).unwrap();
+    assert!(listed[0].environment[0].has_value);
+    assert_eq!(listed[0].headers[0].name, "authorization");
+    assert!(listed[0].headers[0].has_value);
+    assert!(
+        !serde_json::to_string(&listed)
+            .unwrap()
+            .contains("synthetic-env-original")
+    );
+    assert!(!format!("{listed:?}").contains("synthetic-header-original"));
+    assert!(store.mcp_definitions(bob).unwrap().is_empty());
+    assert_eq!(
+        store.mcp_launch_secrets(bob, "example", &configured.target),
+        Err(StoreError::NotFound)
+    );
+    let mut kept = http_mcp(McpSecretUpdate::Keep, McpSecretUpdate::Keep);
+    kept.description = "Changed display label".into();
+    store
+        .save_mcp_definitions(alice, &[kept], McpEditOrigin::Remote)
+        .unwrap();
+    let launch = store
+        .mcp_launch_secrets(alice, "example", &configured.target)
+        .unwrap();
+    assert_eq!(
+        launch.environment["TOKEN"].expose(),
+        "synthetic-env-original"
+    );
+    assert_eq!(
+        launch.headers["authorization"].expose(),
+        "synthetic-header-original"
+    );
+    assert!(!format!("{launch:?}").contains("synthetic-env-original"));
+    assert!(!format!("{launch:?}").contains("synthetic-header-original"));
+
+    let replaced = http_mcp(
+        McpSecretUpdate::Set(SecretString::new("synthetic-env-replaced".into())),
+        McpSecretUpdate::Set(SecretString::new("synthetic-header-replaced".into())),
+    );
+    store
+        .save_mcp_definitions(alice, &[replaced], McpEditOrigin::Remote)
+        .unwrap();
+    let launch = store
+        .mcp_launch_secrets(alice, "example", &configured.target)
+        .unwrap();
+    assert_eq!(
+        launch.environment["TOKEN"].expose(),
+        "synthetic-env-replaced"
+    );
+    assert_eq!(
+        launch.headers["authorization"].expose(),
+        "synthetic-header-replaced"
+    );
+    let listed = serde_json::to_string(&store.mcp_definitions(alice).unwrap()).unwrap();
+    assert!(!listed.contains("synthetic-env-replaced"));
+    assert!(!listed.contains("synthetic-header-replaced"));
+
+    store
+        .save_mcp_definitions(
+            alice,
+            &[http_mcp(McpSecretUpdate::Clear, McpSecretUpdate::Clear)],
+            McpEditOrigin::Remote,
+        )
+        .unwrap();
+    let listed = store.mcp_definitions(alice).unwrap();
+    assert!(!listed[0].environment[0].has_value);
+    assert!(!listed[0].headers[0].has_value);
+    let launch = store
+        .mcp_launch_secrets(alice, "example", &configured.target)
+        .unwrap();
+    assert!(launch.environment.is_empty());
+    assert!(launch.headers.is_empty());
+}
+
+#[test]
+fn remote_target_changes_require_explicit_updates_and_roll_back_the_whole_save() {
+    let (_directory, store, alice, _bob, _task) = fixture();
+    let configured = http_mcp(
+        McpSecretUpdate::Set(SecretString::new("synthetic-env-original".into())),
+        McpSecretUpdate::Set(SecretString::new("synthetic-header-original".into())),
+    );
+    let mut sibling = mcp(McpSecretUpdate::Keep);
+    sibling.key = "sibling".into();
+    sibling.name = "Sibling".into();
+    store
+        .save_mcp_definitions(
+            alice,
+            &[sibling.clone(), configured.clone()],
+            McpEditOrigin::Remote,
         )
         .unwrap();
     let before = store.mcp_definitions(alice).unwrap();
-    let mut redirected = mcp(McpSecretUpdate::Keep);
-    redirected.target = McpTarget::Stdio {
-        command: "synthetic-other".into(),
+    sibling.description = "Must be rolled back".into();
+    for (environment, header) in [
+        (McpSecretUpdate::Keep, McpSecretUpdate::Keep),
+        (McpSecretUpdate::Clear, McpSecretUpdate::Keep),
+        (McpSecretUpdate::Keep, McpSecretUpdate::Clear),
+    ] {
+        let mut redirected = http_mcp(environment, header);
+        redirected.target = McpTarget::StreamableHttp {
+            url: "https://other.invalid/mcp".into(),
+        };
+        assert_eq!(
+            store.save_mcp_definitions(
+                alice,
+                &[sibling.clone(), redirected],
+                McpEditOrigin::Remote
+            ),
+            Err(StoreError::Conflict)
+        );
+        assert_eq!(store.mcp_definitions(alice).unwrap(), before);
+    }
+    let mut omitted = http_mcp(McpSecretUpdate::Clear, McpSecretUpdate::Clear);
+    omitted.target = McpTarget::StreamableHttp {
+        url: "https://other.invalid/mcp".into(),
     };
+    omitted.headers.clear();
     assert_eq!(
-        store.save_mcp_definitions(alice, &[redirected], McpEditOrigin::Remote),
-        Err(StoreError::Conflict)
-    );
-    assert_eq!(
-        store.save_mcp_definitions(alice, &[mcp(McpSecretUpdate::Clear)], McpEditOrigin::Remote),
-        Err(StoreError::Conflict)
-    );
-    assert_eq!(
-        store.save_mcp_definitions(alice, &[configured], McpEditOrigin::Remote),
-        Err(StoreError::Conflict)
-    );
-    assert_eq!(
-        store.save_mcp_definitions(alice, &[], McpEditOrigin::Remote),
+        store.save_mcp_definitions(alice, &[sibling.clone(), omitted], McpEditOrigin::Remote),
         Err(StoreError::Conflict)
     );
     assert_eq!(store.mcp_definitions(alice).unwrap(), before);
+    let launch = store
+        .mcp_launch_secrets(alice, "example", &configured.target)
+        .unwrap();
+    assert_eq!(
+        launch.environment["TOKEN"].expose(),
+        "synthetic-env-original"
+    );
+    assert_eq!(
+        launch.headers["authorization"].expose(),
+        "synthetic-header-original"
+    );
+
+    let mut redirected = http_mcp(
+        McpSecretUpdate::Set(SecretString::new("synthetic-env-new-target".into())),
+        McpSecretUpdate::Clear,
+    );
+    redirected.target = McpTarget::StreamableHttp {
+        url: "https://other.invalid/mcp".into(),
+    };
+    store
+        .save_mcp_definitions(alice, &[sibling, redirected.clone()], McpEditOrigin::Remote)
+        .unwrap();
+    assert_eq!(
+        store.mcp_launch_secrets(alice, "example", &configured.target),
+        Err(StoreError::Conflict)
+    );
+    let launch = store
+        .mcp_launch_secrets(alice, "example", &redirected.target)
+        .unwrap();
+    assert_eq!(
+        launch.environment["TOKEN"].expose(),
+        "synthetic-env-new-target"
+    );
+    assert!(launch.headers.is_empty());
+}
+
+#[test]
+fn remote_http_to_stdio_transition_clears_headers_without_retaining_header_metadata() {
+    let (_directory, store, alice, _bob, _task) = fixture();
+    let configured = http_mcp(
+        McpSecretUpdate::Set(SecretString::new("synthetic-http-env".into())),
+        McpSecretUpdate::Set(SecretString::new("synthetic-http-header".into())),
+    );
+    store
+        .save_mcp_definitions(alice, &[configured], McpEditOrigin::Remote)
+        .unwrap();
+    let before = store.mcp_definitions(alice).unwrap();
+    let mut redirected = mcp(McpSecretUpdate::Set(SecretString::new(
+        "synthetic-stdio-env".into(),
+    )));
+    for update in [
+        McpSecretUpdate::Keep,
+        McpSecretUpdate::Set(SecretString::new("synthetic-invalid-stdio-header".into())),
+    ] {
+        redirected.headers = vec![McpSecretEdit {
+            name: "Authorization".into(),
+            update,
+        }];
+        assert_eq!(
+            store.save_mcp_definitions(
+                alice,
+                std::slice::from_ref(&redirected),
+                McpEditOrigin::Remote
+            ),
+            Err(StoreError::InvalidInput)
+        );
+        assert_eq!(store.mcp_definitions(alice).unwrap(), before);
+    }
+    redirected.headers = vec![McpSecretEdit {
+        name: "Authorization".into(),
+        update: McpSecretUpdate::Clear,
+    }];
+    store
+        .save_mcp_definitions(
+            alice,
+            std::slice::from_ref(&redirected),
+            McpEditOrigin::Remote,
+        )
+        .unwrap();
+    let listed = store.mcp_definitions(alice).unwrap();
+    assert!(listed[0].headers.is_empty());
+    let launch = store
+        .mcp_launch_secrets(alice, "example", &redirected.target)
+        .unwrap();
+    assert!(launch.headers.is_empty());
+    assert_eq!(launch.environment["TOKEN"].expose(), "synthetic-stdio-env");
     assert_eq!(
         store
-            .mcp_launch_secrets(alice, "example", &before[0].target)
+            .read(|tx| Ok(tx.query_row(
+                "SELECT count(*) FROM mcp_server_secrets WHERE kind='header'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn remote_mcp_omission_and_server_removal_delete_values_only_in_the_owning_account() {
+    let (_directory, store, alice, bob, _task) = fixture();
+    let configured = mcp(McpSecretUpdate::Set(SecretString::new(
+        "synthetic-value".into(),
+    )));
+    for account in [alice, bob] {
+        store
+            .save_mcp_definitions(
+                account,
+                std::slice::from_ref(&configured),
+                McpEditOrigin::Remote,
+            )
+            .unwrap();
+    }
+    let mut omitted = mcp(McpSecretUpdate::Keep);
+    omitted.environment.clear();
+    store
+        .save_mcp_definitions(alice, &[omitted], McpEditOrigin::Remote)
+        .unwrap();
+    assert!(
+        store
+            .mcp_launch_secrets(alice, "example", &configured.target)
+            .unwrap()
+            .environment
+            .is_empty()
+    );
+    store
+        .save_mcp_definitions(
+            alice,
+            std::slice::from_ref(&configured),
+            McpEditOrigin::Remote,
+        )
+        .unwrap();
+    let mut renamed = mcp(McpSecretUpdate::Keep);
+    renamed.key = "renamed".into();
+    renamed.name = "Renamed".into();
+    store
+        .save_mcp_definitions(alice, &[renamed], McpEditOrigin::Remote)
+        .unwrap();
+    assert!(
+        store
+            .mcp_launch_secrets(alice, "renamed", &configured.target)
+            .unwrap()
+            .environment
+            .is_empty()
+    );
+    store
+        .save_mcp_definitions(
+            alice,
+            std::slice::from_ref(&configured),
+            McpEditOrigin::Remote,
+        )
+        .unwrap();
+    store
+        .save_mcp_definitions(alice, &[], McpEditOrigin::Remote)
+        .unwrap();
+    assert!(store.mcp_definitions(alice).unwrap().is_empty());
+    assert_eq!(
+        store.mcp_launch_secrets(alice, "example", &configured.target),
+        Err(StoreError::NotFound)
+    );
+    assert_eq!(
+        store
+            .mcp_launch_secrets(bob, "example", &configured.target)
             .unwrap()
             .environment["TOKEN"]
             .expose(),
-        "synthetic-only"
+        "synthetic-value"
     );
-    let mut harmless = mcp(McpSecretUpdate::Keep);
-    harmless.description = "Changed display label".into();
-    store
-        .save_mcp_definitions(alice, &[harmless], McpEditOrigin::Remote)
-        .unwrap();
+    assert_eq!(
+        store
+            .read(|tx| Ok(tx
+                .query_row("SELECT count(*) FROM mcp_server_secrets", [], |row| row
+                    .get::<_, i64>(0))?))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]

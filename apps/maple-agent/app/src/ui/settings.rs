@@ -803,31 +803,29 @@ impl SettingsScreen {
             environment: Vec::new(),
             headers: Vec::new(),
         };
-        let remote = self.integrations_backend.remote_host().is_some();
         let edits = (|| {
-            server.environment = mcp::field_edits(&editor.saved_environment, remote, cx)?;
-            server.environment.extend(mcp::new_value_edits(
-                &Zeroizing::new(editor.environment.read(cx).text()),
-                remote,
-            )?);
-            server.headers = mcp::field_edits(&editor.saved_headers, remote, cx)?;
-            server.headers.extend(mcp::new_value_edits(
-                &Zeroizing::new(editor.headers.read(cx).text()),
-                remote,
-            )?);
+            server.environment = mcp::field_edits(&editor.saved_environment, cx)?;
+            server
+                .environment
+                .extend(mcp::new_value_edits(&Zeroizing::new(
+                    editor.environment.read(cx).text(),
+                ))?);
+            server.headers = mcp::field_edits(&editor.saved_headers, cx)?;
+            server.headers.extend(mcp::new_value_edits(&Zeroizing::new(
+                editor.headers.read(cx).text(),
+            ))?);
             mcp::require_target_choice(editor.original.as_ref(), &server)?;
-            if !editor.http {
-                if server.headers.iter().any(|entry| {
+            if !editor.http
+                && server.headers.iter().any(|entry| {
                     !matches!(
                         entry.update,
                         maple_agent::store::records::McpSecretUpdate::Clear
                     )
-                }) {
-                    return Err(
-                        "Clear each saved HTTP header before switching to Standard IO.".to_string(),
-                    );
-                }
-                server.headers.clear();
+                })
+            {
+                return Err(
+                    "Clear each saved HTTP header before switching to Standard IO.".to_string(),
+                );
             }
             Ok(())
         })();
@@ -2859,23 +2857,26 @@ impl SettingsScreen {
             } else {
                 field("Command", "", editor.target.clone())
             })
-            .when(!editor.saved_environment.is_empty(), |col| col
-                .child(subsection_title("Environment values"))
-                .child(self.render_mcp_secret_fields(&editor.saved_environment, false, cx)))
-            .when(!editor.saved_headers.is_empty(), |col| col
-                .child(subsection_title("Header values"))
-                .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx)))
-            .when(self.integrations_backend.remote_host().is_none(), |col| col
-                .child(field(
-                    "New environment values",
-                    "KEY=value pairs separated by semicolons. Existing values use the choices above.",
-                    editor.environment.clone(),
-                ))
-                .when(editor.http, |col| col.child(field(
+            .when(!editor.saved_environment.is_empty(), |col| {
+                col.child(subsection_title("Environment values"))
+                    .child(self.render_mcp_secret_fields(&editor.saved_environment, false, cx))
+            })
+            .when(!editor.saved_headers.is_empty(), |col| {
+                col.child(subsection_title("Header values"))
+                    .child(self.render_mcp_secret_fields(&editor.saved_headers, true, cx))
+            })
+            .child(field(
+                "New environment values",
+                "KEY=value pairs separated by semicolons. Existing values use the choices above.",
+                editor.environment.clone(),
+            ))
+            .when(editor.http, |col| {
+                col.child(field(
                     "New headers",
                     "Name=value pairs separated by semicolons.",
                     editor.headers.clone(),
-                ))))
+                ))
+            })
             .child(
                 div()
                     .flex()

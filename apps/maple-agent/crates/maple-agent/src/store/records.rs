@@ -763,8 +763,9 @@ fn send_fingerprint(parameters: &Value) -> StoreResult<[u8; 32]> {
 }
 
 impl Store {
-    /// Replace the account's configured server list atomically. Omitted values
-    /// mean Keep, never an instruction to return a saved secret to the caller.
+    /// Replace the account's configured server list atomically. Keep retains a
+    /// named value only for its current target; omitted names are removed.
+    /// Remote target changes require Set or Clear for every saved value.
     pub fn save_mcp_definitions(
         &self,
         account: AccountId,
@@ -792,13 +793,14 @@ impl Store {
                 let old_server = mcp_server_tx(tx,account,&edit.key)?;
                 let old_values = if let Some((id,_)) = &old_server { mcp_values_tx(tx,*id)? } else { BTreeMap::new() };
                 let target = mcp_target_hash(&definition.target)?;
-                if origin == McpEditOrigin::Remote {
-                    if !old_values.is_empty() && old_server.as_ref().is_none_or(|(_,old)| old.target != definition.target) {
-                        return Err(StoreError::Conflict);
-                    }
-                    let requested: BTreeSet<_> = edit.environment.iter().map(|value| ("env",value.name.clone()))
-                        .chain(edit.headers.iter().map(|value| ("header",value.name.to_ascii_lowercase()))).collect();
-                    if old_values.keys().any(|name| !requested.contains(&(name.0.as_str(),name.1.clone()))) {
+                if origin == McpEditOrigin::Remote && old_server.as_ref().is_some_and(|(_,old)| old.target != definition.target) {
+                    let explicit: BTreeSet<_> = edit.environment.iter()
+                        .filter(|value| !matches!(&value.update, McpSecretUpdate::Keep))
+                        .map(|value| ("env",value.name.clone()))
+                        .chain(edit.headers.iter()
+                            .filter(|value| !matches!(&value.update, McpSecretUpdate::Keep))
+                            .map(|value| ("header",value.name.to_ascii_lowercase()))).collect();
+                    if old_values.keys().any(|name| !explicit.contains(&(name.0.as_str(),name.1.clone()))) {
                         return Err(StoreError::Conflict);
                     }
                 }
@@ -813,11 +815,6 @@ impl Store {
                     for edit_value in values {
                         let name = if kind == "header" { edit_value.name.to_ascii_lowercase() } else { edit_value.name.clone() };
                         let previous = old_values.get(&(kind.to_owned(),name.clone()));
-                        if origin == McpEditOrigin::Remote && match &edit_value.update {
-                            McpSecretUpdate::Set(_) => true,
-                            McpSecretUpdate::Clear => previous.is_some(),
-                            McpSecretUpdate::Keep => false,
-                        } { return Err(StoreError::Conflict); }
                         let value = match &edit_value.update {
                             McpSecretUpdate::Set(value) => Some(value),
                             McpSecretUpdate::Keep => previous.filter(|(saved_target,_)| saved_target == &target).map(|(_,value)| value),
@@ -832,10 +829,6 @@ impl Store {
             }
             for (id,key) in old {
                 if !keys.contains(key.as_str()) {
-                    if origin == McpEditOrigin::Remote {
-                        let has_values: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM mcp_server_secrets WHERE server_id=?1)",[id],|row|row.get(0))?;
-                        if has_values { return Err(StoreError::Conflict); }
-                    }
                     tx.execute("DELETE FROM mcp_servers WHERE id=?1 AND account_id=?2",params![id,account.0])?;
                 }
             }
@@ -981,7 +974,12 @@ fn mcp_definition(edit: &McpServerEdit) -> StoreResult<McpDefinition> {
         return Err(StoreError::InvalidInput);
     }
     let target = canonical_mcp_target(&edit.target)?;
-    if matches!(target, McpTarget::Stdio { .. }) && !edit.headers.is_empty() {
+    if matches!(target, McpTarget::Stdio { .. })
+        && edit
+            .headers
+            .iter()
+            .any(|value| !matches!(&value.update, McpSecretUpdate::Clear))
+    {
         return Err(StoreError::InvalidInput);
     }
     let names = |values: &[McpSecretEdit], header: bool| -> StoreResult<Vec<McpSecretPresence>> {
@@ -1028,6 +1026,12 @@ fn mcp_definition(edit: &McpServerEdit) -> StoreResult<McpDefinition> {
             })
             .collect()
     };
+    let mut headers = names(&edit.headers, true)?;
+    if matches!(target, McpTarget::Stdio { .. }) {
+        // Clear edits acknowledge credentials from the previous HTTP target;
+        // the resulting stdio definition has no HTTP header names.
+        headers.clear();
+    }
     Ok(McpDefinition {
         key: edit.key.clone(),
         name: edit.name.clone(),
@@ -1036,7 +1040,7 @@ fn mcp_definition(edit: &McpServerEdit) -> StoreResult<McpDefinition> {
         timeout_seconds: edit.timeout_seconds,
         target,
         environment: names(&edit.environment, false)?,
-        headers: names(&edit.headers, true)?,
+        headers,
     })
 }
 
