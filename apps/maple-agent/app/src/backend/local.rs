@@ -2397,6 +2397,17 @@ impl LocalBackend {
             .await
     }
 
+    pub async fn model_catalog(
+        &self,
+        user_id: &str,
+    ) -> Result<maple_sdk::ModelCatalogResponse, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .model_catalog()
+            .await
+    }
+
     /// What the catalog says about a model: its vision and context window.
     /// None when the catalog cannot be read.
     pub async fn model_catalog_entry(

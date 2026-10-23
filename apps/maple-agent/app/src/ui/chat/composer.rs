@@ -22,23 +22,42 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
-/// Presentation only: selection and persisted tasks keep the original model ID.
-/// Match Research's short names until the selector consumes catalog labels.
-fn model_label(model: &str) -> &str {
-    match model {
-        "gpt-oss-120b" => "GPT-OSS",
-        "gemma4-31b" => "Gemma 4",
-        "glm-5-3-flash" => "GLM-5.3 Flash",
-        "glm-5-3" => "GLM 5.3",
-        "kimi-k3" => "Kimi K3",
-        "deepseek-v4-1-flash" => "DeepSeek V4.1 Flash",
-        "deepseek-v4-1-flash-1017-uncensored" => "DeepSeek Uncensored",
-        "llama3-3-70b" => "Llama 3.3",
-        "gpt-oss-safeguard-120b" => "GPT-OSS Safeguard",
-        "auto:quick" => "Quick",
-        "auto:powerful" => "Powerful",
-        _ => model,
-    }
+/// Research's compact label precedence, projected once when the catalog loads.
+/// IDs remain the keys used for selection and persisted tasks.
+pub(super) fn catalog_model_labels(
+    catalog: &maple_sdk::ModelCatalogResponse,
+) -> std::collections::HashMap<String, String> {
+    let label = |short: Option<&str>, full: Option<&str>, id: &str| {
+        short
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| full.filter(|value| !value.trim().is_empty()))
+            .unwrap_or(id)
+            .to_string()
+    };
+    catalog
+        .data
+        .iter()
+        .map(|model| {
+            (
+                model.id.clone(),
+                label(
+                    model.short_name.as_deref(),
+                    model.display_name.as_deref(),
+                    &model.id,
+                ),
+            )
+        })
+        .chain(catalog.aliases.iter().map(|alias| {
+            (
+                alias.id.clone(),
+                label(
+                    alias.short_name.as_deref(),
+                    alias.label.as_deref(),
+                    &alias.id,
+                ),
+            )
+        }))
+        .collect()
 }
 
 /// Recent projects for the header menu. The default Maple workspace stays
@@ -272,7 +291,7 @@ impl ChatScreen {
                 let pick = model.clone();
                 let item = MenuItem::new(
                     SharedString::from(format!("model-{model}")),
-                    model_label(&model).to_string(),
+                    self.model_label(&model).to_string(),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
                     },
@@ -833,7 +852,7 @@ impl ChatScreen {
         let model_label = self
             .selected_model
             .as_deref()
-            .map(model_label)
+            .map(|model| self.model_label(model))
             .unwrap_or("Model")
             .to_string();
         div()
@@ -1294,7 +1313,34 @@ fn chip(
 
 #[cfg(test)]
 mod tests {
-    use super::{RecentProjectRoot, header_project_paths};
+    use super::{RecentProjectRoot, catalog_model_labels, header_project_paths};
+
+    #[test]
+    fn model_labels_follow_research_catalog_precedence() {
+        let catalog = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "model-a", "short_name": "Compact", "display_name": "Full name"},
+                {"id": "model-b", "display_name": "Server supplied name"},
+                {"id": "model-c", "short_name": " ", "display_name": "Fallback name"},
+                {"id": "model-d"}
+            ],
+            "aliases": [
+                {"id": "alias-a", "short_name": "Alias", "label": "Full alias", "target_model": "model-a"},
+                {"id": "alias-b", "label": "Automatic", "target_model": "model-b"},
+                {"id": "alias-c", "short_name": "", "label": " ", "target_model": "model-c"}
+            ]
+        }))
+        .unwrap();
+        let labels = catalog_model_labels(&catalog);
+        assert_eq!(labels["model-a"], "Compact");
+        assert_eq!(labels["model-b"], "Server supplied name");
+        assert_eq!(labels["model-c"], "Fallback name");
+        assert_eq!(labels["model-d"], "model-d");
+        assert_eq!(labels["alias-a"], "Alias");
+        assert_eq!(labels["alias-b"], "Automatic");
+        assert_eq!(labels["alias-c"], "alias-c");
+    }
 
     #[test]
     fn the_header_keeps_the_owners_default_workspace_past_the_recent_cap() {

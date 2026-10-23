@@ -584,6 +584,8 @@ pub struct ChatScreen {
     /// The catalog's vision and context window per model id, looked up
     /// when a model is chosen.
     model_catalog: HashMap<String, CatalogEntry>,
+    /// Friendly labels from the advanced catalog; selection always uses IDs.
+    model_labels: HashMap<String, String>,
     /// MCP servers with their enabled state for the selected task.
     session_mcp: Vec<AgentSessionMcpServer>,
     /// Count of enabled servers in `session_mcp`, for the composer chip.
@@ -1283,6 +1285,7 @@ impl ChatScreen {
             draft_counter: 0,
             image_picking: false,
             model_catalog: HashMap::new(),
+            model_labels: HashMap::new(),
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
@@ -1963,7 +1966,25 @@ impl ChatScreen {
             .unwrap_or_else(|| "Choose folder".to_string())
     }
 
+    fn refresh_model_labels(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.model_catalog(&user_id).await },
+            cx,
+            |this, result, cx| {
+                if let Ok(catalog) = result {
+                    this.model_labels = composer::catalog_model_labels(&catalog);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
     fn refresh_models(&self, cx: &mut Context<Self>) {
+        // Presentation metadata loads independently so failure or latency does
+        // not affect the existing model list or default selection.
+        self.refresh_model_labels(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let env_model = backend.configured_model();
@@ -5159,6 +5180,10 @@ impl ChatScreen {
         } else {
             self.restore_default_model(cx);
         }
+    }
+
+    fn model_label<'a>(&'a self, model: &'a str) -> &'a str {
+        self.model_labels.get(model).map_or(model, String::as_str)
     }
 
     fn model_menu_models(&self) -> Vec<String> {

@@ -225,6 +225,7 @@ operations! {
     end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
     cancel_run(user_id: (&str), run_id: (&str)) -> ();
     available_model_ids(user_id: (&str)) -> Vec<String>;
+    model_catalog(user_id: (&str)) -> maple_sdk::ModelCatalogResponse;
     model_catalog_entry(user_id: (&str), model: (&str)) -> Option<maple_agent::agent::CatalogEntry>;
     audio_capabilities(user_id: (&str)) -> maple_agent::agent::AudioCapabilities;
     synthesize_speech(user_id: (&str), text: (String), voice: (String), speed: (f32)) -> Vec<u8>;
@@ -378,13 +379,14 @@ impl AgentBackend {
         params: impl Serialize,
     ) -> Result<R, String> {
         self.ensure_active()?;
-        // Speech, account UI and each viewer's remote-sidebar preferences
+        // Catalog presentation, speech, account UI and remote-sidebar preferences
         // belong to the controller.
         // All task operations use the selected host's separate connection.
         let client = if let Some(controller) = &self.controller
             && matches!(
                 method,
                 "audio_capabilities"
+                    | "model_catalog"
                     | "synthesize_speech"
                     | "transcribe_audio"
                     | "plan_usage"

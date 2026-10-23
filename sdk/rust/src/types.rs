@@ -732,6 +732,10 @@ impl ModelReasoning {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogModel {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
     #[serde(default = "default_model_object")]
     pub object: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -770,6 +774,10 @@ pub struct CatalogCapabilities {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogAlias {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1392,6 +1400,34 @@ pub enum AgentSseEvent {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_preserves_optional_model_and_alias_labels() {
+        let catalog: super::ModelCatalogResponse = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "model-a", "short_name": "Compact", "display_name": "Full name"},
+                {"id": "legacy-model"}
+            ],
+            "aliases": [
+                {"id": "auto:quick", "short_name": "Quick", "label": "Automatic quick"},
+                {"id": "legacy-alias"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(catalog.data[0].short_name.as_deref(), Some("Compact"));
+        assert_eq!(catalog.data[0].display_name.as_deref(), Some("Full name"));
+        assert_eq!(catalog.aliases[0].short_name.as_deref(), Some("Quick"));
+        assert_eq!(catalog.aliases[0].label.as_deref(), Some("Automatic quick"));
+        assert!(catalog.data[1].short_name.is_none());
+        assert!(catalog.data[1].display_name.is_none());
+        assert!(catalog.aliases[1].short_name.is_none());
+        assert!(catalog.aliases[1].label.is_none());
+        let serialized = serde_json::to_value(catalog).unwrap();
+        assert_eq!(serialized["data"][0]["short_name"], "Compact");
+        assert!(serialized["data"][1].get("short_name").is_none());
+        assert!(serialized["aliases"][1].get("label").is_none());
+    }
+
     use super::*;
     use serde_json::json;
 
