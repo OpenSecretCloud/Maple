@@ -67,6 +67,18 @@ import {
   QueuedComposerMessages
 } from "@/components/chat/QueuedComposerMessages";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
+import { ChatCompactionDivider } from "@/components/chat/ChatCompactionDivider";
+import {
+  mergeChatCompactionMarkers,
+  projectChatCompactions,
+  type ChatCompactionMarker
+} from "@/services/chatCompaction";
+import {
+  isCompactionMetadataUnsupported,
+  readChatCompactions,
+  readChatCompactionStatus
+} from "@/services/chatCompactionApi";
+import { startChatCompactionPolling } from "@/services/chatCompactionPolling";
 import { ToolActivityCard } from "@/components/ToolActivityCard";
 import {
   continueChatComposerList,
@@ -311,6 +323,7 @@ type ConversationContent =
 type MessageStatus = "completed" | "in_progress" | "incomplete" | "streaming" | "error";
 type ExtendedMessage = Omit<OpenAIMessage, "status"> & {
   status?: MessageStatus;
+  response_id?: string;
 };
 
 type ReasoningContentItem = { type: "reasoning_text"; text: string };
@@ -322,6 +335,7 @@ type ReasoningItem = Omit<ResponseReasoningItem, "content" | "status"> & {
 type ToolCallItem = {
   id: string;
   type: "tool_call";
+  response_id?: string;
   call_id: string;
   name: string;
   arguments: string;
@@ -331,6 +345,7 @@ type ToolCallItem = {
 type ToolOutputItem = {
   id: string;
   type: "tool_output";
+  response_id?: string;
   call_id: string;
   output: string;
   status?: MessageStatus;
@@ -497,6 +512,7 @@ function normalizeReasoningItem(item: ResponseReasoningItem | ReasoningItem): Re
 
 function normalizeToolCallItem(item: unknown): ToolCallItem | null {
   if (!item || typeof item !== "object" || !("type" in item)) return null;
+  const responseId = (item as { response_id?: unknown }).response_id;
 
   if ((item as { type?: string }).type === "tool_call") {
     const toolCall = item as Partial<ToolCallItem>;
@@ -505,6 +521,7 @@ function normalizeToolCallItem(item: unknown): ToolCallItem | null {
     return {
       id: toolCall.id,
       type: "tool_call",
+      ...(typeof responseId === "string" && { response_id: responseId }),
       call_id: toolCall.call_id,
       name: typeof toolCall.name === "string" ? toolCall.name : "function",
       arguments:
@@ -522,6 +539,7 @@ function normalizeToolCallItem(item: unknown): ToolCallItem | null {
     return {
       id: toolCall.id,
       type: "tool_call",
+      ...(typeof responseId === "string" && { response_id: responseId }),
       call_id: toolCall.call_id,
       name: toolCall.name,
       arguments: toolCall.arguments,
@@ -534,6 +552,7 @@ function normalizeToolCallItem(item: unknown): ToolCallItem | null {
 
 function normalizeToolOutputItem(item: unknown): ToolOutputItem | null {
   if (!item || typeof item !== "object" || !("type" in item)) return null;
+  const responseId = (item as { response_id?: unknown }).response_id;
 
   if ((item as { type?: string }).type === "tool_output") {
     const toolOutput = item as Partial<ToolOutputItem>;
@@ -542,6 +561,7 @@ function normalizeToolOutputItem(item: unknown): ToolOutputItem | null {
     return {
       id: toolOutput.id,
       type: "tool_output",
+      ...(typeof responseId === "string" && { response_id: responseId }),
       call_id: toolOutput.call_id,
       output:
         typeof toolOutput.output === "string"
@@ -558,6 +578,7 @@ function normalizeToolOutputItem(item: unknown): ToolOutputItem | null {
     return {
       id: toolOutput.id,
       type: "tool_output",
+      ...(typeof responseId === "string" && { response_id: responseId }),
       call_id: toolOutput.call_id,
       output: toolOutput.output,
       status: toolOutput.status
@@ -983,6 +1004,11 @@ function mergePolledMessagesWithRuntime(cached: readonly Message[], polled: Mess
 // The API already returns items in the correct format (ConversationItem union)
 function convertItemsToMessages(items: Array<unknown>): Message[] {
   return items.flatMap((item) => {
+    // Response retrieval may include opaque checkpoint output. Dividers use
+    // the bounded metadata API; never retain or log that opaque content here.
+    if (item && typeof item === "object" && (item as { type?: string }).type === "compaction") {
+      return [];
+    }
     const normalizedItem = normalizeConversationItem(item);
 
     if (!normalizedItem && item != null) {
@@ -1187,7 +1213,8 @@ function ToolCallRenderer({
 // Types for grouping messages into turns
 type MessageGroup =
   | { type: "user"; message: ExtendedMessage; id: string }
-  | { type: "assistant"; items: Message[]; id: string };
+  | { type: "assistant"; items: Message[]; id: string }
+  | { type: "compaction"; marker: ChatCompactionMarker; id: string };
 
 function getUserMessageText(message: ExtendedMessage): string {
   return (
@@ -1217,10 +1244,14 @@ const MessageList = memo(
   ({
     messages,
     isGenerating,
+    compactions,
+    isCompacting,
     chatId
   }: {
     messages: Message[];
     isGenerating: boolean;
+    compactions?: readonly ChatCompactionMarker[];
+    isCompacting: boolean;
     chatId?: string;
   }) => {
     const toolCallsByCallId = useMemo(() => {
@@ -1254,7 +1285,19 @@ const MessageList = memo(
       const groups: MessageGroup[] = [];
       let currentAssistantItems: Message[] = [];
 
-      for (const item of messages) {
+      for (const item of projectChatCompactions(messages, compactions ?? [])) {
+        if (item.type === "compaction") {
+          if (currentAssistantItems.length > 0) {
+            groups.push({
+              type: "assistant",
+              items: [...currentAssistantItems],
+              id: `assistant-${currentAssistantItems[0].id}`
+            });
+            currentAssistantItems = [];
+          }
+          groups.push({ type: "compaction", marker: item, id: item.id });
+          continue;
+        }
         // Check if this is a user message
         if (item.type === "message" && (item as unknown as ExtendedMessage).role === "user") {
           // Flush any pending assistant items first
@@ -1287,7 +1330,7 @@ const MessageList = memo(
       }
 
       return groups;
-    }, [messages]);
+    }, [messages, compactions]);
 
     const renderAssistantItems = (items: Message[]) => {
       const renderedItems: JSX.Element[] = [];
@@ -1439,11 +1482,18 @@ const MessageList = memo(
     };
 
     const shouldShowInitialAssistantLoader =
-      isGenerating && groupedMessages[groupedMessages.length - 1]?.type !== "assistant";
+      isGenerating &&
+      !isCompacting &&
+      groupedMessages[groupedMessages.length - 1]?.type !== "assistant";
 
     return (
       <>
         {groupedMessages.map((group, groupIndex) => {
+          if (group.type === "compaction") {
+            return (
+              <ChatCompactionDivider key={group.id} status="completed" historyAnchorId={group.id} />
+            );
+          }
           if (group.type === "user") {
             const message = group.message;
             if (!message.content || message.content.length === 0) return null;
@@ -1528,6 +1578,8 @@ const MessageList = memo(
 
           return null;
         })}
+
+        {isCompacting && <ChatCompactionDivider status="compacting" />}
 
         {/* Loading indicator - only show while waiting for the first assistant item (TTFT) */}
         {shouldShowInitialAssistantLoader && <ChatAssistantPendingTurn />}
@@ -2824,6 +2876,49 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     stoppingRuntimeRegistry
   ]);
 
+  // This optional metadata never enters canonical item pagination or model input.
+  const refreshChatCompactions = useCallback(
+    async (runtimeKey: ChatRuntimeKey, conversationId: string, older = false) => {
+      if (!openai) return;
+      const starting = runtimeStore.get(runtimeKey);
+      if (!starting || (older && !starting.hasMoreCompactionHistory)) return;
+      const after = older ? starting.compactionHistoryCursor : undefined;
+      try {
+        const page = await readChatCompactions(openai, conversationId, after);
+        const owned = runtimeStore.get(runtimeKey);
+        if (
+          !owned ||
+          isChatRuntimeDeletionPending(runtimeStore, runtimeKey) ||
+          (owned.conversation?.id ??
+            conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey))) !==
+            conversationId
+        ) {
+          return;
+        }
+        runtimeStore.update(runtimeKey, (current) => {
+          // Concurrent refreshes merge by checkpoint identity. Only the owner of
+          // the oldest-page cursor may advance it; newest-page refreshes cannot
+          // reset a history pagination already in progress.
+          const advancesCursor = older
+            ? current.compactionHistoryCursor === after
+            : current.compactionHistoryCursor === undefined;
+          return {
+            ...current,
+            compactions: mergeChatCompactionMarkers(current.compactions ?? [], page.data),
+            ...(advancesCursor && {
+              compactionHistoryCursor: page.last_id ?? current.compactionHistoryCursor,
+              hasMoreCompactionHistory: page.has_more
+            })
+          };
+        });
+      } catch {
+        // Older backends and unavailable presentation reads must not interrupt chat.
+        // Do not log raw encrypted API errors or private checkpoint payloads.
+      }
+    },
+    [openai, runtimeStore]
+  );
+
   // Load conversation from API
   const loadConversation = useCallback(
     async (runtimeKey: ChatRuntimeKey, conversationId: string) => {
@@ -2835,6 +2930,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       const isStaleRequest = () =>
         !runtimeStore.get(runtimeKey) ||
         activeConversationLoadRef.current.get(runtimeStore.resolveKey(runtimeKey)) !== requestId;
+
+      void refreshChatCompactions(runtimeKey, conversationId);
 
       try {
         // Start both fetches immediately in parallel
@@ -2957,6 +3054,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       activeConversationLoadRef,
       isRuntimeSelected,
       openai,
+      refreshChatCompactions,
       runtimeStore,
       selectFreshDraftRuntime,
       selectedProjectId,
@@ -3001,6 +3099,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         order: "desc",
         after: requestOldestItemId
       });
+      void refreshChatCompactions(runtimeKey, conversationId, true);
 
       // Convert items to messages, grouping tool calls with their messages
       const olderMessages = convertItemsToMessages(
@@ -3094,6 +3193,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     historyPaginationLifecycle,
     openai,
     projectionScrollCoordinatorRef,
+    refreshChatCompactions,
     resolveScrollProjectionKey,
     runtimeStore,
     updateComposerForKey
@@ -4741,6 +4841,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             if (responseId) {
               if (runtimeStore.setCurrentResponseId(runtimeKey, runToken, responseId)) {
                 clearUnresolvedChatResponseMessage(runtimeStore, runToken, optimisticMessageId);
+                // Initial checkpoints precede response persistence. Link the
+                // optimistic user turn for the same placement used after reload.
+                updateRunMessages((messages) =>
+                  updateMessageById(messages, optimisticMessageId, (message) => ({
+                    ...message,
+                    response_id: responseId
+                  }))
+                );
               }
               if (await onResponseCreated(responseId)) {
                 terminalState = "cancelled";
@@ -4909,6 +5017,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             );
           } else if (eventType === "response.output_item.done") {
             const doneEvent = event as ResponseOutputItemDoneEvent;
+            if ((doneEvent.item as { type?: string }).type === "compaction") {
+              const snapshot = runtimeStore.get(runtimeKey);
+              const conversationId = snapshot?.conversation?.id;
+              if (conversationId && runtimeStore.isRunCurrent(runtimeKey, runToken)) {
+                void refreshChatCompactions(runtimeKey, conversationId);
+              }
+            }
             const item = normalizeConversationItem(doneEvent.item);
 
             if (item) {
@@ -4969,7 +5084,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
       return terminalState;
     },
-    [logStreamEvent, runtimeStore]
+    [logStreamEvent, refreshChatCompactions, runtimeStore]
   );
 
   // Every submit synchronously detaches its owning composer. During an active
@@ -5231,62 +5346,92 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             return null;
           }
           registerChatOptimisticMessage(runtimeStore, run.token, localMessageId);
-          const responseParams: ResponseCreateParamsStreaming = {
-            conversation: conversationId!,
-            model: item.model,
-            input: [{ role: "user", content: messageContent }],
-            metadata: { internal_message_id: localMessageId },
-            stream: true,
-            store: true,
-            ...(item.webSearchEnabled && { tools: [{ type: "web_search" }] }),
-            // The catalog decides which efforts a model accepts; openai 5.x's
-            // ReasoningEffort type predates `none`, `xhigh` and `max`.
-            ...(item.reasoningEffort && {
-              reasoning: { effort: item.reasoningEffort } as NonNullable<
-                ResponseCreateParamsStreaming["reasoning"]
-              >
-            })
-          };
-          const stream = await withInferenceCapacityRetry(
-            (maxInferenceSends) => {
-              registerUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
-              responseRequestStarted = true;
-              return openai.responses.create(responseParams, {
-                signal: run.signal,
-                headers: {
-                  [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: String(maxInferenceSends)
-                }
-              });
+          const stopCompactionPolling = startChatCompactionPolling({
+            read: (signal) =>
+              readChatCompactionStatus(openai, conversationId!, localMessageId, signal),
+            onStatus: (status) => {
+              runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+                ...snapshot,
+                compactingMessageId: status.status === "compacting" ? localMessageId : undefined
+              }));
             },
-            run.signal,
-            (capacityError) => {
-              // Capacity rejection proves this turn was not accepted. Stop or
-              // deletion can safely restore it and abort the replay delay.
-              responseRequestStarted = false;
-              clearUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
-              if (
-                isChatRunQueueHaltRequested(runtimeStore, run.token) ||
-                isChatRuntimeDeletionPending(runtimeStore, runtimeKey)
-              ) {
-                throw capacityError;
-              }
-            }
-          );
-
-          if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return null;
+            onUnavailable: () => {
+              runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+                ...snapshot,
+                compactingMessageId: undefined
+              }));
+            },
+            isCurrent: () => runtimeStore.isRunCurrent(runtimeKey, run.token),
+            signal: run.signal,
+            isUnsupported: isCompactionMetadataUnsupported
+          });
           try {
-            return await processStreamingResponse(
-              stream,
-              runtimeKey,
-              run.token,
-              localMessageId,
-              async (responseId) => {
-                if (!isRuntimeStopping(run.token)) return false;
-                return cancelKnownChatResponse(runtimeKey, run.token, responseId, localMessageId);
+            const responseParams: ResponseCreateParamsStreaming = {
+              conversation: conversationId!,
+              model: item.model,
+              input: [{ role: "user", content: messageContent }],
+              metadata: { internal_message_id: localMessageId },
+              stream: true,
+              store: true,
+              ...(item.webSearchEnabled && { tools: [{ type: "web_search" }] }),
+              // The catalog decides which efforts a model accepts; openai 5.x's
+              // ReasoningEffort type predates `none`, `xhigh` and `max`.
+              ...(item.reasoningEffort && {
+                reasoning: { effort: item.reasoningEffort } as NonNullable<
+                  ResponseCreateParamsStreaming["reasoning"]
+                >
+              })
+            };
+            const stream = await withInferenceCapacityRetry(
+              (maxInferenceSends) => {
+                registerUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
+                responseRequestStarted = true;
+                return openai.responses.create(responseParams, {
+                  signal: run.signal,
+                  headers: {
+                    [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: String(maxInferenceSends)
+                  }
+                });
+              },
+              run.signal,
+              (capacityError) => {
+                // Capacity rejection proves this turn was not accepted. Stop or
+                // deletion can safely restore it and abort the replay delay.
+                responseRequestStarted = false;
+                clearUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
+                if (
+                  isChatRunQueueHaltRequested(runtimeStore, run.token) ||
+                  isChatRuntimeDeletionPending(runtimeStore, runtimeKey)
+                ) {
+                  throw capacityError;
+                }
               }
             );
+
+            if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return null;
+            try {
+              return await processStreamingResponse(
+                stream,
+                runtimeKey,
+                run.token,
+                localMessageId,
+                async (responseId) => {
+                  if (!isRuntimeStopping(run.token)) return false;
+                  return cancelKnownChatResponse(runtimeKey, run.token, responseId, localMessageId);
+                }
+              );
+            } finally {
+              runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
+            }
           } finally {
-            runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
+            stopCompactionPolling();
+            runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+              ...snapshot,
+              compactingMessageId: undefined
+            }));
+            // A checkpoint may have been saved even if the main response fails.
+            // Its response/anchor association decides whether it belongs in view.
+            void refreshChatCompactions(runtimeKey, conversationId!);
           }
         };
 
@@ -5640,6 +5785,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       openai,
       processStreamingResponse,
       queryClient,
+      refreshChatCompactions,
       runtimeStore,
       selectedProjectId,
       setErrorForKey,
@@ -5814,7 +5960,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
               {/* Message list with modern ChatGPT/Claude style */}
               <div className="space-y-1">
-                <MessageList messages={messages} isGenerating={isGenerating} chatId={chatId} />
+                <MessageList
+                  messages={messages}
+                  isGenerating={isGenerating}
+                  compactions={activeRuntime.compactions}
+                  isCompacting={isGenerating && Boolean(activeRuntime.compactingMessageId)}
+                  chatId={chatId}
+                />
               </div>
 
               <div ref={messagesEndRef} />

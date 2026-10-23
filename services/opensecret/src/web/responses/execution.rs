@@ -9,8 +9,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock, Weak,
     },
 };
 use tokio::sync::{watch, Notify};
@@ -33,6 +33,8 @@ struct ResponseExecutionInner {
     task_state: Mutex<ResponseExecutionTaskState>,
     task_finished: Notify,
     owner_finished: AtomicBool,
+    compaction_request: OnceLock<(Uuid, Uuid)>,
+    active_compactions: AtomicUsize,
     registry: Weak<RegistryInner>,
 }
 
@@ -51,6 +53,11 @@ pub(crate) struct ResponseExecutionRegistration {
 }
 
 pub(crate) struct ResponseExecutionTaskGuard {
+    inner: Arc<ResponseExecutionInner>,
+}
+
+/// Advisory progress only. Dropping this guard never publishes a checkpoint.
+pub(crate) struct ResponseCompactionProgressGuard {
     inner: Arc<ResponseExecutionInner>,
 }
 
@@ -77,6 +84,8 @@ impl ResponseExecutionRegistry {
             }),
             task_finished: Notify::new(),
             owner_finished: AtomicBool::new(false),
+            compaction_request: OnceLock::new(),
+            active_compactions: AtomicUsize::new(0),
             registry: Arc::downgrade(&self.inner),
         });
 
@@ -110,6 +119,27 @@ impl ResponseExecutionRegistry {
             .filter(|execution| execution.user_id == user_id)
             .cloned()
             .map(|inner| ResponseExecution { inner })
+    }
+
+    /// Session-local UI progress, never proof of durable execution state.
+    pub(crate) fn compacting_response_for_request(
+        &self,
+        user_id: Uuid,
+        conversation_id: Uuid,
+        message_id: Uuid,
+    ) -> Option<Uuid> {
+        self.inner
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .find(|execution| {
+                execution.user_id == user_id
+                    && execution.compaction_request.get() == Some(&(conversation_id, message_id))
+                    && !*execution.cancellation.borrow()
+                    && execution.active_compactions.load(Ordering::Acquire) > 0
+            })
+            .map(|execution| execution.response_id)
     }
 
     #[cfg(test)]
@@ -153,6 +183,22 @@ impl Drop for ResponseExecutionRegistration {
 }
 
 impl ResponseExecution {
+    pub(crate) fn bind_compaction_request(&self, conversation_id: Uuid, message_id: Uuid) {
+        // Bind once, before preparation. A retained handle cannot change which
+        // conversation/request may observe progress for this execution.
+        let _ = self
+            .inner
+            .compaction_request
+            .set((conversation_id, message_id));
+    }
+
+    pub(crate) fn begin_compaction_progress(&self) -> ResponseCompactionProgressGuard {
+        self.inner.active_compactions.fetch_add(1, Ordering::AcqRel);
+        ResponseCompactionProgressGuard {
+            inner: self.inner.clone(),
+        }
+    }
+
     pub(crate) fn response_id(&self) -> Uuid {
         self.inner.response_id
     }
@@ -222,6 +268,12 @@ impl ResponseExecution {
             }
             finished.await;
         }
+    }
+}
+
+impl Drop for ResponseCompactionProgressGuard {
+    fn drop(&mut self) {
+        self.inner.active_compactions.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -363,6 +415,112 @@ mod tests {
             .execution_for_user(response_id, Uuid::new_v4())
             .is_none());
         assert!(registry.register(response_id, user_id).is_err());
+    }
+
+    #[test]
+    fn compaction_progress_is_scoped_to_owner_conversation_and_request() {
+        let registry = ResponseExecutionRegistry::default();
+        let user = Uuid::new_v4();
+        let conversation = Uuid::new_v4();
+        let message = Uuid::new_v4();
+        let response = Uuid::new_v4();
+        let registration = registry.register(response, user).unwrap();
+        let execution = registration.execution();
+        execution.bind_compaction_request(conversation, message);
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
+        let progress = execution.begin_compaction_progress();
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            Some(response)
+        );
+        for (owner, conv, request) in [
+            (Uuid::new_v4(), conversation, message),
+            (user, Uuid::new_v4(), message),
+            (user, conversation, Uuid::new_v4()),
+        ] {
+            assert_eq!(
+                registry.compacting_response_for_request(owner, conv, request),
+                None
+            );
+        }
+        execution.bind_compaction_request(Uuid::new_v4(), Uuid::new_v4());
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            Some(response)
+        );
+        drop(progress);
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
+    }
+
+    #[test]
+    fn compaction_progress_clears_on_failed_scope_cancel_and_owner_drop() {
+        let registry = ResponseExecutionRegistry::default();
+        let user = Uuid::new_v4();
+        let conversation = Uuid::new_v4();
+        let message = Uuid::new_v4();
+        let registration = registry.register(Uuid::new_v4(), user).unwrap();
+        let execution = registration.execution();
+        execution.bind_compaction_request(conversation, message);
+        let failed_work = || -> Result<(), ()> {
+            let _progress = execution.begin_compaction_progress();
+            assert!(registry
+                .compacting_response_for_request(user, conversation, message)
+                .is_some());
+            Err(())
+        };
+        assert!(failed_work().is_err());
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
+        let progress = execution.begin_compaction_progress();
+        execution.cancel();
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
+        drop(progress);
+        drop(registration);
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
+        // A retained handle cannot make an already-removed execution visible.
+        let _late_progress = execution.begin_compaction_progress();
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_compaction_future_releases_advisory_progress() {
+        let registry = ResponseExecutionRegistry::default();
+        let user = Uuid::new_v4();
+        let conversation = Uuid::new_v4();
+        let message = Uuid::new_v4();
+        let registration = registry.register(Uuid::new_v4(), user).unwrap();
+        let execution = registration.execution();
+        execution.bind_compaction_request(conversation, message);
+        let mut work = Box::pin(async {
+            let _progress = execution.begin_compaction_progress();
+            std::future::pending::<()>().await;
+        });
+        assert!(futures::poll!(&mut work).is_pending());
+        assert!(registry
+            .compacting_response_for_request(user, conversation, message)
+            .is_some());
+        drop(work);
+        assert_eq!(
+            registry.compacting_response_for_request(user, conversation, message),
+            None
+        );
     }
 
     #[test]
