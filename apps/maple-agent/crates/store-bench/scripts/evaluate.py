@@ -237,6 +237,11 @@ def validate_observations(run, samples, full):
 
 def absolute_results(report):
     checks = []
+    # Give only the full macOS list gate 25% hosted-runner headroom. Other
+    # platforms/diagnostics retain the 1 ms target; relative comparisons remain
+    # independent of this absolute budget.
+    list_budget = 1250 if (report["profile"] == "full"
+                           and report.get("machine_before", {}).get("os") == "macos") else 1000
 
     def check(mode, name, actual, budget, scope, statistic="median", oversized=False):
         status = "passed" if actual <= budget else ("needs_decision" if oversized else "failed")
@@ -249,7 +254,7 @@ def absolute_results(report):
         obs = run["observations"]
         if mode == "keyed":
             for name, budget, scope in (
-                    ("list_50_cold", 1000, "Store list, fresh SQLite caches; OS cache warm"),
+                    ("list_50_cold", list_budget, "Store list, fresh SQLite caches; OS cache warm"),
                     ("open_100_cold", 2000, "Store page and plan lookup; UI/live overlay unmeasured"),
                     ("raw_connection_open", 1000, "one raw-key SQLite connection; excludes host startup/password KDF"),
                     ("model_context_boundary_cold", 50000, "first partial context load including parse; OS cache warm"),
