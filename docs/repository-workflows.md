@@ -41,7 +41,9 @@ Agent desktop packages compare master against the last successful ancestor run
 with all four Dev/Prod macOS/Linux download verifiers completed; selector-only
 and failed runs do not consume outstanding changes. Unrelated master pushes skip
 Agent packages. Manual master dispatch always builds both profiles. PR previews
-keep their merge-base selection and signing stays confined to trusted master.
+build and package only Dev on macOS and Linux, including the matching Linux
+downloaded-package verifier; Prod packages remain covered by master builds.
+PRs keep their merge-base selection and signing stays confined to trusted master.
 Research desktop, Android and iOS PR workflows group runs by workflow and PR.
 A new run cancels earlier runs for that same unsigned preview; unrelated PRs
 and signed, master and manual queues keep their existing behavior.

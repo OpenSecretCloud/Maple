@@ -82,3 +82,18 @@ restore/save overhead, storage eviction, test-only resolution changes, and the
 new slowest job determine the result. Dev/Prod packages and the plain CI binary
 have different build inputs; their outputs have not been proved interchangeable.
 Runner upgrades and further scheduling experiments should follow these results.
+
+## Pull-request package profiles
+
+Agent desktop pull requests build only the Dev profile on macOS and Linux.
+The unsigned macOS packager and Linux downloaded-package verifier use the same
+Dev-only selection, including fork and stacked PRs. Master pushes and manual
+master dispatches retain Dev and Prod builds, signing, attestation and package
+verification. The master change selector still requires all four Dev/Prod
+downloaded verifiers before considering outstanding changes covered.
+
+This removes four runnable PR jobs (Prod macOS binary, unsigned macOS package,
+Linux AppImage and downloaded Linux verifier), reducing desktop jobs from eight
+to four. It does not remove platform workspace/provider tests or the separate
+plain Linux release build. The job-count reduction saves their runner work;
+the slowest remaining job still determines PR wall time.

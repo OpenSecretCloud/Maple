@@ -85,7 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -222,7 +222,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: [dev]
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -277,7 +277,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:
@@ -453,7 +453,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [dev, prod]
+        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["dev"]' || '["dev","prod"]') }}
     env:
       MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
     steps:

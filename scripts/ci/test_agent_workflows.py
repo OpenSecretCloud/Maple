@@ -4,6 +4,7 @@ import functools
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +33,21 @@ def strings(value):
     elif isinstance(value, list):
         for child in value:
             yield from strings(child)
+
+
+def variants_for(job, event):
+    value = job["strategy"]["matrix"]["variant"]
+    if isinstance(value, list):
+        return value
+    # Interpret only the event-based JSON choice used by this workflow. Reject
+    # other contexts so fork/base/selector state cannot change the PR profiles.
+    choice = re.fullmatch(
+        r"\$\{\{ fromJSON\(github\.event_name == '([^']+)' && '([^']+)' \|\| '([^']+)'\) \}\}",
+        value,
+    )
+    if choice is None:
+        raise AssertionError(f"unsupported variant matrix: {value}")
+    return json.loads(choice[2] if event == choice[1] else choice[3])
 
 
 class AgentWorkflowBoundaryTests(unittest.TestCase):
@@ -403,6 +419,26 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                                         "MASTER_AGENT": selected})
                     self.assertEqual(output.read_text(), f"agent={expected}\n")
 
+    def test_pr_profiles_match_producers_and_consumers_while_master_keeps_both(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+        for name in ("macos-build", "linux", "verify-linux"):
+            self.assertEqual(set(jobs[name]["strategy"]["matrix"]), {"variant"})
+        for event, expected in (("pull_request", ["dev"]),
+                                ("push", ["dev", "prod"]),
+                                ("workflow_dispatch", ["dev", "prod"])):
+            with self.subTest(event=event):
+                for name in ("macos-build", "linux", "verify-linux"):
+                    self.assertEqual(variants_for(jobs[name], event), expected, name)
+                macos_consumer = "macos-unsigned" if event == "pull_request" else "macos"
+                self.assertEqual(variants_for(jobs[macos_consumer], event), expected)
+                for producer, consumer in (("macos-build", macos_consumer),
+                                           ("linux", "verify-linux")):
+                    self.assertEqual(variants_for(jobs[producer], event),
+                                     variants_for(jobs[consumer], event))
+        self.assertEqual(jobs["macos-unsigned"]["strategy"]["matrix"], {"variant": ["dev"]})
+        for name in ("macos", "attest-linux", "verify-macos"):
+            self.assertEqual(jobs[name]["strategy"]["matrix"], {"variant": ["dev", "prod"]})
+
     def test_profiles_and_artifacts_keep_platform_variant_and_run_identity(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
         for name, platform in (
@@ -413,7 +449,6 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(job=name):
                 job = jobs[name]
-                self.assertEqual(job["strategy"]["matrix"], {"variant": ["dev", "prod"]})
                 self.assertIs(job["strategy"]["fail-fast"], False)
                 self.assertEqual(job["env"]["MAPLE_RELEASE_PROFILE"], "${{ matrix.variant }}")
                 script = "build-release.sh" if name in ("macos-build", "linux") else "verify-prebuilt-release.sh"
@@ -652,7 +687,6 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                     self.assertIn("needs.attest-linux.result == 'success'", condition)
                     self.assertIn(self.MASTER_GUARD, condition)
                 self.assertNotIn("environment", job)
-                self.assertEqual(job["strategy"]["matrix"], {"variant": ["dev", "prod"]})
                 upload = next(step for step in jobs[build]["steps"]
                               if step.get("uses", "").startswith("actions/upload-artifact@"))
                 download = next(i for i, step in enumerate(job["steps"])
