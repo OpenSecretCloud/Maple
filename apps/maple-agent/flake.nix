@@ -269,6 +269,9 @@
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
 
             shellHook = ''
+              # Cargo can prefer rustup proxies in CARGO_HOME/bin over PATH
+              # for external subcommands. Keep fmt/clippy on this Nix compiler.
+              export RUSTUP_TOOLCHAIN="${rustToolchain}"
               if [ -z "''${CI:-}" ] \
                 && [ "''${MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" != "1" ] \
                 && [ -z "''${CARGO_BUILD_BUILD_DIR:-}" ] \

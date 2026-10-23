@@ -105,15 +105,23 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
+      - name: Fingerprint the actual release environment
+        id: environment
+        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
       - name: Cache Agent release dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
+          add-rust-environment-hash-key: "true"
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          cmd-format: nix develop --no-update-lock-file "${{ github.workspace }}/apps/maple-agent" -c {0}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      - name: Record the current release environment after restore
+        run: |
+          mkdir -p target/ci-metrics
+          cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
       - name: Build optimized Agent with embedded profile
-        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Upload prebuilt Agent binary and notices
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -123,6 +131,18 @@ jobs:
             apps/maple-agent/target/release/maple-agent
             apps/maple-agent/target/third-party-notices
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Summarize release phase timings and target size
+        if: always()
+        run: python3 ../../scripts/ci/agent_measure.py --summarize target
+      - name: Upload bounded release measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-release-metrics-${{ matrix.variant }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/maple-agent/target/ci-metrics/
+          if-no-files-found: warn
           retention-days: 7
 
   macos:
@@ -274,15 +294,23 @@ jobs:
       - name: Verify pinned Nix runtime
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
+      - name: Fingerprint the actual release environment
+        id: environment
+        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_cache.py --profile release --output "$RUNNER_TEMP/agent-environment.json"
       - name: Cache Agent release dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
+          add-rust-environment-hash-key: "true"
+          key: maple-agent-release-v2-${{ matrix.variant }}-${{ steps.environment.outputs.compatibility }}
+          cmd-format: nix develop --no-update-lock-file "${{ github.workspace }}/apps/maple-agent" -c {0}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      - name: Record the current release environment after restore
+        run: |
+          mkdir -p target/ci-metrics
+          cp "$RUNNER_TEMP/agent-environment.json" target/ci-metrics/environment.json
       - name: Build optimized Agent with embedded profile
-        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+        run: nix develop --no-update-lock-file . -c python3 ../../scripts/ci/agent_measure.py --phase release-build --target target -- ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Package Linux AppImage
         run: |
           args=()
@@ -301,6 +329,18 @@ jobs:
           path: apps/maple-agent/dist/${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Summarize release phase timings and target size
+        if: always()
+        run: python3 ../../scripts/ci/agent_measure.py --summarize target
+      - name: Upload bounded release measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-release-metrics-${{ matrix.variant }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/maple-agent/target/ci-metrics/
+          if-no-files-found: warn
+          retention-days: 7
 
   attest-linux:
     name: Attest Linux packages (${{ matrix.variant }})

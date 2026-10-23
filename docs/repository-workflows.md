@@ -122,6 +122,37 @@ lives under `RUNNER_TEMP`, so separate Nix shells reach the same server despite
 their different `TMPDIR` values. Cache archive restoration and compiler hits
 remain separate measurements.
 
+## Agent compilation and cache measurements
+
+Agent CI runs the three-platform workspace matrix, three-platform upstream
+SQLCipher provider suite, and plain Linux optimized binary as independent jobs.
+The final `Agent CI required jobs` check rejects failed or unexpectedly skipped
+selected jobs. All retain fail-closed change selection. The plain Linux binary
+and Desktop Dev/Prod packages have separate profiles and caches.
+
+Before restoring targets, `scripts/ci/agent_cache.py` fingerprints Rust inside
+the component Nix shell, or the explicitly selected Windows MSVC environment,
+plus native ABI/toolchain, flags, features, profile and provider configuration.
+The component shell also pins Rustup proxies to its Nix toolchain so Cargo's
+external Clippy/rustfmt commands cannot silently select a host compiler.
+Windows setup also pins Cargo's linker to the selected MSVC `link.exe` and
+compiles/runs an offline fixture with a Cargo build script before restoring
+targets. This catches Git Bash's unrelated `link.exe` shadowing Microsoft tools.
+The workspace and Desktop caches use this compatibility prefix with
+`rust-cache`'s automatic dependency suffix. PRs only read; successful master
+pushes write. Application version changes can reuse compatible dependencies;
+Cargo still checks freshness. The provider cache additionally requires the
+verified, resolved upstream test-only lockfile and transformed manifest, with
+no fallback across provider dependency graphs. Its temporary source and target
+remain outside shipping workspace outputs.
+
+Unsigned builders upload seven-day `maple-agent-*-metrics-*` artifacts with
+actual environment identity, phase durations, logical target sizes, and bounded
+current Cargo timing HTML. Action logs report exact/restore keys and transferred
+cache bytes; logical target size is not compressed cache size. Windows build
+and test are separate phases. See [the Agent performance audit](agent-ci-performance.md)
+for the baseline, tradeoffs and cold/warm validation procedure.
+
 ## macOS runners and Apple toolchain
 
 Research desktop/iOS builds, Agent release-binary jobs
