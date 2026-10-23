@@ -547,7 +547,11 @@ fn native_windows_directory() -> StoreResult<std::ffi::OsString> {
 }
 
 fn checker_command(paths: &StorePaths) -> StoreResult<Command> {
-    let mut command = Command::new(std::env::current_exe()?);
+    // Keep the checker as our direct child, including bundled-loader packages.
+    // Bypass launcher wrappers so watchdog parent verification and direct
+    // cancellation/reaping are preserved. No key enters argv or environment.
+    let mut command = crate::self_launch::child_command()
+        .map_err(|_| std::io::Error::other("integrity checker executable is unavailable"))?;
     #[cfg(test)]
     command.args([
         "--exact",

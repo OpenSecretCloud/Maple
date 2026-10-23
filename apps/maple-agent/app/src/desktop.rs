@@ -2704,8 +2704,7 @@ impl StartupError {
                     cx.background_executor()
                         .spawn(async move {
                             crate::host::stop(&crate::configured_api_url())?;
-                            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-                            std::process::Command::new(exe)
+                            crate::self_launch::command()?
                                 .spawn()
                                 .map_err(|e| e.to_string())?;
                             Ok::<(), String>(())
@@ -2780,8 +2779,14 @@ impl Render for StartupError {
 }
 
 fn show_startup_error(error: String) {
+    #[cfg(target_os = "linux")]
+    let restart_path = crate::self_launch::executable().ok();
     gpui_platform::application().run(move |cx| {
         cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
+        #[cfg(target_os = "linux")]
+        if let Some(path) = restart_path {
+            cx.set_restart_path(path);
+        }
         cx.on_action(|_: &QuitApp, cx| quit_app(cx));
         ui::menus::install(cx);
         let bounds = Bounds::centered(None, size(px(560.), px(260.)), cx);
@@ -2836,6 +2841,15 @@ fn show_update_about(cx: &mut App) {
 pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
     log::debug!("startup: logging ready at {} ms", crate::startup_elapsed());
+    #[cfg(target_os = "linux")]
+    let restart_path = match crate::self_launch::executable() {
+        Ok(path) => path,
+        Err(error) => {
+            log::error!("Could not start Maple: {error}");
+            show_startup_error(error);
+            return;
+        }
+    };
 
     // The frontend starts with defaults until the host's bounded settings
     // snapshot arrives. Locked startup never reads saved application data.
@@ -2857,6 +2871,8 @@ pub fn run() {
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
             cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
+            #[cfg(target_os = "linux")]
+            cx.set_restart_path(restart_path);
             cx.set_quit_mode(gpui::QuitMode::Explicit);
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
             if let Err(error) = cx.text_system().add_fonts(

@@ -53,6 +53,8 @@ fn main() {
     let pcr = std::env::var("VITE_OPEN_SECRET_PCR_ENVIRONMENT").ok();
     let (channel, profile) = release_profile::select_profile(channel.as_deref(), pcr.as_deref())
         .expect("validated Maple Agent build profile");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo target OS");
+    let update_feed_url = profile.update_feed_for_target_os(&target_os);
     let metadata = serde_json::json!({
         "profile": channel,
         "display_name": profile.display_name,
@@ -68,7 +70,7 @@ fn main() {
         "git_revision": revision,
         "source_sha": source_sha,
         "update_tag_prefix": profile.update_tag_prefix,
-        "update_feed_url": profile.update_feed_url,
+        "update_feed_url": update_feed_url,
         "update_public_keys": profile.update_public_keys,
         "prerelease": profile.prerelease,
     });

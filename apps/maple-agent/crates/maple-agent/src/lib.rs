@@ -16,6 +16,7 @@ pub use desktop_environment::prepare_process_environment;
 pub mod maple_api;
 pub mod open_secret_config;
 pub mod private_file;
+pub mod self_launch;
 
 /// Host-owned profile store; callers use typed persistence APIs.
 pub mod store;

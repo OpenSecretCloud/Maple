@@ -135,7 +135,8 @@ Goose, with an independent dependency graph.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes or asks a question while the
   window is not focused.
-- Release check on launch: a banner links to a newer GitHub release.
+- Signed updates for packaged Prod: background download and Restart to Update;
+  read-only installations offer a verified manual download.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
 
@@ -305,7 +306,7 @@ just release                    # local release build only
 For hosted Dev and Prod packages, see [desktop builds](docs/desktop-builds.md)
 and [build profiles](docs/release-profiles.md). The desktop build workflow
 produces both profiles on protected `master`; macOS packages use Developer ID
-signing and notarization, and Linux packages are portable AppImages.
+signing and notarization, and Linux packages are portable user-local tar bundles.
 
 The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at
@@ -589,17 +590,18 @@ check.
 Packaged Prod builds use the independent signed Agent update feed. Dev and
 unpackaged/MDE builds do not check a production updater. The Prod profile pins
 the update URL and reviewed primary/backup public keys; inherited environment
-variables cannot replace them. Packaged Prod builds check the compiled feed, while
-publication remains disabled pending owner service setup. Invitations still
-require the signed installed-update rehearsal.
+variables cannot replace them. Packaged Prod builds check the compiled platform
+feed; publication is a separate protected operation. Invitations require the
+signed installed-update rehearsal for each supported platform.
 An empty-key profile still reports that updates are not configured and makes no
 update requests.
 
 Updates authenticate product, channel, version, target, byte size and SHA-256
 before staging. Automatic downloads default on; installation requires the
 explicit Restart to Update action, fresh feed revalidation and profile-host
-shutdown. Read-only installations offer a manual download. Linux automatic
-replacement stays disabled until its packaged update gate is independently
+shutdown. Read-only installations offer a manual download. Linux x86_64 uses
+a user-local directory bundle, with atomic directory exchange and relaunch
+through its AppRun entrypoint. Its packaged update gate must be independently
 validated. See [updater development and activation](docs/updates.md).
 
 The [desktop build workflow](docs/desktop-builds.md) provides Actions artifacts

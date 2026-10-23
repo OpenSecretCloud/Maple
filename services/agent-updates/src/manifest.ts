@@ -10,8 +10,7 @@ export interface Artifact {
   size: number;
   sha256: string;
 }
-export interface Manifest {
-  format: "maple-agent-update-v1";
+interface ManifestFields {
   product: "maple-agent";
   channel: "stable";
   version: string;
@@ -19,9 +18,18 @@ export interface Manifest {
   source_sha: string;
   pub_date: string;
   notes: string;
+}
+export interface Manifest extends ManifestFields {
+  format: "maple-agent-update-v1";
   artifacts: { "darwin-aarch64": Artifact; "linux-x86_64"?: Artifact };
   downloads: { macos: Artifact; "linux-appimage"?: Artifact };
 }
+export interface ManifestV2 extends ManifestFields {
+  format: "maple-agent-update-v2";
+  artifacts: { "linux-x86_64": Artifact };
+  downloads: { "linux-bundle": Artifact };
+}
+export type UpdateManifest = Manifest | ManifestV2;
 export interface Envelope {
   manifest: string;
   signature: string;
@@ -72,7 +80,7 @@ function artifact(
   );
 }
 
-export function parseManifest(value: unknown): Manifest {
+export function parseManifest(value: unknown): UpdateManifest {
   if (
     !record(value) ||
     !keys(value, [
@@ -87,7 +95,9 @@ export function parseManifest(value: unknown): Manifest {
       "artifacts",
       "downloads",
     ]) ||
-    value.format !== "maple-agent-update-v1" ||
+    !["maple-agent-update-v1", "maple-agent-update-v2"].includes(
+      value.format as string,
+    ) ||
     value.product !== "maple-agent" ||
     value.channel !== "stable" ||
     typeof value.version !== "string" ||
@@ -106,8 +116,27 @@ export function parseManifest(value: unknown): Manifest {
     !scalarText(value.notes) ||
     /[\x00-\x08\x0b-\x1f\x7f]/.test(value.notes) ||
     !record(value.artifacts) ||
+    !record(value.downloads)
+  )
+    throw new Error("invalid manifest");
+  if (value.format === "maple-agent-update-v2") {
+    const linux = value.artifacts["linux-x86_64"];
+    const download = value.downloads["linux-bundle"];
+    if (
+      !keys(value.artifacts, ["linux-x86_64"]) ||
+      !keys(value.downloads, ["linux-bundle"]) ||
+      !artifact(linux, value.version, ".tar.gz") ||
+      !artifact(download, value.version, ".tar.gz") ||
+      linux.path !== download.path ||
+      linux.size !== download.size ||
+      linux.sha256 !== download.sha256
+    )
+      throw new Error("invalid Linux bundle manifest");
+    return value as unknown as ManifestV2;
+  }
+  // Keep the shipped v1 target/path rules, including optional AppImages.
+  if (
     !keys(value.artifacts, ["darwin-aarch64", "linux-x86_64"]) ||
-    !record(value.downloads) ||
     !keys(value.downloads, ["macos", "linux-appimage"]) ||
     !artifact(
       value.artifacts["darwin-aarch64"],
@@ -137,7 +166,7 @@ export function parseManifest(value: unknown): Manifest {
 // authenticate exact bytes with pinned keys; R2 write authority is not signing authority.
 export function parseEnvelope(bytes: Uint8Array): {
   envelope: Envelope;
-  manifest: Manifest;
+  manifest: UpdateManifest;
 } {
   if (bytes.length === 0 || bytes.length > MAX_ENVELOPE_BYTES)
     throw new Error("oversized envelope");

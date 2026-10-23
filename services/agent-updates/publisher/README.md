@@ -17,13 +17,17 @@ are required; the exact item-ID inputs are listed in the [service setup](../READ
 The public key must already be pinned both in the selected build's source profile
 and in the publisher's trusted source profile. An empty key list blocks publication.
 
+Normal publication defaults to both platforms at the same version, build and
+source. Disable Linux only explicitly for a historical macOS-only run. Initial
+unadvertised Linux publications enable the real N-to-N+1 rehearsal; passing
+that rehearsal remains a gate before invitations.
+
 ```sh
 publisher=services/agent-updates/publisher/publisher.py
-python3 "$publisher" trust --run-id BUILD_RUN_ID --output trust.json
-# Use --linux on trust and --linux linux-artifacts on prepare only when the
-# Linux package and installed-update acceptance gates have passed.
-python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.1 \
-  --build BUILD_RUN_NUMBER --macos macos-artifacts --notes-file notes.txt \
+python3 "$publisher" trust --run-id BUILD_RUN_ID --linux --output trust.json
+# Both platform packages come from this one verified producer run.
+python3 "$publisher" prepare --run-id BUILD_RUN_ID --version 0.0.4 \
+  --build BUILD_RUN_NUMBER --macos macos-artifacts --linux linux-artifacts --notes-file notes.txt \
   --public-key public-key.pub --output bundle
 python3 "$publisher" reserve --bundle bundle --public-key bundle/public-key.pub \
   --endpoint https://ACCOUNT.r2.cloudflarestorage.com --bucket AGENT_BUCKET
@@ -52,18 +56,36 @@ match the selected run's build number, version and application identity. Sparse
 archives are rejected; extension headers and cumulative metadata are bounded.
 
 The manifest build number is the selected build run's `run_number`, matching the
-packaging workflow's `CFBundleVersion` input. Its application version must match
+packaging workflow's `CFBundleVersion` input and Linux `bundle.json` descriptor.
+The Linux descriptor is read with bounded archive metadata, entry and expanded-size
+limits, without extraction or execution; its exact Prod identity, version, build,
+source, entrypoint and executable must match the selected release. Its application version must match
 the selected packages and be a canonical stable SemVer. The default publication
 date is the build run's creation date, making preparation deterministic across
 retries. `--pub-date` can select another UTC date, but retries must preserve it,
 the notes and every other reserved byte. No timestamps are inserted when signing.
 
+Linux uses an actual `.tar.gz` bundle and a separate signed v2 feed. Preparation
+always writes the mac-only v1 `manifest.json`, preserving the wire shape accepted
+by installed Mac clients. With `--linux`, it additionally writes
+`linux-manifest.json` with format `maple-agent-update-v2`, only the
+`linux-x86_64` artifact and the identical `linux-bundle` download. The two
+manifests share product, channel, version, build, source, date and notes. The
+same primary key signs both exact documents as `envelope.json` and
+`linux-envelope.json`. Linux publication also requires the canonical compiled
+Linux feed in both the selected source profile and trusted publisher profile;
+Mac-only producers do not need that field.
+
 `reserve` creates `stable/releases/V/publication-manifest.json` using
 `If-None-Match: *`. This private object reserves the exact unsigned bytes before
 the signing stage. It also reserves `publication-metadata.json`, an exact hash and
 size inventory of the private audit sidecars. Both digests are bound by the
-reservation receipt. It recovers an existing complete signed manifest into the
-bundle, preserving its envelope on a retry. `sign` requires the reservation
+reservation receipt. When Linux is included, it separately reserves
+`publication-linux-manifest.json` and binds `linux_manifest_sha256` in that same
+receipt. Linux payload hashes are inside the exact reserved Linux document; its
+sidecars are inside the reserved metadata inventory. All selected bytes are
+reserved before signing. It recovers each existing complete signed manifest into
+the bundle, preserving both envelopes on a retry. `sign` requires the reservation
 receipt, signs the exact bytes with prehashed minisign and the exact trusted
 comment `product=maple-agent channel=stable version=V`, then verifies the signature.
 
@@ -81,6 +103,20 @@ release verifies the objects, repairs missing objects with create-only writes an
 leaves the pointer unchanged; a different envelope at the same or lower version is
 rejected. Failed attempts never delete objects or automatically restore a pointer.
 
+For Linux, the immutable signed envelope is
+`stable/releases/V/linux-manifest.json` and the separate conditional pointer is
+`stable/linux/latest.json`. The public paths are
+`/agent/stable/linux/latest.json` and
+`/agent/stable/releases/V/linux-manifest.json`; `/download/agent/stable/linux`
+redirects to the signed tar bundle. Both pointers are authenticated and snapshotted
+before any promotion. Every selected payload, audit sidecar and complete envelope
+is verified before either pointer advances. The two CAS writes are deliberately
+independent: if the second fails, an exact retry verifies the already advanced
+feed and safely promotes the remaining one. A newer or conflicting pointer blocks
+the retry; nothing restores or rolls back a pointer automatically. Mac-only
+publication never reads or changes the Linux pointer. The existing four stages
+and three protected environment approvals remain unchanged.
+
 The bundle contains raw, provenance-checked build-info, package manifest,
 SHA256SUMS and macOS notarization logs under `metadata/`, prefixed by platform,
 plus the stable run/source/artifact identity and attestation policy in
@@ -88,8 +124,8 @@ plus the stable run/source/artifact identity and attestation policy in
 it is omitted from durable metadata so a successful verifier-only rerun can reuse
 the exact release. A finite filename allowlist and a 4 MiB limit per file
 bound this audit inventory. Reservation, signing and publication require exactly
-the five macOS sidecars and provenance, plus the three Linux sidecars when Linux
-is included; a missing, empty, partial or extra inventory is rejected. These
+the five macOS sidecars and provenance, plus the three Linux sidecars when the
+separate Linux document is included; a missing, empty, partial or extra inventory is rejected. These
 objects are stored immutably under
 `stable/releases/V/metadata/` and verified before the complete manifest appears.
 They remain private because the Worker serves only artifacts enumerated in the

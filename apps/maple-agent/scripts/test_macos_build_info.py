@@ -17,12 +17,16 @@ from unittest import mock
 spec = importlib.util.spec_from_file_location("macos_build_info", Path(__file__).with_name("macos-build-info.py"))
 metadata = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(metadata)
+spec = importlib.util.spec_from_file_location("release_info", Path(__file__).with_name("release-info.py"))
+release_info = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release_info)
 SOURCE_SHA = "a" * 40
 
 
 def public_info(profile="dev", source_sha=SOURCE_SHA):
     profiles = json.loads(Path(__file__).resolve().parent.parent.joinpath("release-profiles.json").read_text())
-    return dict(profiles[profile], profile=profile, version="0.1.0", git_revision=source_sha[:8], source_sha=source_sha)
+    public = {field: profiles[profile][field] for field in release_info.PUBLIC_FIELDS}
+    return dict(public, profile=profile, version="0.1.0", git_revision=source_sha[:8], source_sha=source_sha)
 
 
 def macho(payload, *, cpu=metadata.CPU_TYPE_ARM64, subtype=0, kind=metadata.MH_EXECUTE, duplicate=False, owner=b"__TEXT"):

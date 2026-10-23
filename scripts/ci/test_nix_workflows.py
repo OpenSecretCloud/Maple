@@ -18,8 +18,8 @@ VERIFY_STEP = {
     "name": "Verify pinned Nix runtime",
     "run": "bash scripts/ci/verify-nix-runtime.sh",
 }
-# Independent Agent provider and Linux release jobs each retain pinned setup.
-EXPECTED_INSTALLS = 78
+# Independent Agent provider, Linux release and attestation jobs retain pinned setup.
+EXPECTED_INSTALLS = 79
 
 
 @functools.cache

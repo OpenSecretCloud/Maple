@@ -24,6 +24,34 @@ impl Target {
             Self::LinuxX86_64 => "linux-x86_64",
         }
     }
+
+    pub fn feed_path(self) -> &'static str {
+        match self {
+            Self::DarwinAarch64 => "/agent/stable/latest.json",
+            Self::LinuxX86_64 => "/agent/stable/linux/latest.json",
+        }
+    }
+
+    pub fn manifest_filename(self) -> &'static str {
+        match self {
+            Self::DarwinAarch64 => "manifest.json",
+            Self::LinuxX86_64 => "linux-manifest.json",
+        }
+    }
+
+    pub fn manifest_path(self, version: &str) -> String {
+        format!(
+            "/agent/stable/releases/{version}/{}",
+            self.manifest_filename()
+        )
+    }
+
+    fn manifest_format(self) -> &'static str {
+        match self {
+            Self::DarwinAarch64 => "maple-agent-update-v1",
+            Self::LinuxX86_64 => "maple-agent-update-v2",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -37,9 +65,12 @@ pub struct Artifact {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Downloads {
-    pub macos: Artifact,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macos: Option<Artifact>,
     #[serde(rename = "linux-appimage", skip_serializing_if = "Option::is_none")]
     pub linux_appimage: Option<Artifact>,
+    #[serde(rename = "linux-bundle", skip_serializing_if = "Option::is_none")]
+    pub linux_bundle: Option<Artifact>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -73,6 +104,10 @@ impl VerifiedRelease {
     }
 
     pub fn artifact(&self, target: Target) -> Result<&Artifact> {
+        ensure!(
+            self.manifest.format == target.manifest_format(),
+            "release format does not support this target"
+        );
         self.manifest
             .artifacts
             .get(target.key())
@@ -131,6 +166,7 @@ pub fn verify_envelope(bytes: &[u8], origin: &Url, keys: &[String]) -> Result<Ve
     let manifest: Manifest =
         serde_json::from_str(&envelope.manifest).context("invalid signed manifest")?;
     validate_manifest(&manifest)?;
+    validate_download_fields(&envelope.manifest, &manifest.format)?;
     ensure!(
         signature.trusted_comment()
             == format!(
@@ -163,9 +199,34 @@ fn lowercase_hex(value: &str, len: usize) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+fn validate_download_fields(text: &str, format: &str) -> Result<()> {
+    // Optional fields cannot distinguish omission from an explicit null. Keep
+    // legacy v1's exact field contract, and require a Linux-only v2 inventory
+    // even when a forbidden download field has a null value.
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    let downloads = value["downloads"]
+        .as_object()
+        .context("invalid download inventory")?;
+    match format {
+        "maple-agent-update-v1" => ensure!(
+            !downloads.contains_key("linux-bundle"),
+            "Linux bundles require update format v2"
+        ),
+        "maple-agent-update-v2" => ensure!(
+            downloads.len() == 1 && downloads.contains_key("linux-bundle"),
+            "update format v2 requires only the Linux bundle download"
+        ),
+        _ => bail!("unsupported update format"),
+    }
+    Ok(())
+}
+
 pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
     ensure!(
-        manifest.format == "maple-agent-update-v1",
+        matches!(
+            manifest.format.as_str(),
+            "maple-agent-update-v1" | "maple-agent-update-v2"
+        ),
         "unsupported update format"
     );
     ensure!(manifest.product == "maple-agent", "wrong update product");
@@ -196,6 +257,18 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
                 .any(|c| c.is_control() && c != '\n' && c != '\t'),
         "invalid release notes"
     );
+    match manifest.format.as_str() {
+        "maple-agent-update-v1" => validate_v1_inventory(manifest),
+        "maple-agent-update-v2" => validate_v2_inventory(manifest),
+        _ => unreachable!("update format was validated above"),
+    }
+}
+
+fn validate_v1_inventory(manifest: &Manifest) -> Result<()> {
+    ensure!(
+        manifest.downloads.linux_bundle.is_none(),
+        "Linux bundles require update format v2"
+    );
     ensure!(
         manifest.artifacts.contains_key("darwin-aarch64"),
         "macOS artifact is required"
@@ -208,7 +281,15 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
         };
         validate_artifact(artifact, &manifest.version, suffix)?;
     }
-    validate_artifact(&manifest.downloads.macos, &manifest.version, ".dmg")?;
+    validate_artifact(
+        manifest
+            .downloads
+            .macos
+            .as_ref()
+            .context("macOS download is required")?,
+        &manifest.version,
+        ".dmg",
+    )?;
     ensure!(
         manifest.artifacts.contains_key("linux-x86_64")
             == manifest.downloads.linux_appimage.is_some(),
@@ -221,6 +302,24 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
             "Linux download differs from updater payload"
         );
     }
+    Ok(())
+}
+
+fn validate_v2_inventory(manifest: &Manifest) -> Result<()> {
+    ensure!(
+        manifest.artifacts.len() == 1 && manifest.artifacts.contains_key("linux-x86_64"),
+        "update format v2 requires only the Linux artifact"
+    );
+    ensure!(
+        manifest.downloads.macos.is_none() && manifest.downloads.linux_appimage.is_none(),
+        "update format v2 requires only the Linux bundle download"
+    );
+    let artifact = &manifest.artifacts["linux-x86_64"];
+    validate_artifact(artifact, &manifest.version, ".tar.gz")?;
+    ensure!(
+        manifest.downloads.linux_bundle.as_ref() == Some(artifact),
+        "Linux bundle download differs from updater payload"
+    );
     Ok(())
 }
 

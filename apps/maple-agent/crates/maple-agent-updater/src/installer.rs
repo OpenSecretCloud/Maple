@@ -28,6 +28,12 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, fs::PermissionsExt};
 
+mod linux_bundle;
+
+pub use linux_bundle::{
+    cleanup_current_linux_bundle, discover_linux_installation, validate_linux_bundle_archive,
+};
+
 const APP_NAME: &str = "Maple Agent.app";
 const STAGING_PREFIX: &str = ".maple-agent-update-";
 const STAGING_RANDOM_LENGTH: usize = 16;
@@ -114,7 +120,6 @@ impl Drop for InstallLock {
 }
 
 /// Find a supported installation from the real executable, never a saved path.
-/// AppImage updates remain notify-only until the packaged Linux launch gate.
 pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -144,6 +149,10 @@ pub fn discover_installation(executable: &Path, _appimage: Option<&Path>) -> Res
 /// stopping the host. This is a preflight, not authority: permissions may still
 /// change, and callers must handle a failed atomic replacement safely.
 pub fn preflight_installation(installed: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if linux_bundle::is_bundle_path(installed) {
+        return linux_bundle::preflight(installed);
+    }
     ensure_supported()?;
     validate_destination(installed)?;
     let parent = installed.parent().unwrap();
@@ -192,7 +201,11 @@ fn replacement_access(path: &Path, rights: libc::c_int) -> Result<()> {
 }
 
 pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
-    validate_destination(installed)?;
+    if linux_bundle::is_bundle_path(installed) {
+        linux_bundle::validate_destination(installed)?;
+    } else {
+        validate_destination(installed)?;
+    }
     let file = open_install_lock(installed)?;
     file.try_lock_exclusive().map_err(|e| {
         if e.kind() == io::ErrorKind::WouldBlock {
@@ -279,13 +292,21 @@ fn validate_install_lock_path(installed: &Path, file: &File) -> Result<()> {
 /// The caller retains the application lock for this preparation's entire
 /// lifetime, including while Ready, until it is installed or discarded.
 pub fn prepare(update: &PreparedUpdate) -> Result<InstallPreparation> {
-    preflight_installation(&update.installed_path)?;
-    prepare_inner(update, Verifier::Native)
+    if cfg!(target_os = "linux") {
+        linux_bundle::prepare(update)
+    } else {
+        preflight_installation(&update.installed_path)?;
+        prepare_inner(update, Verifier::Native)
+    }
 }
 
 pub fn revalidate(preparation: &InstallPreparation, update: &PreparedUpdate) -> Result<()> {
-    preflight_installation(&update.installed_path)?;
-    revalidate_inner(preparation, update, Verifier::Native)
+    if cfg!(target_os = "linux") {
+        linux_bundle::revalidate(preparation, update)
+    } else {
+        preflight_installation(&update.installed_path)?;
+        revalidate_inner(preparation, update, Verifier::Native)
+    }
 }
 
 /// Apply the updater's exact archive acceptance rules to a production release
@@ -298,6 +319,9 @@ pub fn validate_archive(payload: &Path) -> Result<()> {
 /// receipt exists the directory may contain the prior app, so only a verified
 /// new startup may clear it through checkpoint cleanup.
 pub fn discard_preparation(preparation: &InstallPreparation) -> Result<()> {
+    if linux_bundle::is_bundle_path(&preparation.installed_path) {
+        return linux_bundle::discard(preparation);
+    }
     validate_destination(&preparation.installed_path)?;
     validate_staging(&preparation.installed_path, &preparation.staging_dir)?;
     if preparation.payload_path != preparation.staging_dir.join("payload")
@@ -313,14 +337,18 @@ pub fn discard_preparation(preparation: &InstallPreparation) -> Result<()> {
 }
 
 /// Requires the caller to retain the application lock and profile host fences.
-/// It rechecks the downloaded archive, every staged byte, and the OS signature
+/// It rechecks the downloaded archive, every staged byte, and platform identity
 /// immediately before the atomic swap. No downloaded executable is launched.
 pub fn replace(
     preparation: &InstallPreparation,
     update: &PreparedUpdate,
 ) -> Result<InstalledUpdate> {
-    ensure_supported()?;
-    replace_inner(preparation, update, Verifier::Native, Synchronizer::Native)
+    if cfg!(target_os = "linux") {
+        linux_bundle::replace(preparation, update)
+    } else {
+        ensure_supported()?;
+        replace_inner(preparation, update, Verifier::Native, Synchronizer::Native)
+    }
 }
 
 fn replace_inner(
@@ -361,6 +389,15 @@ fn replace_inner(
 }
 
 impl InstalledUpdate {
+    /// The installed directory remains state identity; Linux executes AppRun.
+    pub fn restart_path(&self) -> PathBuf {
+        if linux_bundle::is_bundle_path(&self.installed_path) {
+            self.installed_path.join("AppRun")
+        } else {
+            self.installed_path.clone()
+        }
+    }
+
     /// Call only after the new app reached its startup checkpoint. On failure,
     /// retain the backup; automatic crash rollback is deliberately not implied.
     pub fn checkpoint_cleanup(&self) -> Result<()> {
@@ -480,7 +517,7 @@ enum Verifier {
 #[derive(Clone, Copy)]
 enum Synchronizer {
     Native,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, unix))]
     Test(fn(&Path) -> Result<()>),
 }
 
@@ -488,7 +525,7 @@ impl Synchronizer {
     fn sync(self, directory: &Path) -> Result<()> {
         match self {
             Self::Native => sync_directory(directory),
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(all(test, unix))]
             Self::Test(sync) => sync(directory),
         }
     }
@@ -688,7 +725,7 @@ fn open_regular(path: &Path, create: bool, exclusive: bool) -> Result<File> {
     #[cfg(unix)]
     options
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     let file = options.open(path)?;
     if !file.metadata()?.is_file() {
         return Err(InstallError::Invalid("expected a regular file"));
@@ -767,10 +804,21 @@ enum Node {
     Symlink(String),
 }
 
+type ArchiveInventory = (BTreeMap<String, Node>, Option<Vec<u8>>);
+
 /// Raw iteration prevents tar's GNU/PAX preprocessing from allocating an
 /// attacker-declared extension size. Extensions are bounded and parsed here;
 /// no ownership, xattrs, flags, hard links, sparse or special files are applied.
 fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String, Node>> {
+    scan_archive_root(payload, output, APP_NAME).map(|(nodes, _)| nodes)
+}
+
+fn scan_archive_root(
+    payload: &Path,
+    output: Option<&Path>,
+    app_name: &str,
+) -> Result<ArchiveInventory> {
+    let mut descriptor = None;
     let input = open_regular(payload, false, false)?;
     let decoded = MultiGzDecoder::new(input);
     let bounded = ExpansionLimit {
@@ -847,7 +895,7 @@ fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String
             .remove("path")
             .or(long_name.take())
             .unwrap_or_else(|| header_path.to_owned());
-        let name = archive_path(&name, kind.is_dir())?;
+        let name = archive_path(&name, kind.is_dir(), app_name)?;
         if !explicit.insert(name.clone()) {
             return Err(InstallError::Invalid("duplicate archive path"));
         }
@@ -870,7 +918,27 @@ fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String
             if expanded > MAX_EXPANDED_BYTES {
                 return Err(InstallError::Invalid("archive expansion limit exceeded"));
             }
-            let digest = if let Some(root) = output {
+            let digest = if app_name != APP_NAME && name == format!("{app_name}/bundle.json") {
+                if size > 16 * 1024 {
+                    return Err(InstallError::Invalid("bundle descriptor is too large"));
+                }
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes)?;
+                if bytes.len() as u64 != size {
+                    return Err(InstallError::Invalid("truncated bundle descriptor"));
+                }
+                if let Some(root) = output {
+                    let destination = root.join(&name);
+                    create_public_directory(destination.parent().unwrap())?;
+                    let mut file = open_regular(&destination, true, true)?;
+                    file.write_all(&bytes)?;
+                    set_mode(&destination, mode)?;
+                    file.sync_all()?;
+                }
+                let digest = Sha256::digest(&bytes).into();
+                descriptor = Some(bytes);
+                digest
+            } else if let Some(root) = output {
                 let destination = root.join(&name);
                 create_public_directory(destination.parent().unwrap())?;
                 let mut file = open_regular(&destination, true, true)?;
@@ -913,7 +981,7 @@ fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String
                 .remove("linkpath")
                 .or(long_link.take())
                 .unwrap_or_else(|| header_link.to_owned());
-            validate_link(&name, &link)?;
+            validate_link(&name, &link, app_name)?;
             Node::Symlink(link)
         } else {
             return Err(InstallError::Invalid(
@@ -929,7 +997,7 @@ fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String
     if !pax.is_empty() || long_name.is_some() || long_link.is_some() {
         return Err(InstallError::Invalid("unconsumed archive extension"));
     }
-    if nodes.get(APP_NAME) != Some(&Node::Directory) {
+    if nodes.get(app_name) != Some(&Node::Directory) {
         return Err(InstallError::Invalid("missing application root"));
     }
     let paths: Vec<String> = nodes.keys().cloned().collect();
@@ -977,10 +1045,10 @@ fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String
             }
         }
     }
-    Ok(nodes)
+    Ok((nodes, descriptor))
 }
 
-fn archive_path(raw: &str, directory: bool) -> Result<String> {
+fn archive_path(raw: &str, directory: bool, app_name: &str) -> Result<String> {
     let name = if directory {
         raw.strip_suffix('/').unwrap_or(raw)
     } else {
@@ -993,14 +1061,14 @@ fn archive_path(raw: &str, directory: bool) -> Result<String> {
         || name
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
-        || name.split('/').next() != Some(APP_NAME)
+        || name.split('/').next() != Some(app_name)
     {
         return Err(InstallError::Invalid("unsafe archive path"));
     }
     Ok(name.to_owned())
 }
 
-fn validate_link(name: &str, link: &str) -> Result<()> {
+fn validate_link(name: &str, link: &str, app_name: &str) -> Result<()> {
     if link.is_empty()
         || link.len() > MAX_PATH_BYTES
         || link.starts_with('/')
@@ -1023,7 +1091,7 @@ fn validate_link(name: &str, link: &str) -> Result<()> {
             _ => resolved.push(part),
         }
     }
-    if resolved.first() != Some(&APP_NAME) {
+    if resolved.first() != Some(&app_name) {
         return Err(InstallError::Invalid("symlink escapes application"));
     }
     Ok(())
@@ -1118,6 +1186,10 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 fn scan_tree(bundle: &Path) -> Result<BTreeMap<String, Node>> {
+    scan_tree_root(bundle, APP_NAME)
+}
+
+fn scan_tree_root(bundle: &Path, app_name: &str) -> Result<BTreeMap<String, Node>> {
     let mut nodes = BTreeMap::new();
     let parent = bundle
         .parent()
@@ -1139,7 +1211,7 @@ fn scan_tree(bundle: &Path) -> Result<BTreeMap<String, Node>> {
             let link = link
                 .to_str()
                 .ok_or(InstallError::Invalid("invalid staged symlink"))?;
-            validate_link(name, link)?;
+            validate_link(name, link, app_name)?;
             Node::Symlink(link.to_owned())
         } else if metadata.is_dir() {
             #[cfg(unix)]
@@ -1498,8 +1570,9 @@ mod tests {
                     notes: "fixture".into(),
                     artifacts: BTreeMap::from([("darwin-aarch64".into(), artifact)]),
                     downloads: Downloads {
-                        macos: dmg,
+                        macos: Some(dmg),
                         linux_appimage: None,
+                        linux_bundle: None,
                     },
                 },
                 envelope: "test-only authenticated caller fixture".into(),

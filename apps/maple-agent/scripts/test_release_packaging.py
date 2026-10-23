@@ -2,6 +2,7 @@
 """Hermetic identity, artifact-integrity and native-signing boundary tests."""
 
 import base64
+import hashlib
 import importlib.util
 import io
 import json
@@ -24,6 +25,11 @@ SCRIPTS = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("release_info", SCRIPTS / "release-info.py")
 release_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_info)
+
+
+def profile_info(profile):
+    profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
+    return {field: profiles[profile][field] for field in release_info.PUBLIC_FIELDS}
 
 
 class NativeArchiveMetadataTests(unittest.TestCase):
@@ -101,7 +107,7 @@ class PrebuiltReleaseTests(unittest.TestCase):
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture source")
         self.source = self.git("rev-parse", "HEAD").stdout.strip()
-        profile = json.loads((self.component / "release-profiles.json").read_text())["dev"]
+        profile = profile_info("dev")
         self.info = {**profile, "profile": "dev", "version": "0.1.0",
                      "source_sha": self.source, "git_revision": self.source[:8]}
         self.metadata = self.component / "fixture-build-info.json"
@@ -175,13 +181,12 @@ class LinuxVerifierExtractionTests(unittest.TestCase):
         for name in ("verify-release.sh", "release-info.py"):
             shutil.copy2(SCRIPTS / name, scripts / name)
         shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
-        profiles = json.loads((self.component / "release-profiles.json").read_text())
-        self.info = {**profiles["dev"], "profile": "dev", "version": "0.1.0",
+        self.info = {**profile_info("dev"), "profile": "dev", "version": "0.1.0",
                      "source_sha": "a" * 40, "git_revision": "a" * 8}
         self.artifacts = self.root / "artifacts"
         self.artifacts.mkdir()
         (self.artifacts / "build-info.json").write_text(json.dumps(self.info) + "\n")
-        launcher = f"""#!{sys.executable}
+        self.launcher = f"""#!{sys.executable}
 import sys
 if sys.argv[1:] == ["--build-info"]:
     print({json.dumps(self.info)!r})
@@ -190,35 +195,28 @@ elif sys.argv[1:] == ["--version"]:
 else:
     raise SystemExit("unexpected fixture launcher arguments")
 """
-        self.image = self.artifacts / "fixture.AppImage"
-        self.image.write_text(f"""#!{sys.executable}
-import os
-from pathlib import Path
-import sys
-assert sys.argv[1:] == ["--appimage-extract"]
-appdir = Path("squashfs-root")
-appdir.mkdir(mode=0o755)
-for name, content, mode in (("AppRun", {launcher!r}, int(os.environ["FIXTURE_EXEC_MODE"], 8)),
-                             ("resource.txt", "fixture data", int(os.environ["FIXTURE_DATA_MODE"], 8))):
-    descriptor = os.open(appdir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(descriptor, "w") as output:
-        output.write(content)
-""")
-        release_info.write_manifest(self.info, self.artifacts, "linux-x86_64", True)
+        self.archive = self.artifacts / release_info.linux_package_name(self.info)
         # Substitute only the audit/runtime closure and host identity; the real
         # verifier still checks the manifest, checksums, profile and source.
-        (scripts / "linux-release-appimage.py").write_text("""import os
+        (scripts / "linux-release-bundle.py").write_text("""import importlib.util
 from pathlib import Path
 import sys
-assert sys.argv[1] == "audit"
-appdir = Path(sys.argv[2])
+if sys.argv[1] == "extract":
+    assert sys.argv[4:] == ["--profile", "dev"]
+    spec = importlib.util.spec_from_file_location("release_info", Path(__file__).with_name("release-info.py"))
+    release_info = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_info)
+    appdir = release_info.extract_app_archive(sys.argv[2], sys.argv[3], "maple-agent-dev")
+else:
+    assert sys.argv[1] == "audit", sys.argv
+    appdir = Path(sys.argv[2])
 assert appdir.stat().st_mode & 0o777 == 0o755
 assert (appdir / "AppRun").stat().st_mode & 0o7777 == 0o755
 assert (appdir / "resource.txt").stat().st_mode & 0o7777 == 0o644
 private = appdir.parent / "private-after-extraction"
 private.write_text("fixture private metadata")
 assert private.stat().st_mode & 0o777 == 0o600, "extraction changed the parent's private umask"
-assert appdir.parent.stat().st_mode & 0o777 == 0o700
+assert appdir.parent.stat().st_mode & 0o777 == 0o700, "extraction parent must remain private"
 """)
         commands = self.root / "commands"
         commands.mkdir()
@@ -232,9 +230,29 @@ assert appdir.parent.stat().st_mode & 0o777 == 0o700
         self.env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
                         TMPDIR=str(self.root), FIXTURE_EXEC_MODE="755", FIXTURE_DATA_MODE="644")
 
+    def write_archive(self):
+        root = "maple-agent-dev.app"
+        members = [(root, None, 0o755),
+                   (root + "/AppRun", self.launcher, int(self.env["FIXTURE_EXEC_MODE"], 8)),
+                   (root + "/resource.txt", "fixture data", int(self.env["FIXTURE_DATA_MODE"], 8))]
+        with tarfile.open(self.archive, "w:gz") as archive:
+            for name, content, mode in members:
+                member = tarfile.TarInfo(name)
+                member.mode = mode
+                if content is None:
+                    member.type = tarfile.DIRTYPE
+                    archive.addfile(member)
+                else:
+                    data = content.encode()
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+        release_info.write_manifest(self.info, self.artifacts, "linux-x86_64", True)
+
     def verify(self):
+        self.write_archive()
         result = subprocess.run(["bash", str(self.component / "scripts/verify-release.sh"), "dev",
-                                 str(self.artifacts), "--unsigned"], env=self.env, capture_output=True, text=True)
+                                 str(self.artifacts), "--unsigned", "--platform", "linux-x86_64"],
+                                env=self.env, capture_output=True, text=True)
         self.assertFalse(list(self.root.glob("maple-agent-verify.*")), "verifier private files must be cleaned")
         return result
 
@@ -269,8 +287,7 @@ class MacosUnsignedVerifierTests(unittest.TestCase):
         entitlements = self.component / "app/packaging/macos-entitlements.plist"
         entitlements.parent.mkdir(parents=True)
         shutil.copy2(SCRIPTS.parent / "app/packaging/macos-entitlements.plist", entitlements)
-        profiles = json.loads((self.component / "release-profiles.json").read_text())
-        self.info = {**profiles["dev"], "profile": "dev", "version": "0.1.0",
+        self.info = {**profile_info("dev"), "profile": "dev", "version": "0.1.0",
                      "source_sha": "a" * 40, "git_revision": "a" * 8}
         self.bundle = self.root / f"{self.info['display_name']}.app"
         binary = self.bundle / "Contents/MacOS/maple-agent"
@@ -359,9 +376,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
-        profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
         self.info = {
-            **profiles["dev"], "profile": "dev", "version": "0.1.0",
+            **profile_info("dev"), "profile": "dev", "version": "0.1.0",
             "source_sha": "a" * 40, "git_revision": "a" * 8,
         }
         self.path = self.directory / "build-info.json"
@@ -411,7 +427,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.info[field] = original
 
     def test_prod_metadata_requires_the_configured_primary_and_backup_pins(self):
-        prod = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())["prod"]
+        prod = profile_info("prod")
         self.info = {**prod, "profile": "prod", "version": "0.0.1",
                      "source_sha": "a" * 40, "git_revision": "a" * 8}
         self.write_info()
@@ -422,6 +438,26 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.write_info()
             with self.subTest(keys=keys), self.assertRaisesRegex(ValueError, "release profile"):
                 release_info.read_info("prod", self.path)
+
+    def test_prod_feed_validation_uses_the_explicit_platform_not_the_input_url(self):
+        profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
+        self.info = {**profile_info("prod"), "profile": "prod", "version": "0.1.0",
+                     "source_sha": "a" * 40, "git_revision": "a" * 8}
+        self.write_info()
+        release_info.read_info("prod", self.path)
+        release_info.read_info("prod", self.path, platform="macos-aarch64")
+        with self.assertRaisesRegex(ValueError, "update_feed_url"):
+            release_info.read_info("prod", self.path, platform="linux-x86_64")
+        self.info["update_feed_url"] = profiles["prod"]["linux_update_feed_url"]
+        self.write_info()
+        release_info.read_info("prod", self.path, platform="linux-x86_64")
+        for platform in (None, "macos-aarch64"):
+            with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "update_feed_url"):
+                release_info.read_info("prod", self.path, platform=platform)
+        self.info["update_feed_url"] = "https://wrong.invalid/agent/stable/linux/latest.json"
+        self.write_info()
+        with self.assertRaisesRegex(ValueError, "update_feed_url"):
+            release_info.read_info("prod", self.path, platform="linux-x86_64")
 
     def test_backup_requires_a_distinct_public_key_not_a_changed_comment_or_id(self):
         def key(point, key_id=b"12345678", comment="fixture"):
@@ -486,6 +522,113 @@ class ReleaseMetadataTests(unittest.TestCase):
         extra.unlink()
         (self.directory / "SHA256SUMS").write_text("a" * 64 + "  ../outside\n")
         with self.assertRaises(ValueError):
+            release_info.verify_artifacts("dev", self.directory, True)
+
+
+class LinuxReleaseMetadataTests(unittest.TestCase):
+    setUp = ReleaseMetadataTests.setUp
+    write_info = ReleaseMetadataTests.write_info
+
+    def package(self):
+        package = self.directory / release_info.linux_package_name(self.info)
+        package.write_bytes(b"compressed Linux bundle fixture")
+        release_info.write_manifest(self.info, self.directory, "linux-x86_64", True)
+        return package
+
+    def write_checksums(self):
+        (self.directory / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+            for path in sorted(self.directory.iterdir()) if path.name != "SHA256SUMS"
+        ))
+
+    def test_linux_package_records_checksum_policy_and_exact_public_inventory(self):
+        package = self.package()
+        manifest = release_info.verify_artifacts("dev", self.directory, True, platform="linux-x86_64")
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["package"], "maple-agent-dev-0.1.0-aaaaaaaa-linux-x86_64.tar.gz")
+        self.assertIsNone(manifest["macos_signing"])
+        self.assertEqual(manifest["linux_integrity"], "sha256")
+        self.assertEqual({path.name for path in self.directory.iterdir()},
+                         {"build-info.json", "manifest.json", "SHA256SUMS", package.name})
+        self.assertTrue(all(path.stat().st_mode & 0o777 == 0o644 for path in self.directory.iterdir()))
+        with self.assertRaisesRegex(ValueError, "requested platform"):
+            release_info.verify_artifacts("dev", self.directory, True, platform="macos-aarch64")
+
+    def test_linux_package_name_must_match_profile_version_and_source_revision(self):
+        expected = release_info.linux_package_name(self.info)
+        for name in ("fixture.AppImage", "fixture.tar.gz", expected.replace("-dev-", "-prod-"),
+                     expected.replace("-0.1.0-", "-0.2.0-"), expected.replace("-aaaaaaaa-", "-bbbbbbbb-")):
+            with self.subTest(name=name):
+                package = self.directory / name
+                package.write_bytes(b"wrong package")
+                with self.assertRaises(ValueError):
+                    release_info.write_manifest(self.info, self.directory, "linux-x86_64", True)
+                package.unlink()
+
+    def test_linux_extra_files_fail_even_with_valid_checksums(self):
+        self.package()
+        extra = self.directory / "extra.txt"
+        extra.write_text("checked but not public release inventory")
+        self.write_checksums()
+        with self.assertRaisesRegex(ValueError, "exactly the expected bundle"):
+            release_info.verify_artifacts("dev", self.directory, True)
+        with self.assertRaises(ValueError):
+            release_info.write_manifest(self.info, self.directory, "linux-x86_64", True)
+
+    def test_downloaded_renamed_linux_package_is_rejected_with_consistent_manifest_and_checksums(self):
+        package = self.package()
+        package.rename(self.directory / "fixture.tar.gz")
+        path = self.directory / "manifest.json"
+        manifest = json.loads(path.read_text())
+        path.write_text(json.dumps({**manifest, "package": "fixture.tar.gz"}))
+        self.write_checksums()
+        with self.assertRaisesRegex(ValueError, "exactly the expected bundle"):
+            release_info.verify_artifacts("dev", self.directory, True)
+
+    def test_linux_prod_artifact_validates_the_platform_specific_feed(self):
+        profiles = json.loads((SCRIPTS.parent / "release-profiles.json").read_text())
+        self.info = {**profile_info("prod"), "profile": "prod", "version": "0.1.0",
+                     "source_sha": "a" * 40, "git_revision": "a" * 8,
+                     "update_feed_url": profiles["prod"]["linux_update_feed_url"]}
+        self.write_info()
+        self.package()
+        release_info.verify_artifacts("prod", self.directory, True, platform="linux-x86_64")
+        self.info["update_feed_url"] = profiles["prod"]["update_feed_url"]
+        self.write_info()
+        self.write_checksums()
+        with self.assertRaisesRegex(ValueError, "update_feed_url"):
+            release_info.verify_artifacts("prod", self.directory, True, platform="linux-x86_64")
+
+    def test_linux_integrity_and_signing_policy_cannot_be_relabelled(self):
+        self.package()
+        path = self.directory / "manifest.json"
+        original = json.loads(path.read_text())
+        for field, value in (("macos_signing", "developer-id-notarized"),
+                             ("linux_integrity", "signed"), ("linux_integrity", None)):
+            with self.subTest(field=field, value=value):
+                path.write_text(json.dumps({**original, field: value}))
+                self.write_checksums()
+                with self.assertRaisesRegex(ValueError, "Linux integrity"):
+                    release_info.verify_artifacts("dev", self.directory, True)
+        path.write_text(json.dumps({key: value for key, value in original.items() if key != "macos_signing"}))
+        self.write_checksums()
+        with self.assertRaisesRegex(ValueError, "Linux integrity"):
+            release_info.verify_artifacts("dev", self.directory, True)
+
+    def test_linux_symlink_or_directory_cannot_replace_public_metadata(self):
+        self.package()
+        for name in ("build-info.json", "manifest.json", "SHA256SUMS"):
+            with self.subTest(name=name):
+                path = self.directory / name
+                original = path.read_bytes()
+                path.unlink()
+                path.symlink_to(self.directory / "outside")
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    release_info.verify_artifacts("dev", self.directory, True)
+                path.unlink()
+                path.write_bytes(original)
+        (self.directory / "unexpected-directory").mkdir()
+        with self.assertRaisesRegex(ValueError, "unsupported file"):
             release_info.verify_artifacts("dev", self.directory, True)
 
 

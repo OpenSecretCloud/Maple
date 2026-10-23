@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { fixture, PAYLOAD } from "./fixtures";
+import { linuxFixture } from "./linux-fixtures";
 
 // Miniflare is Wrangler's exact locked runtime dependency. Node hosts the
 // harness; assertions make real requests through workerd and its R2 binding.
@@ -13,7 +14,7 @@ const server = `
  process.on('SIGTERM', async()=>{await mf.dispose(); process.exit(0);});
  process.send({origin:(await mf.ready).origin});
 `;
-test("real workerd R2 binding streams exact immutable bytes, ranges, HEAD and redirects", async () => {
+test("real workerd R2 binding serves separate feeds, immutable bytes, ranges, HEAD and redirects", async () => {
   const directory = await mkdtemp(join(tmpdir(), "agent-updates-workerd-"));
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -25,12 +26,16 @@ test("real workerd R2 binding streams exact immutable bytes, ranges, HEAD and re
       import worker from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
       export default { async fetch(request,env) {
         if (new URL(request.url).pathname === '/__seed' && request.method === 'POST') {
-          const {metadata,payload} = await request.json();
+          const {metadata,linuxMetadata,payload} = await request.json();
           const bytes = Uint8Array.from(metadata);
           await env.AGENT_RELEASES.put('stable/latest.json',bytes);
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/manifest.json',bytes);
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent.app.tar.gz',Uint8Array.from(payload));
           await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent.dmg',Uint8Array.from(payload));
+          await env.AGENT_RELEASES.put('stable/linux/latest.json',Uint8Array.from(linuxMetadata));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/linux-manifest.json',Uint8Array.from(linuxMetadata));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/Maple-Agent-linux-x86_64.tar.gz',Uint8Array.from(payload));
+          await env.AGENT_RELEASES.put('stable/releases/0.0.2/publication-manifest.json',Uint8Array.from(payload));
           return new Response('seeded');
         }
         return worker.fetch(request,env);
@@ -78,6 +83,7 @@ test("real workerd R2 binding streams exact immutable bytes, ranges, HEAD and re
       method: "POST",
       body: JSON.stringify({
         metadata: Array.from(fixture().bytes),
+        linuxMetadata: Array.from(linuxFixture().bytes),
         payload: Array.from(PAYLOAD),
       }),
     });
@@ -108,6 +114,48 @@ test("real workerd R2 binding streams exact immutable bytes, ranges, HEAD and re
     expect(head.status).toBe(200);
     expect(head.headers.get("content-length")).toBe(String(PAYLOAD.length));
     expect(await head.text()).toBe("");
+    const linuxLatest = await fetch(`${origin}/agent/stable/linux/latest.json`);
+    expect(linuxLatest.status).toBe(200);
+    expect(linuxLatest.headers.get("cdn-cache-control")).toBe("no-store");
+    expect(new Uint8Array(await linuxLatest.arrayBuffer())).toEqual(
+      linuxFixture().bytes,
+    );
+    const linuxRedirect = await fetch(`${origin}/download/agent/stable/linux`, {
+      redirect: "manual",
+    });
+    expect(linuxRedirect.status).toBe(302);
+    expect(linuxRedirect.headers.get("cache-control")).toBe("no-store");
+    expect(linuxRedirect.headers.get("location")).toBe(
+      linuxFixture().manifest.artifacts["linux-x86_64"].path,
+    );
+    const linuxArtifact = `${origin}${linuxFixture().manifest.artifacts["linux-x86_64"].path}`;
+    const linuxRange = await fetch(linuxArtifact, {
+      headers: { range: "bytes=2-7" },
+    });
+    expect(linuxRange.status).toBe(206);
+    expect(new Uint8Array(await linuxRange.arrayBuffer())).toEqual(
+      PAYLOAD.slice(2, 8),
+    );
+    const linuxHead = await fetch(linuxArtifact, { method: "HEAD" });
+    expect(linuxHead.status).toBe(200);
+    expect(linuxHead.headers.get("content-length")).toBe(
+      String(PAYLOAD.length),
+    );
+    expect(await linuxHead.text()).toBe("");
+    const linuxManifest = await fetch(
+      `${origin}/agent/stable/releases/0.0.2/linux-manifest.json`,
+    );
+    expect(linuxManifest.status).toBe(200);
+    expect(new Uint8Array(await linuxManifest.arrayBuffer())).toEqual(
+      linuxFixture().bytes,
+    );
+    expect(
+      (
+        await fetch(
+          `${origin}/agent/stable/releases/0.0.2/publication-manifest.json`,
+        )
+      ).status,
+    ).toBe(404);
     expect(
       (await fetch(`${origin}/download/agent/stable/linux-appimage`)).status,
     ).toBe(404);

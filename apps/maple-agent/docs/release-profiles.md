@@ -55,11 +55,17 @@ are `profile`, `display_name`, `bundle_id`, `data_namespace`, `api_url`,
 revision with a possible `-dirty` suffix; `source_sha` is the full source commit.
 Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.
 
-Packaged Prod builds use only the compiled Agent stable feed at
-`https://updates.trymaple.ai/agent/stable/latest.json`. The profile pins the
+Packaged Prod builds use only the compiled Agent stable feed:
+`https://updates.trymaple.ai/agent/stable/latest.json` on macOS, or
+`https://updates.trymaple.ai/agent/stable/linux/latest.json` on Linux. The checked-in
+`update_feed_url` and `linux_update_feed_url` select those targets; embedded
+build-info retains the existing `update_feed_url` field with the effective feed.
+Both feeds describe the same Agent version, build and source when publishing both
+platforms. Separate wire schemas preserve installed macOS client compatibility;
+this does not require separate release cadences. The profile pins the
 reviewed primary and backup public keys, enabling packaged Prod discovery after
-launch. Publication remains disabled pending owner service setup; invitations
-still require the signed update rehearsal. An empty-key profile reports
+launch. Publication is a separate protected operation; invitations
+require the signed update rehearsal for each supported platform. An empty-key profile reports
 **Updates not configured** and
 makes no update requests. Active trust requires two distinct public keys; the
 backup supports planned rotation and does not revoke a compromised accepted
@@ -74,6 +80,6 @@ Configured Prod checks after launch and approximately hourly, verifies signed
 metadata and package contents, and downloads automatically by default. Users
 can turn automatic downloads off and download explicitly. Installation waits
 for **Restart to Update** and a warning that tasks and remote access stop.
-Read-only/translocated apps and the currently gated Linux updater offer manual
+Read-only/translocated apps and unsupported Linux install contexts offer manual
 download links from signed metadata. See [updater development and activation](updates.md) for
 verification, recovery and the separate production activation boundary.

@@ -22,6 +22,7 @@ mod notify;
 mod platform;
 mod profile;
 mod remote;
+mod self_launch;
 mod settings;
 #[cfg(feature = "desktop")]
 mod shortcuts;
@@ -252,14 +253,12 @@ fn main() {
     match cli.mode {
         Some(Mode::Host { command }) => {
             init_logging(LogOutput::FileOnly);
-            let result = match command {
+            let result = match &command {
                 HostCommand::Serve => host::run(configured_api_url()),
                 HostCommand::Stop => host::stop(&configured_api_url()),
             };
             if let Err(error) = result {
-                log::error!("Maple host command failed: {error}");
-                eprintln!("{error}");
-                std::process::exit(1);
+                exit_host_error(&command, &error);
             }
         }
         Some(Mode::Remote { command }) => {
@@ -327,6 +326,39 @@ fn main() {
             #[cfg(not(feature = "desktop"))]
             disabled_mode("(desktop)", "desktop");
         }
+    }
+}
+
+/// A detached host has no stderr, so leave a diagnostic before exiting. Only
+/// fixed summaries reach the log: errors can contain service URLs or paths.
+fn exit_host_error(command: &HostCommand, error: &str) -> ! {
+    let operation = match command {
+        HostCommand::Serve => "serve",
+        HostCommand::Stop => "stop",
+    };
+    // env_logger's Pipe target writes and flushes each record synchronously,
+    // and TeeWriter also flushes ERROR records. process::exit skips destructors.
+    log::error!(
+        "Maple host {operation} failed: {}",
+        host_error_summary(error)
+    );
+    eprintln!("{error}");
+    std::process::exit(1);
+}
+
+fn host_error_summary(error: &str) -> &'static str {
+    if error.starts_with("failed to build the billing HTTP client:")
+        || error == "builder error"
+        || error.contains("no root certificates found")
+        || error.contains("No CA certificates were loaded from the system")
+    {
+        "HTTP client initialization failed; check OS CA certificates and TLS trust configuration."
+    } else if error.starts_with("Cannot open host lock:")
+        || error.starts_with("Cannot acquire Maple host ownership:")
+    {
+        "Host profile lock is unavailable; check profile storage permissions and existing host processes."
+    } else {
+        "Host operation failed; check profile configuration and runtime dependencies."
     }
 }
 
@@ -530,7 +562,10 @@ enum LogOutput {
 fn init_logging(output: LogOutput) {
     let paths = backend::store_paths();
     let log_dir = paths.logs();
-    let file = paths.open_log().ok();
+    let file = paths
+        .prepare_control_root()
+        .and_then(|paths| paths.open_log())
+        .ok();
     const DEFAULT_FILTER: &str =
         "info,iroh=warn,iroh_relay=warn,noq=warn,noq_proto=warn,netwatch=warn,tracing::span=warn";
     let mut builder = match output {
@@ -594,12 +629,97 @@ impl std::io::Write for TeeWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, LoginArgs, Mode};
+    use super::{Cli, HostCommand, LoginArgs, Mode};
     use clap::Parser;
 
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
         Cli::try_parse_from(std::iter::once("maple-agent").chain(args.iter().copied()))
             .map(|cli| cli.mode)
+    }
+
+    #[test]
+    fn host_error_summaries_include_only_fixed_guidance() {
+        let private = "https://fake-user:fake-password@example.invalid/private?token=fake-token account=fake-account";
+        for error in [
+            format!("failed to build the billing HTTP client: builder error: {private}"),
+            "builder error".to_string(),
+            format!("no root certificates found: {private}"),
+            format!("No CA certificates were loaded from the system: {private}"),
+        ] {
+            assert_eq!(
+                super::host_error_summary(&error),
+                "HTTP client initialization failed; check OS CA certificates and TLS trust configuration."
+            );
+        }
+        for error in [
+            format!("Cannot open host lock: /private/fake-account: {private}"),
+            format!("Cannot acquire Maple host ownership: {private}"),
+        ] {
+            assert_eq!(
+                super::host_error_summary(&error),
+                "Host profile lock is unavailable; check profile storage permissions and existing host processes."
+            );
+        }
+        assert_eq!(
+            super::host_error_summary(private),
+            "Host operation failed; check profile configuration and runtime dependencies."
+        );
+    }
+
+    #[test]
+    fn host_error_exit_leaves_sanitized_log_after_process_exit() {
+        const CHILD_OPERATION: &str = "MAPLE_TEST_HOST_ERROR_LOG_CHILD";
+        if let Ok(operation) = std::env::var(CHILD_OPERATION) {
+            super::init_logging(super::LogOutput::FileOnly);
+            let command = match operation.as_str() {
+                "serve" => HostCommand::Serve,
+                "stop" => HostCommand::Stop,
+                _ => panic!("invalid child operation"),
+            };
+            super::exit_host_error(
+                &command,
+                "failed to build the billing HTTP client: builder error: https://fake-user:fake-password@example.invalid/private?token=fake-token account=fake-account",
+            );
+        }
+
+        for operation in ["serve", "stop"] {
+            let root = tempfile::tempdir().unwrap();
+            let data = root.path().join("data");
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::host_error_exit_leaves_sanitized_log_after_process_exit",
+                ])
+                .env(CHILD_OPERATION, operation)
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("XDG_DATA_HOME", &data)
+                .env("RUST_LOG", "off")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(1));
+            let log = std::fs::read_to_string(
+                data.join(crate::profile::DATA_NAMESPACE)
+                    .join("store-v1/logs/maple-agent.log"),
+            )
+            .unwrap();
+            assert!(log.contains("ERROR"));
+            assert!(log.contains(&format!("Maple host {operation} failed:")));
+            assert!(log.contains("check OS CA certificates and TLS trust configuration"));
+            for private in [
+                "https://",
+                "fake-user",
+                "fake-password",
+                "example.invalid",
+                "?token=",
+                "fake-token",
+                "fake-account",
+            ] {
+                assert!(!log.contains(private), "private input reached the log");
+            }
+        }
     }
 
     #[test]

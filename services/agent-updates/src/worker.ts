@@ -3,7 +3,7 @@ import {
   parseEnvelope,
   releasePath,
   type Artifact,
-  type Manifest,
+  type UpdateManifest,
 } from "./manifest";
 
 interface StoredObject {
@@ -41,10 +41,14 @@ function response(
     },
   });
 }
-async function metadata(
+async function metadata<Format extends UpdateManifest["format"]>(
   bucket: Bucket,
   key: string,
-): Promise<{ bytes: Uint8Array<ArrayBuffer>; manifest: Manifest } | null> {
+  format: Format,
+): Promise<{
+  bytes: Uint8Array<ArrayBuffer>;
+  manifest: Extract<UpdateManifest, { format: Format }>;
+} | null> {
   const object = await bucket.get(key);
   if (!object) return null;
   if (object.size === 0 || object.size > MAX_ENVELOPE_BYTES || !object.body) {
@@ -74,7 +78,29 @@ async function metadata(
     bytes.set(chunk, offset);
     offset += chunk.length;
   }
-  return { bytes, manifest: parseEnvelope(bytes).manifest };
+  const manifest = parseEnvelope(bytes).manifest;
+  if (manifest.format !== format) throw new Error("manifest format mismatch");
+  return {
+    bytes,
+    manifest: manifest as Extract<UpdateManifest, { format: Format }>,
+  };
+}
+
+function metadataResponse(
+  request: Request,
+  bytes: Uint8Array<ArrayBuffer>,
+  immutable = false,
+): Response {
+  return new Response(request.method === "HEAD" ? null : bytes, {
+    headers: {
+      ...(immutable
+        ? { "cache-control": "public, max-age=31536000, immutable" }
+        : NO_STORE),
+      "content-type": "application/json; charset=utf-8",
+      "content-length": String(bytes.length),
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 function requestedRange(
@@ -186,6 +212,26 @@ export default {
       return response(404, request.method);
     try {
       if (
+        path === "/agent/stable/linux/latest.json" ||
+        path === "/download/agent/stable/linux"
+      ) {
+        const current = await metadata(
+          env.AGENT_RELEASES,
+          "stable/linux/latest.json",
+          "maple-agent-update-v2",
+        );
+        if (!current) return response(404, request.method);
+        return path.startsWith("/download/")
+          ? new Response(null, {
+              status: 302,
+              headers: {
+                ...NO_STORE,
+                location: current.manifest.downloads["linux-bundle"].path,
+              },
+            })
+          : metadataResponse(request, current.bytes);
+      }
+      if (
         path === "/agent/stable/latest.json" ||
         path.startsWith("/download/agent/stable/")
       ) {
@@ -200,6 +246,7 @@ export default {
         const current = await metadata(
           env.AGENT_RELEASES,
           "stable/latest.json",
+          "maple-agent-update-v1",
         );
         if (!current) return response(404, request.method);
         if (path.startsWith("/download/")) {
@@ -213,47 +260,48 @@ export default {
               })
             : response(404, request.method);
         }
-        return new Response(request.method === "HEAD" ? null : current.bytes, {
-          headers: {
-            ...NO_STORE,
-            "content-type": "application/json; charset=utf-8",
-            "content-length": String(current.bytes.length),
-          },
-        });
+        return metadataResponse(request, current.bytes);
       }
       const release = releasePath(path);
       if (!release) return response(404, request.method);
-      const published = await metadata(
-        env.AGENT_RELEASES,
-        `stable/releases/${release.version}/manifest.json`,
-      );
-      if (!published) return response(404, request.method);
-      if (published.manifest.version !== release.version)
-        throw new Error("version mismatch");
-      if (release.file === "manifest.json")
-        return new Response(
-          request.method === "HEAD" ? null : published.bytes,
-          {
-            headers: {
-              "cache-control": "public, max-age=31536000, immutable",
-              "content-type": "application/json; charset=utf-8",
-              "content-length": String(published.bytes.length),
-              "x-content-type-options": "nosniff",
-            },
-          },
+      // Explicit metadata routes never fall back to their sibling feed. Other
+      // paths are authorized only by exact enumeration in these two fixed keys.
+      const candidates =
+        release.file === "manifest.json"
+          ? (["maple-agent-update-v1"] as const)
+          : release.file === "linux-manifest.json"
+            ? (["maple-agent-update-v2"] as const)
+            : (["maple-agent-update-v1", "maple-agent-update-v2"] as const);
+      for (const format of candidates) {
+        const file =
+          format === "maple-agent-update-v1"
+            ? "manifest.json"
+            : "linux-manifest.json";
+        const published = await metadata(
+          env.AGENT_RELEASES,
+          `stable/releases/${release.version}/${file}`,
+          format,
         );
-      const artifact = [
-        ...Object.values(published.manifest.artifacts),
-        ...Object.values(published.manifest.downloads),
-      ].find((value) => value.path === path);
-      return artifact
-        ? await artifactResponse(
+        if (!published) continue;
+        if (published.manifest.version !== release.version)
+          throw new Error("version mismatch");
+        if (release.file === file)
+          return metadataResponse(request, published.bytes, true);
+        const artifact = [
+          ...Object.values(published.manifest.artifacts),
+          ...Object.values(published.manifest.downloads),
+        ].find((value) => value.path === path);
+        // A v1 hit retains the shipped behavior without consulting Linux. A
+        // missing/nonmatching v1 permits v2; corrupt metadata never falls through.
+        if (artifact)
+          return await artifactResponse(
             request,
             env.AGENT_RELEASES,
             release.key,
             artifact,
-          )
-        : response(404, request.method);
+          );
+      }
+      return response(404, request.method);
     } catch {
       return response(503, request.method);
     }

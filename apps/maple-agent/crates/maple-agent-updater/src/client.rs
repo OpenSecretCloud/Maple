@@ -166,7 +166,9 @@ impl Updater {
                 );
                 bytes.extend_from_slice(&chunk);
             }
-            manifest::verify_envelope(&bytes, &origin, &self.config.public_keys)
+            let release = manifest::verify_envelope(&bytes, &origin, &self.config.public_keys)?;
+            release.artifact(self.config.target)?;
+            Ok::<_, anyhow::Error>(release)
         })
         .await
         .context("update metadata request timed out")?
@@ -183,21 +185,21 @@ impl Updater {
             verified.manifest == release.manifest,
             "release fields differ from its signed envelope"
         );
+        verified.artifact(self.config.target)?;
         Ok(verified)
     }
 
     fn eligible(&self, release: &VerifiedRelease) -> Result<bool> {
+        // Schema and target are bound before rollback memory can advance or a
+        // saved preparation can become eligible for filesystem effects.
+        release.artifact(self.config.target)?;
         let version = release.version();
         Ok(version > self.config.current_version
             && self
                 .state
                 .highest_verified()?
                 .as_ref()
-                .is_none_or(|highest| &version >= highest)
-            && release
-                .manifest
-                .artifacts
-                .contains_key(self.config.target.key()))
+                .is_none_or(|highest| &version >= highest))
     }
 
     pub async fn check(&self) -> Result<CheckOutcome> {
