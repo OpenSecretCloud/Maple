@@ -439,6 +439,7 @@ fn an_uncertain_generated_attempt_retains_the_phrase_but_blocks_resubmission(
 }
 
 struct StoreGateHost(Entity<StoreGate>);
+
 impl Render for StoreGateHost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(self.0.clone())
@@ -452,7 +453,7 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
     cx.executor().allow_parking();
     let backend =
         Arc::new(AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap());
-    let gate = cx.new(|cx| StoreGate::new(backend, StoreState::Locked, cx));
+    let gate = cx.new(|cx| StoreGate::new_mounted(backend, StoreState::Locked, cx));
     let (_host, cx) = cx.add_window_view(|window, cx| {
         window.activate_window();
         crate::desktop::register_key_bindings(cx);
@@ -466,7 +467,12 @@ fn locked_gate_tab_space_and_enter_reach_erase_confirmation_and_cancel(
     cx.update(|_, app| {
         let gate = gate.read(app);
         assert!(!gate.busy);
-        assert!(gate.message.as_deref().unwrap().contains("unlock password"));
+        assert!(gate.bridges.borrow().is_empty());
+        assert!(
+            gate.message.as_deref().unwrap().contains("unlock password"),
+            "unexpected unlock feedback: {:?}",
+            gate.message
+        );
     });
     cx.simulate_keystrokes("tab");
     cx.simulate_keystrokes("tab");
@@ -526,7 +532,7 @@ fn needs_setup_gate_keyboard_opens_the_typed_password_form(cx: &mut gpui::TestAp
     cx.executor().allow_parking();
     let backend =
         Arc::new(AgentBackend::for_test("http://127.0.0.1:1".into(), String::new()).unwrap());
-    let gate = cx.new(|cx| StoreGate::new(backend, StoreState::NeedsSetup, cx));
+    let gate = cx.new(|cx| StoreGate::new_mounted(backend, StoreState::NeedsSetup, cx));
     gate.update(cx, |gate, _cx| {
         gate.status = Some(serde_json::from_value(serde_json::json!({
             "state":{"state":"needs_setup"}, "mode":"password", "password_settings_available":true

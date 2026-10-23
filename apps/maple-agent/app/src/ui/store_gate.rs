@@ -134,6 +134,18 @@ impl StoreGate {
     }
 
     pub fn new(backend: Arc<AgentBackend>, state: StoreState, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::new_mounted(backend, state, cx);
+        this.refresh(cx);
+        if this.state == StoreState::Maintenance {
+            this.poll_maintenance(cx);
+        }
+        this
+    }
+
+    /// Mount the gate without starting host requests. Production starts them
+    /// immediately in `new`; UI fixtures keep their supplied state independent
+    /// of unrelated Tokio completions, as with `ChatScreen::new_mounted`.
+    fn new_mounted(backend: Arc<AgentBackend>, state: StoreState, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             focus: cx.focus_handle(),
             backend,
@@ -176,10 +188,6 @@ impl StoreGate {
                 }
             });
         });
-        this.refresh(cx);
-        if this.state == StoreState::Maintenance {
-            this.poll_maintenance(cx);
-        }
         this
     }
 
@@ -1996,7 +2004,7 @@ mod tests {
         let state = StoreState::Refused {
             reason: RefusalReason::NewerVersion,
         };
-        let gate = cx.new(|cx| StoreGate::new(test_backend(), state.clone(), cx));
+        let gate = cx.new(|cx| StoreGate::new_mounted(test_backend(), state.clone(), cx));
         gate.update(cx, |gate, cx| {
             let mut status = notice_status();
             status.state = state;
@@ -2019,7 +2027,7 @@ mod tests {
     #[gpui::test]
     fn external_gate_notice_is_shown_inside_its_live_password_form(cx: &mut gpui::TestAppContext) {
         cx.executor().allow_parking();
-        let gate = cx.new(|cx| StoreGate::new(test_backend(), StoreState::Locked, cx));
+        let gate = cx.new(|cx| StoreGate::new_mounted(test_backend(), StoreState::Locked, cx));
         let form =
             cx.new(|cx| PasswordForm::new(test_backend(), PasswordAction::Remove, Vec::new(), cx));
         gate.update(cx, |gate, cx| {
@@ -2202,7 +2210,7 @@ mod tests {
     #[gpui::test]
     fn forgot_password_opens_erase_and_clears_hidden_input(cx: &mut gpui::TestAppContext) {
         cx.executor().allow_parking();
-        let gate = cx.new(|cx| StoreGate::new(test_backend(), StoreState::Locked, cx));
+        let gate = cx.new(|cx| StoreGate::new_mounted(test_backend(), StoreState::Locked, cx));
         gate.update(cx, |gate, cx| {
             gate.password.update(cx, |input, cx| {
                 input.replace_secret(Zeroizing::new("synthetic attempted unlock".into()), cx)
@@ -2216,7 +2224,7 @@ mod tests {
     #[gpui::test]
     fn erase_requires_exact_typed_confirmation_before_any_request(cx: &mut gpui::TestAppContext) {
         cx.executor().allow_parking();
-        let gate = cx.new(|cx| StoreGate::new(test_backend(), StoreState::Locked, cx));
+        let gate = cx.new(|cx| StoreGate::new_mounted(test_backend(), StoreState::Locked, cx));
         gate.update(cx, |gate, cx| {
             gate.confirmation
                 .update(cx, |input, cx| input.set_text("erase", cx));
