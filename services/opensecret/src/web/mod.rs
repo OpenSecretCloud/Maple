@@ -1,6 +1,7 @@
 pub mod attestation_routes;
 pub mod encryption_middleware;
 mod health_routes;
+pub(crate) mod inference_rate_limit;
 pub mod login_routes;
 pub(crate) mod model_request_policy;
 mod native_handoff_routes;

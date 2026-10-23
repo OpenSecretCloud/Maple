@@ -48,6 +48,50 @@ transport; protected routes are not ordinary plaintext `fetch`, `curl`, or
   new-server and new-client / old-server behavior when they can update
   independently; gate or stage incompatible changes.
 
+### Inference request admission
+
+Authenticated POSTs to `/v1/chat/completions`, `/v1/responses`, `/v1/systemone`,
+and `/v1/embeddings` share one account UUID bucket in each backend process.
+Both JWT and API-key calls use the verified owner; changing keys, sessions,
+models, or endpoints does not give that account a fresh bucket. Requests count
+after authentication and transport/body decoding, before handler validation,
+provider calls, or Responses persistence. A Responses tool loop counts as one
+incoming request; this is not a provider-call, token, or concurrency limit.
+Retrieval, cancellation, models, and audio routes do not consume this bucket.
+
+The default is 100 admissions in a rolling 60-second window. The next request
+starts a fixed 60-second cooldown; subsequent rejected requests do not extend
+it. Rejections carry logical HTTP 429, an OpenAI-shaped `rate_limit_exceeded`
+error, and integer `Retry-After` seconds rounded up from the remaining cooldown.
+They do not carry the upstream `inference_capacity` or automatic-replay marker.
+Transport V2 keeps status, headers and body inside its authenticated encrypted
+response. Clients can inspect the header without a new SDK; this does not
+promise that every client automatically waits and retries.
+
+`INFERENCE_RATE_LIMIT_RPM` (1..1000, default 100) and
+`INFERENCE_RATE_LIMIT_COOLDOWN_SECONDS` (1..3600, default 60) configure startup.
+Invalid values fail startup. At most 10,000 account buckets are retained, each
+with at most the configured RPM timestamps. Expired buckets are reclaimed on
+capacity pressure; live windows/cooldowns are never evicted to admit a new
+account. If all buckets are active, new accounts receive 503. State is local to
+the process and resets on restart; routing across replicas multiplies the
+available allowance. This is a best-effort guardrail, not a global quota.
+
+The opt-in SDK test `sdk/src/lib/test/integration/inferenceRateLimit.test.ts`
+exercises the default policy through a loopback Local backend. Supply the
+ordinary `VITE_TEST_*` Pro fixture inputs plus `VITE_TEST_OTHER_EMAIL` and
+`VITE_TEST_OTHER_PASSWORD` for an independent account, then run from `sdk/`:
+
+```sh
+RUN_RATE_LIMIT_SMOKE=1 bun test src/lib/test/integration/inferenceRateLimit.test.ts --timeout 120000
+```
+
+Use a fresh account window and the default settings. The test deliberately
+submits provider-free validation failures across all four endpoints, verifies
+the shared JWT/API-key cooldown, independent-account and read access, and waits
+for actual cooldown recovery. Keep fixture credentials in private environment
+inputs, never in command arguments or logs.
+
 ## Durable provider rules
 
 - Keep canonical public model IDs separate from provider IDs, routing policy,

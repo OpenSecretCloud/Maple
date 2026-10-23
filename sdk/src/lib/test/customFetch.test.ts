@@ -163,6 +163,47 @@ describe("createCustomFetch inference-capacity contract", () => {
     });
   }
 
+  test("account rate limits remain OpenAI 429 errors with Retry-After", async () => {
+    const deps = capacityDependencies(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Account rate limit exceeded",
+              type: "rate_limit_error",
+              code: "rate_limit_exceeded"
+            }
+          }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "60",
+              "x-opensecret-error-contract": "1",
+              "x-opensecret-error-code": "rate_limit_exceeded"
+            }
+          }
+        )
+    );
+    const openai = new OpenAI({
+      apiKey: "test-api-key",
+      baseURL: `${apiUrl}/v1`,
+      maxRetries: 0,
+      fetch: createCustomFetchWithDependencies({ apiKey: "test-api-key", apiUrl }, deps)
+    });
+    let error: unknown;
+    try {
+      await openai.embeddings.create({ model: "nomic-embed-text", input: "hello" });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(OpenAI.RateLimitError);
+    expect(findOpenSecretInferenceCapacityError(error)).toBeNull();
+    expect((error as OpenAI.APIError).headers?.get("retry-after")).toBe("60");
+    expect((error as OpenAI.APIError).code).toBe("rate_limit_exceeded");
+    expect(deps.runtime.request).toHaveBeenCalledTimes(1);
+  });
+
   test("uses strict bounded delta-seconds retry hints", async () => {
     const cases: Array<[string | undefined, number | null]> = [
       [undefined, 1_000],

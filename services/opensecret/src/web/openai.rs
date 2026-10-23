@@ -1544,10 +1544,15 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
     Router::new()
         .route(
             "/v1/chat/completions",
-            post(proxy_openai).layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                decrypt_request::<Value>,
-            )),
+            post(proxy_openai)
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.inference_rate_limiter.clone(),
+                    super::inference_rate_limit::enforce,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    decrypt_request::<Value>,
+                )),
         )
         .route(
             "/v1/models/catalog",
@@ -1572,10 +1577,15 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
         )
         .route(
             "/v1/embeddings",
-            post(proxy_embeddings).layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                decrypt_request::<EmbeddingRequest>,
-            )),
+            post(proxy_embeddings)
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.inference_rate_limiter.clone(),
+                    super::inference_rate_limit::enforce,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    decrypt_request::<EmbeddingRequest>,
+                )),
         )
         .with_state(app_state)
 }
