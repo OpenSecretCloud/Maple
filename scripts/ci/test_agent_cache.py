@@ -284,9 +284,18 @@ class NativeEnvironmentTests(unittest.TestCase):
             for version in ("10.0", "11.0"):
                 (sdk / "Include" / version).mkdir(parents=True)
                 (sdk / "Lib" / version).mkdir(parents=True)
-            environment = {"VCToolsInstallDir": str(root / "toolset"), "WindowsSdkDir": str(sdk), "WindowsSDKVersion": "10.0\\"}
+            environment = {"VCToolsInstallDir": str(root / "toolset"), "WindowsSdkDir": str(sdk), "WindowsSDKVersion": "10.0\\",
+                           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": str(compiler.parent / "link.exe")}
             with patch.object(agent_cache, "executable", return_value=str(compiler)), patch.object(agent_cache, "command", return_value="MSVC version"):
                 before = agent_cache.native_identity("Windows", environment)
+                self.assertEqual(before["linker"]["path"], str((compiler.parent / "link.exe").resolve()))
+                for wrong_linker in ("", str(root / "Git/usr/bin/link.exe")):
+                    with self.subTest(linker=wrong_linker):
+                        wrong = {**environment, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": wrong_linker}
+                        with self.assertRaisesRegex(ValueError, "pin Cargo's Windows linker"):
+                            agent_cache.native_identity("Windows", wrong)
+                (compiler.parent / "link.exe").write_bytes(b"new selected linker")
+                self.assertNotEqual(agent_cache.native_identity("Windows", environment), before)
                 (compiler.parent / "c2.dll").write_bytes(b"new native backend")
                 self.assertNotEqual(agent_cache.native_identity("Windows", environment), before)
                 environment["WindowsSDKVersion"] = "11.0\\"

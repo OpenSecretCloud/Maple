@@ -129,6 +129,10 @@ jobs:
           printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
           # openssl-src uses NASM if available and otherwise selects no-asm.
 
+      - name: Pin and smoke-test the selected Windows linker
+        if: runner.os == 'Windows'
+        run: python3 ../../scripts/ci/agent_windows.py
+
       - name: Fingerprint the actual build environment
         id: environment
         run: |
@@ -275,6 +279,10 @@ jobs:
           native_perl_windows="$(cygpath -m "$native_perl")"
           printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
           # openssl-src uses NASM if available and otherwise selects no-asm.
+
+      - name: Pin and smoke-test the selected Windows linker
+        if: runner.os == 'Windows'
+        run: python3 ../../scripts/ci/agent_windows.py
 
       - name: Select isolated provider paths
         run: |

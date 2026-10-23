@@ -35,6 +35,25 @@ def strings(value):
 
 
 class AgentWorkflowBoundaryTests(unittest.TestCase):
+    def test_windows_linker_is_pinned_and_smoked_before_fingerprint_or_cache(self):
+        jobs = workflow("agent-ci.yml")["jobs"]
+        for name in ("desktop", "provider"):
+            with self.subTest(job=name):
+                steps = jobs[name]["steps"]
+                native = next(i for i, step in enumerate(steps)
+                              if step.get("uses", "").startswith("ilammy/msvc-dev-cmd@"))
+                smoke = next(i for i, step in enumerate(steps)
+                             if step.get("run") == "python3 ../../scripts/ci/agent_windows.py")
+                fingerprint = next(i for i, step in enumerate(steps) if step.get("id") == "environment")
+                cache = next(i for i, step in enumerate(steps)
+                             if "rust-cache@" in step.get("uses", "")
+                             or "actions/cache/restore@" in step.get("uses", ""))
+                self.assertLess(native, smoke)
+                self.assertLess(smoke, fingerprint)
+                self.assertLess(fingerprint, cache)
+                self.assertEqual(steps[smoke]["if"], "runner.os == 'Windows'")
+                self.assertNotIn("continue-on-error", steps[smoke])
+
     def test_windows_crypto_pins_native_perl_only_after_required_module_probe(self):
         step = next(step for step in workflow("agent-ci.yml")["jobs"]["desktop"]["steps"]
                     if step.get("name") == "Select native Windows Perl for the static crypto build")

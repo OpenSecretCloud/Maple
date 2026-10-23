@@ -135,6 +135,9 @@ the component Nix shell, or the explicitly selected Windows MSVC environment,
 plus native ABI/toolchain, flags, features, profile and provider configuration.
 The component shell also pins Rustup proxies to its Nix toolchain so Cargo's
 external Clippy/rustfmt commands cannot silently select a host compiler.
+Windows setup also pins Cargo's linker to the selected MSVC `link.exe` and
+compiles/runs an offline fixture with a Cargo build script before restoring
+targets. This catches Git Bash's unrelated `link.exe` shadowing Microsoft tools.
 The workspace and Desktop caches use this compatibility prefix with
 `rust-cache`'s automatic dependency suffix. PRs only read; successful master
 pushes write. Application version changes can reuse compatible dependencies;

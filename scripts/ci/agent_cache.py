@@ -34,6 +34,7 @@ CONFIG_FILES = (
     "apps/maple-agent/scripts/test-rusqlite-provider.py",
     "apps/maple-agent/scripts/build-release.sh",
     "scripts/ci/agent_cache.py",
+    "scripts/ci/agent_windows.py",
 )
 ENV_KEYS = {
     "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC",
@@ -153,6 +154,13 @@ def native_identity(system: str, environment: dict[str, str]) -> dict[str, objec
             if not candidate.is_file():
                 raise ValueError(f"selected MSVC tool is missing: {name}")
             binaries[name] = file_digest(candidate)
+        # A developer environment can make Rust trust Git Bash's PATH, where
+        # Git's unrelated link.exe shadows MSVC. Hashing the adjacent MSVC
+        # binary is insufficient unless Cargo is explicitly configured to use it.
+        configured_linker = environment.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER")
+        linker = compiler.parent / "link.exe"
+        if not configured_linker or Path(configured_linker).resolve() != linker:
+            raise ValueError("pin Cargo's Windows linker to the selected MSVC link.exe before cache restore")
         sdk = Path(environment["WindowsSdkDir"]).resolve()
         sdk_version = environment["WindowsSDKVersion"].rstrip("/\\")
         if not (sdk / "Include" / sdk_version).is_dir() or not (sdk / "Lib" / sdk_version).is_dir():
@@ -160,6 +168,7 @@ def native_identity(system: str, environment: dict[str, str]) -> dict[str, objec
         return {
             "compiler": str(compiler), "toolset": str(toolset),
             "compiler_version": command([str(compiler)], allowed=(0, 2)),
+            "linker": {"path": str(linker), "sha256": binaries["link.exe"]},
             "binaries": binaries, "sdk": str(sdk), "sdk_version": sdk_version,
         }
     result = {
