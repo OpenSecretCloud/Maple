@@ -22,6 +22,25 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
+/// Presentation only: selection and persisted tasks keep the original model ID.
+/// Match Research's short names until the selector consumes catalog labels.
+fn model_label(model: &str) -> &str {
+    match model {
+        "gpt-oss-120b" => "GPT-OSS",
+        "gemma4-31b" => "Gemma 4",
+        "glm-5-3-flash" => "GLM-5.3 Flash",
+        "glm-5-3" => "GLM 5.3",
+        "kimi-k3" => "Kimi K3",
+        "deepseek-v4-1-flash" => "DeepSeek V4.1 Flash",
+        "deepseek-v4-1-flash-1017-uncensored" => "DeepSeek Uncensored",
+        "llama3-3-70b" => "Llama 3.3",
+        "gpt-oss-safeguard-120b" => "GPT-OSS Safeguard",
+        "auto:quick" => "Quick",
+        "auto:powerful" => "Powerful",
+        _ => model,
+    }
+}
+
 /// Recent projects for the header menu. The default Maple workspace stays
 /// listed even when it sits past the recent cap.
 fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
@@ -253,7 +272,7 @@ impl ChatScreen {
                 let pick = model.clone();
                 let item = MenuItem::new(
                     SharedString::from(format!("model-{model}")),
-                    model.clone(),
+                    model_label(&model).to_string(),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
                     },
@@ -813,8 +832,10 @@ impl ChatScreen {
         let drafts = &self.draft_images;
         let model_label = self
             .selected_model
-            .clone()
-            .unwrap_or_else(|| "Model".to_string());
+            .as_deref()
+            .map(model_label)
+            .unwrap_or("Model")
+            .to_string();
         div()
             .w_full()
             .flex()
