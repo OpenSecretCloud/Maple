@@ -187,7 +187,7 @@ pub(super) fn validate_destination(installed: &Path) -> Result<()> {
         })
     {
         return Err(InstallError::NotifyOnly(
-            "run a user-owned installed Maple Agent Linux bundle",
+            "run a user-owned installed Maple Work Linux bundle",
         ));
     }
     let metadata = fs::symlink_metadata(installed)?;

@@ -63,6 +63,34 @@ reopen use the validated persistent `AppRun`; the bounded SQL integrity child
 executes the validated loader/payload directly to preserve parent ownership and
 private stdin. After replacement, restart targets the committed bundle's `AppRun`.
 
+## Maple Work filename bridge
+
+Display branding is Maple Work; current macOS packages still contain
+`Maple Agent.app`. The installer accepts either `Maple Agent.app` or
+`Maple Work.app` as the installed Prod bundle and exactly one of those roots
+inside a macOS update archive. Dev names and arbitrary application names are
+not admitted. Bundle ID, signing identity, signed metadata, payload hashes,
+version checks and the existing extraction limits remain mandatory.
+
+The archive root is normalized to the legacy staging name inside the private
+staging directory. Replacement and relaunch preserve the existing installation
+path, and saved preparations/receipts keep their existing format. The two names
+in one parent directory share the legacy install lock, preventing concurrent
+preparation or startup cleanup from crossing names. If both apps exist, updating
+one leaves the other intact; this bridge does not merge or remove installations.
+
+This is compatibility preparation, not a filename migration. Do not change the
+root published on the existing macOS feed yet: older clients require
+`Maple Agent.app` and can skip the bridge release because they fetch one latest
+offer. A later rename needs a separately reviewed delivery plan that retains a
+legacy-root upgrade path for those clients (or an explicit manual-upgrade
+policy), coordinates package generation/verification and tests signed installed
+updates. Automatically moving an existing app to a new path additionally needs
+collision, interruption, relaunch and recovery handling. This change neither
+renames existing installations nor changes feed/schema, release paths or data
+locations. Linux retains its existing `maple-agent.app` installation identity;
+its visible branding and updater guidance use Maple Work.
+
 ## Wire and trust contract
 
 The response is an envelope with two fields: `manifest` is the exact JSON string
