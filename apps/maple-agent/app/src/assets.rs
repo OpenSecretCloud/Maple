@@ -36,6 +36,8 @@ assets!(
     "icons/loader-circle.svg",
     "icons/lock.svg",
     "icons/mic.svg",
+    // The wordmark's M, alone, for the collapsed sidebar's rail.
+    "icons/maple-mark.svg",
     "icons/maple-wordmark.svg",
     "icons/maximize-2.svg",
     "icons/minimize-2.svg",
