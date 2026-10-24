@@ -5823,7 +5823,7 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 [[package]]
 name = "pdf_oxide"
 version = "0.3.74"
-source = "git+https://github.com/OpenSecretCloud/pdf_oxide.git?rev=f24b43ba997dd91ce60839640a8ce3ac92a87a5d#f24b43ba997dd91ce60839640a8ce3ac92a87a5d"
+source = "git+https://github.com/OpenSecretCloud/pdf_oxide.git?rev=2bc9246782fe874a97e57e348acc7a9eaa27ca4d#2bc9246782fe874a97e57e348acc7a9eaa27ca4d"
 dependencies = [
  "aes 0.9.1",
  "base64 0.22.1",
