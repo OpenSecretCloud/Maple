@@ -644,6 +644,7 @@ async fn prepare_prompt_inner(
     let mut source_races = 0;
     let mut non_reducing = HashSet::new();
     let mut made_progress = false;
+    let mut progress = None;
     for preparation_step in 0..MAX_PREPARATION_STEPS {
         if executor.execution.is_cancelled() || tokio::time::Instant::now() >= executor.deadline {
             tracing::warn!(
@@ -933,6 +934,9 @@ async fn prepare_prompt_inner(
         let mut published = false;
         // Publish each complete section/prefix before beginning another. A later
         // helper failure retains this progress for the next request.
+        if enabled && !plan.summary_work.is_empty() && progress.is_none() {
+            progress = Some(executor.execution.begin_compaction_progress());
+        }
         let candidate = if enabled {
             match reducing_checkpoint(
                 executor,
@@ -965,6 +969,9 @@ async fn prepare_prompt_inner(
                     // before using an advisory fallback. Metadata estimates do
                     // not authorize omitting unhydrated history.
                     advisory_failure = Some(error);
+                    // The helper attempt ended without a checkpoint; checking
+                    // the original prompt is not active compaction work.
+                    progress.take();
                     None
                 }
                 Err(error) => {

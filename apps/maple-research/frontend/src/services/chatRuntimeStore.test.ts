@@ -34,6 +34,45 @@ function streamingMessage(id: string, text: string): Message {
 }
 
 describe("ChatRuntimeStore", () => {
+  test("clears advisory compaction on cancellation and cannot revive it in the next run", () => {
+    const store = createStore();
+    const run = store.beginRun(A);
+    store.updateForRun(A, run.token, (snapshot) => ({
+      ...snapshot,
+      compactingMessageId: "previous-message"
+    }));
+    store.cancelRun(A, run.token);
+    expect(store.get(A)?.compactingMessageId).toBeUndefined();
+    expect(
+      store.updateForRun(A, run.token, (snapshot) => ({
+        ...snapshot,
+        compactingMessageId: "late-message"
+      }))
+    ).toBe(false);
+    store.beginRun(A);
+    expect(store.get(A)?.compactingMessageId).toBeUndefined();
+  });
+
+  test("settling a run clears advisory progress before its abort listeners run", () => {
+    for (const settle of ["completeRunAndAbort", "finishRun", "completeRun"] as const) {
+      const store = createStore();
+      const run = store.beginRun(A);
+      store.updateForRun(A, run.token, (snapshot) => ({
+        ...snapshot,
+        compactingMessageId: "active-message",
+        lastSeenItemId: "canonical-cursor"
+      }));
+      let observedDuringAbort: string | undefined;
+      run.signal.addEventListener("abort", () => {
+        observedDuringAbort = store.get(A)?.compactingMessageId;
+      });
+      expect(store[settle](A, run.token)).toBe(true);
+      expect(store.get(A)?.compactingMessageId).toBeUndefined();
+      expect(observedDuringAbort).toBeUndefined();
+      expect(store.get(A)?.lastSeenItemId).toBe("canonical-cursor");
+    }
+  });
+
   test("keeps concurrent A and B runs isolated while A receives offscreen updates", () => {
     const store = createStore();
     store.select(A, {

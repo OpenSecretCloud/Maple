@@ -6753,6 +6753,7 @@ async fn create_response_stream(
         .register(response_uuid, user.uuid)
         .map_err(|_| ApiError::InternalServerError)?;
     let response_execution = response_execution_registration.execution();
+    response_execution.bind_compaction_request(conv_uuid, user_message_id);
     let compaction_budget = Arc::new(CompactionBudget::default());
 
     // Phase 1b/2a: Validate the required input and prepare base context before
