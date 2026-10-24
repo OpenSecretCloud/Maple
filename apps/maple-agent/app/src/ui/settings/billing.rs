@@ -37,9 +37,8 @@ impl BillingState {
         }
     }
 
-    /// Plans worth listing (active, sold to this build, priced, and a
-    /// current tier: never the retired Starter), cheapest first. Computed
-    /// on load, not in render.
+    /// Plans worth listing (active, sold to this build, priced, and Pro,
+    /// Max, or Team), cheapest first. Computed on load, not in render.
     fn sort_products(products: &mut [Product]) {
         products.sort_by_key(|product| {
             product

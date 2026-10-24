@@ -30,9 +30,6 @@ pub const PRICING_URL: &str = crate::profile::PRICING_URL;
 )]
 pub enum PlanTier {
     Free,
-    /// Deprecated. Kept so a legacy subscription reads as paid without API
-    /// access; never offered for sale (see [`PlanTier::is_for_sale`]).
-    Starter,
     Pro,
     Max,
     Team,
@@ -47,8 +44,6 @@ impl PlanTier {
             Self::Max
         } else if name.contains("pro") {
             Self::Pro
-        } else if name.contains("starter") {
-            Self::Starter
         } else {
             Self::Free
         }
@@ -60,7 +55,7 @@ impl PlanTier {
     }
 
     /// Plans the app lists for sale: Pro, Max, and Team, like the web
-    /// pricing page. Starter is retired and unknown names read as Free.
+    /// pricing page. Unknown names read as Free.
     pub fn is_for_sale(self) -> bool {
         self >= Self::Pro
     }
@@ -305,11 +300,10 @@ mod tests {
     }
 
     #[test]
-    fn starter_is_never_for_sale() {
+    fn only_pro_max_and_team_are_for_sale() {
         for (name, for_sale) in [
-            ("Starter", false),
-            ("Maple Starter Plan", false),
             ("Free", false),
+            ("Unexpected", false),
             ("Pro", true),
             ("Max", true),
             ("Team", true),
@@ -332,7 +326,7 @@ mod tests {
         assert_eq!(PlanTier::from_product_name(Some("Max Plan")), PlanTier::Max);
         assert_eq!(PlanTier::from_product_name(Some("Team")), PlanTier::Team);
         assert!(PlanTier::Pro.has_api_access());
-        assert!(!PlanTier::Starter.has_api_access());
+        assert!(!PlanTier::Free.has_api_access());
     }
 
     #[test]
