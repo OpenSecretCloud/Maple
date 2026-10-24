@@ -339,6 +339,79 @@ impl Manager {
         let encode = |value| {
             serde_json::to_value(value).map_err(|_| "Could not encode remote settings".to_string())
         };
+        if request.method == "remote_peer_info" {
+            let (account, peer): (String, String) = serde_json::from_value(request.params)
+                .map_err(|_| "Invalid remote update request")?;
+            let _account_guard = self.backend.account_gate.read().await;
+            self.backend.authorize_account(&account)?;
+            let info = tokio::time::timeout(Duration::from_secs(5), async {
+                let link = self.connect(&peer).await?;
+                if link.node.account != account {
+                    return Err("The signed-in account changed".into());
+                }
+                Ok::<_, String>(super::streams::peer_info(&link.connection).await)
+            })
+            .await
+            .unwrap_or(Ok(None))?;
+            self.backend.authorize_account(&account)?;
+            return serde_json::to_value(info)
+                .map_err(|_| "Could not display remote update status".into());
+        }
+        if request.method == "remote_install_update" {
+            let (account, peer, expected_grant, install): (
+                String,
+                String,
+                [u8; 16],
+                super::update::InstallRequest,
+            ) = serde_json::from_value(request.params)
+                .map_err(|_| "Invalid remote update request")?;
+            install.validate()?;
+            let _account_guard = self.backend.account_gate.read().await;
+            self.backend.authorize_account(&account)?;
+            let response = tokio::time::timeout(Duration::from_secs(15), async {
+                let link = self.connect(&peer).await?;
+                self.backend.authorize_account(&account)?;
+                if link.node.account != account { return Err("The signed-in account changed".into()); }
+                let paired = link.node.store.lock().map_err(|_| "Remote grant unavailable")?.peers()
+                    .get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.grant == expected_grant);
+                if !paired { return Err("Remote update authorization changed. Reopen this computer.".into()); }
+                let info = super::streams::peer_info(&link.connection).await
+                    .filter(super::update::PeerInfo::supports_remote_updates)
+                    .ok_or("This computer does not support remote updates")?;
+                if info.update.offered.as_ref() != Some(&install.target) {
+                    return Err("The remote update changed. Refresh before trying again.".into());
+                }
+                if info.update.state != super::update::UpdateState::Ready || info.update.blocked.is_some() {
+                    return Err("The remote computer is not ready to install this update.".into());
+                }
+                self.backend.authorize_account(&account)?;
+                link.node.ensure_valid().await?;
+                if !link.node.store.lock().map_err(|_| "Remote grant unavailable")?.peers()
+                    .get(&link.peer.to_string()).is_some_and(|value| value.can_connect && value.grant == expected_grant) {
+                    return Err("Remote update authorization changed. Reopen this computer.".into());
+                }
+                let message = super::streams::call(&link.connection, wire::Command {
+                    id: 2,
+                    method: wire::Method::RemoteUpdateInstall,
+                    send_id: None,
+                    params: serde_json::to_value(super::update::InstallCommand {
+                        expected_grant, request: install.clone(),
+                    }).map_err(|_| "Invalid remote update request")?,
+                }).await.map_err(|_| "Remote update outcome is uncertain. Refresh its status; do not submit another update.")?;
+                let protocol::Message::Response { result, .. } = message else {
+                    return Err("Remote update outcome is uncertain. Refresh its status; do not submit another update.".into());
+                };
+                let accepted: super::update::InstallAccepted = serde_json::from_value(result?)
+                    .map_err(|_| "Remote update outcome is uncertain. Refresh its status; do not submit another update.")?;
+                if accepted.operation_id != install.operation_id || accepted.target != install.target {
+                    return Err("Remote update outcome is uncertain. Refresh its status; do not submit another update.".into());
+                }
+                Ok::<_, String>(accepted)
+            }).await.map_err(|_| "Remote update outcome is uncertain. Refresh its status; do not submit another update.")??;
+            self.backend.authorize_account(&account)?;
+            return serde_json::to_value(response)
+                .map_err(|_| "Could not display remote update receipt".into());
+        }
         if request.method == "remote_pairing_window" {
             let current = self.node.lock().await.clone();
             let window = match current {

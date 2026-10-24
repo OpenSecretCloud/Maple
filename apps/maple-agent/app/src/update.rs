@@ -48,6 +48,8 @@ pub struct Snapshot {
     pub state: State,
     pub label: String,
     pub version: Option<String>,
+    /// Exact verified platform document, never reconstructed from a version.
+    pub remote_candidate: Option<crate::remote::update::ReleaseIdentity>,
     pub primary: Option<UpdateAction>,
     pub primary_label: &'static str,
     pub manual_download_url: Option<String>,
@@ -60,6 +62,7 @@ impl Snapshot {
             state,
             label: label.into(),
             version: None,
+            remote_candidate: None,
             primary: None,
             primary_label: "",
             manual_download_url: None,
@@ -183,6 +186,38 @@ impl Controller {
     pub fn snapshot(&self) -> Snapshot {
         self.0.snapshots.borrow().clone()
     }
+    pub(crate) fn remote_status(&self) -> crate::remote::update::RemoteUpdateStatus {
+        use crate::remote::update::{BlockedReason, RemoteUpdateStatus, UpdateState};
+        let snapshot = self.snapshot();
+        let state = match snapshot.state {
+            State::Disabled => UpdateState::Disabled,
+            State::Idle => UpdateState::Idle,
+            State::Checking => UpdateState::Checking,
+            State::Current => UpdateState::Current,
+            State::Available => UpdateState::Available,
+            State::Downloading => UpdateState::Downloading,
+            State::Ready => UpdateState::Ready,
+            State::Installing => UpdateState::Installing,
+            State::RestartRequired => UpdateState::RestartRequired,
+            State::Error => UpdateState::Error,
+        };
+        let blocked = if snapshot.primary == Some(UpdateAction::ManualDownload) {
+            Some(BlockedReason::UnsupportedInstallation)
+        } else {
+            match snapshot.state {
+                State::Ready | State::Installing => None,
+                State::Disabled => Some(BlockedReason::UpdatesDisabled),
+                State::Checking | State::Downloading => Some(BlockedReason::Busy),
+                _ => Some(BlockedReason::UpdateNotReady),
+            }
+        };
+        RemoteUpdateStatus {
+            state,
+            offered: snapshot.remote_candidate,
+            blocked,
+            operation: None,
+        }
+    }
     #[cfg(test)]
     pub(crate) fn startup_policy_for_test(&self) -> (bool, bool) {
         (
@@ -300,6 +335,7 @@ impl Controller {
         let previous = self.snapshot();
         let mut checking = Snapshot::new(State::Checking, "Checking for updates…");
         checking.version = previous.version;
+        checking.remote_candidate = previous.remote_candidate;
         checking.manual_download_url = previous.manual_download_url;
         self.publish(checking);
     }
@@ -319,6 +355,7 @@ impl Controller {
         let previous = self.snapshot();
         let mut snapshot = Snapshot::new(State::Error, message);
         snapshot.version = previous.version;
+        snapshot.remote_candidate = previous.remote_candidate;
         snapshot.manual_download_url = previous.manual_download_url;
         snapshot.show_banner = snapshot.version.is_some();
         snapshot.primary = Some(UpdateAction::Check);
@@ -519,6 +556,7 @@ impl Controller {
             },
         );
         snapshot.version = Some(version.clone());
+        snapshot.remote_candidate = Some(release_identity(release));
         snapshot.manual_download_url = manual_download_url(release);
         if state == State::Ready {
             snapshot.primary = Some(UpdateAction::Restart);
@@ -597,6 +635,30 @@ impl Controller {
         &self,
         backend: Arc<crate::backend::AgentBackend>,
     ) -> Result<Option<PathBuf>, String> {
+        self.install_requested(backend, None).await
+    }
+
+    pub(crate) async fn install_remote(
+        &self,
+        backend: Arc<crate::backend::AgentBackend>,
+        target: crate::remote::update::ReleaseIdentity,
+        operation_id: String,
+    ) -> Result<Option<PathBuf>, String> {
+        target.validate()?;
+        let operation = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|_| "Invalid remote update operation ID")?;
+        if operation.to_string() != operation_id {
+            return Err("Invalid remote update operation ID".into());
+        }
+        self.install_requested(backend, Some((target, *operation.as_bytes())))
+            .await
+    }
+
+    async fn install_requested(
+        &self,
+        backend: Arc<crate::backend::AgentBackend>,
+        remote: Option<(crate::remote::update::ReleaseIdentity, [u8; 16])>,
+    ) -> Result<Option<PathBuf>, String> {
         if let Some(path) = self.restart_path() {
             return Ok(Some(path));
         }
@@ -606,7 +668,7 @@ impl Controller {
         let Ok(_operation) = self.0.operation.try_lock() else {
             return Ok(None);
         };
-        let result = self.install_inner(backend).await;
+        let result = self.install_inner(backend, remote).await;
         if let Some(path) = self.restart_path() {
             return Ok(Some(path));
         }
@@ -628,6 +690,7 @@ impl Controller {
     async fn install_inner(
         &self,
         backend: Arc<crate::backend::AgentBackend>,
+        remote: Option<(crate::remote::update::ReleaseIdentity, [u8; 16])>,
     ) -> Result<Option<PathBuf>, InstallationFailure> {
         let api_url = backend.api_url().to_owned();
         let service = self.service().await?;
@@ -639,8 +702,15 @@ impl Controller {
             .prepared
             .clone()
             .ok_or("No verified update is ready")?;
+        if remote
+            .as_ref()
+            .is_some_and(|(expected, _)| *expected != release_identity(&prepared.release))
+        {
+            return Err("That exact remote update is no longer ready".into());
+        }
         let mut installing = Snapshot::new(State::Installing, "Preparing to restart and update…");
         installing.version = Some(prepared.release.manifest.version.clone());
+        installing.remote_candidate = Some(release_identity(&prepared.release));
         installing.manual_download_url = manual_download_url(&prepared.release);
         self.publish(installing);
         let installed_path = service.installed_path.clone();
@@ -729,7 +799,11 @@ impl Controller {
                 return Err(InstallationFailure::from(error));
             }
             let manual_failure = std::cell::Cell::new(false);
-            let mut host_fence = match crate::host::acquire_update_fence(&api_url) {
+            let fence = match remote {
+                Some((_, operation)) => crate::host::acquire_remote_update_fence(&api_url, operation),
+                None => crate::host::acquire_update_fence(&api_url),
+            };
+            let mut host_fence = match fence {
                 Ok(fence) => Some(fence),
                 Err(message) => {
                     let _ = maple_agent_updater::installer::discard_preparation(&preparation);
@@ -788,6 +862,16 @@ impl Controller {
                 })
             }
         }
+    }
+}
+
+fn release_identity(release: &VerifiedRelease) -> crate::remote::update::ReleaseIdentity {
+    use sha2::{Digest, Sha256};
+    crate::remote::update::ReleaseIdentity {
+        version: release.manifest.version.clone(),
+        build: release.manifest.build.clone(),
+        source_sha: release.manifest.source_sha.clone(),
+        manifest_sha256: format!("{:x}", Sha256::digest(release.envelope.as_bytes())),
     }
 }
 
@@ -1223,6 +1307,47 @@ mod tests {
                 .ends_with("/Maple-Agent.dmg")
         );
         assert!(manual_download_url_for_target(&release, Target::LinuxX86_64).is_none());
+    }
+
+    #[test]
+    fn remote_candidate_binds_the_exact_verified_platform_document() {
+        let feed = "https://updates.trymaple.ai/agent/stable/latest.json"
+            .parse()
+            .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            &feed,
+            &[key],
+        )
+        .unwrap();
+        let candidate = release_identity(&release);
+        candidate.validate().unwrap();
+        let mut same_version_different_document = release.clone();
+        // Envelope whitespace does not change the displayed version, but a
+        // prepared remote transaction must retain its exact authenticated bytes.
+        same_version_different_document.envelope.push('\n');
+        assert_ne!(
+            candidate,
+            release_identity(&same_version_different_document)
+        );
+        let controller = Controller::new(false);
+        let mut ready = Snapshot::new(State::Ready, "Ready");
+        ready.remote_candidate = Some(candidate.clone());
+        controller.publish(ready.clone());
+        assert_eq!(controller.remote_status().offered, Some(candidate));
+        assert!(controller.remote_status().blocked.is_none());
+        controller.begin_check();
+        assert_eq!(
+            controller.remote_status().blocked,
+            Some(crate::remote::update::BlockedReason::Busy)
+        );
+        controller.recheck_failed(ready);
+        assert!(controller.remote_status().blocked.is_none());
+        controller.publish(Snapshot::new(State::Current, "No update"));
+        assert!(controller.remote_status().offered.is_none());
     }
 
     #[test]
