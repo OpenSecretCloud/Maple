@@ -1,0 +1,25 @@
+{
+  "provenance": "Public deterministic Node.js crypto P-256/HKDF-SHA256/AES-256-GCM vector; frozen and verified against maple-sdk with p256 0.13.2 before its dependency migration. Recipient scalar 0x11 repeated 32 times; ephemeral scalar 0x22 repeated 32 times; salt 0x33 repeated 32 times; nonce 0x44 repeated 12 times. Never use these fixed test keys or nonces in production.",
+  "private_key_pkcs8_base64": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgERERERERERERERERERERERERERERERERERERERERERGhRANCAAQCF+YX8LZEOSgnj5aZnmmiOk8sFSvfbWzfZuW4AoLU7RlKfevLl3EtLdo8qFqodlpW9F/HWFmWUvKJfGUwbleU",
+  "public_key_spki_base64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAhfmF/C2RDkoJ4+WmZ5pojpPLBUr321s32bluAKC1O0ZSn3ry5dxLS3aPKhaqHZaVvRfx1hZllLyiXxlMG5XlA==",
+  "envelope": {
+    "enc_v": 1,
+    "alg": "p256-hkdf-sha256-aes256gcm",
+    "kid": "33333333-3333-4333-8333-333333333333",
+    "epk": "BNZak5d8qj0bCBhS/1ennkZfFmBXcwS66tUF3TpIWJzzUBheiVNy32Ih6joTdVfkc/3bZ1XwW9UHw8Uz/OnJEoU=",
+    "salt": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
+    "nonce": "RERERERERERERERE",
+    "ciphertext": "hKhnVEYGBTiUq9yaZqdVXPvNtZdyo06HpYCmHO9bRFYzmUWoh3Tt/Z3ZDctNcxbgF7c4iDzEOLAKNeSOZ9JjXJMrNVM63tvmN79vgK0XLTG89Qdz1vsK+a1RpSThe0Io3TbrKmfVNkOPFCPMkZyWbZoes94l7gE9pDone68LcuBZA3atFclCHQOXafIYyIDjFKJHoqMzEg6uGFk/vTMJNJ1flUFuSzlidhItdZNDrsNb5lyeqf+EkK2FiHqhnEOQOqRAQcaP5N35JDYlKgngDFqVLsU/FDj/rCPOCYyUJdChE1sc2BBOPZqaZGbLLCL+gtVBqequYRyEogM9SeT0pYGPE8Ssc2EaYzT5qjJ1VLNRNphqjiWPmngp31gr7Pcw0BT82a5D5JIwBPdk29ABvntcJZ6kc1jE2ljswQQJnKCmBTvcN539M9xmzJ1GQLVZmeUQkaTyEmAc"
+  },
+  "payload": {
+    "v": 1,
+    "notification_id": "11111111-1111-4111-8111-111111111111",
+    "message_id": "22222222-2222-4222-8222-222222222222",
+    "kind": "agent.message",
+    "title": "Legacy preview fixture",
+    "body": "Public deterministic compatibility test",
+    "deep_link": "opensecret://agent/subagent/fixture",
+    "thread_id": "agent:subagent:fixture",
+    "sent_at": 1772800000
+  }
+}

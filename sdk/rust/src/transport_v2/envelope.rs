@@ -3,7 +3,7 @@ use std::{fmt, str::FromStr};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Uri};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 

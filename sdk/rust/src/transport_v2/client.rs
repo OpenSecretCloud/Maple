@@ -10,7 +10,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand_core::{OsRng, RngCore};
 use reqwest::{header, redirect::Policy, Client, Url};
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{EphemeralSecret, PublicKey};

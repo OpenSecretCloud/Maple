@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hkdf::Hkdf;
 use p256::{
     ecdh::diffie_hellman,
+    elliptic_curve::Generate,
     pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey},
     PublicKey, SecretKey,
 };
@@ -18,6 +19,9 @@ pub const PUSH_NOTIFICATION_KEY_ALGORITHM: &str = "p256_ecdh_v1";
 pub const PUSH_NOTIFICATION_ENVELOPE_ALGORITHM: &str = "p256-hkdf-sha256-aes256gcm";
 const PUSH_NOTIFICATION_PAYLOAD_VERSION: i32 = 1;
 const PUSH_NOTIFICATION_PREVIEW_INFO: &[u8] = b"opensecret-push-preview-v1";
+
+#[cfg(test)]
+mod compatibility_tests;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EncryptedPushPreviewEnvelope {
@@ -51,7 +55,7 @@ pub struct PushNotificationKeyPair {
 impl PushNotificationKeyPair {
     pub fn generate() -> Self {
         Self {
-            private_key: SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng),
+            private_key: SecretKey::generate(),
         }
     }
 
@@ -179,10 +183,7 @@ mod tests {
         Aes256Gcm, Nonce,
     };
     use p256::{
-        ecdh::EphemeralSecret,
-        elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
-        pkcs8::DecodePublicKey,
-        PublicKey,
+        ecdh::EphemeralSecret, elliptic_curve::sec1::ToSec1Point, pkcs8::DecodePublicKey, PublicKey,
     };
 
     fn encrypt_preview_payload_for_test(
@@ -190,7 +191,7 @@ mod tests {
         payload: &PushNotificationPreviewPayload,
     ) -> EncryptedPushPreviewEnvelope {
         let recipient_key = PublicKey::from_public_key_der(recipient_public_key_der).unwrap();
-        let ephemeral_secret = EphemeralSecret::random(&mut OsRng);
+        let ephemeral_secret = EphemeralSecret::generate();
         let ephemeral_public = PublicKey::from(&ephemeral_secret);
         let shared_secret = ephemeral_secret.diffie_hellman(&recipient_key);
 
@@ -210,7 +211,7 @@ mod tests {
             enc_v: 1,
             alg: PUSH_NOTIFICATION_ENVELOPE_ALGORITHM.to_string(),
             kid: Uuid::new_v4().to_string(),
-            epk: BASE64.encode(ephemeral_public.to_encoded_point(false).as_bytes()),
+            epk: BASE64.encode(ephemeral_public.to_sec1_point(false).as_bytes()),
             salt: BASE64.encode(salt),
             nonce: BASE64.encode(nonce_bytes),
             ciphertext: BASE64.encode(ciphertext),
