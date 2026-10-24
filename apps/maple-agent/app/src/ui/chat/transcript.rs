@@ -51,7 +51,7 @@ impl ChatScreen {
                 return div().into_any_element();
             };
             let chat = chat_entity.read(cx);
-            match chat.timeline.get(ix) {
+            let row = match chat.timeline.get(ix) {
                 Some(item) => {
                     let render_ctx = RenderCtx {
                         selection: selection.clone(),
@@ -125,7 +125,13 @@ impl ChatScreen {
                     }
                 }
                 None => div().into_any_element(),
-            }
+            };
+            // The list spans the full width so the wheel scrolls it from
+            // the side margins too; each row keeps the composer's column.
+            div()
+                .w_full()
+                .child(div().max_w(CONTENT_WIDTH).mx_auto().px_6().child(row))
+                .into_any_element()
         })
         .size_full();
         div()
@@ -167,17 +173,9 @@ impl ChatScreen {
                 )
             })
             .child(
-                // The list element does not apply padding itself, so the
-                // gutter lives here. Same column width as the composer.
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .max_w(CONTENT_WIDTH)
-                    .mx_auto()
-                    .px_6()
-                    .pb_4()
-                    .child(list),
+                // The list element does not apply padding itself; rows carry
+                // the content column and gutter (see the list closure).
+                div().flex_1().min_h_0().w_full().pb_4().child(list),
             )
             .child(crate::ui::scrollbar::scrollbar(
                 "transcript-scrollbar",

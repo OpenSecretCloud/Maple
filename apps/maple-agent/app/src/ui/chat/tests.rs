@@ -7475,6 +7475,19 @@ mod state_tests {
             "an idle wheel must move the viewport, got {moved:?}"
         );
 
+        // The side margins outside the 900px content column scroll too.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(40.), center.y),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
+            ..Default::default()
+        });
+        let margin = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
+        assert_ne!(
+            (margin.item_ix, margin.offset_in_item),
+            (moved.item_ix, moved.offset_in_item),
+            "a wheel over the side margin must move the viewport, got {margin:?}"
+        );
+
         // A streamed chunk lands. No repaint runs before the user's wheel
         // event, exactly like a frame that is still pending.
         cx.update(|_window, app| {
