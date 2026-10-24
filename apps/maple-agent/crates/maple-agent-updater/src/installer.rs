@@ -34,7 +34,9 @@ pub use linux_bundle::{
     cleanup_current_linux_bundle, discover_linux_installation, validate_linux_bundle_archive,
 };
 
+// Keep the staging/receipt name stable for preparations made before the rebrand.
 const APP_NAME: &str = "Maple Agent.app";
+const WORK_APP_NAME: &str = "Maple Work.app";
 const STAGING_PREFIX: &str = ".maple-agent-update-";
 const STAGING_RANDOM_LENGTH: usize = 16;
 const RECEIPT_NAME: &str = "installed.json";
@@ -222,7 +224,18 @@ fn install_lock_path(installed: &Path) -> Result<PathBuf> {
     let parent = installed
         .parent()
         .ok_or(InstallError::Invalid("missing installation parent"))?;
-    let digest = hex::encode(Sha256::digest(installed.as_os_str().as_encoded_bytes()));
+    // Both macOS names share a lock: their staging directories share a parent,
+    // and startup cleanup must not sweep another name's live preparation.
+    // Use the legacy key so already-running older clients also serialize.
+    let lock_identity = if installed
+        .file_name()
+        .is_some_and(|name| name == WORK_APP_NAME)
+    {
+        parent.join(APP_NAME)
+    } else {
+        installed.to_owned()
+    };
+    let digest = hex::encode(Sha256::digest(lock_identity.as_os_str().as_encoded_bytes()));
     Ok(parent.join(format!(".maple-agent-install-{digest}.lock")))
 }
 
@@ -643,7 +656,9 @@ fn validate_destination(installed: &Path) -> Result<()> {
         || installed
             .to_str()
             .is_none_or(|path| path.chars().any(char::is_control))
-        || installed.file_name().is_none_or(|n| n != APP_NAME)
+        || installed
+            .file_name()
+            .is_none_or(|n| n != APP_NAME && n != WORK_APP_NAME)
         || installed
             .components()
             .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
@@ -810,7 +825,7 @@ type ArchiveInventory = (BTreeMap<String, Node>, Option<Vec<u8>>);
 /// attacker-declared extension size. Extensions are bounded and parsed here;
 /// no ownership, xattrs, flags, hard links, sparse or special files are applied.
 fn scan_archive(payload: &Path, output: Option<&Path>) -> Result<BTreeMap<String, Node>> {
-    scan_archive_root(payload, output, APP_NAME).map(|(nodes, _)| nodes)
+    scan_archive_with_alias(payload, output, APP_NAME, true).map(|(nodes, _)| nodes)
 }
 
 fn scan_archive_root(
@@ -818,6 +833,16 @@ fn scan_archive_root(
     output: Option<&Path>,
     app_name: &str,
 ) -> Result<ArchiveInventory> {
+    scan_archive_with_alias(payload, output, app_name, false)
+}
+
+fn scan_archive_with_alias(
+    payload: &Path,
+    output: Option<&Path>,
+    app_name: &str,
+    allow_work_name: bool,
+) -> Result<ArchiveInventory> {
+    let mut archive_root = None;
     let mut descriptor = None;
     let input = open_regular(payload, false, false)?;
     let decoded = MultiGzDecoder::new(input);
@@ -895,6 +920,21 @@ fn scan_archive_root(
             .remove("path")
             .or(long_name.take())
             .unwrap_or_else(|| header_path.to_owned());
+        // Admit exactly one known root, then normalize only that root to the
+        // legacy staging name. Mixed roots are rejected even for disjoint files.
+        let root = name.split('/').next().unwrap_or_default();
+        if root != app_name && !(allow_work_name && root == WORK_APP_NAME) {
+            return Err(InstallError::Invalid("unexpected application root"));
+        }
+        if archive_root
+            .as_deref()
+            .is_some_and(|previous| previous != root)
+        {
+            return Err(InstallError::Invalid("mixed application roots"));
+        }
+        archive_root = Some(root.to_owned());
+        let checked = archive_path(&name, kind.is_dir(), root)?;
+        let name = format!("{app_name}{}", &checked[root.len()..]);
         let name = archive_path(&name, kind.is_dir(), app_name)?;
         if !explicit.insert(name.clone()) {
             return Err(InstallError::Invalid("duplicate archive path"));
@@ -1580,6 +1620,221 @@ mod tests {
             },
             payload_path: payload,
             installed_path: installed.canonicalize().unwrap(),
+        }
+    }
+
+    fn named_update_fixture(
+        root: &Path,
+        installed_name: &str,
+        archive_name: &str,
+    ) -> PreparedUpdate {
+        let mut update = update_fixture(root);
+        if installed_name != APP_NAME {
+            let destination = root.join(installed_name);
+            fs::rename(&update.installed_path, &destination).unwrap();
+            update.installed_path = destination.canonicalize().unwrap();
+        }
+        let original = fixture_members();
+        let names: Vec<_> = original
+            .iter()
+            .map(|member| {
+                let name = match member {
+                    Member::Directory(name)
+                    | Member::File(name, ..)
+                    | Member::Link(name, ..)
+                    | Member::Special(name, ..) => name,
+                };
+                name.replacen(APP_NAME, archive_name, 1)
+            })
+            .collect();
+        let members: Vec<_> = original
+            .iter()
+            .zip(&names)
+            .map(|(member, name)| match member {
+                Member::Directory(_) => Member::Directory(name),
+                Member::File(_, bytes, mode) => Member::File(name, bytes, *mode),
+                Member::Link(_, target) => Member::Link(name, target),
+                Member::Special(_, kind) => Member::Special(name, *kind),
+            })
+            .collect();
+        archive(&update.payload_path, &members);
+        let bytes = fs::read(&update.payload_path).unwrap();
+        let artifact = update
+            .release
+            .manifest
+            .artifacts
+            .get_mut("darwin-aarch64")
+            .unwrap();
+        artifact.size = bytes.len() as u64;
+        artifact.sha256 = hex::encode(Sha256::digest(&bytes));
+        update
+    }
+
+    #[test]
+    fn both_bundle_names_prepare_restore_revalidate_and_discard_both_archive_names() {
+        for installed_name in [APP_NAME, WORK_APP_NAME] {
+            for archive_name in [APP_NAME, WORK_APP_NAME] {
+                let root = tempfile::tempdir().unwrap();
+                let update = named_update_fixture(root.path(), installed_name, archive_name);
+                let verifier = Verifier::Test(accept_test_signature);
+                let prepared = prepare_inner(&update, verifier).unwrap();
+                assert_eq!(prepared.installed_path.file_name().unwrap(), installed_name);
+                assert_eq!(prepared.staged_path, prepared.staging_dir.join(APP_NAME));
+                let restored: InstallPreparation =
+                    serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+                revalidate_inner(&restored, &update, verifier).unwrap();
+                let mut retargeted = restored.clone();
+                retargeted.staged_path = retargeted.staging_dir.join(WORK_APP_NAME);
+                assert!(revalidate_inner(&retargeted, &update, verifier).is_err());
+                fs::write(
+                    prepared.staged_path.join("Contents/maple-agent"),
+                    b"tampered",
+                )
+                .unwrap();
+                assert!(revalidate_inner(&restored, &update, verifier).is_err());
+                discard_preparation(&prepared).unwrap();
+                assert!(!prepared.staging_dir.exists());
+                assert!(update.installed_path.is_dir());
+            }
+        }
+    }
+
+    #[test]
+    fn bundle_aliases_share_the_legacy_install_lock_and_exclude_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join(APP_NAME);
+        let work = root.path().join(WORK_APP_NAME);
+        fs::create_dir(&legacy).unwrap();
+        fs::create_dir(&work).unwrap();
+        let legacy = legacy.canonicalize().unwrap();
+        let work = work.canonicalize().unwrap();
+        let old_digest = hex::encode(Sha256::digest(legacy.as_os_str().as_encoded_bytes()));
+        assert_eq!(
+            install_lock_path(&work).unwrap(),
+            legacy
+                .parent()
+                .unwrap()
+                .join(format!(".maple-agent-install-{old_digest}.lock"))
+        );
+        let guard = acquire_install_lock(&legacy).unwrap();
+        assert!(matches!(
+            acquire_install_lock(&work),
+            Err(InstallError::Busy)
+        ));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert!(matches!(
+            cleanup_after_startup(&work, "0.0.1", "1"),
+            Err(InstallError::Busy)
+        ));
+        drop(guard);
+        let guard = acquire_install_lock(&work).unwrap();
+        assert!(matches!(
+            acquire_install_lock(&legacy),
+            Err(InstallError::Busy)
+        ));
+        drop(guard);
+    }
+
+    #[test]
+    fn rebrand_does_not_admit_mixed_unknown_or_unsafe_archive_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = root.path().join("package");
+        for members in [
+            vec![
+                Member::Directory(APP_NAME),
+                Member::Directory(WORK_APP_NAME),
+            ],
+            vec![
+                Member::Directory(WORK_APP_NAME),
+                Member::File("Maple Agent.app/Contents/file", b"x", 0o644),
+            ],
+            vec![Member::Directory("Maple Research.app")],
+            vec![Member::Directory("Maple Work Dev.app")],
+            vec![
+                Member::Directory(WORK_APP_NAME),
+                Member::File("Maple Work.app/../outside", b"x", 0o644),
+            ],
+            vec![
+                Member::Directory(WORK_APP_NAME),
+                Member::Link("Maple Work.app/escape", "../outside"),
+            ],
+        ] {
+            archive(&payload, &members);
+            assert!(scan_archive(&payload, None).is_err());
+        }
+        // The generic (Linux) scanner keeps its exact-root contract.
+        archive(&payload, &[Member::Directory(WORK_APP_NAME)]);
+        assert!(scan_archive_root(&payload, None, "maple-agent.app").is_err());
+        // The former exact macOS root contract cannot consume the future name.
+        assert!(scan_archive_root(&payload, None, APP_NAME).is_err());
+    }
+
+    #[test]
+    fn only_the_two_production_bundle_names_are_eligible_destinations() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            APP_NAME,
+            WORK_APP_NAME,
+            "Maple Work Dev.app",
+            "Maple Research.app",
+        ] {
+            let bundle = root.path().join(name);
+            fs::create_dir(&bundle).unwrap();
+            let bundle = bundle.canonicalize().unwrap();
+            assert_eq!(
+                validate_destination(&bundle).is_ok(),
+                matches!(name, APP_NAME | WORK_APP_NAME)
+            );
+        }
+        let alias_parent = root.path().join("alias-parent");
+        fs::create_dir(&alias_parent).unwrap();
+        let alias = alias_parent.join(WORK_APP_NAME);
+        std::os::unix::fs::symlink(root.path().join(WORK_APP_NAME), &alias).unwrap();
+        assert!(validate_destination(&alias).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn both_bundle_names_swap_in_place_and_preserve_sibling_installations_and_backups() {
+        for installed_name in [APP_NAME, WORK_APP_NAME] {
+            for archive_name in [APP_NAME, WORK_APP_NAME] {
+                let root = tempfile::tempdir().unwrap();
+                let update = named_update_fixture(root.path(), installed_name, archive_name);
+                let sibling_name = if installed_name == APP_NAME {
+                    WORK_APP_NAME
+                } else {
+                    APP_NAME
+                };
+                let sibling = root.path().join(sibling_name);
+                fs::create_dir(&sibling).unwrap();
+                fs::write(sibling.join("untouched"), b"sibling").unwrap();
+                let verifier = Verifier::Test(accept_test_signature);
+                let prepared = prepare_inner(&update, verifier).unwrap();
+                let committed =
+                    replace_inner(&prepared, &update, verifier, Synchronizer::Native).unwrap();
+                assert_eq!(committed.restart_path(), update.installed_path);
+                assert_eq!(
+                    bundle_version(&committed.backup_path).unwrap(),
+                    ("0.0.1".into(), "1".into())
+                );
+                assert_eq!(
+                    fs::read(committed.installed_path.join("Contents/maple-agent")).unwrap(),
+                    b"verified package executable"
+                );
+                assert_eq!(fs::read(sibling.join("untouched")).unwrap(), b"sibling");
+                let restored: InstalledUpdate = serde_json::from_slice(
+                    &fs::read(committed.staging_dir.join(RECEIPT_NAME)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(restored.installed_path, update.installed_path);
+                assert_eq!(restored.backup_path, committed.backup_path);
+                assert!(discard_preparation(&prepared).is_err());
+                assert!(
+                    restored.checkpoint_cleanup().is_err(),
+                    "unsigned fixture cannot authorize backup deletion"
+                );
+                assert!(restored.backup_path.is_dir());
+            }
         }
     }
 
