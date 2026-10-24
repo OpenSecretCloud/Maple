@@ -226,6 +226,32 @@ impl ChatScreen {
             .children(self.render_notice(cx).map(|notice| notice.mx_6().mb_2()))
     }
 
+    /// A wheel over the margins beside the composer scrolls the
+    /// transcript as the list's own wheel does: the same line height,
+    /// follow-tail release and re-engage at the bottom, and paging.
+    pub(super) fn scroll_transcript_from_margin(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = event.delta.pixel_delta(px(20.)).y;
+        if delta == px(0.) {
+            return;
+        }
+        let top = self.list_state.scroll_px_offset_for_scrollbar().y;
+        self.list_state
+            .set_offset_from_scrollbar(gpui::point(px(0.), top + delta));
+        let start = self.list_state.logical_scroll_top().item_ix;
+        let count = self.list_state.item_count();
+        let mut end = start;
+        while end < count && self.list_state.item_is_below_viewport(end) == Some(false) {
+            end += 1;
+        }
+        self.transcript_scrolled(start, end, cx);
+        cx.notify();
+    }
+
     /// Pill over the bottom edge while the view is scrolled up, so a
     /// reader can return to the newest message with one click.
     fn render_jump_to_latest(&self, cx: &mut Context<Self>) -> Div {

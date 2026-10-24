@@ -6359,26 +6359,38 @@ impl Render for ChatScreen {
                     ))
                 })
                 .child(
+                    // Full width, so a wheel over the margins beside the
+                    // column scrolls the transcript; the column keeps its
+                    // own wheel for the composer, cards, and palette.
                     div()
-                        .relative()
                         .w_full()
-                        .max_w(CONTENT_WIDTH)
-                        .mx_auto()
-                        .px_6()
-                        .pb_4()
-                        .when(self.composer_expanded, |wrap| {
-                            wrap.flex_none()
+                        .when(self.composer_expanded, |row| {
+                            row.flex_none()
                                 .h(gpui::relative(0.7))
                                 .min_h_0()
                                 .flex()
                                 .flex_col()
                         })
-                        .children(self.render_btw_card(cx))
-                        .children(self.render_subagents_card(cx))
-                        .children(self.render_plan_card(cx))
-                        .child(self.render_composer(window, cx))
-                        .children(self.render_slash_palette(cx))
-                        .children(self.render_persistence_failure(cx)),
+                        .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_margin))
+                        .child(
+                            div()
+                                .relative()
+                                .w_full()
+                                .max_w(CONTENT_WIDTH)
+                                .mx_auto()
+                                .px_6()
+                                .pb_4()
+                                .when(self.composer_expanded, |wrap| {
+                                    wrap.flex_1().min_h_0().flex().flex_col()
+                                })
+                                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                                .children(self.render_btw_card(cx))
+                                .children(self.render_subagents_card(cx))
+                                .children(self.render_plan_card(cx))
+                                .child(self.render_composer(window, cx))
+                                .children(self.render_slash_palette(cx))
+                                .children(self.render_persistence_failure(cx)),
+                        ),
                 )
         };
         let main = match loading_overlay {
