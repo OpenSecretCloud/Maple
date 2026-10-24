@@ -4,7 +4,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Nonce},
     ChaCha20Poly1305,
 };
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand_core::{OsRng, RngCore};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, SharedSecret, StaticSecret};
 
 // Re-export for tests

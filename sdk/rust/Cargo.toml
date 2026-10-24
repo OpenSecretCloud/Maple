@@ -1,6 +1,6 @@
 [package]
 name = "maple-sdk"
-version = "4.1.1"
+version = "4.1.2"
 edition = "2021"
 authors = ["Maple Privacy Labs"]
 description = "Maple Rust SDK for secure AI APIs, encrypted sessions, and Nitro attestation"
@@ -29,7 +29,11 @@ aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2.0", features = ["static_secrets", "zeroize"] }
 hkdf = "0.12"
-p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "pkcs8", "getrandom", "std"] }
+# Enforce the RUSTSEC-2026-0387 fix for downstream builds without this lockfile.
+crypto-bigint = { version = "0.7.6", default-features = false }
+# X25519 retains its existing RNG traits independently of P-256's newer API.
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 sha2 = "0.10"
 base64 = "0.22"
 ring = "0.17"  # For certificate validation

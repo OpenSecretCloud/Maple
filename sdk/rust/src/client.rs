@@ -18,8 +18,8 @@ use base64::{
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use http::{header, HeaderMap as HttpHeaderMap, Request as HttpRequest, Response as HttpResponse};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use rand_core::{OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fmt,
