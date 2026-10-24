@@ -7365,6 +7365,53 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_wheel_beside_the_composer_scrolls_the_transcript(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            let timeline = (0..40)
+                .map(|i| {
+                    item(
+                        &format!("m{i}"),
+                        "message",
+                        Some(&format!("Message {i}\n\nwith a second paragraph")),
+                    )
+                })
+                .collect();
+            chat.replace_timeline(timeline);
+        });
+        let top = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| {
+                let offset = chat.read(app).list_state.logical_scroll_top();
+                (offset.item_ix, offset.offset_in_item)
+            })
+        };
+        let wheel_up = |cx: &mut gpui::VisualTestContext, x: f32| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                // Level with the composer column's bottom padding.
+                position: gpui::point(px(x), px(790.)),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+        };
+        let pinned = top(cx);
+
+        // Over the composer column itself the transcript stays put.
+        wheel_up(cx, 600.);
+        assert_eq!(top(cx), pinned, "the composer column keeps its own wheel");
+
+        // In the margin beside it the transcript scrolls up and lets go
+        // of the tail.
+        wheel_up(cx, 1150.);
+        let moved = top(cx);
+        assert_ne!(moved, pinned, "a wheel beside the composer must scroll");
+        assert!(
+            cx.update(|_window, app| !chat.read(app).list_state.is_following_tail()),
+            "scrolling up from the margin must stop following the tail"
+        );
+    }
+
+    #[gpui::test]
     fn test_streaming_chunk_keeps_wheel_scrolling_up(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         assert_streaming_chunk_keeps_wheel_scrolling_up(cx, false);
@@ -7473,6 +7520,19 @@ mod state_tests {
             (moved.item_ix, moved.offset_in_item),
             (pinned.item_ix, pinned.offset_in_item),
             "an idle wheel must move the viewport, got {moved:?}"
+        );
+
+        // The side margins outside the 900px content column scroll too.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(40.), center.y),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
+            ..Default::default()
+        });
+        let margin = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
+        assert_ne!(
+            (margin.item_ix, margin.offset_in_item),
+            (moved.item_ix, moved.offset_in_item),
+            "a wheel over the side margin must move the viewport, got {margin:?}"
         );
 
         // A streamed chunk lands. No repaint runs before the user's wheel

@@ -51,7 +51,7 @@ impl ChatScreen {
                 return div().into_any_element();
             };
             let chat = chat_entity.read(cx);
-            match chat.timeline.get(ix) {
+            let row = match chat.timeline.get(ix) {
                 Some(item) => {
                     let render_ctx = RenderCtx {
                         selection: selection.clone(),
@@ -125,7 +125,13 @@ impl ChatScreen {
                     }
                 }
                 None => div().into_any_element(),
-            }
+            };
+            // The list spans the full width so the wheel scrolls it from
+            // the side margins too; each row keeps the composer's column.
+            div()
+                .w_full()
+                .child(div().max_w(CONTENT_WIDTH).mx_auto().px_6().child(row))
+                .into_any_element()
         })
         .size_full();
         div()
@@ -167,17 +173,9 @@ impl ChatScreen {
                 )
             })
             .child(
-                // The list element does not apply padding itself, so the
-                // gutter lives here. Same column width as the composer.
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .max_w(CONTENT_WIDTH)
-                    .mx_auto()
-                    .px_6()
-                    .pb_4()
-                    .child(list),
+                // The list element does not apply padding itself; rows carry
+                // the content column and gutter (see the list closure).
+                div().flex_1().min_h_0().w_full().pb_4().child(list),
             )
             .child(crate::ui::scrollbar::scrollbar(
                 "transcript-scrollbar",
@@ -226,6 +224,32 @@ impl ChatScreen {
                 )
             })
             .children(self.render_notice(cx).map(|notice| notice.mx_6().mb_2()))
+    }
+
+    /// A wheel over the margins beside the composer scrolls the
+    /// transcript as the list's own wheel does: the same line height,
+    /// follow-tail release and re-engage at the bottom, and paging.
+    pub(super) fn scroll_transcript_from_margin(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = event.delta.pixel_delta(px(20.)).y;
+        if delta == px(0.) {
+            return;
+        }
+        let top = self.list_state.scroll_px_offset_for_scrollbar().y;
+        self.list_state
+            .set_offset_from_scrollbar(gpui::point(px(0.), top + delta));
+        let start = self.list_state.logical_scroll_top().item_ix;
+        let count = self.list_state.item_count();
+        let mut end = start;
+        while end < count && self.list_state.item_is_below_viewport(end) == Some(false) {
+            end += 1;
+        }
+        self.transcript_scrolled(start, end, cx);
+        cx.notify();
     }
 
     /// Pill over the bottom edge while the view is scrolled up, so a
