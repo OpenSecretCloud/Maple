@@ -1992,12 +1992,17 @@ impl LocalBackend {
         open_in_browser(&url, "checkout")
     }
 
-    /// Prepaid API credits left on the account.
+    /// Prepaid API credits left on the account. The billing error is
+    /// logged, not shown: it can carry the server's whole response body.
     pub async fn api_credit_balance(&self, user_id: &str) -> Result<i64, String> {
         self.billing_call(user_id, |billing, token| async move {
             billing.api_credit_balance(&token).await
         })
         .await
+        .map_err(|error| {
+            log::warn!("Could not load the credit balance: {error}");
+            "Could not load the latest balance. Refresh to try again.".to_string()
+        })
     }
 
     /// Start a card or Bitcoin checkout for `credits` prepaid API credits in

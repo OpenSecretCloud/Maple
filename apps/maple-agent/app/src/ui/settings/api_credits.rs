@@ -255,10 +255,11 @@ impl SettingsScreen {
                 ),
         );
 
+        // A failed load keeps the last balance, if any, and says so below it.
         let balance = match (credits.balance, &credits.balance_error) {
-            (Some(balance), _) => format!("{} credits", format_count(balance)),
-            (None, Some(message)) => message.clone(),
-            (None, None) => "Loading balance…".to_string(),
+            (Some(balance), _) => Some(format!("{} credits", format_count(balance))),
+            (None, None) => Some("Loading balance…".to_string()),
+            (None, Some(_)) => None,
         };
         section = section.child(
             widgets::card_row()
@@ -271,13 +272,23 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child("Extra credit balance"),
                 )
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .child(balance),
-                )
+                .when_some(balance, |card, balance| {
+                    card.child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(balance),
+                    )
+                })
+                .when_some(credits.balance_error.clone(), |card, message| {
+                    card.child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::status_error()))
+                            .child(message),
+                    )
+                })
                 .child(
                     div()
                         .text_xs()
@@ -384,37 +395,46 @@ impl SettingsScreen {
                 })
                 .child(label)
         };
-        let mut buttons = div().flex().items_center().gap_2();
-        if !guest {
-            buttons = buttons.child(div().flex_1().child(self.application_target(
-                target(CreditsTarget::Pay(PaymentMethod::Stripe)),
-                pay_button(PaymentMethod::Stripe, ready),
+        // Guests see card checkout disabled, as on the web.
+        let card = pay_button(PaymentMethod::Stripe, ready && !guest).when(guest, |el| {
+            el.tooltip(widgets::tooltip(
+                "Anonymous accounts pay with Bitcoin",
+                None,
+            ))
+        });
+        let buttons = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().child(
+                self.application_target(target(CreditsTarget::Pay(PaymentMethod::Stripe)), card),
+            ))
+            .child(div().flex_1().child(self.application_target(
+                target(CreditsTarget::Pay(PaymentMethod::Zaprite)),
+                pay_button(PaymentMethod::Zaprite, ready),
             )));
-        }
-        buttons = buttons.child(div().flex_1().child(self.application_target(
-            target(CreditsTarget::Pay(PaymentMethod::Zaprite)),
-            pay_button(PaymentMethod::Zaprite, ready),
-        )));
-        purchase = purchase.child(buttons).child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(if guest {
-                    "Checkout opens in your browser. Anonymous accounts pay with Bitcoin."
-                } else {
-                    "Checkout opens in your browser."
-                }),
-        );
-        section = section.child(purchase);
-        if let Some(notice) = &credits.notice {
-            section = section.child(
+        purchase = purchase.child(buttons);
+        // Feedback goes right under the buttons, which are in view when
+        // pressed; below the card it can fall past the window's edge.
+        purchase = match &credits.notice {
+            Some(notice) => purchase.child(
                 widgets::banner(theme::bg_sidebar_pill())
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
                     .child(notice.clone()),
-            );
-        }
-        section
+            ),
+            None => purchase.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(if guest {
+                        "Checkout opens in your browser. Anonymous accounts pay with Bitcoin."
+                    } else {
+                        "Checkout opens in your browser."
+                    }),
+            ),
+        };
+        section.child(purchase)
     }
 
     fn credit_choice_button(
