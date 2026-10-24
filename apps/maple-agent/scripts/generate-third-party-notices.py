@@ -16,7 +16,7 @@ from third_party_notices import (
 def render(inventory, component, target, default_features, features):
     feature_description = ", ".join(features) or "none"
     blocks = [
-        "Maple Agent — Third-party notices\n",
+        "Maple Work — Third-party notices\n",
         "This distribution includes software and data under the following licenses.\n"
         f"Application: maple-agent-app; target: {target}.\n"
         f"Default features: {default_features}; additional features: {feature_description}.\n"
@@ -42,7 +42,7 @@ def render(inventory, component, target, default_features, features):
     text = ("\n" + "=" * 78 + "\n\n").join(blocks).rstrip() + "\n"
     document = ('<!doctype html><html lang="en"><meta charset="utf-8">'
                 '<meta name="viewport" content="width=device-width">'
-                '<title>Maple Agent third-party notices</title>'
+                '<title>Maple Work third-party notices</title>'
                 '<style>body{max-width:76rem;margin:2rem auto;padding:0 1rem;'
                 'font:15px/1.5 system-ui}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>'
                 '<h1>Third-party notices</h1><pre>' + html.escape(text) + '</pre></html>\n')

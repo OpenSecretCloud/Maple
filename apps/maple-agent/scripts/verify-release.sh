@@ -71,6 +71,7 @@ if [[ "$platform" == macos-aarch64 ]]; then
     mkdir "$mount"
     /usr/bin/hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$directory/$package" >/dev/null
     app_name="$(python3 "$component/scripts/release-info.py" field "$profile" "$directory/build-info.json" --field display_name)"
+    bundle_name="$(python3 "$component/scripts/release-info.py" bundle-name "$profile" "$directory/build-info.json")"
     bundle_id="$(python3 "$component/scripts/release-info.py" field "$profile" "$directory/build-info.json" --field bundle_id)"
     verify_macos_app() {
         local app="$1" signature executable
@@ -98,14 +99,19 @@ actual=plistlib.loads(open(sys.argv[1], "rb").read())
 expected=plistlib.loads(open(sys.argv[2], "rb").read())
 assert actual == expected, "downloaded app entitlements differ from the reviewed policy"
 PY
-        python3 - "$app/Contents/Info.plist" "$bundle_id" "$app_name" "$directory/build-info.json" <<'PY'
+        python3 - "$app/Contents/Info.plist" "$bundle_id" "$app_name" "$directory/build-info.json" "$bundle_name" <<'PY'
 import json,plistlib,re,sys
+from pathlib import Path
 with open(sys.argv[1], "rb") as source:
     plist=plistlib.load(source)
 info=json.load(open(sys.argv[4]))
 assert plist["CFBundleIdentifier"] == sys.argv[2]
-assert plist["CFBundleDisplayName"] == sys.argv[3]
+assert plist["CFBundleDisplayName"] == sys.argv[5]
 assert plist["CFBundleName"] == sys.argv[3]
+localized=Path(sys.argv[1]).parent / "Resources/en.lproj/InfoPlist.strings"
+assert plistlib.loads(localized.read_bytes()) == {
+    "CFBundleDisplayName": sys.argv[3], "CFBundleName": sys.argv[3],
+}
 assert plist["CFBundleExecutable"] == "maple-agent"
 assert plist["CFBundleShortVersionString"] == info["version"].split("-",1)[0]
 assert re.fullmatch(r"[1-9][0-9]*", plist["CFBundleVersion"])
@@ -127,12 +133,12 @@ PY
             fi
         fi
     }
-    dmg_app="$mount/$app_name.app"
+    dmg_app="$mount/$bundle_name.app"
     verify_macos_app "$dmg_app"
     archives=("$directory"/*.app.tar.gz)
     [[ ${#archives[@]} == 1 && -f "${archives[0]}" ]] || { echo "expected exactly one app archive" >&2; exit 1; }
     python3 "$component/scripts/release-info.py" extract-app "$profile" "${archives[0]}" --output "$temporary/archive"
-    archive_app="$temporary/archive/$app_name.app"
+    archive_app="$temporary/archive/$bundle_name.app"
     verify_macos_app "$archive_app"
     python3 "$component/scripts/release-info.py" compare-apps "$profile" "$dmg_app" --output "$archive_app"
     if [[ "$static" == false ]]; then

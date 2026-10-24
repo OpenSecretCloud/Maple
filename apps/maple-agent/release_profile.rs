@@ -151,7 +151,7 @@ pub fn select_profile(
     }]
     .clone();
     if channel == "unpackaged" {
-        profile.display_name = "Maple Agent Debug".into();
+        profile.display_name = "Maple Work Debug".into();
         profile.bundle_id = "cloud.opensecret.maple.agent.debug".into();
         profile.data_namespace = "maple-agent".into();
         // Hosted return is admitted only by packaged profiles. Local

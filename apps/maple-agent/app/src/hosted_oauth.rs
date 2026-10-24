@@ -13,7 +13,7 @@ pub(crate) const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: usize = 8192;
 const CALLBACK_PATH: &str = "/auth/callback";
-const RETURN_ERROR: &str = "Browser sign-in could not finish. Start again in Maple Agent.";
+const RETURN_ERROR: &str = "Browser sign-in could not finish. Start again in Maple Work.";
 
 pub(crate) struct HandoffListener {
     listener: TcpListener,
@@ -215,12 +215,12 @@ fn completion_response(outcome: Result<bool, ()>) -> String {
     let (title, message) = match outcome {
         Ok(true) => ("Signed in", "You can close this tab."),
         Ok(false) => (
-            "Signed in to Maple Agent",
+            "Signed in to Maple Work",
             "Your session could not be saved. You will need to sign in again when you restart the app. You can close this tab.",
         ),
         Err(()) => (
             "Sign-in could not finish",
-            "Return to Maple Agent and start again. You can close this tab.",
+            "Return to Maple Work and start again. You can close this tab.",
         ),
     };
     let body = include_str!("hosted_oauth_complete.html")

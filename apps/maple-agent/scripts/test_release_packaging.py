@@ -289,7 +289,7 @@ class MacosUnsignedVerifierTests(unittest.TestCase):
         shutil.copy2(SCRIPTS.parent / "app/packaging/macos-entitlements.plist", entitlements)
         self.info = {**profile_info("dev"), "profile": "dev", "version": "0.1.0",
                      "source_sha": "a" * 40, "git_revision": "a" * 8}
-        self.bundle = self.root / f"{self.info['display_name']}.app"
+        self.bundle = self.root / f"{release_info.macos_bundle_name('dev')}.app"
         binary = self.bundle / "Contents/MacOS/maple-agent"
         binary.parent.mkdir(parents=True)
         # Metadata-only Mach-O cannot execute. A successful static verification
@@ -392,12 +392,57 @@ class ReleaseMetadataTests(unittest.TestCase):
             with self.subTest(profile=profile, source=source), self.assertRaises(ValueError):
                 release_info.read_info(profile, self.path, source)
 
+    def test_display_branding_preserves_installed_bundle_names_and_metadata_contract(self):
+        for profile, display, bundle in (
+            ("prod", "Maple Work", "Maple Agent"),
+            ("dev", "Maple Work Dev", "Maple Agent Dev"),
+        ):
+            with self.subTest(profile=profile):
+                info = {**self.info, **profile_info(profile), "profile": profile}
+                self.path.write_text(json.dumps(info))
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPTS / "release-info.py"), "bundle-name", profile, str(self.path)],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(result.stdout.strip(), bundle)
+                self.assertEqual(info["display_name"], display)
+                output = self.directory / "Info.plist"
+                release_info.write_plist(info, output, "42")
+                plist = plistlib.loads(output.read_bytes())
+                self.assertEqual(plist["CFBundleDisplayName"], bundle)
+                self.assertEqual(plist["CFBundleName"], display)
+                localized = output.parent / "Resources/en.lproj/InfoPlist.strings"
+                self.assertEqual(plistlib.loads(localized.read_bytes()), {
+                    "CFBundleDisplayName": display, "CFBundleName": display,
+                })
+                self.assertEqual(plist["CFBundleIdentifier"], info["bundle_id"])
+                self.assertEqual(plist["CFBundleExecutable"], "maple-agent")
+                self.assertEqual(set(info), release_info.BUILD_FIELDS)
+
     def test_dirty_or_incomplete_source_revision_is_rejected(self):
         for revision in ("aaaaaaaa-dirty", "unknown", "bbbbbbbb"):
             self.info["git_revision"] = revision
             self.write_info()
             with self.subTest(revision=revision), self.assertRaises(ValueError):
                 release_info.read_info("dev", self.path)
+
+    def test_debug_bundle_localizes_branding_without_changing_its_identity(self):
+        output = self.directory / "Maple Agent Debug.app/Contents/Info.plist"
+        output.parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPTS.parent / "app/macos/Info.plist", output)
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "macos-debug-plist.py"), str(output)],
+            env=dict(os.environ, MAPLE_DEBUG_BUNDLE_ID="cloud.opensecret.maple.agent.debug"),
+            check=True, capture_output=True, text=True,
+        )
+        plist = plistlib.loads(output.read_bytes())
+        self.assertEqual(plist["CFBundleIdentifier"], "cloud.opensecret.maple.agent.debug")
+        self.assertEqual(plist["CFBundleExecutable"], "maple-agent")
+        self.assertEqual(plist["CFBundleDisplayName"], "Maple Agent Debug")
+        localized = output.parent / "Resources/en.lproj/InfoPlist.strings"
+        self.assertEqual(plistlib.loads(localized.read_bytes()), {
+            "CFBundleDisplayName": "Maple Work Debug", "CFBundleName": "Maple Work Debug",
+        })
 
     def test_endpoint_or_state_namespace_drift_is_rejected(self):
         for field, value in (("api_url", "https://wrong.invalid"), ("data_namespace", "maple-agent-prod")):
@@ -670,6 +715,17 @@ class AppArchiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_info.compare_app_payloads(first, second)
 
+    def test_profile_extraction_keeps_the_installed_name_after_rebranding(self):
+        self.write_archive()
+        output = self.directory / "profile-output"
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "release-info.py"), "extract-app", "dev",
+             str(self.archive), "--output", str(output)],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertTrue((output / "Maple Agent Dev.app/Contents/maple-agent").is_file())
+        self.assertFalse((output / "Maple Work Dev.app").exists())
+
     def test_rejects_traversal_unexpected_roots_and_link_escape(self):
         cases = [
             ("/outside", "file", "fixture"),
@@ -872,6 +928,9 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assert_secrets_not_returned(result)
         archive = next(call for call in calls if call[0] == "tar")
         self.assertEqual(archive[1:5], ["--no-xattrs", "--no-fflags", "--no-acls", "--no-mac-metadata"])
+        self.assertEqual(archive[-1], "Maple Agent Dev.app")
+        image = next(call for call in calls if call[:2] == ["hdiutil", "create"])
+        self.assertEqual(image[image.index("-volname") + 1], "Maple Work Dev")
         signs = [call for call in calls if call[0] == "codesign" and "--force" in call]
         self.assertTrue(signs[0][-1].endswith("libswiftFixture.dylib"))
         self.assertTrue(signs[1][-1].endswith(".app"))
@@ -894,7 +953,12 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assert_search_list_restored(calls)
         self.assertFalse(list(self.directory.glob(".macos-release.*")))
         with tarfile.open(self.directory / "fixture.app.tar.gz") as archive:
-            icon = archive.extractfile(f"{self.info['display_name']}.app/Contents/Resources/MapleAgent.icns").read()
+            bundle = release_info.macos_bundle_name("dev") + ".app"
+            plist = plistlib.loads(archive.extractfile(f"{bundle}/Contents/Info.plist").read())
+            self.assertEqual(plist["CFBundleDisplayName"], "Maple Agent Dev")
+            localized = plistlib.loads(archive.extractfile(f"{bundle}/Contents/Resources/en.lproj/InfoPlist.strings").read())
+            self.assertEqual(localized["CFBundleDisplayName"], "Maple Work Dev")
+            icon = archive.extractfile(f"{bundle}/Contents/Resources/MapleAgent.icns").read()
             self.assertEqual(icon, (SCRIPTS.parent / "app/packaging/maple-agent-dev.icns").read_bytes())
             self.assertNotEqual(icon, (SCRIPTS.parent / "app/packaging/maple-agent.icns").read_bytes())
             for member in archive:
@@ -902,7 +966,7 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
                 if member.isdir():
                     self.assertTrue(member.mode & 0o001, f"package directory is not publicly accessible: {member.name}")
         extracted = release_info.extract_app_archive(
-            self.directory / "fixture.app.tar.gz", self.directory / "extracted", self.info["display_name"]
+            self.directory / "fixture.app.tar.gz", self.directory / "extracted", release_info.macos_bundle_name("dev")
         )
         self.assertTrue((extracted / "Contents/MacOS/maple-agent").is_file())
         self.assertEqual(extracted.stat().st_mode & 0o777, 0o755)

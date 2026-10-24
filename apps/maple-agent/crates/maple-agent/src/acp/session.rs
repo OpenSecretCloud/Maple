@@ -263,7 +263,7 @@ pub(super) fn find_acp_session<'a>(
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| {
-            "The requested Maple Agent task does not exist in the supplied project directory"
+            "The requested Maple Work task does not exist in the supplied project directory"
                 .to_string()
         })
 }

@@ -1,4 +1,4 @@
-# Maple Agent build profiles
+# Maple Work build profiles
 
 `MAPLE_RELEASE_PROFILE=dev` or `prod` selects a packaged profile at compile
 time. `release-profiles.json` is the shared public configuration used by both
@@ -8,8 +8,15 @@ ID, or PCR trust environment.
 
 | Profile | Application | Bundle ID | State namespace | API / billing trust |
 | --- | --- | --- | --- | --- |
-| Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Hosted Dev API and billing; development PCR |
-| Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Hosted Prod API and billing; production PCR |
+| Dev | Maple Work Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Hosted Dev API and billing; development PCR |
+| Prod | Maple Work | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Hosted Prod API and billing; production PCR |
+
+Display branding is independent of installation identity. macOS keeps the
+`Maple Agent.app` and `Maple Agent Dev.app` filenames and updater archive roots;
+Linux keeps `maple-agent.app` and `maple-agent-dev.app`. Executables, bundle IDs,
+state namespaces, settings, update feeds, and artifact filenames are unchanged.
+macOS uses `Resources/en.lproj/InfoPlist.strings` for the new display name while
+the base `CFBundleDisplayName` matches the existing bundle filename for Finder.
 
 The API endpoints and client ID match `scripts/ci/_common.sh`'s existing
 Research Dev and Prod service selection. Billing browser pricing, checkout
@@ -43,7 +50,7 @@ state. Installing both channels therefore keeps separate sign-ins and history.
 With `MAPLE_RELEASE_PROFILE` unset, the binary reports `unpackaged`, retains the
 existing `maple-agent` namespace, runtime endpoint/client overrides, explicit
 compile-time PCR selection, and legacy `maple-gpui` adoption. Its debug bundle
-identity is `cloud.opensecret.maple.agent.debug` and display name is Maple Agent
+identity is `cloud.opensecret.maple.agent.debug` and display name is Maple Work
 Debug. Release packaging accepts only Dev or Prod metadata.
 
 `maple-agent --build-info` prints one JSON object and exits before changing the
