@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Action, AnyView, App, BoxShadow, Div, ElementId, Hsla, Pixels, Role, SharedString, Stateful,
-    StyleRefinement, Window, div, prelude::*, px,
+    Action, Anchor, AnyView, App, BoxShadow, Div, ElementId, Hsla, Pixels, Point, Role,
+    SharedString, Stateful, StyleRefinement, Window, anchored, div, prelude::*, px,
 };
 
 use super::icons::icon;
@@ -355,7 +355,7 @@ pub const ROW_ICON: Pixels = px(14.);
 
 // ---- Tooltips -------------------------------------------------------------
 
-/// Small label shown under the pointer after gpui's hover delay, with an
+/// Small label shown above the pointer after gpui's hover delay, with an
 /// optional fixed shortcut hint. Attach with `.tooltip(widgets::tooltip(..))`.
 /// Prefer [`tooltip_for_action`] when the control fires an action: that
 /// reads the live keymap instead of a literal that a rebind would outdate.
@@ -364,11 +364,12 @@ pub fn tooltip(
     shortcut: Option<&'static str>,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let label = label.into();
-    move |_window, cx| {
+    move |window, cx| {
         let label = label.clone();
         cx.new(|_| Tooltip {
             label,
             shortcut: shortcut.map(SharedString::from),
+            pointer: window.mouse_position(),
         })
         .into()
     }
@@ -387,7 +388,13 @@ pub fn tooltip_for_action(
         let shortcut = window
             .highest_precedence_binding_for_action(&*action)
             .map(|binding| SharedString::from(format_keystrokes(binding.keystrokes())));
-        cx.new(|_| Tooltip { label, shortcut }).into()
+        let pointer = window.mouse_position();
+        cx.new(|_| Tooltip {
+            label,
+            shortcut,
+            pointer,
+        })
+        .into()
     }
 }
 
@@ -464,12 +471,28 @@ fn key_glyph(key: &str) -> String {
 struct Tooltip {
     label: SharedString,
     shortcut: Option<SharedString>,
+    /// Where the pointer was when the tooltip showed, in window coordinates.
+    pointer: Point<Pixels>,
 }
+
+/// Space between the pointer and a tooltip above it.
+const TOOLTIP_GAP: Pixels = px(16.);
+/// Space below the pointer when a tooltip flips under it, enough to clear
+/// the cursor's arrow.
+const TOOLTIP_CURSOR_CLEARANCE: Pixels = px(20.);
 
 impl Render for Tooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        div()
-            .mt_2()
+        // gpui puts a tooltip's corner just past the pointer, where the
+        // cursor covers it. The view stays zero-sized there and anchors the
+        // label at the pointer itself: centered, 16 px above it.
+        // The transparent padding holds both gaps, and `anchored` fits the
+        // padded box, so it flips below (`TOOLTIP_CURSOR_CLEARANCE` under
+        // the pointer) when the whole box has no room above, and slides
+        // inside the window at the sides. A hoverable tooltip must not
+        // reuse this root: gpui keeps one shown while its root is hovered.
+        let label = div()
+            .debug_selector(|| "tooltip".into())
             .flex()
             .items_center()
             .gap_2()
@@ -491,7 +514,18 @@ impl Render for Tooltip {
                     .font_family(crate::assets::FONT_MONO)
                     .text_color(gpui::rgb(theme::text_secondary()))
                     .child(keys)
-            }))
+            }));
+        div().child(
+            anchored()
+                .position(self.pointer)
+                .anchor(Anchor::BottomCenter)
+                .child(
+                    div()
+                        .pt(TOOLTIP_CURSOR_CLEARANCE)
+                        .pb(TOOLTIP_GAP)
+                        .child(label),
+                ),
+        )
     }
 }
 
@@ -589,4 +623,128 @@ pub fn copy_button(
             },
         ))
         .child(if copied { "Copied" } else { "Copy" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Bounds, Modifiers, TestAppContext, VisualTestContext, size};
+
+    const WINDOW: gpui::Size<Pixels> = size(px(400.), px(300.));
+
+    /// Buttons against the top, left, and right edges of the window, one
+    /// well inside it, and one with a two-line label and a shortcut.
+    struct Host;
+
+    impl Render for Host {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let button = |id: &'static str, label: &'static str, shortcut| {
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .absolute()
+                    .size_6()
+                    .tooltip(tooltip(label, shortcut))
+            };
+            div()
+                .size_full()
+                .child(button("top", "Settings", None).top_0().left(px(100.)))
+                .child(
+                    button("middle", "Settings", None)
+                        .top(px(200.))
+                        .left(px(100.)),
+                )
+                .child(
+                    button("left", "Toggle sidebar", None)
+                        .top(px(200.))
+                        .left_0(),
+                )
+                .child(
+                    button("right", "Toggle sidebar", None)
+                        .top(px(200.))
+                        .right_0(),
+                )
+                .child(
+                    button("multiline", "Queue message\nafter this run", Some("↵"))
+                        .top(px(200.))
+                        .left(px(200.)),
+                )
+        }
+    }
+
+    fn setup(cx: &mut TestAppContext) -> &mut VisualTestContext {
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        cx.simulate_resize(WINDOW);
+        cx.run_until_parked();
+        cx
+    }
+
+    /// Hover the middle of `selector` until its tooltip shows. Returns the
+    /// tooltip's bounds and the pointer, after checking that the tooltip
+    /// lies inside the window.
+    fn hover(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> (Bounds<Pixels>, Point<Pixels>) {
+        let pointer = cx.debug_bounds(selector).expect("button").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let tooltip = cx.debug_bounds("tooltip").expect("tooltip");
+        assert!(
+            tooltip.left() >= px(0.)
+                && tooltip.top() >= px(0.)
+                && tooltip.right() <= WINDOW.width
+                && tooltip.bottom() <= WINDOW.height,
+            "the tooltip {tooltip:?} lies inside the window"
+        );
+        (tooltip, pointer)
+    }
+
+    /// Whether two positions match to within gpui's whole-pixel rounding.
+    fn near(a: Pixels, b: Pixels) -> bool {
+        (a - b).abs() <= px(0.5)
+    }
+
+    #[gpui::test]
+    fn a_tooltip_sits_centered_above_the_pointer(cx: &mut TestAppContext) {
+        let cx = setup(cx);
+        for selector in ["middle", "multiline"] {
+            let (tooltip, pointer) = hover(cx, selector);
+            assert!(
+                near(tooltip.bottom(), pointer.y - px(16.)),
+                "{selector}: the tooltip {tooltip:?} is the gap above the pointer {pointer:?}"
+            );
+            assert!(
+                near(tooltip.center().x, pointer.x),
+                "{selector}: the tooltip {tooltip:?} is centered on the pointer {pointer:?}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn without_room_above_a_tooltip_flips_below_the_cursor(cx: &mut TestAppContext) {
+        let cx = setup(cx);
+        let (tooltip, pointer) = hover(cx, "top");
+        assert!(
+            near(tooltip.top(), pointer.y + TOOLTIP_CURSOR_CLEARANCE),
+            "the tooltip {tooltip:?} is the clearance below the pointer {pointer:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn at_the_sides_a_tooltip_stays_above_the_pointer_inside_the_window(cx: &mut TestAppContext) {
+        let cx = setup(cx);
+        for selector in ["left", "right"] {
+            let (tooltip, pointer) = hover(cx, selector);
+            assert!(
+                near(tooltip.bottom(), pointer.y - px(16.)),
+                "{selector}: the tooltip {tooltip:?} is the gap above the pointer {pointer:?}"
+            );
+        }
+    }
 }
