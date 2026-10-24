@@ -5695,6 +5695,7 @@ mod state_tests {
     /// the expanded sidebar replaces the rail.
     #[gpui::test]
     fn collapsed_sidebar_rail_expands_it(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
@@ -5721,6 +5722,7 @@ mod state_tests {
     /// same scale and origin, including device-pixel rounding.
     #[gpui::test]
     fn collapsed_sidebar_mark_matches_the_wordmark(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
@@ -5755,6 +5757,7 @@ mod state_tests {
     /// pane layouts; expanding restores the ordinary header.
     #[gpui::test]
     fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
@@ -5799,6 +5802,7 @@ mod state_tests {
     /// The header's New task button starts the same draft as the sidebar.
     #[gpui::test]
     fn collapsed_sidebar_header_starts_a_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary_at("s1", "One", "/work/alpha")];
             this.project_root = Some("/work/alpha".to_string());
@@ -5822,6 +5826,7 @@ mod state_tests {
     /// without forwarding a character to the composer.
     #[gpui::test]
     fn collapsed_sidebar_header_buttons_take_the_keyboard(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary_at("s1", "One", "/work/alpha")];
             this.project_root = Some("/work/alpha".to_string());
@@ -5890,6 +5895,7 @@ mod state_tests {
     /// sidebar.
     #[gpui::test]
     fn collapsed_sidebar_rail_mark_takes_the_keyboard(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);

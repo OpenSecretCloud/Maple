@@ -2926,38 +2926,6 @@ impl Sidebar {
             })
             .child(icon("panel-left", px(16.), theme::text_secondary()))
     }
-
-    /// Sidebar footer: just the settings gear.
-    fn render_footer(&self) -> Div {
-        let chat = self.chat.clone();
-        let gear = div()
-            .id("open-settings")
-            .flex_none()
-            .size_8()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            .tooltip(widgets::tooltip_for_action(
-                "Settings",
-                &super::OpenAppSettings,
-            ))
-            .on_click(move |_event, window, cx| {
-                if let Some(chat) = chat.upgrade() {
-                    chat.update(cx, |chat, cx| {
-                        chat.execute_command(ChatCommand::OpenSettings, window, cx);
-                    });
-                }
-            })
-            .child(icon("settings", px(16.), theme::text_secondary()));
-        div().flex().items_center().px_3().py_2().child(gear)
-    }
 }
 
 impl Render for Sidebar {
@@ -3083,7 +3051,9 @@ impl Render for Sidebar {
                         self.list.clone(),
                     )),
             )
-            .child(self.render_footer())
+            // The persistent Settings footer is owned by ChatScreen, outside
+            // this cached subtree's collapse animation.
+            .child(div().h_12().flex_none())
     }
 }
 

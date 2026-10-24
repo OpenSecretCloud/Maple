@@ -79,10 +79,19 @@ fn header_project_paths(recent_roots: &[RecentProjectRoot]) -> Vec<String> {
 impl ChatScreen {
     pub(super) fn render_header(
         &self,
+        sidebar_expansion: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let title = self.selected_title.clone();
+        let collapsed_progress = 1. - sidebar_expansion;
+        let expanded_inset = window.rem_size();
+        let inset =
+            expanded_inset + (SIDEBAR_COLLAPSED_INSET - expanded_inset) * collapsed_progress;
+        // Two 1.75rem buttons, their 0.25rem gap, two 0.75rem gaps,
+        // and the 1px divider retain the existing toolbar geometry.
+        let toolbar_width = window.rem_size() * 5.25 + px(1.);
+        let header_gap = window.rem_size() * 0.75;
         titlebar::drag_region(
             div()
                 .id("chat-header")
@@ -93,59 +102,88 @@ impl ChatScreen {
                 .gap_3()
                 .h(super::CHAT_HEADER_HEIGHT)
                 .flex_none()
-                .pl_4()
+                .pl(inset)
                 .pr_3()
-                .bg(gpui::rgb(theme::bg_sidebar()))
-                .when(self.sidebar_collapsed, |row| {
-                    row.pl(SIDEBAR_COLLAPSED_INSET)
-                }),
+                .bg(gpui::rgb(theme::bg_sidebar())),
         )
-        .when(self.sidebar_collapsed, |row| {
+        .when(collapsed_progress > 0., |row| {
             row.child(
-                div().flex().items_center().gap_1().children(
-                    [
-                        (
-                            "header-sidebar-toggle",
-                            "panel-left",
-                            "Toggle sidebar",
-                            &super::ToggleSidebar as &dyn gpui::Action,
-                            ChatCommand::ToggleSidebar,
-                            3,
-                        ),
-                        (
-                            "header-new-task",
-                            "square-pen",
-                            "New task",
-                            &super::NewTask,
-                            ChatCommand::NewTask,
-                            4,
-                        ),
-                    ]
-                    .into_iter()
-                    .map(|(id, name, label, action, command, tab_index)| {
-                        widgets::icon_button_for_action(
-                            id,
-                            name,
-                            label,
-                            px(16.),
-                            theme::text_secondary(),
-                            action,
-                        )
-                        .debug_selector(move || id.to_string())
-                        .tab_index(tab_index)
-                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                            cx.stop_propagation();
-                        })
-                        .on_key_down(Self::sidebar_button_key_down)
-                        .on_click(cx.listener(
-                            move |this, _event, window, cx| {
-                                this.execute_command(command, window, cx);
-                            },
-                        ))
-                    }),
-                ),
+                div()
+                    .flex_none()
+                    .w(toolbar_width * collapsed_progress)
+                    .h_full()
+                    // Its own trailing gap contracts with the toolbar;
+                    // cancel the row's gap so the title never jumps.
+                    .mr(-header_gap)
+                    .overflow_hidden()
+                    .opacity(collapsed_progress)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .w(toolbar_width)
+                            .h_full()
+                            .pr_3()
+                            .child(
+                                div().flex().items_center().gap_1().children(
+                                    [
+                                        (
+                                            "header-sidebar-toggle",
+                                            "panel-left",
+                                            "Toggle sidebar",
+                                            &super::ToggleSidebar as &dyn gpui::Action,
+                                            ChatCommand::ToggleSidebar,
+                                            3,
+                                        ),
+                                        (
+                                            "header-new-task",
+                                            "square-pen",
+                                            "New task",
+                                            &super::NewTask,
+                                            ChatCommand::NewTask,
+                                            4,
+                                        ),
+                                    ]
+                                    .into_iter()
+                                    .map(
+                                        |(id, name, label, action, command, tab_index)| {
+                                            widgets::icon_button_for_action(
+                                                id,
+                                                name,
+                                                label,
+                                                px(16.),
+                                                theme::text_secondary(),
+                                                action,
+                                            )
+                                            .debug_selector(move || id.to_string())
+                                            .tab_index(tab_index)
+                                            .tab_stop(self.sidebar_collapsed)
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                |_event, _window, cx| {
+                                                    cx.stop_propagation();
+                                                },
+                                            )
+                                            .on_key_down(Self::sidebar_button_key_down)
+                                            .on_click(
+                                                cx.listener(move |this, _event, window, cx| {
+                                                    this.execute_command(command, window, cx);
+                                                }),
+                                            )
+                                        },
+                                    ),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(1.))
+                                    .h_4()
+                                    .flex_none()
+                                    .bg(gpui::rgb(theme::border())),
+                            ),
+                    ),
             )
-            .child(div().w(px(1.)).h_4().bg(gpui::rgb(theme::border())))
         })
         .child(
             div()
