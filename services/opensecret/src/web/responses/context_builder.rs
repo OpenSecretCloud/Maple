@@ -22,6 +22,8 @@ pub struct ChatMsg {
     /// Only tool_output messages need an ID.
     pub tool_call_id: Option<Uuid>,
     pub tok: usize,
+    /// Persisted user identity carried through projection only; never sent upstream.
+    source_user_uuid: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +100,7 @@ pub fn build_prompt<D: DBConnection + ?Sized>(
     internal_instructions: Option<&str>,
     reasoning_replay: ReasoningReplay,
 ) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
-    build_prompt_with_token_reserve(
+    build_prompt_with_recovery_boundary(
         db,
         conversation_id,
         user_id,
@@ -108,7 +110,9 @@ pub fn build_prompt<D: DBConnection + ?Sized>(
         internal_instructions,
         0,
         reasoning_replay,
+        None,
     )
+    .map(|(messages, tokens, _)| (messages, tokens))
 }
 
 /// Build persisted conversation context while reserving room for a message that
@@ -125,6 +129,75 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
     token_reserve: usize,
     reasoning_replay: ReasoningReplay,
 ) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
+    if token_reserve == 0 {
+        return build_prompt(
+            db,
+            conversation_id,
+            user_id,
+            user_key,
+            model,
+            override_instructions,
+            internal_instructions,
+            reasoning_replay,
+        );
+    }
+    build_prompt_with_recovery_boundary(
+        db,
+        conversation_id,
+        user_id,
+        user_key,
+        model,
+        override_instructions,
+        internal_instructions,
+        token_reserve,
+        reasoning_replay,
+        None,
+    )
+    .map(|(messages, tokens, _)| (messages, tokens))
+}
+
+/// Build the normal persisted projection and identify the actual current user
+/// message if it survives that projection. A missing boundary disables recovery;
+/// it must never be inferred from message text or the most recent user role.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_prompt_for_recovery<D: DBConnection + ?Sized>(
+    db: &D,
+    conversation_id: i64,
+    user_id: uuid::Uuid,
+    user_key: &secp256k1::SecretKey,
+    model: &str,
+    override_instructions: Option<&str>,
+    internal_instructions: Option<&str>,
+    reasoning_replay: ReasoningReplay,
+    required_user_uuid: Uuid,
+) -> Result<(Vec<serde_json::Value>, usize, Option<usize>), crate::ApiError> {
+    build_prompt_with_recovery_boundary(
+        db,
+        conversation_id,
+        user_id,
+        user_key,
+        model,
+        override_instructions,
+        internal_instructions,
+        0,
+        reasoning_replay,
+        Some(required_user_uuid),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_prompt_with_recovery_boundary<D: DBConnection + ?Sized>(
+    db: &D,
+    conversation_id: i64,
+    user_id: uuid::Uuid,
+    user_key: &secp256k1::SecretKey,
+    model: &str,
+    override_instructions: Option<&str>,
+    internal_instructions: Option<&str>,
+    token_reserve: usize,
+    reasoning_replay: ReasoningReplay,
+    required_user_uuid: Option<Uuid>,
+) -> Result<(Vec<serde_json::Value>, usize, Option<usize>), crate::ApiError> {
     // 1. Get default user instructions if they exist (unless override provided)
     let mut system_tokens = 0usize;
     let mut system_msg_opt = if let Some(instruction_text) = override_instructions {
@@ -224,6 +297,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
             reasoning: None,
             tool_call_id: None,
             tok,
+            source_user_uuid: None,
         });
     }
 
@@ -249,6 +323,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                     reasoning: None,
                     tool_call_id: None,
                     tok: t,
+                    source_user_uuid: Some(r.uuid),
                 });
             }
             "assistant" => {
@@ -276,6 +351,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                     reasoning: reasoning.map(|r| r.content),
                     tool_call_id: None,
                     tok: t,
+                    source_user_uuid: None,
                 });
             }
             "tool_call" => {
@@ -356,6 +432,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                     reasoning: reasoning.map(|r| r.content),
                     tool_call_id: None,
                     tok: t,
+                    source_user_uuid: None,
                 });
             }
             "tool_output" => {
@@ -378,6 +455,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                     reasoning: None,
                     tool_call_id: r.tool_call_id,
                     tok: t,
+                    source_user_uuid: None,
                 });
             }
             "reasoning" => {
@@ -430,6 +508,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
             reasoning: None,
             tool_call_id: None,
             tok: count_tokens(truncation_content),
+            source_user_uuid: None,
         };
 
         // Only insert if we have enough messages (safety check)
@@ -442,11 +521,22 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
     // to the database before this function is called, so it's included in the
     // get_conversation_context_metadata result above.
 
-    // 6. Format for LLM API (no further truncation needed - already done in step 3)
-    if token_reserve == 0 {
-        build_prompt_from_chat_messages(msgs, model)
+    // 6. Preserve the existing final projection, tracking provenance through any
+    // final truncation without changing which messages it keeps.
+    if let Some(required_user_uuid) = required_user_uuid {
+        build_prompt_from_chat_messages_with_recovery_boundary(
+            msgs,
+            model,
+            token_reserve,
+            Some(required_user_uuid),
+        )
     } else {
-        build_prompt_from_chat_messages_with_token_reserve(msgs, model, token_reserve)
+        let prompt = if token_reserve == 0 {
+            build_prompt_from_chat_messages(msgs, model)
+        } else {
+            build_prompt_from_chat_messages_with_token_reserve(msgs, model, token_reserve)
+        }?;
+        Ok((prompt.0, prompt.1, None))
     }
 }
 
@@ -699,10 +789,20 @@ pub fn build_prompt_from_chat_messages(
 }
 
 pub fn build_prompt_from_chat_messages_with_token_reserve(
-    mut msgs: Vec<ChatMsg>,
+    msgs: Vec<ChatMsg>,
     model: &str,
     token_reserve: usize,
 ) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
+    build_prompt_from_chat_messages_with_recovery_boundary(msgs, model, token_reserve, None)
+        .map(|(messages, tokens, _)| (messages, tokens))
+}
+
+fn build_prompt_from_chat_messages_with_recovery_boundary(
+    mut msgs: Vec<ChatMsg>,
+    model: &str,
+    token_reserve: usize,
+    required_user_uuid: Option<Uuid>,
+) -> Result<(Vec<serde_json::Value>, usize, Option<usize>), crate::ApiError> {
     // 4. Truncation
     let ctx_budget = prompt_token_budget(model).saturating_sub(token_reserve);
 
@@ -791,6 +891,7 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
                 reasoning: None,
                 tool_call_id: None,
                 tok: truncation_msg_tokens,
+                source_user_uuid: None,
             });
         }
 
@@ -840,7 +941,11 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
 
     // 5. Convert to JSON array required by chat API
     let mut final_msgs = Vec::new();
+    let mut required_from = None;
     for m in msgs {
+        let is_required_user = required_user_uuid.is_some()
+            && m.role == ROLE_USER
+            && m.source_user_uuid == required_user_uuid;
         let msg = if m.role == "tool" {
             // tool_call_id should always be present for tool messages
             debug_assert!(
@@ -913,12 +1018,15 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
                 "content": content
             })
         };
+        if is_required_user && msg.get("role").and_then(Value::as_str) == Some(ROLE_USER) {
+            required_from.get_or_insert(final_msgs.len());
+        }
         final_msgs.push(msg);
     }
 
     normalize_tool_call_ids_for_model(&mut final_msgs, model);
 
-    Ok((final_msgs, total))
+    Ok((final_msgs, total, required_from))
 }
 
 fn attach_reasoning_to_assistant_message(message: &mut Value, reasoning: Option<&str>) {
@@ -1082,7 +1190,180 @@ mod tests {
             reasoning: None,
             tool_call_id: None,
             tok: tokens.unwrap_or_else(|| count_tokens(content)),
+            source_user_uuid: None,
         }
+    }
+
+    fn create_persisted_user_chat_msg(uuid: Uuid, content: &str, tokens: usize) -> ChatMsg {
+        let mut message = create_chat_msg(ROLE_USER, content, Some(tokens));
+        message.source_user_uuid = Some(uuid);
+        message
+    }
+
+    #[test]
+    fn test_recovery_boundary_distinguishes_duplicate_user_text_by_uuid() {
+        let first_uuid = Uuid::new_v4();
+        let current_uuid = Uuid::new_v4();
+        let history = vec![
+            create_chat_msg(ROLE_SYSTEM, "instructions", Some(1)),
+            create_persisted_user_chat_msg(first_uuid, "same user text", 1),
+            create_chat_msg(ROLE_ASSISTANT, "answer", Some(1)),
+            create_persisted_user_chat_msg(current_uuid, "same user text", 1),
+        ];
+        let normal = build_prompt_from_chat_messages(history.clone(), "test-model")
+            .expect("normal projection");
+
+        for (uuid, expected_boundary) in [(first_uuid, 1), (current_uuid, 3)] {
+            let (messages, tokens, boundary) =
+                build_prompt_from_chat_messages_with_recovery_boundary(
+                    history.clone(),
+                    "test-model",
+                    0,
+                    Some(uuid),
+                )
+                .expect("provenance projection");
+            assert_eq!((messages, tokens), normal);
+            assert_eq!(boundary, Some(expected_boundary));
+        }
+    }
+
+    #[test]
+    fn test_recovery_boundary_keeps_actual_user_before_concurrent_later_user() {
+        let current_uuid = Uuid::new_v4();
+        let later_uuid = Uuid::new_v4();
+        let tool_call_id = Uuid::new_v4();
+        let history = vec![
+            create_persisted_user_chat_msg(Uuid::new_v4(), "older user", 1),
+            create_chat_msg(ROLE_ASSISTANT, "older answer", Some(1)),
+            create_persisted_user_chat_msg(current_uuid, "current request", 1),
+            create_tool_call_chat_msg(tool_call_id, "web_search", "{}", 1),
+            create_tool_output_chat_msg(tool_call_id, "result", 1),
+            create_persisted_user_chat_msg(later_uuid, "concurrent later request", 1),
+        ];
+        let (messages, _, boundary) = build_prompt_from_chat_messages_with_recovery_boundary(
+            history,
+            "test-model",
+            0,
+            Some(current_uuid),
+        )
+        .expect("provenance projection");
+
+        assert_eq!(boundary, Some(2));
+        let protected = &messages[boundary.expect("actual current user survives")..];
+        assert_eq!(protected.len(), 4);
+        assert_eq!(protected[0]["content"], "current request");
+        assert!(protected[1].get("tool_calls").is_some());
+        assert_eq!(protected[2]["role"], "tool");
+        assert_eq!(protected[3]["content"], "concurrent later request");
+    }
+
+    #[test]
+    fn test_recovery_boundary_missing_after_normal_truncation_is_none() {
+        let current_uuid = Uuid::new_v4();
+        let history = vec![
+            create_persisted_user_chat_msg(Uuid::new_v4(), "first user", 1),
+            create_chat_msg(ROLE_ASSISTANT, "first answer", Some(1)),
+            create_persisted_user_chat_msg(current_uuid, "omitted current user", 1),
+            create_chat_msg(
+                ROLE_ASSISTANT,
+                "large middle answer",
+                Some(prompt_token_budget("test-model")),
+            ),
+            create_persisted_user_chat_msg(Uuid::new_v4(), "later user", 1),
+            create_chat_msg(ROLE_ASSISTANT, "later answer", Some(1)),
+        ];
+        let normal = build_prompt_from_chat_messages(history.clone(), "test-model")
+            .expect("normal truncated projection");
+        let (messages, tokens, boundary) = build_prompt_from_chat_messages_with_recovery_boundary(
+            history,
+            "test-model",
+            0,
+            Some(current_uuid),
+        )
+        .expect("provenance truncated projection");
+
+        assert_eq!((messages.clone(), tokens), normal);
+        assert_eq!(boundary, None);
+        assert!(!messages
+            .iter()
+            .any(|message| message["content"] == "omitted current user"));
+        assert!(messages
+            .iter()
+            .any(|message| message["content"] == "later user"));
+    }
+
+    #[test]
+    fn test_recovery_boundary_requires_a_matching_user_and_never_serializes_provenance() {
+        let current_uuid = Uuid::new_v4();
+        let mut assistant = create_chat_msg(ROLE_ASSISTANT, "assistant text", Some(1));
+        assistant.source_user_uuid = Some(current_uuid);
+        let history = vec![
+            create_persisted_user_chat_msg(Uuid::new_v4(), "ordinary user text", 1),
+            assistant,
+        ];
+        let (messages, _, boundary) = build_prompt_from_chat_messages_with_recovery_boundary(
+            history,
+            "test-model",
+            0,
+            Some(current_uuid),
+        )
+        .expect("non-user provenance does not qualify");
+        assert_eq!(boundary, None);
+        let serialized = serde_json::to_string(&messages).expect("serialize final prompt");
+        assert!(!serialized.contains("source_user_uuid"));
+        assert!(!serialized.contains(&current_uuid.to_string()));
+
+        let (messages, _, boundary) = build_prompt_from_chat_messages_with_recovery_boundary(
+            vec![create_persisted_user_chat_msg(
+                current_uuid,
+                "ordinary user text",
+                1,
+            )],
+            "test-model",
+            0,
+            Some(current_uuid),
+        )
+        .expect("matching user provenance");
+        assert_eq!(boundary, Some(0));
+        assert_eq!(
+            messages,
+            vec![json!({"role": "user", "content": "ordinary user text"})]
+        );
+    }
+
+    #[test]
+    fn test_recovery_boundary_preserves_reserved_projection_and_kimi_tool_ids() {
+        let current_uuid = Uuid::new_v4();
+        let tool_call_id = Uuid::new_v4();
+        let reserve = 32;
+        let history = vec![
+            create_chat_msg(ROLE_SYSTEM, "instructions", Some(1)),
+            create_persisted_user_chat_msg(Uuid::new_v4(), "first user", 1),
+            create_chat_msg(
+                ROLE_ASSISTANT,
+                "large old answer",
+                Some(prompt_token_budget("kimi-k3")),
+            ),
+            create_persisted_user_chat_msg(current_uuid, "current user", 1),
+            create_tool_call_chat_msg(tool_call_id, "web_search", "{}", 1),
+            create_tool_output_chat_msg(tool_call_id, "result", 1),
+        ];
+        let normal =
+            build_prompt_from_chat_messages_with_token_reserve(history.clone(), "kimi-k3", reserve)
+                .expect("normal reserved projection");
+        let (messages, tokens, boundary) = build_prompt_from_chat_messages_with_recovery_boundary(
+            history,
+            "kimi-k3",
+            reserve,
+            Some(current_uuid),
+        )
+        .expect("provenance reserved projection");
+
+        assert_eq!((messages.clone(), tokens), normal);
+        assert_eq!(boundary, Some(3));
+        assert_eq!(messages[3]["content"], "current user");
+        assert_eq!(messages[4]["tool_calls"][0]["id"], "functions.web_search:0");
+        assert_eq!(messages[5]["tool_call_id"], "functions.web_search:0");
     }
 
     fn create_chat_msg_with_reasoning(
@@ -1120,6 +1401,7 @@ mod tests {
             reasoning: None,
             tool_call_id: None,
             tok,
+            source_user_uuid: None,
         }
     }
 
@@ -1196,6 +1478,7 @@ mod tests {
             reasoning: None,
             tool_call_id: None,
             tok: tokens,
+            source_user_uuid: None,
         };
 
         let (messages, total_tokens) =
@@ -1667,6 +1950,7 @@ mod tests {
             reasoning: None,
             tool_call_id: None,
             tok: tokens,
+            source_user_uuid: None,
         }
     }
 
@@ -1693,6 +1977,7 @@ mod tests {
             reasoning: None,
             tool_call_id: Some(tool_call_id),
             tok: tokens,
+            source_user_uuid: None,
         }
     }
 
