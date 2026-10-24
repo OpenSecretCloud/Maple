@@ -522,8 +522,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
-              "tinfoil-0.2.1-maple.1" = "sha256-vdpdRjBwQ7wyyyuTRZROpRJ7i8OttSrXjJxBG9vBs8s=";
-              "tinfoil-ehbp-0.3.1" = "sha256-BSSob5uyIIOw/Zr5aZFTU0GOM5imxk7KoZ5g+I4+s70=";
+              "tinfoil-0.2.1-maple.2" = "sha256-Pl3Hy0tq0MmpBT/ZHPcwHU6J1bjBAEiwmkBbs1mLKBw=";
             };
           };
           nativeBuildInputs = [
