@@ -134,6 +134,39 @@ The platform CI jobs and component checks run those fixtures with their selected
 toolchain. Quantify hosted savings only after the retained Cargo reports confirm
 that the repeated application unit is fresh and tests still execute.
 
+## Incidental host toolchains must not block a compatible restore
+
+The [later master macOS job at `692b33ff`](https://github.com/MaplePrivacyLabs/Maple/actions/runs/40024153792/job/120656381786)
+passed in **57m53s** after another complete target miss. Its own actual-build
+environment JSON and compatibility digest were identical to the retained
+`cc67565b` seed. The cache action additionally enumerated every installed
+Rustup toolchain: an unused host Rust changed from 1.99.0 to 1.99.1 while the
+selected Nix Rust remained 1.98.0. That changed its supplemental restore hash
+from `a5aee41c` to `a861070b`. The old compatible archive still existed; this
+lookup miss was not evidence that it needed more time to warm.
+
+`agent_cache_command.py` now runs the action's real Rust/Cargo probes through
+the selected component environment, but returns an empty result for its
+optional installed-Rustup inventory. The actual `rustc -vV` remains in the
+primary action's identity, and its normal manifest/lock dependency suffix
+remains enabled. Actual compiler, flags, SDK and native compatibility continue
+to be enforced by the existing fingerprint.
+
+When neither an exact hit nor a restored Cargo target is present, a second,
+read-only action invocation searches the existing ABI/job/OS/architecture
+prefix without the supplemental host-toolchain hash. Archive paths and their
+cache-service version remain unchanged, allowing the existing master archives
+to be used during migration. Its save step is disabled; only the primary action
+can save a stable exact key after successful master validation. Checking the
+restored target's `CACHEDIR.TAG` avoids downloading another large archive when
+the primary already restored a different dependency suffix.
+
+The cold job spent **36m00s** building and **16m42s** preparing its environment.
+Its test phase rebuilt zero compilation units, so the Git metadata freshness
+fix remained effective. Cache restoration, native dependency reuse and Nix
+materialization time need separate hosted measurements; a shorter overall job
+alone does not establish which cost was removed.
+
 ## Pull-request package profiles
 
 Agent desktop pull requests build only the Dev profile on macOS and Linux.

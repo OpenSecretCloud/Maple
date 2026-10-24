@@ -150,8 +150,29 @@ jobs:
           add-rust-environment-hash-key: "true"
           # Dependency hashes belong in the action's exact suffix, not its restore prefix.
           key: maple-agent-ci-v2-${{ steps.environment.outputs.compatibility }}
-          cmd-format: ${{ runner.os == 'Windows' && '{0}' || format('nix develop --no-update-lock-file "{0}/apps/maple-agent" -c {1}', github.workspace, '{0}') }}
+          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: Check whether Cargo targets were restored
+        id: restored-target
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/apps/maple-agent/target/CACHEDIR.TAG" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore compatible legacy Cargo targets on a cache miss
+        if: ${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: apps/maple-agent -> target
+          # Read only within the existing actual compiler/native ABI prefix.
+          # The primary cache retains its exact dependency suffix and owns saves.
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-ci-v2-${{ steps.environment.outputs.compatibility }}
+          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
+          save-if: "false"
 
       - name: Record the current build environment after restore
         run: |
@@ -395,8 +416,27 @@ jobs:
           add-rust-environment-hash-key: "true"
           # Dependency hashes belong in the action's exact suffix, not its restore prefix.
           key: maple-agent-release-v2-${{ steps.environment.outputs.compatibility }}
-          cmd-format: ${{ runner.os == 'Windows' && '{0}' || format('nix develop --no-update-lock-file "{0}/apps/maple-agent" -c {1}', github.workspace, '{0}') }}
+          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: Check whether Cargo targets were restored
+        id: restored-target
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/apps/maple-agent/target/CACHEDIR.TAG" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore compatible legacy Cargo targets on a cache miss
+        if: ${{ steps.rust-cache.outputs.cache-hit != 'true' && steps.restored-target.outputs.present != 'true' }}
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-release-v2-${{ steps.environment.outputs.compatibility }}
+          cmd-format: python3 "${{ github.workspace }}/scripts/ci/agent_cache_command.py" {0}
+          save-if: "false"
 
       - name: Record the current build environment after restore
         run: |

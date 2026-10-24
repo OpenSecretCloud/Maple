@@ -30,6 +30,7 @@ SHARED_INPUTS = frozenset(
         "scripts/ci/agent_change_detection.py",
         "scripts/ci/agent_master_selection.py",
         "scripts/ci/agent_cache.py",
+        "scripts/ci/agent_cache_command.py",
         "scripts/ci/agent_windows.py",
         "scripts/ci/agent_measure.py",
         "scripts/ci/change_detection.py",
