@@ -3599,9 +3599,12 @@ impl ChatScreen {
         let action = snapshot.primary;
         Some(
             div()
+                .debug_selector(|| "update-banner".to_string())
+                .w_full()
+                .min_w_0()
                 .flex()
-                .items_center()
-                .gap_3()
+                .flex_col()
+                .gap_2()
                 .px_3()
                 .py_2()
                 .rounded(theme::RADIUS_SM)
@@ -3610,36 +3613,66 @@ impl ChatScreen {
                 .border_color(gpui::rgb(theme::border()))
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child(icon("arrow-up", px(14.), theme::accent()))
-                .child(div().flex_1().child(snapshot.label.clone()))
-                .when_some(action, |row, action| {
-                    row.child(
-                        div()
-                            .id("update-primary")
-                            .px_2()
-                            .py_0p5()
-                            .rounded(theme::RADIUS_SM)
-                            .text_color(gpui::rgb(theme::accent()))
-                            .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(crate::update::UpdateRequested(action));
-                            }))
-                            .child(snapshot.primary_label),
-                    )
-                })
                 .child(
                     div()
-                        .id("update-later")
-                        .px_2()
-                        .py_0p5()
-                        .rounded(theme::RADIUS_SM)
-                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.emit(crate::update::UpdateRequested(
-                                crate::update::UpdateAction::Later,
-                            ));
-                        }))
-                        .child("Later"),
+                        .w_full()
+                        .flex()
+                        .items_start()
+                        .gap_3()
+                        .child(div().flex_shrink_0().child(icon(
+                            "arrow-up",
+                            px(14.),
+                            theme::accent(),
+                        )))
+                        .child(
+                            div()
+                                .debug_selector(|| "update-banner-label".to_string())
+                                .flex_1()
+                                .min_w_0()
+                                .child(snapshot.label.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_end()
+                        .gap_2()
+                        .when_some(action, |row, action| {
+                            row.child(
+                                div()
+                                    .id("update-primary")
+                                    .debug_selector(|| "update-primary".to_string())
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(theme::RADIUS_SM)
+                                    .text_color(gpui::rgb(theme::accent()))
+                                    .hover(|style| {
+                                        style.bg(theme::overlay_hover()).cursor_pointer()
+                                    })
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(crate::update::UpdateRequested(action));
+                                    }))
+                                    .child(snapshot.primary_label),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id("update-later")
+                                .debug_selector(|| "update-later".to_string())
+                                .flex_shrink_0()
+                                .px_2()
+                                .py_0p5()
+                                .rounded(theme::RADIUS_SM)
+                                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(crate::update::UpdateRequested(
+                                        crate::update::UpdateAction::Later,
+                                    ));
+                                }))
+                                .child("Later"),
+                        ),
                 ),
         )
     }

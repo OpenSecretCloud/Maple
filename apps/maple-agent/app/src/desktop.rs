@@ -135,6 +135,8 @@ struct MapleApp {
     settings: crate::settings::AppSettings,
     updater: crate::update::Controller,
     restart_prompt_pending: bool,
+    #[cfg(target_os = "linux")]
+    restart_confirmation: Option<Entity<ui::update_confirmation::UpdateConfirmation>>,
     /// The complete live shortcut map. Settings mutations prepare a full
     /// replacement before this runtime clears GPUI's process-wide bindings.
     shortcuts: crate::shortcuts::ShortcutRuntime,
@@ -982,6 +984,14 @@ impl MapleApp {
                 return;
             }
             self.restart_prompt_pending = true;
+            #[cfg(target_os = "linux")]
+            let answer = {
+                let (prompt, answer) = ui::update_confirmation::open(window, cx);
+                self.restart_confirmation = Some(prompt);
+                cx.notify();
+                answer
+            };
+            #[cfg(not(target_os = "linux"))]
             let answer = window.prompt(gpui::PromptLevel::Warning, "Restart Maple to update?",
                 Some("This stops running tasks and remote access on this computer. Editors using Maple must reconnect after the update."),
                 &["Later", "Restart to Update"], cx);
@@ -989,25 +999,30 @@ impl MapleApp {
             let backend = self.backend.clone();
             let install_backend = backend.clone();
             let bridge = cx.spawn(async move |this, cx| {
-                let confirmed = answer.await == Ok(1)
-                    && this
-                        .update(cx, |this, cx| {
-                            if !this.store_ready
-                                || this.backend.store_state()
-                                    != maple_agent::store::StoreState::Open
-                                || this.updater.snapshot().state != crate::update::State::Ready
-                            {
-                                return false;
-                            }
-                            if let Some(state) = cx.try_global::<DesktopLifecycle>()
-                                && state.closing.replace(true)
-                            {
-                                return false;
-                            }
-                            persist_window_state();
-                            true
-                        })
-                        .unwrap_or(false);
+                let accepted = answer.await == Ok(1);
+                let confirmed = this
+                    .update(cx, |this, cx| {
+                        #[cfg(target_os = "linux")]
+                        {
+                            this.restart_confirmation = None;
+                            cx.notify();
+                        }
+                        if !accepted
+                            || !this.store_ready
+                            || this.backend.store_state() != maple_agent::store::StoreState::Open
+                            || this.updater.snapshot().state != crate::update::State::Ready
+                        {
+                            return false;
+                        }
+                        if let Some(state) = cx.try_global::<DesktopLifecycle>()
+                            && state.closing.replace(true)
+                        {
+                            return false;
+                        }
+                        persist_window_state();
+                        true
+                    })
+                    .unwrap_or(false);
                 let installed = if confirmed {
                     backend
                         .spawn(async move { controller.install(install_backend).await })
@@ -1835,7 +1850,8 @@ impl Render for MapleApp {
             cx.refresh_windows();
         }
         let titlebar = self.titlebar.clone();
-        div()
+        let root = div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1889,7 +1905,10 @@ impl Render for MapleApp {
                             Screen::Settings(screen) => screen.clone().into_any_element(),
                         }
                     }),
-            )
+            );
+        #[cfg(target_os = "linux")]
+        let root = root.children(self.restart_confirmation.clone());
+        root
     }
 }
 
@@ -3087,6 +3106,8 @@ pub fn run() {
                         settings: root_settings,
                         updater: root_updater,
                         restart_prompt_pending: false,
+                        #[cfg(target_os = "linux")]
+                        restart_confirmation: None,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                     })
@@ -3713,6 +3734,8 @@ mod tests {
                 settings,
                 updater: crate::update::Controller::new(true),
                 restart_prompt_pending: false,
+                #[cfg(target_os = "linux")]
+                restart_confirmation: None,
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
             }

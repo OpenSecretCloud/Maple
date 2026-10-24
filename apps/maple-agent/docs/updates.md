@@ -1,8 +1,8 @@
 # Agent updates
 
 Packaged Prod builds use the Agent-only signed update service at
-`https://updates.trymaple.ai/agent/stable/latest.json` on macOS and
-`https://updates.trymaple.ai/agent/stable/linux/latest.json` on Linux. Dev and unpackaged
+`https://updates.maple.ai/agent/stable/latest.json` on macOS and
+`https://updates.maple.ai/agent/stable/linux/latest.json` on Linux. Dev and unpackaged
 builds do not check that service. The Prod profile now pins the reviewed primary
 and backup public keys, so packaged Prod builds check the compiled feed after
 launch. Builds and production publication remain separate operations;
@@ -11,6 +11,13 @@ platform-specific signed installed-update rehearsal below. Environment
 variables cannot supply a feed or signing key. `MAPLE_DISABLE_UPDATE_CHECK=1`
 can only disable checks. A profile with no keys still shows **Updates not
 configured** and makes no updater requests.
+
+New packages compile the `updates.maple.ai` feeds. Existing packages still poll
+their compiled `updates.trymaple.ai` feeds, which must remain available alongside
+the canonical hostname. Both hosts serve the same signed manifests and hostless
+artifact paths; this hostname change does not change their bytes, wire formats,
+signing keys or installation identity. Migrating the compiled feed takes effect
+only after installing a new package; there is no runtime feed override.
 
 This feature does not change Research's updater, update Worker, publisher,
 release selection, signing configuration, or download paths. Agent publication

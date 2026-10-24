@@ -63,10 +63,13 @@ revision with a possible `-dirty` suffix; `source_sha` is the full source commit
 Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.
 
 Packaged Prod builds use only the compiled Agent stable feed:
-`https://updates.trymaple.ai/agent/stable/latest.json` on macOS, or
-`https://updates.trymaple.ai/agent/stable/linux/latest.json` on Linux. The checked-in
+`https://updates.maple.ai/agent/stable/latest.json` on macOS, or
+`https://updates.maple.ai/agent/stable/linux/latest.json` on Linux. The checked-in
 `update_feed_url` and `linux_update_feed_url` select those targets; embedded
 build-info retains the existing `update_feed_url` field with the effective feed.
+Older installed packages retain their compiled `updates.trymaple.ai` feeds;
+preserve that hostname and both legacy feed paths. Signed manifest paths and
+trusted keys are unchanged, so the two hostnames can serve the same release.
 Both feeds describe the same Agent version, build and source when publishing both
 platforms. Separate wire schemas preserve installed macOS client compatibility;
 this does not require separate release cadences. The profile pins the

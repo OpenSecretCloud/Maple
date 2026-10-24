@@ -96,13 +96,13 @@ fn validate_profiles(profiles: &BTreeMap<String, ReleaseProfile>) -> Result<(), 
         }
         if profile.update_feed_url.as_deref()
             != if channel == "prod" {
-                Some("https://updates.trymaple.ai/agent/stable/latest.json")
+                Some("https://updates.maple.ai/agent/stable/latest.json")
             } else {
                 None
             }
             || profile.linux_update_feed_url.as_deref()
                 != if channel == "prod" {
-                    Some("https://updates.trymaple.ai/agent/stable/linux/latest.json")
+                    Some("https://updates.maple.ai/agent/stable/linux/latest.json")
                 } else {
                     None
                 }
@@ -285,7 +285,7 @@ mod tests {
         assert!(dev.update_public_keys.is_empty());
         assert_eq!(
             prod.update_feed_url.as_deref(),
-            Some("https://updates.trymaple.ai/agent/stable/latest.json")
+            Some("https://updates.maple.ai/agent/stable/latest.json")
         );
         assert_eq!(prod.update_public_keys.len(), 2);
         assert_ne!(prod.update_public_keys[0], prod.update_public_keys[1]);
@@ -337,15 +337,28 @@ mod tests {
     }
 
     #[test]
+    fn new_package_profiles_reject_legacy_feed_urls() {
+        let original = profiles().unwrap();
+        let mut legacy_macos = original.clone();
+        legacy_macos.get_mut("prod").unwrap().update_feed_url =
+            Some("https://updates.trymaple.ai/agent/stable/latest.json".into());
+        assert!(validate_profiles(&legacy_macos).is_err());
+        let mut legacy_linux = original;
+        legacy_linux.get_mut("prod").unwrap().linux_update_feed_url =
+            Some("https://updates.trymaple.ai/agent/stable/linux/latest.json".into());
+        assert!(validate_profiles(&legacy_linux).is_err());
+    }
+
+    #[test]
     fn compiled_update_feeds_match_platform_and_disable_unsupported_targets() {
         let (_, prod) = select_profile(Some("prod"), None).unwrap();
         assert_eq!(
             prod.update_feed_for_target_os("macos"),
-            Some("https://updates.trymaple.ai/agent/stable/latest.json")
+            Some("https://updates.maple.ai/agent/stable/latest.json")
         );
         assert_eq!(
             prod.update_feed_for_target_os("linux"),
-            Some("https://updates.trymaple.ai/agent/stable/linux/latest.json")
+            Some("https://updates.maple.ai/agent/stable/linux/latest.json")
         );
         for target_os in ["windows", "freebsd", ""] {
             assert_eq!(prod.update_feed_for_target_os(target_os), None);

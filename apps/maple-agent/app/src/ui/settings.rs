@@ -1920,7 +1920,7 @@ impl SettingsScreen {
                             cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::AutomaticDownloads(enabled)));
                         }),
                     ))
-                    .child(div().flex().gap_3()
+                    .child(div().flex().flex_wrap().gap_3()
                         .child(widgets::ghost_button("updates-check")
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::Check))))
                             .child(if self.update.busy() { "Checking / updating…" } else if self.update.state == crate::update::State::Error { "Retry" } else { "Check for Updates" }))
@@ -3295,18 +3295,24 @@ fn toggle_row(
 
 fn info_row(label: &str, value: String) -> Div {
     widgets::card_row()
+        .w_full()
+        .min_w_0()
         .flex()
         .items_center()
         .justify_between()
         .gap_4()
         .child(
             div()
+                .flex_shrink_0()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .child(label.to_string()),
         )
         .child(
             div()
+                .flex_1()
+                .min_w_0()
+                .text_right()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child(value),

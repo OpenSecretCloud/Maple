@@ -35,7 +35,7 @@ python3 "$publisher" sign --bundle bundle --public-key bundle/public-key.pub \
   --secret-key /private/temporary/signing-key
 python3 "$publisher" publish --bundle bundle --public-key bundle/public-key.pub \
   --endpoint https://ACCOUNT.r2.cloudflarestorage.com --bucket AGENT_BUCKET \
-  --base-url https://updates.trymaple.ai
+  --base-url https://updates.maple.ai
 ```
 
 `trust` returns the source SHA, selected artifact names, exact run attempt,
@@ -75,6 +75,14 @@ same primary key signs both exact documents as `envelope.json` and
 `linux-envelope.json`. Linux publication also requires the canonical compiled
 Linux feed in both the selected source profile and trusted publisher profile;
 Mac-only producers do not need that field.
+
+The canonical compiled feeds use `https://updates.maple.ai`; both source and
+trusted-publisher profiles must pin those exact URLs. Packages built before the
+hostname change keep checking `updates.trymaple.ai`, so retain delivery there.
+The signed manifest uses hostless artifact paths and works unchanged on both
+hosts. New publication preparation selects a package from the coordinated new
+profile; it does not reinterpret an older package's compiled feed. Existing
+prepared bundles retain their exact bytes for reservation/publication retries.
 
 `reserve` creates `stable/releases/V/publication-manifest.json` using
 `If-None-Match: *`. This private object reserves the exact unsigned bytes before
@@ -143,10 +151,12 @@ signature, full artifact hashes, HEAD lengths, one-byte ranges, and installer
 redirect destinations. All public requests use the native client's
 `Maple-Agent-Updater/1` identity and `Accept-Encoding: identity`, including full
 payload downloads. Repeat that separately with `verify-live --bundle bundle
---public-key bundle/public-key.pub --base-url https://updates.trymaple.ai` after a
+--public-key bundle/public-key.pub --base-url https://updates.maple.ai` after a
 transport failure or operational change. If this final check fails after promotion,
 inspect the live state and retry the identical bundle; publication may already
 have completed. This check does not install or relaunch an application.
+The same read-only verification command can target `https://updates.trymaple.ai`
+to check compatibility delivery for older installed clients.
 
 Run offline tests:
 
