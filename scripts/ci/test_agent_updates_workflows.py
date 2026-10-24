@@ -150,7 +150,8 @@ class AgentUpdatesWorkflows(unittest.TestCase):
             self.assertNotIn("services/updates", source)
             self.assertNotIn("CLOUDFLARE_API_TOKEN", source)
         publish = str(jobs["publish"])
-        self.assertIn("--base-url https://updates.trymaple.ai", publish)
+        self.assertIn("--base-url https://updates.maple.ai", publish)
+        self.assertNotIn("--base-url https://updates.trymaple.ai", publish)
         self.assertNotIn("AGENT_UPDATES_ORIGIN", publish)
 
     def test_routes_and_worker_resources_require_separate_setup(self):

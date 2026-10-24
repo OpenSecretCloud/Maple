@@ -140,9 +140,17 @@ therefore remains a trusted workflow boundary, not separate credential authority
 The public key must also be pinned in both the chosen build's Prod source profile
 and the publisher's trusted master profile. An empty source key list fails closed;
 setting workflow variables cannot replace those pins. Production verification uses
-the fixed `https://updates.trymaple.ai` origin. No Worker deployment token belongs
+the fixed `https://updates.maple.ai` origin. No Worker deployment token belongs
 in the Agent publication steps. Preserve the existing environment's policies;
 the Agent workflow additionally enforces manual dispatch from trusted `master`.
+
+New Agent packages compile the canonical `updates.maple.ai` feeds, and the
+publisher requires those exact URLs in both the selected source and its trusted
+profile. Keep the existing `updates.trymaple.ai` Agent routes active for installed
+clients, alongside the separately owner-managed canonical hostname. Both hosts
+must retain Agent delivery; Research remains on its existing hostname. Changing
+these source pins does not deploy either hostname or change signed manifest
+paths, keys, feed schemas or existing release bytes.
 
 Before/after route activation compare Research's metadata bytes and all six
 GET/HEAD download redirects, accounting for legitimate Research releases. In an

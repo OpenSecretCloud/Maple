@@ -245,4 +245,4 @@ jobs:
           nix develop --no-update-lock-file .#ci -c python3 services/agent-updates/publisher/publisher.py publish \
             --bundle bundle --public-key bundle/public-key.pub \
             --endpoint "https://${R2_ACCOUNT}.r2.cloudflarestorage.com" --bucket "$R2_BUCKET" \
-            --base-url https://updates.trymaple.ai
+            --base-url https://updates.maple.ai

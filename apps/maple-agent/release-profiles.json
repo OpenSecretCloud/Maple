@@ -26,8 +26,8 @@
     "client_id": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
     "pcr_environment": "production",
     "update_tag_prefix": "maple-agent-v",
-    "update_feed_url": "https://updates.trymaple.ai/agent/stable/latest.json",
-    "linux_update_feed_url": "https://updates.trymaple.ai/agent/stable/linux/latest.json",
+    "update_feed_url": "https://updates.maple.ai/agent/stable/latest.json",
+    "linux_update_feed_url": "https://updates.maple.ai/agent/stable/linux/latest.json",
     "update_public_keys": [
       "RWSEawHGDqhs8hlPvW08LCDXexMVkxqCtKhorNHTVpgMmYlls07md+mc",
       "RWR3nhVL8nlVmwQBTSKl/dl6a0V3eseG260Be3/aYVb4+K8MgBfyOyN4"

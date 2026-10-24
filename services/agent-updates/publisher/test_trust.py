@@ -121,6 +121,25 @@ class PinTests(unittest.TestCase):
             with self.assertRaises(p.PublishError):
                 p.validate_pins(self.key, self.profile, bad)
 
+    def test_feed_migration_requires_the_canonical_host_in_both_trust_profiles(self):
+        profile = deepcopy(self.profile)
+        profile["prod"]["linux_update_feed_url"] = p.LINUX_FEED_URL
+        # A new publisher must not prepare an old-feed binary as though the
+        # hostname move were compiled into it, or accept stale trusted pins.
+        for side in (0, 1):
+            for field, legacy in (
+                ("update_feed_url", "https://updates.trymaple.ai/agent/stable/latest.json"),
+                ("linux_update_feed_url", "https://updates.trymaple.ai/agent/stable/linux/latest.json"),
+            ):
+                profiles = [deepcopy(profile), deepcopy(profile)]
+                profiles[side]["prod"][field] = legacy
+                with self.subTest(side=side, field=field), self.assertRaisesRegex(p.PublishError, "update feed"):
+                    p.validate_pins(self.key, *profiles, linux=True)
+
+    def test_checked_in_profile_matches_publisher_feed_pins(self):
+        profile = p.decode_json(p.read_bytes(p.ROOT / "apps/maple-agent/release-profiles.json", p.MAX_MANIFEST))
+        p.validate_pins(profile["prod"]["update_public_keys"][0], profile, deepcopy(profile), linux=True)
+
     def test_linux_feed_is_pinned_on_both_profiles_only_when_linux_selected(self):
         # Historical Mac-only producers need no Linux profile field.
         p.validate_pins(self.key, self.profile, deepcopy(self.profile), False)
