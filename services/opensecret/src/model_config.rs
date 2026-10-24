@@ -1045,7 +1045,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Dealign's uncensored DeepSeek 1017 reasoning and tool-use model.",
         ModelAccessTier::Pro,
         ModelCapabilities::chat(true, true),
-        &["New"],
+        &["Beta"],
         true,
         true,
         false,
